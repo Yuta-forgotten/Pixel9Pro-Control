@@ -1,0 +1,10 @@
+# Shell scripts must keep LF on all platforms (Android requires LF)
+*.sh text eol=lf
+module.prop text eol=lf
+system/vendor/etc/*.json text eol=lf
+etc/*.json text eol=lf
+
+# Binary files
+*.jpg binary
+*.zip binary
+*.png binary
