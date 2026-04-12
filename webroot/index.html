@@ -1,0 +1,1364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#daf0ea">
+<meta name="color-scheme" content="dark">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>温控调度控制台</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root {
+  --accent:    #3db8a4;
+  --accent-dk: #2a9a88;
+  --accent-dim:rgba(61,184,164,.18);
+  --coral:     #f0907a;
+  --lime:      #78c84a;
+
+  --text:   rgba(22,42,38,.88);
+  --text-2: rgba(22,42,38,.54);
+  --text-3: rgba(22,42,38,.30);
+
+  --g-bg:     rgba(255,255,255,.72);
+  --g-border: rgba(255,255,255,.82);
+  --g-shadow: 0 4px 22px rgba(40,90,76,.12);
+  --blur:     blur(20px) saturate(1.6) brightness(1.03);
+
+  --r-sm: 12px; --r-md: 16px; --r-lg: 22px;
+  --r-xl: 26px; --r-f:  9999px;
+  --dur:  200ms;
+  --ease: cubic-bezier(.2,0,0,1);
+  --spring: cubic-bezier(.34,1.56,.64,1);
+
+  --tab-h: 58px;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  font-family: 'Google Sans','Roboto',system-ui,sans-serif;
+  color: var(--text);
+  overflow: hidden;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: #d8f0ea;
+}
+
+/* ── Background: position:fixed + px offsets prevents resize-jitter ── */
+.bg-img {
+  position: fixed;
+  top: -40px; left: -40px; right: -40px; bottom: -40px;
+  background: url('/bg.jpg') center 18% / cover no-repeat;
+  filter: blur(7px) brightness(.90) saturate(1.15);
+  z-index: -2;
+}
+.bg-tint {
+  position: fixed; inset: 0; z-index: -1;
+  background: linear-gradient(158deg,
+    rgba(210,245,238,.62) 0%,
+    rgba(225,242,252,.50) 48%,
+    rgba(248,238,230,.58) 100%);
+}
+
+/* ── Glass card ─────────────────────────────────────────────── */
+.card {
+  background: var(--g-bg);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--g-border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--g-shadow);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+
+/* ── Tab pages container ────────────────────────────────────── */
+.tab-pages {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.tab-page {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: none;
+  padding: env(safe-area-inset-top, 0px) 14px 20px;
+}
+
+.tab-page.active { display: block; }
+
+.page-title {
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--text);
+  padding: 14px 4px 2px;
+  margin-bottom: 8px;
+}
+
+.section-label {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .13em;
+  text-transform: uppercase; color: var(--text-3);
+  padding: 6px 4px 0;
+}
+
+.col { display: flex; flex-direction: column; gap: 10px; }
+
+/* ── Tab bar ────────────────────────────────────────────────── */
+.tab-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  height: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px));
+  background: rgba(225,248,242,.90);
+  backdrop-filter: blur(28px) saturate(1.8);
+  -webkit-backdrop-filter: blur(28px) saturate(1.8);
+  border-top: 1px solid rgba(255,255,255,.64);
+}
+
+.tab-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding-top: 8px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  position: relative;
+  color: var(--text-3);
+  transition: color var(--dur) var(--ease), opacity var(--dur) var(--ease);
+}
+
+.tab-item:active { opacity: .58; }
+
+.tab-item .ti-icon {
+  line-height: 0;
+  transition: transform .22s var(--spring);
+}
+
+.tab-item .ti-label {
+  font-size: 10.5px;
+  font-weight: 500;
+  transition: color var(--dur) var(--ease);
+}
+
+.tab-item.active { color: var(--accent-dk); }
+.tab-item.active .ti-icon { transform: scale(1.14); }
+
+/* Top indicator */
+.tab-item::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 22%; right: 22%;
+  height: 2.5px;
+  border-radius: 0 0 3px 3px;
+  background: var(--accent);
+  transform: scaleX(0);
+  transition: transform .26s var(--spring);
+}
+.tab-item.active::before { transform: scaleX(1); }
+
+/* ── Hero card ──────────────────────────────────────────────── */
+.hero-card {
+  position: relative; overflow: hidden;
+  padding: 20px 18px;
+  display: flex; align-items: center; gap: 14px;
+  transition: border-color var(--dur) var(--ease);
+}
+.hero-tint {
+  position: absolute; inset: 0; pointer-events: none;
+  border-radius: inherit;
+  transition: background var(--dur) var(--ease);
+}
+/* No ::after edge highlight — clean frosted glass look */
+.hero-icon {
+  width: 54px; height: 54px; flex-shrink: 0; position: relative; z-index: 1;
+  border-radius: var(--r-md);
+  background: rgba(255,255,255,.55); border: 1px solid rgba(255,255,255,.75);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--accent-dk);
+}
+.hero-icon.pop { animation: iconpop .38s var(--spring) both }
+@keyframes iconpop {
+  0%  { transform: scale(.6); opacity: .3 }
+  60% { transform: scale(1.12) }
+  100%{ transform: scale(1); opacity: 1 }
+}
+.hero-info { flex: 1; min-width: 0; position: relative; z-index: 1; }
+.hero-label { font-size: 10.5px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase; color: var(--text-3); }
+.hero-mode  { font-size: 24px; font-weight: 400; line-height: 1.15; margin-top: 2px; color: var(--text); }
+.hero-desc  { font-size: 11.5px; color: var(--text-2); margin-top: 4px; line-height: 1.4; }
+
+.hero-card.mode-game     { border-color: rgba(235,115,80,.38) }
+.hero-card.mode-balanced { border-color: rgba(61,184,164,.42) }
+.hero-card.mode-battery  { border-color: rgba(120,200,74,.38) }
+.hero-card.mode-stock    { border-color: rgba(90,155,235,.38) }
+.hero-card.mode-unknown  { border-color: var(--g-border) }
+.hero-card.mode-game     .hero-tint { background: rgba(235,115,80,.08) }
+.hero-card.mode-balanced .hero-tint { background: rgba(61,184,164,.10) }
+.hero-card.mode-battery  .hero-tint { background: rgba(120,200,74,.08) }
+.hero-card.mode-stock    .hero-tint { background: rgba(90,155,235,.08) }
+.hero-card.mode-game     .hero-icon { background: rgba(235,115,80,.18); border-color: rgba(235,115,80,.32); color: #d06028; }
+.hero-card.mode-balanced .hero-icon { background: rgba(61,184,164,.18); border-color: rgba(61,184,164,.32); color: var(--accent-dk); }
+.hero-card.mode-battery  .hero-icon { background: rgba(120,200,74,.18); border-color: rgba(120,200,74,.32); color: #4a8a28; }
+.hero-card.mode-stock    .hero-icon { background: rgba(90,155,235,.18); border-color: rgba(90,155,235,.32); color: #3a6ea8; }
+
+/* ── Badge ──────────────────────────────────────────────────── */
+.badge {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
+  padding: 4px 12px; border-radius: var(--r-f);
+  background: rgba(61,184,164,.18); border: 1px solid rgba(61,184,164,.38);
+  color: var(--accent-dk);
+}
+.badge.off {
+  background: rgba(22,42,38,.06); border-color: rgba(22,42,38,.14); color: var(--text-3);
+}
+
+/* ── Home: quick thermal snapshot ───────────────────────────── */
+.snap-card { padding: 16px 16px 14px; }
+
+.snap-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px;
+}
+.snap-title { font-size: 12px; font-weight: 500; color: var(--text-2); }
+
+.snap-body { display: flex; align-items: stretch; gap: 14px; }
+
+.snap-temp { display: flex; align-items: flex-end; gap: 3px; flex-shrink: 0; }
+.snap-temp-num {
+  font-size: 48px; font-weight: 200; line-height: 1;
+  font-variant-numeric: tabular-nums; letter-spacing: -.02em;
+  color: var(--accent-dk); transition: color .45s;
+}
+.snap-temp-unit { font-size: 17px; color: var(--text-2); margin-bottom: 5px; }
+
+.snap-divider {
+  width: 1px; align-self: stretch;
+  background: rgba(22,42,38,.10); flex-shrink: 0; margin: 2px 0;
+}
+
+.snap-sensors { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 7px; }
+
+.snap-chip {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 6px; font-size: 11px; color: var(--text-2);
+}
+.snap-chip-val { font-weight: 500; font-variant-numeric: tabular-nums; }
+
+.snap-status {
+  font-size: 11px; color: var(--text-3); margin-top: 10px;
+}
+
+/* ── Home: device info card ─────────────────────────────────── */
+.info-card { padding: 14px 16px; display: flex; flex-direction: column; gap: 9px; }
+.info-row { display: flex; align-items: center; justify-content: space-between; }
+.info-lbl { font-size: 11.5px; color: var(--text-3); }
+.info-val { font-size: 12px; font-weight: 500; color: var(--text-2); }
+
+/* ── Thermal tab: full card ─────────────────────────────────── */
+.thermal-card { padding: 18px 18px 16px; display: flex; flex-direction: column; gap: 14px; }
+.th-header { display: flex; align-items: center; justify-content: space-between; }
+.th-title { font-size: 12.5px; font-weight: 500; color: var(--text-2); }
+
+.temp-display { display: flex; align-items: flex-end; gap: 8px; }
+.temp-num {
+  font-size: 56px; font-weight: 200; line-height: 1;
+  font-variant-numeric: tabular-nums; letter-spacing: -.02em;
+  transition: color .45s, text-shadow .45s;
+  color: var(--accent-dk);
+}
+.temp-unit { font-size: 20px; color: var(--text-2); margin-bottom: 7px; }
+.temp-meta { margin-left: auto; text-align: right; }
+.temp-zone   { font-size: 10.5px; color: var(--text-3); margin-bottom: 3px; }
+.temp-status { font-size: 12px; font-weight: 500; transition: color .4s; }
+
+.temp-bar-wrap { position: relative; padding-bottom: 20px; margin-top: 4px; }
+.temp-bar-track {
+  height: 5px; border-radius: var(--r-f); overflow: visible; position: relative;
+  background: linear-gradient(90deg,
+    rgba(61,184,164,.22) 0%,
+    rgba(212,160,64,.22) 65%,
+    rgba(235,110,80,.22) 100%);
+}
+.temp-bar-fill {
+  height: 100%; border-radius: var(--r-f);
+  transition: width .9s cubic-bezier(0,0,0,1), background .45s;
+}
+.temp-marker {
+  position: absolute; top: -5px; width: 2px; height: 15px;
+  border-radius: 1px; transform: translateX(-50%);
+}
+.temp-marker.stock { background: rgba(22,42,38,.28); }
+.temp-marker.mod   { background: var(--accent); }
+.temp-mlbl {
+  position: absolute; top: 14px; font-size: 9px;
+  white-space: nowrap; transform: translateX(-50%); color: var(--text-3);
+}
+.temp-mlbl.mod { color: var(--accent-dk); }
+
+.chips { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.chip {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 5px; padding: 8px 13px;
+  background: rgba(255,255,255,.58); border: 1px solid rgba(255,255,255,.75);
+  border-radius: var(--r-md); font-size: 11.5px; color: var(--text-2);
+}
+.chip-val { font-weight: 500; font-variant-numeric: tabular-nums; }
+
+/* ── Profile / Preset cards ─────────────────────────────────── */
+.profile-list { display: flex; flex-direction: column; gap: 8px; }
+.profile-card {
+  display: flex; align-items: center; gap: 14px; padding: 14px 16px;
+  cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+  position: relative; overflow: hidden;
+  background: rgba(255,255,255,.62);
+  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border: 1px solid rgba(255,255,255,.78);
+  border-radius: var(--r-xl);
+  box-shadow: 0 2px 14px rgba(40,90,76,.10);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+/* No ::before edge highlight — clean frosted glass look */
+.profile-card:active { transform: scale(.977); }
+.profile-card.selected {
+  background: rgba(61,184,164,.14); border-color: rgba(61,184,164,.52);
+  box-shadow: 0 0 0 1px rgba(61,184,164,.18), 0 4px 20px rgba(40,90,76,.12);
+}
+.profile-card.loading .p-icon { animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.38} }
+
+.p-icon {
+  width: 46px; height: 46px; flex-shrink: 0; border-radius: var(--r-md);
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(255,255,255,.68); background: rgba(255,255,255,.52);
+  color: var(--accent-dk);
+  transition: background var(--dur);
+}
+.profile-card[data-profile="game"]     .p-icon { background: rgba(235,115,80,.18); border-color: rgba(235,115,80,.32); color: #d06028; }
+.profile-card[data-profile="balanced"] .p-icon { background: rgba(61,184,164,.18); border-color: rgba(61,184,164,.32); color: var(--accent-dk); }
+.profile-card[data-profile="battery"]  .p-icon { background: rgba(120,200,74,.18); border-color: rgba(120,200,74,.32); color: #4a8a28; }
+.profile-card[data-profile="stock"]    .p-icon { background: rgba(90,155,235,.18); border-color: rgba(90,155,235,.32); color: #3a6ea8; }
+.profile-card[data-offset="0"] .p-icon { background: rgba(90,155,235,.18); border-color: rgba(90,155,235,.32); color: #3a6ea8; }
+.profile-card[data-offset="2"] .p-icon { background: rgba(61,184,164,.18); border-color: rgba(61,184,164,.32); color: var(--accent-dk); }
+.profile-card[data-offset="4"] .p-icon { background: rgba(212,160,64,.18); border-color: rgba(212,160,64,.32); color: #8a5a10; }
+.profile-card[data-offset="6"] .p-icon { background: rgba(235,100,72,.18); border-color: rgba(235,100,72,.32); color: #c03820; }
+
+.p-info { flex: 1; min-width: 0; }
+.p-name { font-size: 15px; font-weight: 500; line-height: 1.2; color: var(--text); }
+.p-desc { font-size: 12px; color: var(--text-2); margin-top: 3px; line-height: 1.4; }
+
+.p-check {
+  width: 22px; height: 22px; flex-shrink: 0; border-radius: var(--r-f);
+  background: var(--accent); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  transform: scale(0); opacity: 0;
+  transition: transform var(--dur) var(--spring), opacity var(--dur);
+}
+.p-check svg { display: block; }
+.profile-card.selected .p-check { transform: scale(1); opacity: 1; }
+
+/* ── CPU status ─────────────────────────────────────────────── */
+.status-card { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.status-header { display: flex; align-items: center; justify-content: space-between; }
+.status-title { font-size: 12.5px; font-weight: 500; color: var(--text-2); }
+.refresh-btn {
+  display: flex; align-items: center; gap: 5px; padding: 6px 13px;
+  background: rgba(255,255,255,.58); border: 1px solid rgba(255,255,255,.72);
+  border-radius: var(--r-f); font-family: inherit; font-size: 12px; color: var(--text-2);
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: background var(--dur), opacity var(--dur);
+}
+.refresh-btn:active { opacity: .6; }
+.ri { display: inline-block; }
+.refresh-btn.spinning .ri { animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.cpu-rows { display: flex; flex-direction: column; gap: 13px; }
+.cpu-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
+.cpu-label { font-size: 11.5px; font-weight: 500; color: var(--text-2); letter-spacing: .02em; }
+.cpu-freq  { font-size: 11.5px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.cpu-freq b { color: var(--text); font-weight: 500; }
+.cpu-bar-track { height: 4px; background: rgba(22,42,38,.10); border-radius: var(--r-f); overflow: hidden; }
+.cpu-bar-fill {
+  height: 100%; border-radius: var(--r-f);
+  transform-origin: left; transform: scaleX(0);
+  transition: transform .7s cubic-bezier(0,0,0,1), background .3s;
+}
+.cpu-row:nth-child(1) .cpu-bar-fill { background: linear-gradient(90deg,#3db8a4,#70d0c0); }
+.cpu-row:nth-child(2) .cpu-bar-fill { background: linear-gradient(90deg,#7aabe8,#a8c8f4); }
+.cpu-row:nth-child(3) .cpu-bar-fill { background: linear-gradient(90deg,#e89068,#f4b898); }
+.cpu-params { font-size: 10.5px; color: var(--text-3); margin-top: 3px; font-family: 'Roboto Mono', monospace; }
+
+/* ── Log card ───────────────────────────────────────────────── */
+.log-card { overflow: hidden; }
+.log-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 13px 16px; cursor: pointer; user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  background: rgba(255,255,255,.62);
+  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  border: 1px solid rgba(255,255,255,.78);
+  border-radius: var(--r-lg);
+  transition: border-radius var(--dur) var(--ease);
+}
+.log-card.open .log-toggle { border-radius: var(--r-lg) var(--r-lg) 0 0; border-bottom-color: transparent; }
+.log-lbl { font-size: 12.5px; font-weight: 500; color: var(--text-2); }
+.log-arrow { font-size: 14px; color: var(--text-3); transition: transform var(--dur) var(--ease); }
+.log-card.open .log-arrow { transform: rotate(180deg); }
+.log-body { max-height: 0; overflow: hidden; transition: max-height .36s var(--ease); }
+.log-card.open .log-body { max-height: 240px; }
+.log-inner {
+  padding: 12px 16px 16px;
+  background: rgba(240,252,248,.92);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,.72); border-top: none;
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+  font-family: 'Roboto Mono', monospace;
+  font-size: 11px; line-height: 1.8; color: var(--text-2);
+  white-space: pre-wrap; word-break: break-all; overflow-y: auto; max-height: 200px;
+}
+.log-ok  { color: #1a8a5a; }
+.log-err { color: #c84030; }
+.log-warn{ color: #b07818; }
+.log-dim { color: var(--text-3); }
+
+/* ── Toast ────────────────────────���─────────────────────────── */
+.toast-wrap {
+  position: fixed;
+  bottom: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px) + 12px);
+  left: 50%; transform: translateX(-50%);
+  z-index: 9999; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.toast {
+  background: rgba(22,50,44,.88);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  color: rgba(255,255,255,.92); border-radius: var(--r-f);
+  padding: 10px 22px; font-size: 13.5px; font-weight: 500;
+  white-space: nowrap; pointer-events: auto;
+  box-shadow: 0 4px 24px rgba(0,0,0,.22);
+  animation: t-in var(--dur) var(--ease) both;
+}
+.toast.out { animation: t-out var(--dur) ease both; }
+@keyframes t-in  { from{opacity:0;transform:translateY(14px) scale(.91)} }
+@keyframes t-out { to  {opacity:0;transform:translateY(7px)  scale(.96)} }
+
+/* ── Reboot modal ───────────────────────────────────────────── */
+.modal-wrap {
+  position: fixed; inset: 0; z-index: 400;
+  display: flex; align-items: flex-end; justify-content: center;
+  padding: 0 14px max(24px,env(safe-area-inset-bottom));
+  opacity: 0; pointer-events: none;
+  transition: opacity .22s var(--ease);
+}
+.modal-wrap.open { opacity: 1; pointer-events: auto; }
+.modal-bg {
+  position: absolute; inset: 0;
+  background: rgba(22,42,38,.22);
+  backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px);
+}
+.modal-sheet {
+  position: relative; z-index: 1;
+  width: 100%; max-width: 420px;
+  background: rgba(255,255,255,.86);
+  backdrop-filter: blur(26px) saturate(1.6);
+  -webkit-backdrop-filter: blur(26px) saturate(1.6);
+  border: 1px solid rgba(255,255,255,.92);
+  border-radius: var(--r-xl);
+  box-shadow: 0 8px 48px rgba(40,90,76,.18);
+  padding: 30px 20px 22px;
+  text-align: center;
+  transform: translateY(28px) scale(.97);
+  transition: transform .32s var(--spring);
+}
+.modal-wrap.open .modal-sheet { transform: translateY(0) scale(1); }
+.modal-s-icon  { display: flex; align-items: center; justify-content: center; height: 44px; margin-bottom: 10px; color: var(--accent-dk); }
+.modal-s-title { font-size: 17px; font-weight: 600; color: var(--text); margin-bottom: 7px; }
+.modal-s-desc  { font-size: 13px; color: var(--text-2); line-height: 1.65; margin-bottom: 22px; }
+.modal-actions { display: flex; flex-direction: column; gap: 9px; }
+.mbtn {
+  width: 100%; padding: 14px 16px; border: none; border-radius: var(--r-md);
+  font-family: inherit; font-size: 14.5px; font-weight: 500;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: opacity var(--dur), transform var(--dur) var(--spring);
+}
+.mbtn:active { opacity: .74; transform: scale(.97); }
+.mbtn-primary   { background: var(--accent); color: #fff; font-size: 15px; }
+.mbtn-secondary {
+  background: rgba(61,184,164,.14); color: var(--accent-dk);
+  border: 1px solid rgba(61,184,164,.28);
+}
+.mbtn-ghost {
+  background: rgba(22,42,38,.05); color: var(--text-3);
+  border: 1px solid rgba(22,42,38,.09); font-size: 13px;
+}
+
+/* ── Skeleton ───────────────────────────────────────────────── */
+@keyframes shimmer {
+  0%  { background-position: -200% 0 }
+  100%{ background-position:  200% 0 }
+}
+.skel {
+  background: linear-gradient(90deg,
+    rgba(22,42,38,.06) 25%, rgba(22,42,38,.12) 50%, rgba(22,42,38,.06) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+  border-radius: 10px;
+}
+</style>
+</head>
+<body>
+
+<div class="bg-img" aria-hidden="true"></div>
+<div class="bg-tint" aria-hidden="true"></div>
+
+<div class="tab-pages">
+
+  <!-- ══════════════════ Tab 1: 状态 ══════════════════ -->
+  <div class="tab-page active" id="page-home">
+    <div class="col">
+      <div class="page-title">状态总览</div>
+
+      <!-- ① Current mode hero -->
+      <div class="card hero-card mode-unknown" id="hero">
+        <div class="hero-tint"></div>
+        <div class="hero-icon" id="hero-icon">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+        </div>
+        <div class="hero-info">
+          <div class="hero-label">当前模式</div>
+          <div class="hero-mode" id="hero-mode">读取中…</div>
+          <div class="hero-desc"  id="hero-desc">正在读取当前配置</div>
+        </div>
+      </div>
+
+      <!-- ② Quick thermal snapshot -->
+      <div class="section-label">机身温度</div>
+      <div class="card snap-card">
+        <div class="snap-header">
+          <span class="snap-title">VIRTUAL-SKIN</span>
+          <span class="badge" id="home-mod-badge">+4°C 激活</span>
+        </div>
+        <div id="home-thermal-skel">
+          <div class="skel" style="height:54px"></div>
+        </div>
+        <div id="home-thermal-content" style="display:none">
+          <div class="snap-body">
+            <div class="snap-temp">
+              <div class="snap-temp-num" id="home-temp-num">--</div>
+              <div class="snap-temp-unit">°C</div>
+            </div>
+            <div class="snap-divider"></div>
+            <div class="snap-sensors" id="home-sensor-chips"></div>
+          </div>
+          <div class="snap-status" id="home-temp-status"></div>
+        </div>
+      </div>
+
+      <!-- ③ Device info -->
+      <div class="section-label">设备信息</div>
+      <div class="card info-card">
+        <div class="info-row">
+          <span class="info-lbl">设备</span>
+          <span class="info-val" id="info-model">Pixel 9 Pro</span>
+        </div>
+        <div class="info-row">
+          <span class="info-lbl">Android</span>
+          <span class="info-val" id="info-android">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-lbl">模块版本</span>
+          <span class="info-val" id="info-module">v2.8</span>
+        </div>
+        <div class="info-row">
+          <span class="info-lbl">作者</span>
+          <span class="info-val">Yuta</span>
+        </div>
+        <div class="info-row">
+          <span class="info-lbl">WebUI 端口</span>
+          <span class="info-val">HTTP :6210</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════ Tab 2: 性能 ══════════════════ -->
+  <div class="tab-page" id="page-perf">
+    <div class="col">
+      <div class="page-title">性能调度</div>
+
+      <!-- ① CPU mode cards -->
+      <div class="section-label">性能模式</div>
+      <div class="profile-list">
+
+        <div class="profile-card" data-profile="game" onclick="applyProfile('game')">
+          <div class="p-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>
+          </div>
+          <div class="p-info">
+            <div class="p-name">游戏模式</div>
+            <div class="p-desc">全核心解锁 · 小核≤1950 / 中核≤2600 / 大核≤3105 MHz</div>
+          </div>
+          <div class="p-check">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          </div>
+        </div>
+
+        <div class="profile-card" data-profile="balanced" onclick="applyProfile('balanced')">
+          <div class="p-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
+          </div>
+          <div class="p-info">
+            <div class="p-name">平衡模式</div>
+            <div class="p-desc">小核≤1548MHz · 中大核全速 · 前台 App 独享 cpu4-7</div>
+          </div>
+          <div class="p-check">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          </div>
+        </div>
+
+        <div class="profile-card" data-profile="battery" onclick="applyProfile('battery')">
+          <div class="p-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>
+          </div>
+          <div class="p-info">
+            <div class="p-name">省电模式</div>
+            <div class="p-desc">小核≤1200 / 中核≤1795 / 大核≤1885 MHz · 显著降低峰值功耗</div>
+          </div>
+          <div class="p-check">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          </div>
+        </div>
+
+        <div class="profile-card" data-profile="stock" onclick="applyProfile('stock')">
+          <div class="p-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>
+          </div>
+          <div class="p-info">
+            <div class="p-name">Google 原版调度</div>
+            <div class="p-desc">恢复系统默认频率上限与 cpuset · 由 Android 调度器自主管理</div>
+          </div>
+          <div class="p-check">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ② Real-time CPU frequency -->
+      <div class="section-label">实时频率</div>
+      <div class="card status-card">
+        <div class="status-header">
+          <span class="status-title">CPU 频率状态</span>
+          <button class="refresh-btn" onclick="refreshCpu()" id="refresh-btn">
+            <span class="ri" id="ri">↻</span> 刷新
+          </button>
+        </div>
+        <div class="cpu-rows" id="cpu-rows">
+          <div class="skel" style="height:48px"></div>
+          <div class="skel" style="height:48px"></div>
+          <div class="skel" style="height:48px"></div>
+        </div>
+      </div>
+
+      <!-- ③ Log -->
+      <div class="log-card" id="log-card">
+        <div class="log-toggle" onclick="toggleLog()">
+          <span class="log-lbl">操作记录</span>
+          <span class="log-arrow">▾</span>
+        </div>
+        <div class="log-body">
+          <div class="log-inner" id="log-inner"><span class="log-dim">等待操作…</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════ Tab 3: 温控 ══════════════════ -->
+  <div class="tab-page" id="page-thermal">
+    <div class="col">
+      <div class="page-title">温控管理</div>
+
+      <!-- ① Full thermal display -->
+      <div class="section-label">机身温度详情</div>
+      <div class="card thermal-card">
+        <div class="th-header">
+          <span class="th-title">机身温度</span>
+          <span class="badge" id="th-mod-badge">+4°C 激活</span>
+        </div>
+
+        <div id="thermal-skel">
+          <div class="skel" style="height:52px"></div>
+        </div>
+
+        <div id="thermal-content" style="display:none">
+          <div class="temp-display">
+            <div class="temp-num" id="temp-num">--</div>
+            <div class="temp-unit">°C</div>
+            <div class="temp-meta">
+              <div class="temp-zone"   id="temp-zone">VIRTUAL-SKIN</div>
+              <div class="temp-status" id="temp-status">读取中</div>
+            </div>
+          </div>
+
+          <div class="temp-bar-wrap">
+            <div class="temp-bar-track">
+              <div class="temp-bar-fill" id="temp-fill" style="width:0%"></div>
+              <div class="temp-marker stock" id="mk-stock"     style="left:0%"></div>
+              <div class="temp-mlbl"         id="mk-stock-lbl" style="left:0%">39°C</div>
+              <div class="temp-marker mod"   id="mk-mod"       style="left:0%"></div>
+              <div class="temp-mlbl mod"     id="mk-mod-lbl"   style="left:0%">43°C mod</div>
+            </div>
+          </div>
+
+          <div class="chips" id="sensor-chips"></div>
+        </div>
+      </div>
+
+      <!-- ② Thermal presets -->
+      <div class="section-label">节流阈值档位</div>
+      <div class="profile-list" id="thermal-list">
+
+        <div class="profile-card" data-offset="0" onclick="applyThermal(0)">
+          <div class="p-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M22 11h-4.17l3.24-3.24-1.41-1.42L15 11h-2V9l4.66-4.66-1.42-1.41L13 6.17V2h-2v4.17L7.76 2.93 6.34 4.34 11 9v2H9L4.34 6.34 2.93 7.76 6.17 11H2v2h4.17l-3.24 3.24 1.41 1.42L9 13h2v2l-4.66 4.66 1.42 1.41L11 17.83V22h2v-4.17l3.24 3.24 1.42-1.41L13 15v-2h2l4.66 4.66 1.41-1.42L17.83 13H22z"/></svg>
+          </div>
+          <div class="p-info">
+            <div class="p-name">原版节流</div>
+            <div class="p-desc">VIRTUAL-SKIN 39°C 开始节流（Google 出厂默认）</div>
+          </div>
+          <div class="p-check">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          </div>
+        </div>
+
+        <div class="profile-card" data-offset="2" onclick="applyThermal(2)">
+          <div class="p-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82zm-3 5.82c-1.1 0-2-.9-2-2 0-.72.4-1.35 1-1.71V8h2v7.29c.6.36 1 .99 1 1.71 0 1.1-.9 2-2 2z"/></svg>
+          </div>
+          <div class="p-info">
+            <div class="p-name">轻度优化 +2°C</div>
+            <div class="p-desc">VIRTUAL-SKIN 41°C 开始节流 · 保守方案</div>
+          </div>
+          <div class="p-check">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          </div>
+        </div>
+
+        <div class="profile-card" data-offset="4" onclick="applyThermal(4)">
+          <div class="p-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-.36 3.6-1.21 4.62-2.58.39 1.29.59 2.65.59 4.04 0 2.65-2.15 4.8-4.8 4.8z"/></svg>
+          </div>
+          <div class="p-info">
+            <div class="p-name">推荐档位 +4°C</div>
+            <div class="p-desc">VIRTUAL-SKIN 43°C 开始节流 · 模块内置默认配置</div>
+          </div>
+          <div class="p-check">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          </div>
+        </div>
+
+        <div class="profile-card" data-offset="6" onclick="applyThermal(6)">
+          <div class="p-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+          </div>
+          <div class="p-info">
+            <div class="p-name">激进 +6°C</div>
+            <div class="p-desc">VIRTUAL-SKIN 45°C 开始节流 · 适合长时高负载场景</div>
+          </div>
+          <div class="p-check">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div><!-- /tab-pages -->
+
+<!-- Bottom tab bar: 状态 | 性能 | 温控 -->
+<nav class="tab-bar">
+  <div class="tab-item active" id="tab-home" onclick="switchTab('home')">
+    <span class="ti-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+    </span>
+    <span class="ti-label">状态</span>
+  </div>
+  <div class="tab-item" id="tab-perf" onclick="switchTab('perf')">
+    <span class="ti-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>
+    </span>
+    <span class="ti-label">性能</span>
+  </div>
+  <div class="tab-item" id="tab-thermal" onclick="switchTab('thermal')">
+    <span class="ti-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82zm-3 5.82c-1.1 0-2-.9-2-2 0-.72.4-1.35 1-1.71V8h2v7.29c.6.36 1 .99 1 1.71 0 1.1-.9 2-2 2z"/></svg>
+    </span>
+    <span class="ti-label">温控</span>
+  </div>
+</nav>
+
+<div class="toast-wrap" id="toast-wrap"></div>
+
+<!-- 重启确认弹窗 -->
+<div class="modal-wrap" id="modal-reboot">
+  <div class="modal-bg"></div><!-- 无 onclick：强制用户明确选择 -->
+  <div class="modal-sheet">
+    <div class="modal-s-icon">
+      <svg viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+    </div>
+    <div class="modal-s-title">温控服务未能自动重启</div>
+    <div class="modal-s-desc">节流阈值已切换并保存，但无法在线重启温控服务。<br>须重启手机后新配置才能生效。</div>
+    <div class="modal-actions">
+      <button class="mbtn mbtn-primary"   onclick="doReboot()">立即重启手机</button>
+      <button class="mbtn mbtn-secondary" onclick="closeRebootModal()">稍后重启</button>
+      <button class="mbtn mbtn-ghost"     onclick="cancelThermal()">取消修改</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// APatch Manager WebView 兼容：file: 协议下 fetch() 全部失败。
+// 使用 Android intent 协议在系统外部浏览器（Chrome）中打开 HTTP 地址。
+if(location.protocol==='file:'){location.href='intent://127.0.0.1:6210#Intent;scheme=http;end';throw 0;}
+'use strict';
+
+// 每次加载追加时间戳，防止 HTTP 缓存旧响应
+const _t=Date.now();
+const API={
+  profile:     `/cgi-bin/profile.sh?_=${_t}`,
+  status:      `/cgi-bin/status.sh?_=${_t}`,
+  info:        `/cgi-bin/info.sh?_=${_t}`,
+  thermal:     `/cgi-bin/thermal.sh?_=${_t}`,
+  thermal_set: `/cgi-bin/set_thermal.sh?_=${_t}`,
+  reboot:      `/cgi-bin/reboot.sh`,
+};
+
+// Material You SVG 图标（26×26，用于 hero-icon）
+const ICONS={
+  game:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>`,
+  balanced:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>`,
+  battery:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>`,
+  stock:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>`,
+  unknown:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M11 18h2v-2h-2v2zm1-16C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14c-2.21 0-4 1.79-4 4h2c0-1.1.9-2 2-2s2 .9 2 2c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5 0-2.21-1.79-4-4-4z"/></svg>`,
+};
+
+const PROFILES={
+  game:    {name:'游戏模式',        desc:'全核解锁 · 小核≤1950 / 中核≤2600 / 大核≤3105 MHz', cls:'mode-game'},
+  balanced:{name:'平衡模式',        desc:'小核≤1548MHz · 中大核全速 · 前台 App 独享 cpu4-7',  cls:'mode-balanced'},
+  battery: {name:'省电模式',        desc:'小核≤1200 / 中核≤1795 / 大核≤1885 MHz',             cls:'mode-battery'},
+  stock:   {name:'Google 原版调度', desc:'系统默认频率 · Android 调度器自主管理',               cls:'mode-stock'},
+  unknown: {name:'未选择',          desc:'前往「性能」标签页选择调度模式',                     cls:'mode-unknown'},
+};
+
+const CLUSTERS=[
+  {label:'Cluster 0  (小核 · cpu0-3)', maxHz:1950000},
+  {label:'Cluster 1  (中核 · cpu4-6)', maxHz:2600000},
+  {label:'Cluster 2  (大核 · cpu7)',   maxHz:3105000},
+];
+
+const TEMP_MIN=25, TEMP_MAX=60, THRESH_STOCK=39, THRESH_MOD=43;
+
+/* ── Tab switching ──────────────────────────────────────────── */
+let _currentTab='home';
+
+function switchTab(tab){
+  if(tab===_currentTab) return;
+  _currentTab=tab;
+  document.querySelectorAll('.tab-page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab-item').forEach(i=>i.classList.remove('active'));
+  document.getElementById('page-'+tab).classList.add('active');
+  document.getElementById('tab-' +tab).classList.add('active');
+}
+
+/* ── Reboot modal ───────────────────────────────────────────── */
+let _pendingThermalOffset=4, _prevThermalOffset=4;
+
+function openRebootModal(pending,prev){
+  _pendingThermalOffset=pending; _prevThermalOffset=prev;
+  document.getElementById('modal-reboot').classList.add('open');
+}
+function closeRebootModal(){
+  document.getElementById('modal-reboot').classList.remove('open');
+  showToast('已保存，重启手机后生效');
+}
+async function cancelThermal(){
+  document.getElementById('modal-reboot').classList.remove('open');
+  try{
+    await apiFetch(API.thermal_set,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({offset:_prevThermalOffset}),
+    });
+    updateThermalUI(_prevThermalOffset);
+    showToast('已撤销，恢复原档位');
+  }catch(_){ showToast('撤销失败，请手动重新选择'); }
+}
+async function doReboot(){
+  document.getElementById('modal-reboot').classList.remove('open');
+  showToast('正在重启设备…');
+  try{ await fetch(API.reboot,{method:'POST'}); }catch(_){}
+}
+
+/* ── Utilities ──────────────────────────────────────────────── */
+async function apiFetch(path,opts){
+  const r=await fetch(path,opts);
+  if(!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+function showToast(msg,dur=2500){
+  const c=document.getElementById('toast-wrap');
+  const el=document.createElement('div');
+  el.className='toast'; el.textContent=msg; c.appendChild(el);
+  setTimeout(()=>{
+    el.classList.add('out');
+    // {once:true} 防止监听器累积；400ms 兜底确保节点释放
+    el.addEventListener('animationend',()=>el.remove(),{once:true});
+    setTimeout(()=>{ if(el.isConnected) el.remove(); },400);
+  },dur);
+}
+
+function appendLog(text,type=''){
+  const el=document.getElementById('log-inner');
+  const sp=document.createElement('span');
+  if(type) sp.className='log-'+type;
+  sp.textContent='['+new Date().toLocaleTimeString()+'] '+text;
+  el.innerHTML=''; el.appendChild(sp);
+}
+
+function toggleLog(){ document.getElementById('log-card').classList.toggle('open'); }
+
+/* ── Temperature helpers ────────────────────────────────────── */
+function tempHex(t){
+  if(t<36) return '#2a9a88';
+  if(t<40) return '#4aaa3a';
+  if(t<44) return '#c09020';
+  if(t<48) return '#c06830';
+  return '#b83020';
+}
+
+function tempStatus(t){
+  if(t<36) return '凉爽';
+  if(t<39) return '正常';
+  if(t<43) return '已超出原始阈值，节流延迟策略生效中';
+  if(t<47) return '系统已开始限频降温';
+  if(t<50) return '持续高温，深度节流中';
+  return '设备过热，严重节流';
+}
+
+function barPct(t){
+  return Math.min(Math.max((t-TEMP_MIN)/(TEMP_MAX-TEMP_MIN),0),1)*100;
+}
+
+// 标记位置是常量，只定位一次
+let _markersDone=false;
+function positionMarkers(){
+  const sp=barPct(THRESH_STOCK), mp=barPct(THRESH_MOD);
+  document.getElementById('mk-stock').style.left    =sp+'%';
+  document.getElementById('mk-stock-lbl').style.left=sp+'%';
+  document.getElementById('mk-mod').style.left      =mp+'%';
+  document.getElementById('mk-mod-lbl').style.left  =mp+'%';
+}
+
+/* ── Hero ───────────────────────────────────────────────────── */
+function updateHero(key){
+  const p=PROFILES[key]||PROFILES.unknown;
+  const hero=document.getElementById('hero');
+  const icon=document.getElementById('hero-icon');
+  hero.className='card hero-card '+p.cls;
+  document.getElementById('hero-mode').textContent=p.name;
+  document.getElementById('hero-desc').textContent=p.desc;
+  // 使用 innerHTML 渲染 SVG 图标
+  icon.innerHTML=ICONS[key]||ICONS.unknown;
+  icon.classList.remove('pop');
+  void icon.offsetWidth; // force reflow to restart animation
+  icon.classList.add('pop');
+  document.querySelectorAll('.profile-card[data-profile]').forEach(c=>
+    c.classList.toggle('selected',c.dataset.profile===key));
+}
+
+/* ── Profile (CPU mode) ─────────────────────────────────────── */
+let busy=false, currentProfile='unknown';
+
+async function applyProfile(profile){
+  if(busy||profile===currentProfile) return;
+  busy=true;
+  const card=document.querySelector(`.profile-card[data-profile="${profile}"]`);
+  card.classList.add('loading');
+  appendLog(`切换到 ${PROFILES[profile].name}…`,'dim');
+  document.getElementById('log-card').classList.add('open');
+  try{
+    const data=await apiFetch(API.profile,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({profile}),
+    });
+    if(data.ok){
+      currentProfile=profile;
+      updateHero(profile);
+      showToast(`已切换：${PROFILES[profile].name}`);
+      appendLog(`${PROFILES[profile].name} 已应用`,'ok');
+      refreshCpu();
+    }else{
+      showToast('切换失败：'+(data.error||'未知'));
+      appendLog(data.error||'切换失败','err');
+    }
+  }catch(e){
+    showToast('请求失败，检查服务是否运行');
+    appendLog(String(e),'err');
+  }finally{
+    card.classList.remove('loading');
+    busy=false;
+  }
+}
+
+/* ── CPU frequency ──────────────────────────────────────────── */
+function fmtMhz(hz){
+  if(!hz||isNaN(hz)) return '—';
+  return (hz/1000).toFixed(0)+' MHz';
+}
+
+// 缓存 DOM 引用，避免每 3s 销毁/重建（减少 GC 压力）
+let _cpuRowRefs=null, _cpuFetching=false;
+
+async function refreshCpu(){
+  if(_cpuFetching) return; // 防止并发堆积
+  _cpuFetching=true;
+  const btn=document.getElementById('refresh-btn');
+  btn.classList.add('spinning');
+  try{
+    const clusters=await apiFetch(API.status);
+    const box=document.getElementById('cpu-rows');
+
+    // 首次或行数变化时才重建 DOM
+    if(!_cpuRowRefs||_cpuRowRefs.length!==clusters.length){
+      box.innerHTML='';
+      _cpuRowRefs=clusters.map((c,i)=>{
+        const info=CLUSTERS[i]||{};
+        const row=document.createElement('div'); row.className='cpu-row';
+        const head=document.createElement('div'); head.className='cpu-row-head';
+        const lbl=document.createElement('span'); lbl.className='cpu-label';
+        lbl.textContent=info.label||'cpu'+c.cpu;
+        const freq=document.createElement('span'); freq.className='cpu-freq';
+        const freqB=document.createElement('b');
+        const freqS=document.createElement('span'); freqS.style.opacity='.5';
+        freq.appendChild(freqB);
+        freq.appendChild(document.createTextNode('\u00a0'));
+        freq.appendChild(freqS);
+        head.appendChild(lbl); head.appendChild(freq);
+        const track=document.createElement('div'); track.className='cpu-bar-track';
+        const fill=document.createElement('div'); fill.className='cpu-bar-fill';
+        track.appendChild(fill);
+        const params=document.createElement('div'); params.className='cpu-params';
+        row.appendChild(head); row.appendChild(track); row.appendChild(params);
+        box.appendChild(row);
+        return {freqB,freqS,fill,params,maxHz:info.maxHz||3105000};
+      });
+    }
+
+    // In-place 更新：无新节点，无 GC
+    clusters.forEach((c,i)=>{
+      const r=_cpuRowRefs[i]; if(!r) return;
+      const maxHz=c.max>0?c.max:r.maxHz;
+      r.freqB.textContent=fmtMhz(c.cur);
+      r.freqS.textContent='/ '+fmtMhz(maxHz);
+      r.fill.style.transform=`scaleX(${Math.min(c.cur/maxHz,1).toFixed(3)})`;
+      r.params.textContent=`resp=${c.resp_ms}ms · down=${c.down_us}µs · gov=${c.gov}`;
+    });
+  }catch(e){
+    _cpuRowRefs=null; // 出错时强制下次重建
+    const box=document.getElementById('cpu-rows');
+    box.textContent='';
+    const err=document.createElement('div');
+    err.style.cssText='color:#b83020;font-size:12.5px';
+    err.textContent='获取频率失败：'+e.message;
+    box.appendChild(err);
+  }finally{
+    btn.classList.remove('spinning');
+    _cpuFetching=false;
+  }
+}
+
+/* ── Thermal ────────────────────────────────────────────────── */
+let thermalErr=0, _thermalFetching=false;
+let _chipRefs=null, _homeChipRefs=null;
+
+const ZONE_LABELS={
+  'VIRTUAL-SKIN':   '机身温度',
+  'SKIN':           '机身温度',
+  'soc_therm':      'CPU / SoC',
+  'battery':        '电池温度',
+  'charging_therm': '充电 IC',
+  'btmspkr_therm':  '底部扬声器',
+};
+
+async function refreshThermal(){
+  if(_thermalFetching) return; // 防止并发堆积
+  _thermalFetching=true;
+  try{
+    const zones=await apiFetch(API.thermal);
+    thermalErr=0;
+    if(!zones||zones.length===0){ showThermalNA('未读取到热区数据'); return; }
+
+    const skinZone=zones.find(z=>z.zone==='VIRTUAL-SKIN')||zones.find(z=>z.zone==='SKIN');
+    const secondary=zones.filter(z=>z!==skinZone&&
+      ['soc_therm','battery','charging_therm','btmspkr_therm'].includes(z.zone));
+
+    // ── 首页快照 ──────────────────────────────────────────────
+    document.getElementById('home-thermal-skel').style.display='none';
+    document.getElementById('home-thermal-content').style.display='block';
+
+    if(skinZone){
+      const tc=skinZone.temp/1000;
+      const hex=tempHex(tc);
+      const homeNum=document.getElementById('home-temp-num');
+      homeNum.textContent=tc.toFixed(1);
+      homeNum.style.color=hex;
+      const stEl=document.getElementById('home-temp-status');
+      stEl.textContent=tempStatus(tc);
+      stEl.style.color=hex;
+    }else{
+      document.getElementById('home-temp-num').textContent='--';
+      document.getElementById('home-temp-status').textContent='VIRTUAL-SKIN 未找到';
+    }
+
+    // 首页次要传感器（紧凑列表，in-place 更新）
+    const homeChipsEl=document.getElementById('home-sensor-chips');
+    const zoneKeys=secondary.map(z=>z.zone).join(',');
+    if(!_homeChipRefs||_homeChipRefs.map(r=>r.zone).join(',')!==zoneKeys){
+      homeChipsEl.innerHTML='';
+      _homeChipRefs=secondary.map(z=>{
+        const row=document.createElement('div'); row.className='snap-chip';
+        const lbl=document.createElement('span');
+        lbl.textContent=ZONE_LABELS[z.zone]||z.zone;
+        const val=document.createElement('span'); val.className='snap-chip-val';
+        row.appendChild(lbl); row.appendChild(val);
+        homeChipsEl.appendChild(row);
+        return {zone:z.zone,val};
+      });
+    }
+    secondary.forEach((z,i)=>{
+      const r=_homeChipRefs[i]; if(!r) return;
+      const tc=z.temp/1000;
+      r.val.textContent=tc.toFixed(1)+'°C';
+      r.val.style.color=tempHex(tc);
+    });
+
+    // ── 温控标签页详情 ────────────────────────────────────────
+    document.getElementById('thermal-skel').style.display='none';
+    document.getElementById('thermal-content').style.display='block';
+    if(!_markersDone){ positionMarkers(); _markersDone=true; }
+
+    if(skinZone){
+      const tc=skinZone.temp/1000;
+      const hex=tempHex(tc);
+      const numEl=document.getElementById('temp-num');
+      numEl.textContent=tc.toFixed(1);
+      numEl.style.color=hex;
+      numEl.style.textShadow=`0 0 26px ${hex}55`;
+      document.getElementById('temp-zone').textContent  =ZONE_LABELS[skinZone.zone]||skinZone.zone;
+      document.getElementById('temp-status').textContent=tempStatus(tc);
+      document.getElementById('temp-status').style.color=hex;
+      const fill=document.getElementById('temp-fill');
+      fill.style.width=barPct(tc)+'%';
+      fill.style.background=`linear-gradient(90deg,${hex}70,${hex})`;
+    }else{
+      document.getElementById('temp-num').textContent   ='--';
+      document.getElementById('temp-zone').textContent  ='VIRTUAL-SKIN 未找到';
+      document.getElementById('temp-status').textContent='请确认热区已注册';
+    }
+
+    // 温控页 2×2 芯片网格（in-place 更新）
+    const chipsEl=document.getElementById('sensor-chips');
+    if(!_chipRefs||_chipRefs.map(r=>r.zone).join(',')!==zoneKeys){
+      chipsEl.innerHTML='';
+      _chipRefs=secondary.map(z=>{
+        const chip=document.createElement('div'); chip.className='chip';
+        const lbl=document.createElement('span');
+        lbl.textContent=ZONE_LABELS[z.zone]||z.zone;
+        const val=document.createElement('span'); val.className='chip-val';
+        chip.appendChild(lbl); chip.appendChild(val);
+        chipsEl.appendChild(chip);
+        return {zone:z.zone,val};
+      });
+    }
+    secondary.forEach((z,i)=>{
+      const r=_chipRefs[i]; if(!r) return;
+      const tc=z.temp/1000;
+      r.val.textContent=tc.toFixed(1)+'°C';
+      r.val.style.color=tempHex(tc);
+    });
+
+  }catch(e){
+    thermalErr++;
+    _chipRefs=null; _homeChipRefs=null; // 出错时强制下次重建
+    if(thermalErr===1) showThermalNA('热区 CGI 请求失败');
+  }finally{
+    _thermalFetching=false;
+  }
+}
+
+function showThermalNA(msg){
+  // 首页
+  document.getElementById('home-thermal-skel').style.display='none';
+  document.getElementById('home-thermal-content').style.display='block';
+  document.getElementById('home-temp-num').textContent='--';
+  document.getElementById('home-temp-status').textContent=msg;
+  // 温控页
+  document.getElementById('thermal-skel').style.display='none';
+  document.getElementById('thermal-content').style.display='block';
+  document.getElementById('temp-num').textContent   ='--';
+  document.getElementById('temp-zone').textContent  =msg;
+  document.getElementById('temp-status').textContent='暂不可用';
+}
+
+/* ── Device info ────────────────────────────────────────────── */
+async function loadInfo(){
+  try{
+    const d=await apiFetch(API.info);
+    document.getElementById('info-model').textContent  =d.model  ||'Pixel 9 Pro';
+    document.getElementById('info-android').textContent=d.version||'?';
+    if(d.module_version){
+      document.getElementById('info-module').textContent=d.module_version;
+    }
+    // Cache buster：versionCode 变化时强制单次硬刷新
+    const vc=d.version_code||'';
+    if(vc&&localStorage.getItem('_modVC')!==vc){
+      localStorage.setItem('_modVC',vc);
+      if(!sessionStorage.getItem('_reloaded')){
+        sessionStorage.setItem('_reloaded','1');
+        location.reload(true);
+        return;
+      }
+    }
+    sessionStorage.removeItem('_reloaded');
+  }catch(_){}
+}
+
+async function loadSavedProfile(){
+  try{
+    const d=await apiFetch(API.profile);
+    const saved=d.profile||'unknown';
+    currentProfile=PROFILES[saved]?saved:'unknown';
+    updateHero(currentProfile);
+  }catch(_){ updateHero('unknown'); }
+}
+
+/* ── Thermal preset ─────────────────────────────────────────── */
+const THERMAL_PRESETS={
+  0:{name:'原版节流'},
+  2:{name:'轻度优化 +2°C'},
+  4:{name:'推荐档位 +4°C'},
+  6:{name:'激进 +6°C'},
+};
+
+let currentOffset=4, thermalBusy=false;
+
+function updateThermalUI(offset){
+  currentOffset=offset;
+  document.querySelectorAll('#thermal-list .profile-card').forEach(c=>
+    c.classList.toggle('selected',parseInt(c.dataset.offset)===offset));
+  const label=offset===0?'原版节流':`+${offset}°C 激活`;
+  const off=offset===0;
+  ['home-mod-badge','th-mod-badge'].forEach(id=>{
+    const el=document.getElementById(id);
+    el.textContent=label;
+    el.classList.toggle('off',off);
+  });
+}
+
+async function applyThermal(offset){
+  if(thermalBusy||offset===currentOffset) return;
+  const prevOff=currentOffset;
+  thermalBusy=true;
+  const card=document.querySelector(`#thermal-list .profile-card[data-offset="${offset}"]`);
+  card.classList.add('loading');
+  const preset=THERMAL_PRESETS[offset]||{name:`+${offset}°C`};
+  appendLog(`切换温控档位 ${preset.name}…`,'dim');
+  document.getElementById('log-card').classList.add('open');
+  try{
+    const data=await apiFetch(API.thermal_set,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({offset}),
+    });
+    if(data.ok){
+      updateThermalUI(offset);
+      if(data.restarted){
+        showToast(`${preset.name} · 温控服务已重启，立即生效`);
+        appendLog(`${preset.name} 已重启温控服务`,'ok');
+      }else{
+        appendLog(`${preset.name} 已保存（需重启生效）`,'warn');
+        openRebootModal(offset,prevOff);
+      }
+    }else{
+      showToast('切换失败：'+(data.error||'未知'));
+      appendLog(data.error||'切换失败','err');
+    }
+  }catch(e){
+    showToast('请求失败，检查服务是否运行');
+    appendLog(String(e),'err');
+  }finally{
+    card.classList.remove('loading');
+    thermalBusy=false;
+  }
+}
+
+async function loadThermalPreset(){
+  try{
+    const d=await apiFetch(API.thermal_set);
+    updateThermalUI(d.offset??4);
+  }catch(_){ updateThermalUI(4); }
+}
+
+/* ── Polling with Page Visibility API ───────────────────────── */
+let _cpuTimer=null, _thermalTimer=null;
+
+function startPolling(){
+  if(_cpuTimer) return; // 已在运行
+  _cpuTimer    =setInterval(refreshCpu,     3000);
+  _thermalTimer=setInterval(refreshThermal, 5000);
+}
+
+function stopPolling(){
+  clearInterval(_cpuTimer); clearInterval(_thermalTimer);
+  _cpuTimer=_thermalTimer=null;
+}
+
+// 页面隐藏时暂停轮询，恢复可见时立即更新并重启
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){
+    stopPolling();
+  }else{
+    refreshCpu(); refreshThermal();
+    startPolling();
+  }
+});
+
+/* ── Init ───────────────────────────────────────────────────── */
+(async()=>{
+  await Promise.all([loadInfo(),loadSavedProfile(),refreshCpu(),loadThermalPreset()]);
+  await refreshThermal();
+  startPolling();
+})();
+</script>
+</body>
+</html>
