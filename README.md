@@ -70,7 +70,7 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 | `service.sh` 阻塞启动 | 脚本中的死循环或长耗时操作在 `late_start` 阶段阻塞了系统初始化 | 同上 |
 | `cpuset` 写入非法值 | 向 `/dev/cpuset/*/cpus` 写入不存在的 CPU 编号 | 同上 |
 
-**紧急恢复**：长按电源键 10s 关机 → 电源+音量下进 Bootloader → Recovery → 删除 `/data/adb/modules/pixel9pro_control/` → 重启
+**紧急恢复**：长按电源键强制关机 → 开机进入第二屏动画时电源+音量下进 安全模式 → 重启
 
 ## 致谢与参考
 
