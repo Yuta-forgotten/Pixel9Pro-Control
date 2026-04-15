@@ -1,6 +1,9 @@
 # Build output
 *.zip
 
+# Nested repo copy (accidental, should not exist)
+Pixel9Pro-Control/
+
 # Python
 __pycache__/
 *.pyc

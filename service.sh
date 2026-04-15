@@ -66,12 +66,48 @@ echo 3000 > /proc/sys/vm/dirty_writeback_centisecs 2>/dev/null
 echo 50 > /proc/sys/vm/dirty_ratio 2>/dev/null
 echo 20 > /proc/sys/vm/dirty_background_ratio 2>/dev/null
 
-log -t pixel9pro_ctrl "v3.2.1: System optimizations applied (modem+radio+kernel)"
+# === ZRAM 配置 (Emerald Hill 硬件加速 + 扩容) ===
+# 原厂出厂: persist.vendor.zram_comp_algorithm 默认为 lz4, ZRAM 大小 50% RAM ≈ 8GB.
+# init.rc 代码兜底默认是 lz77eh (Emerald Hill 硬件), 但出厂 persist 属性覆盖为 lz4.
+# 本模块统一配置: 算法 lz77eh (硬件加速, 压缩率更优, CPU 零开销) + 大小 11392MB.
+#
+# persist 属性确保后续重启时 init.rc 直接使用 lz77eh, 减少 swapoff 次数.
+setprop persist.vendor.zram_comp_algorithm lz77eh 2>/dev/null
+
+# 目标: lz77eh + 11392MB (11945377792 bytes)
+TARGET_ALGO="lz77eh"
+TARGET_SIZE="11945377792"
+
+CURRENT_ALGO=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | sed 's/.*\[\(.*\)\].*/\1/')
+CURRENT_SIZE=$(cat /sys/block/zram0/disksize 2>/dev/null)
+
+if [ "$CURRENT_ALGO" != "$TARGET_ALGO" ] || [ "$CURRENT_SIZE" != "$TARGET_SIZE" ]; then
+    log -t pixel9pro_ctrl "ZRAM reconfigure: ${CURRENT_ALGO}/${CURRENT_SIZE} -> ${TARGET_ALGO}/${TARGET_SIZE}"
+    swapoff /dev/block/zram0 2>/dev/null
+    echo 1 > /sys/block/zram0/reset 2>/dev/null
+    echo "$TARGET_ALGO" > /sys/block/zram0/comp_algorithm 2>/dev/null
+    echo "$TARGET_SIZE" > /sys/block/zram0/disksize 2>/dev/null
+    mkswap /dev/block/zram0 >/dev/null 2>&1
+    swapon /dev/block/zram0 2>/dev/null
+    log -t pixel9pro_ctrl "ZRAM: $TARGET_ALGO $(($TARGET_SIZE / 1048576))MB ready"
+else
+    log -t pixel9pro_ctrl "ZRAM: already $TARGET_ALGO $(($TARGET_SIZE / 1048576))MB, skip"
+fi
+
+# === Swap / 内存回收调优 (即时生效) ===
+# swappiness: 150→100, 减少无效换页(stock 150 在16GB设备上43%页面被无谓换出又换回)
+echo 100 > /proc/sys/vm/swappiness 2>/dev/null
+# min_free_kbytes: 27MB→64MB, 提前唤醒 kswapd 减少 direct reclaim 和 allocstall
+echo 65536 > /proc/sys/vm/min_free_kbytes 2>/dev/null
+# vfs_cache_pressure: 100→60, 保留更多 dentry/inode 缓存加速文件路径查找
+echo 60 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
+
+log -t pixel9pro_ctrl "v3.2.3: System optimizations applied (modem+radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 3. 应用 CPU 调度方案 (cpuset + sched_pixel 参数)
 # ──────────────────────────────────────────────────────────
-PROFILE=$(cat "$MODDIR/.current_profile" 2>/dev/null || echo 'balanced')
+PROFILE=$(cat "$MODDIR/.current_profile" 2>/dev/null || echo 'light')
 sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" 2>/dev/null
 log -t pixel9pro_ctrl "CPU profile: $PROFILE"
 
