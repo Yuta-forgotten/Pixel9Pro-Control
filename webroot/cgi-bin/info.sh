@@ -15,5 +15,8 @@ vc=$(grep '^versionCode=' "$moddir/module.prop" 2>/dev/null \
 mv=$(grep '^version=' "$moddir/module.prop" 2>/dev/null \
      | cut -d= -f2 | tr -d '\r\n "\\')
 
-printf '{"model":"%s","version":"%s","version_code":"%s","module_version":"%s"}' \
-    "$model" "$version" "$vc" "$mv"
+# WebUI httpd 进程 RSS (CGI 的父进程即 httpd)
+httpd_rss=$(awk '/^VmRSS/{print $2}' "/proc/$PPID/status" 2>/dev/null)
+
+printf '{"model":"%s","version":"%s","version_code":"%s","module_version":"%s","httpd_rss_kb":%s}' \
+    "$model" "$version" "$vc" "$mv" "${httpd_rss:-0}"
