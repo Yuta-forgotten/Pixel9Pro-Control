@@ -76,7 +76,6 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 - **Sun_Dream（酷安）** — cpuset 路由 + sched_pixel 调度思路（小核移出前台、response_time 控制升频）
 - **[RMBD (Reduce Modem Battery Drain)](https://github.com/Ethan-Ming/Reduce_Modem_Battery-Drain)**
-- **[Mori不是魔力](https://space.bilibili.com/)** — Pixel 插卡续航优化
 - **[WZL203/Pixel-8-pro-thermal-SOC-Charging-control](https://github.com/WZL203/Pixel-8-pro-thermal-SOC-Charging-controlnl)** — Pixel thermal_info_config.json 温控配置参考
 
 ## 免责声明
