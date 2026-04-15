@@ -971,7 +971,7 @@ const ICONS={
 };
 
 const PROFILES={
-  game:    {name:'游戏模式',        desc:'全核 cpu0-7 · 响应 8/8/8ms · ⚠️ 未测试，全核功耗较高', cls:'mode-game'},
+  game:    {name:'游戏模式',        desc:'top-app: cpu0-7 全核 · 响应 8/8/8ms · ⚠️ 全核功耗较高', cls:'mode-game'},
   balanced:{name:'平衡模式',        desc:'前台: cpu4-7 · 后台: cpu0-3 · 小核锁820MHz · 中核12ms · 大核8ms', cls:'mode-balanced'},
   light:   {name:'轻度模式',        desc:'前台: cpu4-7 · 后台: cpu0-3 · 小核锁820MHz · 中核20ms · 大核16ms', cls:'mode-light'},
   battery: {name:'省电模式',        desc:'前台: cpu4-7 · 小核锁820MHz · 中核40ms · 大核30ms', cls:'mode-battery'},
@@ -1616,11 +1616,11 @@ let _longPressed=false;
 
   // Long-press on profile cards → show detail modal
   const PROFILE_DETAILS={
-    game:'<b>游戏模式</b><br><br><b>cpuset</b>: top-app → cpu0-7 全核<br><b>response_time</b>: 小核8ms / 中核8ms / 大核8ms<br><b>down_rate</b>: 500/500/500µs<br><br>所有核心对所有任务可用，升降频极快。<br><br><b>⚠️ 未经长时间测试</b>，全核高频运行功耗大，可能发热明显。建议仅短时使用。',
-    balanced:'<b>平衡模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，foreground → cpu4-6，background → cpu0-3<br><b>response_time</b>: 小核200ms / 中核12ms / 大核8ms<br><b>down_rate</b>: 100/1500/800µs<br><br>前台App只用中+大核，前台服务只用中核，小核通过200ms超长响应时间锁死820MHz最低频，仅跑后台轻任务。',
-    light:'<b>轻度模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核200ms / 中核20ms / 大核16ms<br><b>down_rate</b>: 100/1500/800µs<br><br>与平衡模式相同的核心分配，但中大核升频更慢(20ms/16ms)，日常轻度使用更省电。<br><br>适合长时间亮屏轻度场景：阅读、社交、视频。',
-    battery:'<b>省电模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核500ms / 中核40ms / 大核30ms<br><b>down_rate</b>: 50/500/500µs<br><br>全面保守调度，小核完全锁最低频，中大核升频很慢，降频极快。<br><br>适合不需要流畅度的场景：挂机、待机、听音乐。',
-    stock:'<b>默认模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，foreground → cpu0-6<br><b>response_time</b>: 小核16ms / 中核64ms / 大核200ms<br><b>down_rate</b>: 1000/2000/3000µs<br><br>恢复出厂默认参数，Android调度器自主管理。'
+    game:'<b>游戏模式</b><br><br><b>cpuset</b>: top-app → cpu0-7 全核<br><b>response_time</b>: 小核8ms / 中核8ms / 大核8ms<br><br>游戏进程(top-app)可使用全部核心，升降频极快。<br><br><b>⚠️ 未经长时间测试</b>，全核高频运行功耗大，可能发热明显。建议仅短时使用。',
+    balanced:'<b>平衡模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核200ms / 中核12ms / 大核8ms<br><br>前台App只用中+大核，小核通过200ms超长响应时间锁死820MHz最低频，即使被调度也只能跑最低频。',
+    light:'<b>轻度模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核200ms / 中核20ms / 大核16ms<br><br>与平衡模式相同的核心分配，但中大核升频更慢(20ms/16ms)，日常轻度使用更省电。<br><br>适合长时间亮屏轻度场景：阅读、社交、视频。',
+    battery:'<b>省电模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核500ms / 中核40ms / 大核30ms<br><br>全面保守调度，小核完全锁最低频，中大核升频很慢，降频极快。<br><br>适合不需要流畅度的场景：挂机、待机、听音乐。',
+    stock:'<b>默认模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，foreground → cpu0-6<br><b>response_time</b>: 小核16ms / 中核64ms / 大核200ms<br><br>恢复出厂sched_pixel参数，Android调度器自主管理。'
   };
   document.querySelectorAll('.profile-card[data-profile]').forEach(card=>{
     let lpt;

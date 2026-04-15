@@ -1,13 +1,13 @@
-# Pixel 9 Pro Control Module v3.2.1
+# Pixel 9 Pro Control Module v3.2.2
 
 > APatch/KernelSU 模块 — Pixel 9 Pro (Tensor G4) 温控 + CPU 调度 + 待机功耗优化
 
 ## 功能
 
 ### CPU 调度 (不与 Thermal HAL 冲突)
-- **cpuset 路由**: 前台 App (foreground) 用中+大核 (cpu4-7)，小核 (cpu0-3) 跑后台
+- **cpuset 路由**: 前台 App (top-app) 用中+大核 (cpu4-7)，小核 (cpu0-3) 跑后台
 - **小核锁最低频**: 通过 `response_time_ms=200ms` 将小核压在 820MHz，后台轻任务无需高频
-- **sched_pixel 参数调优**: 通过 `response_time_ms` / `down_rate_limit_us` 控制升降频，不写 `scaling_max/min_freq`
+- **sched_pixel 参数调优**: 通过 `response_time_ms` 控制升频速度，不写 `scaling_max/min_freq`（会被 Thermal HAL 覆盖）
 - 五种模式: game / balanced / light / battery / stock，通过 WebUI 切换
 
 ### 温控优化
@@ -30,14 +30,21 @@
 - CPU 档位 + 温控档位在线切换
 - 支持左右滑动切换页面
 
-## 背景
+## 技术原理
 
 Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率。Thermal HAL 通过独立的 `freq_qos_request` 对象控制 `scaling_max_freq`，会覆盖任何用户空间的直接写入。
 
 本模块的策略是**非对抗 Thermal HAL**，而是控制 Thermal HAL 不管理的参数：
-- `cpuset` — 任务核心分配
-- `response_time_ms` — governor 升频响应时间（Thermal HAL 不碰此参数）
-- `down_rate_limit_us` — governor 降频速率
+- `cpuset` — 任务核心分配 (top-app / background)
+- `response_time_ms` — governor 升频响应时间（Thermal HAL 和 Power HAL 均不碰此参数）
+
+### 关于 foreground cpuset
+
+`foreground` cpuset 由 Android 框架层 (`system_server`) 在 OOM adj 重算时强制写回系统默认值 `0-6`，无法通过文件覆盖或 Power HAL 配置修改（需 Xposed hook）。但因小核 `response_time_ms=200ms` 锁死 820MHz，即使 foreground 任务可调度到小核，调度器也优先选择响应更快的中核，实际影响可忽略。
+
+### 关于 down_rate_limit_us
+
+`down_rate_limit_us` 是内核根据 `response_time_ms` 自动计算的只读派生值，不可独立写入。
 
 ## 安装
 
@@ -49,7 +56,7 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 - **设备**: Pixel 9 Pro (caiman)
 - **系统**: 基于 **Android 17 Beta 3 (SDK 37)** 开发和测试。理论上 sched_pixel 和 thermal HAL 在 Android 15/16 上结构相同，但**未经实际验证**。如果你在其他 Android 版本上使用，请自行测试温控和调度是否正常
-- **Root**: APatch / KernelSU
+- **Root**: APatch 0.10+ / KernelSU
 
 ## 已知问题与故障排除
 
@@ -59,11 +66,11 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 | 原因 | 说明 | 解决 |
 |------|------|------|
-| `thermal_info_config.json` 格式错误 | awk 生成的温控配置 JSON 语法不合法，Thermal HAL 拒绝加载导致系统服务崩溃循环 | 进入安全模式或 Recovery 删除 `/data/adb/modules/pixel9pro_control/` |
-| `service.sh` 阻塞启动 | 脚本中的死循环或长耗时操作在 `late_start` 阶段阻塞了系统初始化 | 同上，删除模块目录 |
+| `thermal_info_config.json` 格式错误 | JSON 语法不合法，Thermal HAL 拒绝加载导致系统服务崩溃循环 | 进入安全模式或 Recovery 删除 `/data/adb/modules/pixel9pro_control/` |
+| `service.sh` 阻塞启动 | 脚本中的死循环或长耗时操作在 `late_start` 阶段阻塞了系统初始化 | 同上 |
 | `cpuset` 写入非法值 | 向 `/dev/cpuset/*/cpus` 写入不存在的 CPU 编号 | 同上 |
 
-
+**紧急恢复**：长按电源键 10s 关机 → 电源+音量下进 Bootloader → Recovery → 删除 `/data/adb/modules/pixel9pro_control/` → 重启
 
 ## 致谢与参考
 
@@ -71,7 +78,6 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 - **[RMBD (Reduce Modem Battery Drain)](https://github.com/Ethan-Ming/Reduce_Modem_Battery-Drain)**
 - **[Mori不是魔力](https://space.bilibili.com/)** — Pixel 插卡续航优化
 - **[WZL203/Pixel-8-pro-thermal-SOC-Charging-control](https://github.com/WZL203/Pixel-8-pro-thermal-SOC-Charging-controlnl)** — Pixel thermal_info_config.json 温控配置参考
-
 
 ## 免责声明
 
