@@ -55,7 +55,7 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 ### 卡二屏（卡在开机动画）
 
-开发过程中曾遇到安装模块后重启卡在开机动画（第二屏）的问题。原因和解决方法：
+若想要修改模块，但是刷入卡在开机动画（第二屏）的问题。原因和解决方法：
 
 | 原因 | 说明 | 解决 |
 |------|------|------|
@@ -63,14 +63,7 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 | `service.sh` 阻塞启动 | 脚本中的死循环或长耗时操作在 `late_start` 阶段阻塞了系统初始化 | 同上，删除模块目录 |
 | `cpuset` 写入非法值 | 向 `/dev/cpuset/*/cpus` 写入不存在的 CPU 编号 | 同上 |
 
-**紧急恢复方法**：
-1. 长按电源键 10 秒强制关机
-2. 按住电源键+音量下 进入 Bootloader
-3. 选择 Recovery → 挂载 data 分区
-4. 删除 `/data/adb/modules/pixel9pro_control/` 目录
-5. 重启
 
-**预防**：修改 `thermal_info_config.json` 后，先用 `python -m json.tool` 验证 JSON 格式正确再打包。
 
 ## 致谢与参考
 
