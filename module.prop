@@ -1,6 +1,6 @@
 id=pixel9pro_control
 name=Pixel 9 Pro 温控调度控制台
-version=v3.2.0
-versionCode=18
+version=v3.2.1
+versionCode=19
 author=Yuta
-description=Pixel 9 Pro (Tensor G4) v3.2.0 — 温控阈值优化(42/45/48°C), cpuset+sched_pixel调度(小核锁最低频), WiFi multicast息屏控制, modem功耗优化, WebUI控制台(:6210)。
+description=Pixel 9 Pro (Tensor G4) v3.2.1 — 温控阈值优化(42/45/48°C), cpuset+sched_pixel调度(小核锁最低频), WiFi multicast息屏控制, modem功耗优化, WebUI控制台(:6210)。
