@@ -5,7 +5,7 @@
 ## 功能
 
 ### CPU 调度 (不与 Thermal HAL 冲突)
-- **cpuset 路由**: 前台 App (top-app) 用中+大核 (cpu4-7)，小核 (cpu0-3) 跑后台
+- **cpuset 路由**: 前台 App (foreground) 用中+大核 (cpu4-7)，小核 (cpu0-3) 跑后台
 - **小核锁最低频**: 通过 `response_time_ms=200ms` 将小核压在 820MHz，后台轻任务无需高频
 - **sched_pixel 参数调优**: 通过 `response_time_ms` / `down_rate_limit_us` 控制升降频，不写 `scaling_max/min_freq`
 - 五种模式: game / balanced / light / battery / stock，通过 WebUI 切换
