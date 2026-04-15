@@ -49,7 +49,7 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 - **设备**: Pixel 9 Pro (caiman)
 - **系统**: 基于 **Android 17 Beta 3 (SDK 37)** 开发和测试。理论上 sched_pixel 和 thermal HAL 在 Android 15/16 上结构相同，但**未经实际验证**。如果你在其他 Android 版本上使用，请自行测试温控和调度是否正常
-- **Root**: APatch 0.10+ / KernelSU
+- **Root**: APatch / KernelSU
 
 ## 已知问题与故障排除
 
