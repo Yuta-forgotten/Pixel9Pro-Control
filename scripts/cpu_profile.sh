@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # ============================================================
-# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v3.2.0
-# 用法: sh cpu_profile.sh [game|balanced|battery|stock|status]
+# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v3.2.1
+# 用法: sh cpu_profile.sh [game|balanced|light|battery|stock|status]
 #
 # v3.1 核心改动 (基于内核源码分析 + Sun_Dream 的方法):
 #   - 不再写 scaling_max_freq / scaling_min_freq (会被 thermal HAL 覆盖)
@@ -69,6 +69,21 @@ case "$PROFILE" in
         log -t pixel9pro_ctrl "CPU: BALANCED [top-app→4-7, 小核response 200ms锁最低频]"
         ;;
 
+    light)
+        # ── 轻度模式 ─────────────────────────────────────────
+        # 与平衡模式相同的核心分配，但中核和大核升频更保守
+        # 小核: response_time=200ms, 锁最低频 820MHz (同平衡)
+        # 中核: response_time=20ms (平衡 12ms), 日常轻度够用
+        # 大核: response_time=16ms (平衡 8ms), 省电优先
+        # 适合长时间亮屏轻度使用 (阅读/社交/视频)
+        apply_sched_pixel 200 20 16  100 1500 800
+        cpuset_write "top-app"           "4-7"
+        cpuset_write "foreground"        "0-6"
+        cpuset_write "background"        "0-3"
+        cpuset_write "system-background" "0-3"
+        log -t pixel9pro_ctrl "CPU: LIGHT [top-app→4-7, 小核response 200ms锁最低频, 中核20ms, 大核16ms]"
+        ;;
+
     battery)
         # ── 省电模式 ─────────────────────────────────────────
         # 小核: response_time=500ms, 完全锁最低频 820MHz
@@ -124,7 +139,7 @@ case "$PROFILE" in
         ;;
 
     *)
-        echo "Usage: $0 [game|balanced|battery|stock|status]"
+        echo "Usage: $0 [game|balanced|light|battery|stock|status]"
         exit 1
         ;;
 esac

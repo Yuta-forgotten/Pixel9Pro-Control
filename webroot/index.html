@@ -405,7 +405,12 @@ body {
 .profile-card[data-profile="game"]     .p-icon { background: rgba(235,115,80,.18); border-color: rgba(235,115,80,.32); color: #d06028; }
 .profile-card[data-profile="balanced"] .p-icon { background: rgba(61,184,164,.18); border-color: rgba(61,184,164,.32); color: var(--accent-dk); }
 .profile-card[data-profile="battery"]  .p-icon { background: rgba(120,200,74,.18); border-color: rgba(120,200,74,.32); color: #4a8a28; }
+.profile-card[data-profile="light"]    .p-icon { background: rgba(100,180,220,.18); border-color: rgba(100,180,220,.32); color: #3a7a9a; }
 .profile-card[data-profile="stock"]    .p-icon { background: rgba(90,155,235,.18); border-color: rgba(90,155,235,.32); color: #3a6ea8; }
+
+.hero-card.mode-light     { border-color: rgba(100,180,220,.38) }
+.hero-card.mode-light     .hero-tint { background: rgba(100,180,220,.08) }
+.hero-card.mode-light     .hero-icon { background: rgba(100,180,220,.18); border-color: rgba(100,180,220,.32); color: #3a7a9a; }
 .profile-card[data-offset="0"] .p-icon { background: rgba(90,155,235,.18); border-color: rgba(90,155,235,.32); color: #3a6ea8; }
 .profile-card[data-offset="2"] .p-icon { background: rgba(61,184,164,.18); border-color: rgba(61,184,164,.32); color: var(--accent-dk); }
 .profile-card[data-offset="4"] .p-icon { background: rgba(212,160,64,.18); border-color: rgba(212,160,64,.32); color: #8a5a10; }
@@ -691,7 +696,7 @@ body {
           </div>
           <div class="p-info">
             <div class="p-name">游戏模式</div>
-            <div class="p-desc">前台App使用 cpu0-7 全核 · 响应时间 8/8/8ms · 升降频极灵敏</div>
+            <div class="p-desc">全核 cpu0-7 · 响应 8/8/8ms · ⚠️ 未测试，全核功耗较高</div>
           </div>
           <div class="p-check">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -704,10 +709,23 @@ body {
           </div>
           <div class="p-info">
             <div class="p-name">平衡模式</div>
-            <div class="p-desc">前台App使用 cpu4-7 · 后台使用 cpu0-3 · 小核锁最低频 820MHz · 中核 12ms / 大核 8ms</div>
+            <div class="p-desc">前台: cpu4-7 · 后台: cpu0-3 · 小核锁820MHz · 中核12ms · 大核8ms</div>
           </div>
           <div class="p-check">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          </div>
+        </div>
+
+        <div class="profile-card" data-profile="light" onclick="applyProfile('light')">
+          <div class="p-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M6.05 4.14l-.39-.39c-.39-.39-1.02-.39-1.41 0l-.01.01c-.39.39-.39 1.02 0 1.41l.39.39c.39.39 1.01.39 1.41 0 .39-.39.39-1.02.01-1.42zM3.01 10.5H1.99c-.55 0-1.01.45-1.01 1s.46 1 1.01 1h1.02c.55 0 .99-.45.99-1s-.44-1-.99-1zm9-9.95c-.56 0-1 .44-1 1v1.02c0 .55.44 1 1 1s1-.45 1-1V1.55c0-.56-.44-1-1-1zm7.74 3.21c-.39-.39-1.02-.39-1.41-.01l-.39.39c-.39.39-.39 1.02 0 1.41.39.39 1.02.39 1.41 0l.39-.39c.39-.38.39-1.01 0-1.4zM17.93 18.86l.39.39c.39.39 1.02.39 1.41 0 .39-.39.39-1.02 0-1.41l-.39-.39c-.39-.39-1.02-.38-1.41.01-.38.39-.38 1.02 0 1.4zM21 10.5h-1.02c-.55 0-.99.45-.99 1s.44 1 .99 1H21c.55 0 1.01-.45 1.01-1s-.46-1-1.01-1zm-9 5.01c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zM12 6.5c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm-1 14.44v1.01c0 .55.44 1 1 1s1-.45 1-1v-1.01c0-.55-.44-1-1-1s-1 .44-1 1zm-7.74-3.21c.39.39 1.02.39 1.41 0l.39-.39c.38-.39.38-1.02 0-1.41-.39-.39-1.03-.39-1.41 0l-.39.39c-.39.39-.39 1.01 0 1.41z"/></svg>
+          </div>
+          <div class="p-info">
+            <div class="p-name">轻度模式</div>
+            <div class="p-desc">前台: cpu4-7 · 后台: cpu0-3 · 小核锁820MHz · 中核20ms · 大核16ms</div>
+          </div>
+          <div class="p-check">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
           </div>
         </div>
 
@@ -717,7 +735,7 @@ body {
           </div>
           <div class="p-info">
             <div class="p-name">省电模式</div>
-            <div class="p-desc">前台App使用 cpu4-7 · 小核锁最低频 820MHz · 中核 40ms / 大核 30ms 保守升频</div>
+            <div class="p-desc">前台: cpu4-7 · 小核锁820MHz · 中核40ms · 大核30ms</div>
           </div>
           <div class="p-check">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -730,7 +748,7 @@ body {
           </div>
           <div class="p-info">
             <div class="p-name">Google 原版调度</div>
-            <div class="p-desc">恢复系统默认 cpuset 与调度参数 · 由 Android 调度器管理</div>
+            <div class="p-desc">恢复系统默认 cpuset 与调度参数</div>
           </div>
           <div class="p-check">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -913,6 +931,17 @@ body {
   </div>
 </div>
 
+<div class="modal-wrap" id="modal-detail">
+  <div class="modal-bg" onclick="closeDetailModal()"></div>
+  <div class="modal-sheet" style="max-height:80vh;overflow-y:auto">
+    <div class="modal-s-title" id="detail-title">模式详情</div>
+    <div class="modal-s-desc" id="detail-body" style="text-align:left;font-size:13px;line-height:1.8"></div>
+    <div class="modal-actions">
+      <button class="mbtn mbtn-secondary" onclick="closeDetailModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // APatch/KernelSU WebView 兼容（参考 AdGuardHome 方案）：
 // APatch 通过 WebViewAssetLoader 将 webroot 映射到 https://mui.kernelsu.org/
@@ -935,17 +964,19 @@ const API={
 const ICONS={
   game:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>`,
   balanced:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>`,
+  light:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><path d="M6.05 4.14l-.39-.39c-.39-.39-1.02-.39-1.41 0l-.01.01c-.39.39-.39 1.02 0 1.41l.39.39c.39.39 1.01.39 1.41 0 .39-.39.39-1.02.01-1.42zM3.01 10.5H1.99c-.55 0-1.01.45-1.01 1s.46 1 1.01 1h1.02c.55 0 .99-.45.99-1s-.44-1-.99-1zm9-9.95c-.56 0-1 .44-1 1v1.02c0 .55.44 1 1 1s1-.45 1-1V1.55c0-.56-.44-1-1-1zm7.74 3.21c-.39-.39-1.02-.39-1.41-.01l-.39.39c-.39.39-.39 1.02 0 1.41.39.39 1.02.39 1.41 0l.39-.39c.39-.38.39-1.01 0-1.4zM17.93 18.86l.39.39c.39.39 1.02.39 1.41 0 .39-.39.39-1.02 0-1.41l-.39-.39c-.39-.39-1.02-.38-1.41.01-.38.39-.38 1.02 0 1.4zM21 10.5h-1.02c-.55 0-.99.45-.99 1s.44 1 .99 1H21c.55 0 1.01-.45 1.01-1s-.46-1-1.01-1zm-9 5.01c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zM12 6.5c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm-1 14.44v1.01c0 .55.44 1 1 1s1-.45 1-1v-1.01c0-.55-.44-1-1-1s-1 .44-1 1zm-7.74-3.21c.39.39 1.02.39 1.41 0l.39-.39c.38-.39.38-1.02 0-1.41-.39-.39-1.03-.39-1.41 0l-.39.39c-.39.39-.39 1.01 0 1.41z"/></svg>`,
   battery:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>`,
   stock:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>`,
   unknown:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M11 18h2v-2h-2v2zm1-16C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14c-2.21 0-4 1.79-4 4h2c0-1.1.9-2 2-2s2 .9 2 2c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5 0-2.21-1.79-4-4-4z"/></svg>`,
 };
 
 const PROFILES={
-  game:    {name:'游戏模式',        desc:'前台App使用 cpu0-7 全核 · 响应时间 8/8/8ms · 升降频极灵敏',                          cls:'mode-game'},
-  balanced:{name:'平衡模式',        desc:'前台App使用 cpu4-7 · 后台使用 cpu0-3 · 小核锁最低频 820MHz · 中核 12ms / 大核 8ms', cls:'mode-balanced'},
-  battery: {name:'省电模式',        desc:'前台App使用 cpu4-7 · 小核锁最低频 820MHz · 中核 40ms / 大核 30ms 保守升频',         cls:'mode-battery'},
-  stock:   {name:'Google 原版调度', desc:'恢复系统默认 cpuset 与调度参数 · 由 Android 调度器管理',                              cls:'mode-stock'},
-  unknown: {name:'未选择',          desc:'前往「性能」标签页选择调度模式',                                                      cls:'mode-unknown'},
+  game:    {name:'游戏模式',        desc:'全核 cpu0-7 · 响应 8/8/8ms · ⚠️ 未测试，全核功耗较高', cls:'mode-game'},
+  balanced:{name:'平衡模式',        desc:'前台: cpu4-7 · 后台: cpu0-3 · 小核锁820MHz · 中核12ms · 大核8ms', cls:'mode-balanced'},
+  light:   {name:'轻度模式',        desc:'前台: cpu4-7 · 后台: cpu0-3 · 小核锁820MHz · 中核20ms · 大核16ms', cls:'mode-light'},
+  battery: {name:'省电模式',        desc:'前台: cpu4-7 · 小核锁820MHz · 中核40ms · 大核30ms', cls:'mode-battery'},
+  stock:   {name:'Google 原版调度', desc:'恢复系统默认 cpuset 与调度参数', cls:'mode-stock'},
+  unknown: {name:'未选择',          desc:'前往「性能」标签页选择调度模式', cls:'mode-unknown'},
 };
 
 const CLUSTERS=[
@@ -1049,6 +1080,7 @@ function openRebootModal(pending,prev){
   _pendingThermalOffset=pending; _prevThermalOffset=prev;
   document.getElementById('modal-reboot').classList.add('open');
 }
+function closeDetailModal(){document.getElementById('modal-detail').classList.remove('open');}
 function closeRebootModal(){
   document.getElementById('modal-reboot').classList.remove('open');
   showToast('已保存，重启手机后生效');
@@ -1158,6 +1190,7 @@ function updateHero(key){
 let busy=false, currentProfile='unknown';
 
 async function applyProfile(profile){
+  if(_longPressed){_longPressed=false;return;}
   if(busy||profile===currentProfile) return;
   busy=true;
   const card=document.querySelector(`.profile-card[data-profile="${profile}"]`);
@@ -1573,12 +1606,33 @@ async function refreshOpt(){
 }
 
 /* ── Init ───────────────────────────────────────────────────── */
+let _longPressed=false;
 (async()=>{
   bindTabSwipe();
   await Promise.all([loadInfo(),loadSavedProfile(),refreshCpu(),loadThermalPreset()]);
   await refreshThermal();
   refreshOpt();
   startPolling();
+
+  // Long-press on profile cards → show detail modal
+  const PROFILE_DETAILS={
+    game:'<b>游戏模式</b><br><br><b>cpuset</b>: top-app → cpu0-7 全核<br><b>response_time</b>: 小核8ms / 中核8ms / 大核8ms<br><b>down_rate</b>: 500/500/500µs<br><br>所有核心对所有任务可用，升降频极快。<br><br><b>⚠️ 未经长时间测试</b>，全核高频运行功耗大，可能发热明显。建议仅短时使用。',
+    balanced:'<b>平衡模式（推荐）</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核200ms / 中核12ms / 大核8ms<br><b>down_rate</b>: 100/1500/800µs<br><br>前台App只用中+大核，小核通过200ms超长响应时间锁死820MHz最低频，仅跑后台轻任务。<br><br>参考 Sun_Dream 思路：小核高频能效差，锁最低频只跑后台更省电。',
+    light:'<b>轻度模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核200ms / 中核20ms / 大核16ms<br><b>down_rate</b>: 100/1500/800µs<br><br>与平衡模式相同的核心分配，但中大核升频更慢(20ms/16ms)，日常轻度使用更省电。<br><br>适合长时间亮屏轻度场景：阅读、社交、视频。',
+    battery:'<b>省电模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核500ms / 中核40ms / 大核30ms<br><b>down_rate</b>: 50/500/500µs<br><br>全面保守调度，小核完全锁最低频，中大核升频很慢，降频极快。<br><br>适合不需要流畅度的场景：挂机、待机、听音乐。',
+    stock:'<b>Google 原版调度</b><br><br><b>cpuset</b>: top-app → cpu0-7，foreground → cpu0-6<br><b>response_time</b>: 小核16ms / 中核64ms / 大核200ms<br><b>down_rate</b>: 1000/2000/3000µs<br><br>恢复出厂默认参数，Android调度器自主管理。'
+  };
+  document.querySelectorAll('.profile-card[data-profile]').forEach(card=>{
+    let lpt;
+    card.addEventListener('touchstart',()=>{_longPressed=false;lpt=setTimeout(()=>{_longPressed=true;openDetailModal(card.dataset.profile);},500);},{passive:true});
+    card.addEventListener('touchend',()=>clearTimeout(lpt),{passive:true});
+    card.addEventListener('touchmove',()=>clearTimeout(lpt),{passive:true});
+  });
+  function openDetailModal(p){
+    document.getElementById('detail-title').textContent=PROFILES[p]?.name||'详情';
+    document.getElementById('detail-body').innerHTML=PROFILE_DETAILS[p]||'';
+    document.getElementById('modal-detail').classList.add('open');
+  }
 })();
 </script>
 </body>

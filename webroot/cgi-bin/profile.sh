@@ -12,7 +12,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     body=$(dd bs=1 count="$len" 2>/dev/null)
     newprof=$(printf '%s' "$body" | sed 's/.*"profile"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/')
     case "$newprof" in
-        game|balanced|battery|stock)
+        game|balanced|light|battery|stock)
             sh "$MODDIR/scripts/cpu_profile.sh" "$newprof" 2>/dev/null
             printf '%s' "$newprof" > "$MODDIR/.current_profile"
             printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n{"ok":true,"profile":"%s"}\n' "$newprof"
@@ -24,7 +24,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 else
     prof=$(cat "$MODDIR/.current_profile" 2>/dev/null | tr -d ' \n\r\t')
     case "$prof" in
-        game|balanced|battery|stock) ;;
+        game|balanced|light|battery|stock) ;;
         *) prof="balanced" ;;
     esac
     printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n{"profile":"%s"}\n' "$prof"
