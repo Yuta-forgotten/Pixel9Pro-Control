@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#e1f8f2">
+<meta name="theme-color" content="#d4f0e8">
 <meta name="color-scheme" content="light">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
@@ -35,8 +35,8 @@
   --spring: cubic-bezier(.34,1.56,.64,1);
 
   --tab-h: 58px;
-  --tab-bg: rgba(225,248,242,.92);
-  --tab-solid: #e1f8f2;
+  --tab-bg: rgba(212,240,232,.94);
+  --tab-solid: #d4f0e8;
 }
 
 html, body {
@@ -45,7 +45,7 @@ html, body {
 
 /* APatch WebView 的底部安全区会露出根背景，这里把 html/body 固定成与 tab bar 一致的底色。 */
 html {
-  background: rgba(225,248,242,.90);
+  background: #d4f0e8;
   overscroll-behavior: none;
 }
 
@@ -56,7 +56,7 @@ body {
   height: 100dvh;
   display: flex;
   flex-direction: column;
-  background: var(--tab-solid);
+  background: transparent;
 }
 
 /* ── Background: position:fixed + px offsets prevents resize-jitter ── */
@@ -747,7 +747,7 @@ body {
             <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>
           </div>
           <div class="p-info">
-            <div class="p-name">Google 原版调度</div>
+            <div class="p-name">默认模式</div>
             <div class="p-desc">恢复系统默认 cpuset 与调度参数</div>
           </div>
           <div class="p-check">
@@ -837,8 +837,8 @@ body {
             <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M22 11h-4.17l3.24-3.24-1.41-1.42L15 11h-2V9l4.66-4.66-1.42-1.41L13 6.17V2h-2v4.17L7.76 2.93 6.34 4.34 11 9v2H9L4.34 6.34 2.93 7.76 6.17 11H2v2h4.17l-3.24 3.24 1.41 1.42L9 13h2v2l-4.66 4.66 1.42 1.41L11 17.83V22h2v-4.17l3.24 3.24 1.42-1.41L13 15v-2h2l4.66 4.66 1.41-1.42L17.83 13H22z"/></svg>
           </div>
           <div class="p-info">
-            <div class="p-name">原版节流</div>
-            <div class="p-desc">VIRTUAL-SKIN 39°C 开始节流（Google 出厂默认）</div>
+            <div class="p-name">默认节流</div>
+            <div class="p-desc">VIRTUAL-SKIN 39°C 开始节流（出厂默认）</div>
           </div>
           <div class="p-check">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -850,8 +850,8 @@ body {
             <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82zm-3 5.82c-1.1 0-2-.9-2-2 0-.72.4-1.35 1-1.71V8h2v7.29c.6.36 1 .99 1 1.71 0 1.1-.9 2-2 2z"/></svg>
           </div>
           <div class="p-info">
-            <div class="p-name">轻度优化 +2°C</div>
-            <div class="p-desc">VIRTUAL-SKIN 41°C 开始节流 · 保守方案</div>
+            <div class="p-name">轻度节流 +2°C</div>
+            <div class="p-desc">VIRTUAL-SKIN 41°C 开始节流</div>
           </div>
           <div class="p-check">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -863,8 +863,8 @@ body {
             <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-.36 3.6-1.21 4.62-2.58.39 1.29.59 2.65.59 4.04 0 2.65-2.15 4.8-4.8 4.8z"/></svg>
           </div>
           <div class="p-info">
-            <div class="p-name">推荐档位 +4°C</div>
-            <div class="p-desc">VIRTUAL-SKIN 43°C 开始节流 · 模块内置默认配置</div>
+            <div class="p-name">常规节流 +4°C</div>
+            <div class="p-desc">VIRTUAL-SKIN 43°C 开始节流 · 模块默认</div>
           </div>
           <div class="p-check">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -876,8 +876,8 @@ body {
             <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
           </div>
           <div class="p-info">
-            <div class="p-name">激进 +6°C</div>
-            <div class="p-desc">VIRTUAL-SKIN 45°C 开始节流 · 适合长时高负载场景</div>
+            <div class="p-name">激进节流 +6°C</div>
+            <div class="p-desc">VIRTUAL-SKIN 45°C 开始节流 · 高负载场景</div>
           </div>
           <div class="p-check">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -975,7 +975,7 @@ const PROFILES={
   balanced:{name:'平衡模式',        desc:'前台: cpu4-7 · 后台: cpu0-3 · 小核锁820MHz · 中核12ms · 大核8ms', cls:'mode-balanced'},
   light:   {name:'轻度模式',        desc:'前台: cpu4-7 · 后台: cpu0-3 · 小核锁820MHz · 中核20ms · 大核16ms', cls:'mode-light'},
   battery: {name:'省电模式',        desc:'前台: cpu4-7 · 小核锁820MHz · 中核40ms · 大核30ms', cls:'mode-battery'},
-  stock:   {name:'Google 原版调度', desc:'恢复系统默认 cpuset 与调度参数', cls:'mode-stock'},
+  stock:   {name:'默认模式', desc:'恢复系统默认 cpuset 与调度参数', cls:'mode-stock'},
   unknown: {name:'未选择',          desc:'前往「性能」标签页选择调度模式', cls:'mode-unknown'},
 };
 
@@ -1206,7 +1206,7 @@ async function applyProfile(profile){
     if(data.ok){
       currentProfile=profile;
       updateHero(profile);
-      showToast(`已切换：${PROFILES[profile].name}`);
+      showToast(`切换至：${PROFILES[profile].name}`);
       appendLog(`${PROFILES[profile].name} 已应用`,'ok');
       refreshCpu();
     }else{
@@ -1456,10 +1456,10 @@ async function loadSavedProfile(){
 
 /* ── Thermal preset ─────────────────────────────────────────── */
 const THERMAL_PRESETS={
-  0:{name:'原版节流'},
-  2:{name:'轻度优化 +2°C'},
-  4:{name:'推荐档位 +4°C'},
-  6:{name:'激进 +6°C'},
+  0:{name:'默认节流'},
+  2:{name:'轻度节流 +2°C'},
+  4:{name:'常规节流 +4°C'},
+  6:{name:'激进节流 +6°C'},
 };
 
 let currentOffset=4, thermalBusy=false;
@@ -1468,7 +1468,7 @@ function updateThermalUI(offset){
   currentOffset=offset;
   document.querySelectorAll('#thermal-list .profile-card').forEach(c=>
     c.classList.toggle('selected',parseInt(c.dataset.offset)===offset));
-  const label=offset===0?'原版节流':`+${offset}°C 激活`;
+  const label=offset===0?'默认节流':`+${offset}°C 激活`;
   const off=offset===0;
   ['home-mod-badge','th-mod-badge'].forEach(id=>{
     const el=document.getElementById(id);
@@ -1617,10 +1617,10 @@ let _longPressed=false;
   // Long-press on profile cards → show detail modal
   const PROFILE_DETAILS={
     game:'<b>游戏模式</b><br><br><b>cpuset</b>: top-app → cpu0-7 全核<br><b>response_time</b>: 小核8ms / 中核8ms / 大核8ms<br><b>down_rate</b>: 500/500/500µs<br><br>所有核心对所有任务可用，升降频极快。<br><br><b>⚠️ 未经长时间测试</b>，全核高频运行功耗大，可能发热明显。建议仅短时使用。',
-    balanced:'<b>平衡模式（推荐）</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核200ms / 中核12ms / 大核8ms<br><b>down_rate</b>: 100/1500/800µs<br><br>前台App只用中+大核，小核通过200ms超长响应时间锁死820MHz最低频，仅跑后台轻任务。<br><br>参考 Sun_Dream 思路：小核高频能效差，锁最低频只跑后台更省电。',
+    balanced:'<b>平衡模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，foreground → cpu4-6，background → cpu0-3<br><b>response_time</b>: 小核200ms / 中核12ms / 大核8ms<br><b>down_rate</b>: 100/1500/800µs<br><br>前台App只用中+大核，前台服务只用中核，小核通过200ms超长响应时间锁死820MHz最低频，仅跑后台轻任务。',
     light:'<b>轻度模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核200ms / 中核20ms / 大核16ms<br><b>down_rate</b>: 100/1500/800µs<br><br>与平衡模式相同的核心分配，但中大核升频更慢(20ms/16ms)，日常轻度使用更省电。<br><br>适合长时间亮屏轻度场景：阅读、社交、视频。',
     battery:'<b>省电模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核500ms / 中核40ms / 大核30ms<br><b>down_rate</b>: 50/500/500µs<br><br>全面保守调度，小核完全锁最低频，中大核升频很慢，降频极快。<br><br>适合不需要流畅度的场景：挂机、待机、听音乐。',
-    stock:'<b>Google 原版调度</b><br><br><b>cpuset</b>: top-app → cpu0-7，foreground → cpu0-6<br><b>response_time</b>: 小核16ms / 中核64ms / 大核200ms<br><b>down_rate</b>: 1000/2000/3000µs<br><br>恢复出厂默认参数，Android调度器自主管理。'
+    stock:'<b>默认模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，foreground → cpu0-6<br><b>response_time</b>: 小核16ms / 中核64ms / 大核200ms<br><b>down_rate</b>: 1000/2000/3000µs<br><br>恢复出厂默认参数，Android调度器自主管理。'
   };
   document.querySelectorAll('.profile-card[data-profile]').forEach(card=>{
     let lpt;

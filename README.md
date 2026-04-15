@@ -1,4 +1,4 @@
-# Pixel 9 Pro Control Module v3.2.0
+# Pixel 9 Pro Control Module v3.2.1
 
 > APatch/KernelSU 模块 — Pixel 9 Pro (Tensor G4) 温控 + CPU 调度 + 待机功耗优化
 
@@ -8,7 +8,7 @@
 - **cpuset 路由**: 前台 App (top-app) 用中+大核 (cpu4-7)，小核 (cpu0-3) 跑后台
 - **小核锁最低频**: 通过 `response_time_ms=200ms` 将小核压在 820MHz，后台轻任务无需高频
 - **sched_pixel 参数调优**: 通过 `response_time_ms` / `down_rate_limit_us` 控制升降频，不写 `scaling_max/min_freq`
-- 四种模式: game / balanced / battery / stock，通过 WebUI 切换
+- 五种模式: game / balanced / light / battery / stock，通过 WebUI 切换
 
 ### 温控优化
 - CPU 降频起始温度从默认 37°C 提高到 **42°C**
@@ -50,6 +50,27 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 - **设备**: Pixel 9 Pro (caiman)
 - **系统**: 基于 **Android 17 Beta 3 (SDK 37)** 开发和测试。理论上 sched_pixel 和 thermal HAL 在 Android 15/16 上结构相同，但**未经实际验证**。如果你在其他 Android 版本上使用，请自行测试温控和调度是否正常
 - **Root**: APatch 0.10+ / KernelSU
+
+## 已知问题与故障排除
+
+### 卡二屏（卡在开机动画）
+
+开发过程中曾遇到安装模块后重启卡在开机动画（第二屏）的问题。原因和解决方法：
+
+| 原因 | 说明 | 解决 |
+|------|------|------|
+| `thermal_info_config.json` 格式错误 | awk 生成的温控配置 JSON 语法不合法，Thermal HAL 拒绝加载导致系统服务崩溃循环 | 进入安全模式或 Recovery 删除 `/data/adb/modules/pixel9pro_control/` |
+| `service.sh` 阻塞启动 | 脚本中的死循环或长耗时操作在 `late_start` 阶段阻塞了系统初始化 | 同上，删除模块目录 |
+| `cpuset` 写入非法值 | 向 `/dev/cpuset/*/cpus` 写入不存在的 CPU 编号 | 同上 |
+
+**紧急恢复方法**：
+1. 长按电源键 10 秒强制关机
+2. 按住电源键+音量下 进入 Bootloader
+3. 选择 Recovery → 挂载 data 分区
+4. 删除 `/data/adb/modules/pixel9pro_control/` 目录
+5. 重启
+
+**预防**：修改 `thermal_info_config.json` 后，先用 `python -m json.tool` 验证 JSON 格式正确再打包。
 
 ## 致谢与参考
 
