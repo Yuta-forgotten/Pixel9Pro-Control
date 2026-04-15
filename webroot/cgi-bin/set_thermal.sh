@@ -13,7 +13,9 @@ STOCK_JSON="$MODDIR/system/vendor/etc/thermal_stock.json"
 OUT_JSON="$MODDIR/system/vendor/etc/thermal_info_config.json"
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
-    body=$(dd bs=1 count="${CONTENT_LENGTH:-0}" 2>/dev/null)
+    len="${CONTENT_LENGTH:-0}"
+    [ "$len" -gt 512 ] 2>/dev/null && len=512
+    body=$(dd bs=1 count="$len" 2>/dev/null)
     offset=$(printf '%s' "$body" | sed 's/.*"offset"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/')
 
     # 只接受 0 / 2 / 4 / 6

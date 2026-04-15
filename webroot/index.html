@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#daf0ea">
-<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#e1f8f2">
+<meta name="color-scheme" content="light">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
@@ -35,10 +35,18 @@
   --spring: cubic-bezier(.34,1.56,.64,1);
 
   --tab-h: 58px;
+  --tab-bg: rgba(225,248,242,.92);
+  --tab-solid: #e1f8f2;
 }
 
 html, body {
   height: 100%;
+}
+
+/* APatch WebView 的底部安全区会露出根背景，这里把 html/body 固定成与 tab bar 一致的底色。 */
+html {
+  background: rgba(225,248,242,.90);
+  overscroll-behavior: none;
 }
 
 body {
@@ -48,7 +56,7 @@ body {
   height: 100dvh;
   display: flex;
   flex-direction: column;
-  background: #d8f0ea;
+  background: var(--tab-solid);
 }
 
 /* ── Background: position:fixed + px offsets prevents resize-jitter ── */
@@ -84,12 +92,15 @@ body {
   flex: 1;
   position: relative;
   overflow: hidden;
+  touch-action: pan-y;
+  overscroll-behavior-x: none;
 }
 
 .tab-page {
   position: absolute;
   inset: 0;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
   display: none;
   padding: env(safe-area-inset-top, 0px) 14px 20px;
@@ -111,7 +122,7 @@ body {
   padding: 6px 4px 0;
 }
 
-.col { display: flex; flex-direction: column; gap: 10px; }
+.col { display: flex; flex-direction: column; gap: 10px; padding-bottom: 24px; }
 
 /* ── Tab bar ────────────────────────────────────────────────── */
 .tab-bar {
@@ -119,7 +130,7 @@ body {
   display: flex;
   align-items: stretch;
   height: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px));
-  background: rgba(225,248,242,.90);
+  background: var(--tab-bg);
   backdrop-filter: blur(28px) saturate(1.8);
   -webkit-backdrop-filter: blur(28px) saturate(1.8);
   border-top: 1px solid rgba(255,255,255,.64);
@@ -226,6 +237,12 @@ body {
 .badge.off {
   background: rgba(22,42,38,.06); border-color: rgba(22,42,38,.14); color: var(--text-3);
 }
+.badge.good {
+  background: rgba(120,200,74,.18); border: 1px solid rgba(120,200,74,.38); color: #4a8a28;
+}
+.badge.warn {
+  background: rgba(235,115,80,.18); border: 1px solid rgba(235,115,80,.38); color: #d06028;
+}
 
 /* ── Home: quick thermal snapshot ───────────────────────────── */
 .snap-card { padding: 16px 16px 14px; }
@@ -268,6 +285,42 @@ body {
 .info-row { display: flex; align-items: center; justify-content: space-between; }
 .info-lbl { font-size: 11.5px; color: var(--text-3); }
 .info-val { font-size: 12px; font-weight: 500; color: var(--text-2); }
+
+/* 把功耗优化从”密集列表”拆成信息卡片，窄屏下更容易扫读。 */
+.opt-card { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.opt-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.opt-copy { min-width: 0; }
+.opt-title { font-size: 12.5px; font-weight: 500; color: var(--text-2); }
+.opt-desc {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-3);
+}
+.opt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.opt-item {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 13px;
+  background: rgba(255,255,255,.54);
+  border: 1px solid rgba(255,255,255,.74);
+  border-radius: var(--r-md);
+}
+.opt-item-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.opt-label {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text);
+}
+.opt-meta {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+.opt-item .badge { align-self: flex-start; }
 
 /* ── Thermal tab: full card ─────────────────────────────────── */
 .thermal-card { padding: 18px 18px 16px; display: flex; flex-direction: column; gap: 14px; }
@@ -508,6 +561,11 @@ body {
   border: 1px solid rgba(22,42,38,.09); font-size: 13px;
 }
 
+@media (max-width: 390px) {
+  .opt-head { flex-direction: column; }
+  .opt-grid { grid-template-columns: 1fr; }
+}
+
 /* ── Skeleton ───────────────────────────────────────────────── */
 @keyframes shimmer {
   0%  { background-position: -200% 0 }
@@ -527,10 +585,10 @@ body {
 <div class="bg-img" aria-hidden="true"></div>
 <div class="bg-tint" aria-hidden="true"></div>
 
-<div class="tab-pages">
+<div class="tab-pages" id="tab-pages">
 
   <!-- ══════════════════ Tab 1: 状态 ══════════════════ -->
-  <div class="tab-page active" id="page-home">
+  <div class="tab-page active" id="page-home" data-tab="home">
     <div class="col">
       <div class="page-title">状态总览</div>
 
@@ -583,7 +641,7 @@ body {
         </div>
         <div class="info-row">
           <span class="info-lbl">模块版本</span>
-          <span class="info-val" id="info-module">v2.8</span>
+          <span class="info-val" id="info-module">—</span>
         </div>
         <div class="info-row">
           <span class="info-lbl">作者</span>
@@ -594,11 +652,32 @@ body {
           <span class="info-val">HTTP :6210</span>
         </div>
       </div>
+
+      <!-- ④ Power optimization status -->
+      <div class="section-label">功耗优化</div>
+      <!-- 首页功耗优化区改成独立小卡片，减少长列表在手机上的拥挤感。 -->
+      <div class="card opt-card">
+        <div class="opt-head">
+          <div class="opt-copy">
+            <div class="opt-title">开机自动设置</div>
+            <div class="opt-desc">模块会在启动后把后台网络与扫描项压到推荐状态；需要时仍可在系统设置里临时重新开启。</div>
+          </div>
+          <button class="refresh-btn" onclick="refreshOpt()" id="opt-refresh-btn">
+            <span class="ri" id="opt-ri">↻</span> 刷新
+          </button>
+        </div>
+        <div class="opt-grid" id="opt-rows">
+          <div class="skel" style="height:108px"></div>
+          <div class="skel" style="height:108px"></div>
+          <div class="skel" style="height:108px"></div>
+          <div class="skel" style="height:108px"></div>
+        </div>
+      </div>
     </div>
   </div>
 
   <!-- ══════════════════ Tab 2: 性能 ══════════════════ -->
-  <div class="tab-page" id="page-perf">
+  <div class="tab-page" id="page-perf" data-tab="perf">
     <div class="col">
       <div class="page-title">性能调度</div>
 
@@ -612,7 +691,7 @@ body {
           </div>
           <div class="p-info">
             <div class="p-name">游戏模式</div>
-            <div class="p-desc">全核心解锁 · 小核≤1950 / 中核≤2600 / 大核≤3105 MHz</div>
+            <div class="p-desc">前台App使用 cpu0-7 全核 · 响应时间 8/8/8ms · 升降频极灵敏</div>
           </div>
           <div class="p-check">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -625,7 +704,7 @@ body {
           </div>
           <div class="p-info">
             <div class="p-name">平衡模式</div>
-            <div class="p-desc">小核≤1548MHz · 中大核全速 · 前台 App 独享 cpu4-7</div>
+            <div class="p-desc">前台App使用 cpu4-7 · 后台使用 cpu0-3 · 小核锁最低频 820MHz · 中核 12ms / 大核 8ms</div>
           </div>
           <div class="p-check">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -638,7 +717,7 @@ body {
           </div>
           <div class="p-info">
             <div class="p-name">省电模式</div>
-            <div class="p-desc">小核≤1200 / 中核≤1795 / 大核≤1885 MHz · 显著降低峰值功耗</div>
+            <div class="p-desc">前台App使用 cpu4-7 · 小核锁最低频 820MHz · 中核 40ms / 大核 30ms 保守升频</div>
           </div>
           <div class="p-check">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -651,7 +730,7 @@ body {
           </div>
           <div class="p-info">
             <div class="p-name">Google 原版调度</div>
-            <div class="p-desc">恢复系统默认频率上限与 cpuset · 由 Android 调度器自主管理</div>
+            <div class="p-desc">恢复系统默认 cpuset 与调度参数 · 由 Android 调度器管理</div>
           </div>
           <div class="p-check">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
@@ -691,7 +770,7 @@ body {
   </div>
 
   <!-- ══════════════════ Tab 3: 温控 ══════════════════ -->
-  <div class="tab-page" id="page-thermal">
+  <div class="tab-page" id="page-thermal" data-tab="thermal">
     <div class="col">
       <div class="page-title">温控管理</div>
 
@@ -835,20 +914,21 @@ body {
 </div>
 
 <script>
-// APatch Manager WebView 兼容：file: 协议下 fetch() 全部失败。
-// 使用 Android intent 协议在系统外部浏览器（Chrome）中打开 HTTP 地址。
-if(location.protocol==='file:'){location.href='intent://127.0.0.1:6210#Intent;scheme=http;end';throw 0;}
+// APatch/KernelSU WebView 兼容（参考 AdGuardHome 方案）：
+// APatch 通过 WebViewAssetLoader 将 webroot 映射到 https://mui.kernelsu.org/
+// 从该域名 fetch localhost CGI 会失败，需重定向到真实 HTTP 服务。
+// 仅当不在 127.0.0.1:6210 时触发重定向，覆盖 file:/content:/https://mui.* 所有场景。
+if(location.host!=='127.0.0.1:6210')document.location='http://127.0.0.1:6210';
 'use strict';
 
-// 每次加载追加时间戳，防止 HTTP 缓存旧响应
-const _t=Date.now();
 const API={
-  profile:     `/cgi-bin/profile.sh?_=${_t}`,
-  status:      `/cgi-bin/status.sh?_=${_t}`,
-  info:        `/cgi-bin/info.sh?_=${_t}`,
-  thermal:     `/cgi-bin/thermal.sh?_=${_t}`,
-  thermal_set: `/cgi-bin/set_thermal.sh?_=${_t}`,
-  reboot:      `/cgi-bin/reboot.sh`,
+  profile:     '/cgi-bin/profile.sh',
+  status:      '/cgi-bin/status.sh',
+  info:        '/cgi-bin/info.sh',
+  thermal:     '/cgi-bin/thermal.sh',
+  thermal_set: '/cgi-bin/set_thermal.sh',
+  reboot:      '/cgi-bin/reboot.sh',
+  optimize:    '/cgi-bin/optimize.sh',
 };
 
 // Material You SVG 图标（26×26，用于 hero-icon）
@@ -861,11 +941,11 @@ const ICONS={
 };
 
 const PROFILES={
-  game:    {name:'游戏模式',        desc:'全核解锁 · 小核≤1950 / 中核≤2600 / 大核≤3105 MHz', cls:'mode-game'},
-  balanced:{name:'平衡模式',        desc:'小核≤1548MHz · 中大核全速 · 前台 App 独享 cpu4-7',  cls:'mode-balanced'},
-  battery: {name:'省电模式',        desc:'小核≤1200 / 中核≤1795 / 大核≤1885 MHz',             cls:'mode-battery'},
-  stock:   {name:'Google 原版调度', desc:'系统默认频率 · Android 调度器自主管理',               cls:'mode-stock'},
-  unknown: {name:'未选择',          desc:'前往「性能」标签页选择调度模式',                     cls:'mode-unknown'},
+  game:    {name:'游戏模式',        desc:'前台App使用 cpu0-7 全核 · 响应时间 8/8/8ms · 升降频极灵敏',                          cls:'mode-game'},
+  balanced:{name:'平衡模式',        desc:'前台App使用 cpu4-7 · 后台使用 cpu0-3 · 小核锁最低频 820MHz · 中核 12ms / 大核 8ms', cls:'mode-balanced'},
+  battery: {name:'省电模式',        desc:'前台App使用 cpu4-7 · 小核锁最低频 820MHz · 中核 40ms / 大核 30ms 保守升频',         cls:'mode-battery'},
+  stock:   {name:'Google 原版调度', desc:'恢复系统默认 cpuset 与调度参数 · 由 Android 调度器管理',                              cls:'mode-stock'},
+  unknown: {name:'未选择',          desc:'前往「性能」标签页选择调度模式',                                                      cls:'mode-unknown'},
 };
 
 const CLUSTERS=[
@@ -876,8 +956,10 @@ const CLUSTERS=[
 
 const TEMP_MIN=25, TEMP_MAX=60, THRESH_STOCK=39, THRESH_MOD=43;
 
-/* ── Tab switching ──────────────────────────────────────────── */
+/* 统一维护 tab 顺序，给点击切换和手势切换共用。 */
+const TAB_ORDER=['home','perf','thermal'];
 let _currentTab='home';
+let _suppressClickUntil=0;
 
 function switchTab(tab){
   if(tab===_currentTab) return;
@@ -887,6 +969,78 @@ function switchTab(tab){
   document.getElementById('page-'+tab).classList.add('active');
   document.getElementById('tab-' +tab).classList.add('active');
 }
+
+function getSwipeTargetTab(deltaX, deltaY){
+  const absX=Math.abs(deltaX);
+  const absY=Math.abs(deltaY);
+  if(absX<60 || absX<=absY*1.5) return '';
+  const nextIndex=TAB_ORDER.indexOf(_currentTab)+(deltaX<0?1:-1);
+  if(nextIndex<0 || nextIndex>=TAB_ORDER.length) return '';
+  return TAB_ORDER[nextIndex];
+}
+
+/* 横向手势切页只在明确的左右滑动时触发，避免和页面纵向滚动、卡片点击打架。 */
+function bindTabSwipe(){
+  const host=document.getElementById('tab-pages');
+  if(!host) return;
+  let gesture=null;
+
+  function findTouch(touchList,id){
+    for(let i=0;i<touchList.length;i++){
+      if(touchList[i].identifier===id) return touchList[i];
+    }
+    return null;
+  }
+
+  host.addEventListener('touchstart',evt=>{
+    if(evt.touches.length!==1) return;
+    if(document.getElementById('modal-reboot').classList.contains('open')) return;
+    const page=evt.target.closest('.tab-page');
+    if(!page||!page.classList.contains('active')) return;
+    const touch=evt.touches[0];
+    gesture={
+      id:touch.identifier,
+      startX:touch.clientX,
+      startY:touch.clientY,
+      lastX:touch.clientX,
+      lastY:touch.clientY,
+      horizontal:null,
+    };
+  },{passive:true});
+
+  host.addEventListener('touchmove',evt=>{
+    if(!gesture) return;
+    const touch=findTouch(evt.touches,gesture.id)||findTouch(evt.changedTouches,gesture.id);
+    if(!touch) return;
+    gesture.lastX=touch.clientX;
+    gesture.lastY=touch.clientY;
+    const deltaX=touch.clientX-gesture.startX;
+    const deltaY=touch.clientY-gesture.startY;
+    if(gesture.horizontal===null){
+      if(Math.abs(deltaX)<12 && Math.abs(deltaY)<12) return;
+      gesture.horizontal=Math.abs(deltaX)>Math.abs(deltaY)*1.15;
+    }
+    if(gesture.horizontal && evt.cancelable) evt.preventDefault();
+  },{passive:false});
+
+  function finishSwipe(){
+    if(!gesture) return;
+    const targetTab=getSwipeTargetTab(gesture.lastX-gesture.startX,gesture.lastY-gesture.startY);
+    gesture=null;
+    if(!targetTab) return;
+    _suppressClickUntil=Date.now()+350;
+    switchTab(targetTab);
+  }
+
+  host.addEventListener('touchend',finishSwipe,{passive:true});
+  host.addEventListener('touchcancel',()=>{ gesture=null; },{passive:true});
+}
+
+document.addEventListener('click',evt=>{
+  if(Date.now()>=_suppressClickUntil) return;
+  evt.preventDefault();
+  evt.stopPropagation();
+},true);
 
 /* ── Reboot modal ───────────────────────────────────────────── */
 let _pendingThermalOffset=4, _prevThermalOffset=4;
@@ -918,8 +1072,8 @@ async function doReboot(){
 }
 
 /* ── Utilities ──────────────────────────────────────────────── */
-async function apiFetch(path,opts){
-  const r=await fetch(path,opts);
+async function apiFetch(path,opts={}){
+  const r=await fetch(path,{cache:'no-store',...opts});
   if(!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -938,10 +1092,15 @@ function showToast(msg,dur=2500){
 
 function appendLog(text,type=''){
   const el=document.getElementById('log-inner');
-  const sp=document.createElement('span');
+  // 首次调用清除占位符
+  if(el.querySelector('.log-dim:only-child')) el.innerHTML='';
+  const sp=document.createElement('div');
   if(type) sp.className='log-'+type;
   sp.textContent='['+new Date().toLocaleTimeString()+'] '+text;
-  el.innerHTML=''; el.appendChild(sp);
+  el.appendChild(sp);
+  // 限制最多 30 条，防止无限增长
+  while(el.childNodes.length>30) el.removeChild(el.firstChild);
+  el.scrollTop=el.scrollHeight;
 }
 
 function toggleLog(){ document.getElementById('log-card').classList.toggle('open'); }
@@ -1245,7 +1404,7 @@ async function loadInfo(){
       localStorage.setItem('_modVC',vc);
       if(!sessionStorage.getItem('_reloaded')){
         sessionStorage.setItem('_reloaded','1');
-        location.reload(true);
+        location.reload();
         return;
       }
     }
@@ -1353,10 +1512,72 @@ document.addEventListener('visibilitychange',()=>{
   }
 });
 
+/* 功耗优化状态改为卡片式渲染，状态、说明和刷新逻辑都集中在这一段。 */
+/* ── Optimization status ────────────────────────────────────── */
+const OPT_ITEMS=[
+  {key:'mobile_data_always_on',    label:'移动数据常开',  hint:'避免蜂窝与 WiFi 双链路同时常驻待机。', good:'0'},
+  {key:'wfc_ims_enabled',          label:'VoWiFi 通话',  hint:'减少 IWLAN 搜网与 IMS 常驻唤醒。',    good:'0'},
+  {key:'wifi_scan_always_enabled', label:'WiFi 后台扫描',hint:'避免熄屏后继续做环境 WiFi 扫描。',     good:'0'},
+  {key:'ble_scan_always_enabled',  label:'BLE 后台扫描', hint:'压低蓝牙扫描与附近设备发现频率。',     good:'0'},
+  {key:'adaptive_connectivity',    label:'自适应连接',   hint:'减少蜂窝 / WiFi 的自动切换判断。',     good:'0'},
+  {key:'network_recommendations',  label:'网络推荐',     hint:'关闭后台网络评分与推荐广播。',         good:'0'},
+  {key:'nearby_sharing',           label:'附近共享',     hint:'降低 Nearby Sharing 的持续扫描开销。', good:'0'},
+  {key:'multicast',                label:'WiFi Multicast',hint:'息屏时关闭组播，减少 WLAN 唤醒。',    good:'off'},
+];
+
+function getOptBadge(val,item){
+  if(val===item.good) return {className:'badge good', text:'已关闭'};
+  if(val==='1'||val==='on') return {className:'badge warn', text:'已开启'};
+  return {className:'badge off', text:'未设置'};
+}
+
+let _optFetching=false;
+async function refreshOpt(){
+  if(_optFetching) return;
+  _optFetching=true;
+  const btn=document.getElementById('opt-refresh-btn');
+  btn.classList.add('spinning');
+  try{
+    const d=await apiFetch(API.optimize);
+    const box=document.getElementById('opt-rows');
+    box.innerHTML='';
+    OPT_ITEMS.forEach(item=>{
+      const val=d[item.key]||'null';
+      const spec=getOptBadge(val,item);
+      const row=document.createElement('div');
+      row.className='opt-item';
+      const head=document.createElement('div');
+      head.className='opt-item-head';
+      const lbl=document.createElement('div');
+      lbl.className='opt-label';
+      lbl.textContent=item.label;
+      const badge=document.createElement('span');
+      badge.className=spec.className;
+      badge.textContent=spec.text;
+      const meta=document.createElement('div');
+      meta.className='opt-meta';
+      meta.textContent=item.hint;
+      head.appendChild(lbl);
+      head.appendChild(badge);
+      row.appendChild(head);
+      row.appendChild(meta);
+      box.appendChild(row);
+    });
+  }catch(e){
+    const box=document.getElementById('opt-rows');
+    box.innerHTML='<div class="opt-item" style="grid-column:1/-1"><div class="opt-label" style="color:#b83020">获取失败</div><div class="opt-meta">'+e.message+'</div></div>';
+  }finally{
+    btn.classList.remove('spinning');
+    _optFetching=false;
+  }
+}
+
 /* ── Init ───────────────────────────────────────────────────── */
 (async()=>{
+  bindTabSwipe();
   await Promise.all([loadInfo(),loadSavedProfile(),refreshCpu(),loadThermalPreset()]);
   await refreshThermal();
+  refreshOpt();
   startPolling();
 })();
 </script>

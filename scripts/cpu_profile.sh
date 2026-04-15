@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # ============================================================
-# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v3.1
+# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v3.2.0
 # 用法: sh cpu_profile.sh [game|balanced|battery|stock|status]
 #
 # v3.1 核心改动 (基于内核源码分析 + Sun_Dream 的方法):
@@ -55,30 +55,32 @@ case "$PROFILE" in
     balanced)
         # ── 平衡模式 (Sun_Dream 思路) ────────────────────────
         # 核心: 前台 app 只用中+大核 (4-7), 小核只跑后台
-        # 小核 response_time=40ms → 极慢升频, 自然趴在 820MHz
+        # 小核 response_time=200ms → 几乎不升频, 锁死最低频 820MHz
+        #   (cpuset 已移出 top-app, 只跑后台轻任务, 200ms 足够压死升频)
+        # 小核 down_rate=100us → 万一升频也立刻降回去
         # 中核 response_time=12ms → 日常流畅
         # 大核 response_time=8ms → 重载时快速响应
-        # 不写 scaling_max/min_freq — 让 thermal HAL 自由管理
-        apply_sched_pixel 40 12 8  200 1500 800
+        # 不写 scaling_max/min_freq — thermal HAL 不碰 sched_pixel 参数
+        apply_sched_pixel 200 12 8  100 1500 800
         cpuset_write "top-app"           "4-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: BALANCED [top-app→4-7, 小核response 40ms]"
+        log -t pixel9pro_ctrl "CPU: BALANCED [top-app→4-7, 小核response 200ms锁最低频]"
         ;;
 
     battery)
         # ── 省电模式 ─────────────────────────────────────────
-        # 小核: response_time=80ms, 几乎不升频
-        # 中核: response_time=25ms, 降频快
-        # 大核: response_time=20ms, 降频快
-        # top-app 仍用中+大核, 但响应更保守
-        apply_sched_pixel 80 25 20  100 500 500
+        # 小核: response_time=500ms, 完全锁最低频 820MHz
+        # 中核: response_time=40ms, 保守升频
+        # 大核: response_time=30ms, 保守升频
+        # 全核 down_rate 极低 → 快速降回低频
+        apply_sched_pixel 500 40 30  50 500 500
         cpuset_write "top-app"           "4-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: BATTERY [top-app→4-7, 小核response 80ms]"
+        log -t pixel9pro_ctrl "CPU: BATTERY [top-app→4-7, 小核response 500ms锁最低频]"
         ;;
 
     stock)

@@ -1,4 +1,4 @@
-# Pixel 9 Pro Control Module v3.1
+# Pixel 9 Pro Control Module v3.2.0
 
 > APatch/KernelSU 模块 — Pixel 9 Pro (Tensor G4) 温控 + CPU 调度 + 待机功耗优化
 

@@ -42,7 +42,7 @@ done
 # 换算为毫摄氏度：×100（与 sysfs 热区单位统一，前端÷1000 显示）
 bat_raw=$(cat /sys/class/power_supply/battery/temp 2>/dev/null | tr -d ' \n\r')
 if [ -n "$bat_raw" ] && [ "$bat_raw" != "0" ]; then
-    bat_mc=$(awk "BEGIN{printf \"%d\", $bat_raw * 100}")
+    bat_mc=$(awk -v r="$bat_raw" 'BEGIN{printf "%d", r * 100}')
     out="${out}${sep}{\"zone\":\"battery\",\"temp\":${bat_mc}}"
     sep=","
 fi

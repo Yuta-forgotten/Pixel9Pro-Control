@@ -7,7 +7,9 @@
 MODDIR="/data/adb/modules/pixel9pro_control"
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
-    body=$(dd bs=1 count="${CONTENT_LENGTH:-0}" 2>/dev/null)
+    len="${CONTENT_LENGTH:-0}"
+    [ "$len" -gt 512 ] 2>/dev/null && len=512
+    body=$(dd bs=1 count="$len" 2>/dev/null)
     newprof=$(printf '%s' "$body" | sed 's/.*"profile"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/')
     case "$newprof" in
         game|balanced|battery|stock)

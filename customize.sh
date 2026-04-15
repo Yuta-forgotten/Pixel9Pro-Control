@@ -1,6 +1,6 @@
 #!/system/bin/sh
-# customize.sh v3.0
-echo "pixel9pro_control v3.0 installed on $(date)" > /data/adb/control_mod.log
+# customize.sh v3.2.0
+echo "pixel9pro_control v3.2.0 installed on $(date)" > /data/adb/control_mod.log
 
 # 保留用户上次选择的温控档位和CPU配置
 [ -f "$MODPATH/.thermal_offset" ] || echo '4' > "$MODPATH/.thermal_offset"
