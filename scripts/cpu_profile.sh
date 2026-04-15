@@ -1,12 +1,13 @@
 #!/system/bin/sh
 # ============================================================
-# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v3.2.1
+# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v3.2.2
 # 用法: sh cpu_profile.sh [game|balanced|light|battery|stock|status]
 #
-# v3.1 核心改动 (基于内核源码分析 + Sun_Dream 的方法):
+# 核心原理 (基于内核源码分析 + Sun_Dream 的方法):
 #   - 不再写 scaling_max_freq / scaling_min_freq (会被 thermal HAL 覆盖)
-#   - 通过 cpuset 路由 + sched_pixel 参数控制频率行为
-#   - 小核"锁最低频"通过不派活+高response_time实现
+#   - 通过 sched_pixel 参数控制频率行为, cpuset 路由 top-app/background
+#   - 小核"锁最低频"通过 response_time=200ms+ 实现
+#   - foreground cpuset 由 system_server 框架层管理, 固定为 0-6, 不可覆盖
 #
 # Tensor G4 拓扑：
 #   cpu0-3  Cortex-A520 (小核)  820-1950 MHz
@@ -15,7 +16,7 @@
 #
 # sched_pixel 参数说明 (源码: cpufreq_gov.c):
 #   response_time_ms: 越大 → 升频越慢 → 自然趴在低频
-#   down_rate_limit_us: 越小 → 降频越快 → 减少高频停留时间
+#   down_rate_limit_us: 由内核根据 response_time_ms 自动计算, 不可独立写入
 # ============================================================
 
 PROFILE="${1:-balanced}"
@@ -29,39 +30,33 @@ cpuset_write()    { [ -f "/dev/cpuset/$1/cpus" ] && echo "$2" > "/dev/cpuset/$1/
 
 apply_sched_pixel() {
     # $1-3: response_time_ms  (小核 / 中核 / 大核)
-    # $4-6: down_rate_limit_us (小核 / 中核 / 大核)
     write_if_exists "$CPU0/sched_pixel/response_time_ms"   "$1"
     write_if_exists "$CPU4/sched_pixel/response_time_ms"   "$2"
     write_if_exists "$CPU7/sched_pixel/response_time_ms"   "$3"
-    write_if_exists "$CPU0/sched_pixel/down_rate_limit_us" "$4"
-    write_if_exists "$CPU4/sched_pixel/down_rate_limit_us" "$5"
-    write_if_exists "$CPU7/sched_pixel/down_rate_limit_us" "$6"
 }
 
 case "$PROFILE" in
 
     game)
         # ── 游戏模式 ─────────────────────────────────────────
-        # 全核可用, 升频极灵敏, 降频也快(避免无效高频)
+        # top-app → 全核 0-7, 升频极灵敏 (response 8ms)
         # 不写 scaling_max_freq — 让温控v3在42°C+渐进介入
-        apply_sched_pixel 8 8 8  500 500 500
+        apply_sched_pixel 8 8 8
         cpuset_write "top-app"           "0-7"
-        cpuset_write "foreground"        "0-7"
+        cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: GAME [全核, response 8/8/8ms]"
+        log -t pixel9pro_ctrl "CPU: GAME [top-app→0-7, response 8/8/8ms]"
         ;;
 
     balanced)
         # ── 平衡模式 (Sun_Dream 思路) ────────────────────────
         # top-app(正在操作的App) → 中+大核 4-7
-        # foreground(前台服务/输入法) → 中核 4-6, 不用大核省电(Sun_Dream建议)
-        # background → 小核 0-3
-        # 小核 response_time=200ms → 锁死最低频 820MHz
+        # 小核 response_time=200ms → 锁死最低频 820MHz (即使foreground含小核也不会被调度)
         # 中核 12ms → 日常流畅, 大核 8ms → 重载响应
-        apply_sched_pixel 200 12 8  100 1500 800
+        apply_sched_pixel 200 12 8
         cpuset_write "top-app"           "4-7"
-        cpuset_write "foreground"        "4-6"
+        cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
         log -t pixel9pro_ctrl "CPU: BALANCED [top-app→4-7, 小核response 200ms锁最低频]"
@@ -72,9 +67,9 @@ case "$PROFILE" in
         # cpuset 同平衡模式, 但中大核升频更保守
         # 小核 200ms 锁最低频, 中核 20ms, 大核 16ms
         # 适合长时间亮屏轻度使用 (阅读/社交/视频)
-        apply_sched_pixel 200 20 16  100 1500 800
+        apply_sched_pixel 200 20 16
         cpuset_write "top-app"           "4-7"
-        cpuset_write "foreground"        "4-6"
+        cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
         log -t pixel9pro_ctrl "CPU: LIGHT [top-app→4-7, 小核response 200ms锁最低频, 中核20ms, 大核16ms]"
@@ -85,18 +80,17 @@ case "$PROFILE" in
         # 小核: response_time=500ms, 完全锁最低频 820MHz
         # 中核: response_time=40ms, 保守升频
         # 大核: response_time=30ms, 保守升频
-        # 全核 down_rate 极低 → 快速降回低频
-        apply_sched_pixel 500 40 30  50 500 500
+        apply_sched_pixel 500 40 30
         cpuset_write "top-app"           "4-7"
-        cpuset_write "foreground"        "4-6"
+        cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: BATTERY [top-app→4-7, foreground→4-6, 小核500ms锁最低频]"
+        log -t pixel9pro_ctrl "CPU: BATTERY [top-app→4-7, 小核500ms锁最低频]"
         ;;
 
     stock)
         # ── Google 原版 ──────────────────────────────────────
-        apply_sched_pixel 16 64 200  1000 2000 3000
+        apply_sched_pixel 16 64 200
         cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
