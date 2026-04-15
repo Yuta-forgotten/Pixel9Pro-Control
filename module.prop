@@ -1,6 +1,6 @@
 id=pixel9pro_control
 name=Pixel 9 Pro 温控调度控制台
-version=v2.8
-versionCode=14
+version=v3.1
+versionCode=16
 author=Yuta
-description=Pixel 9 Pro (Tensor G4) 温控与调度管理。WebUI(:6210) 可在线切换节流阈值(+0/+2/+4/+6°C)、性能档位(游戏/平衡/省电/原版)，实时监控温度与 CPU 频率。Tab 栏版。
+description=Pixel 9 Pro (Tensor G4) v3.1 — 温控阈值优化(42/45/48°C), cpuset+sched_pixel调度(不写scaling_freq), WiFi multicast息屏控制, mobile_data_always_on自动关闭, WebUI(:6210)。

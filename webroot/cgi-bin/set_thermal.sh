@@ -44,7 +44,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         sub(/.*"Name": *"/, "", n)
         sub(/".*/, "", n)
         cur = n
-        tgt = (cur == "VIRTUAL-SKIN" || cur == "VIRTUAL-SKIN-HINT" || cur == "VIRTUAL-SKIN-SOC")
+        tgt = (cur == "VIRTUAL-SKIN" || cur == "VIRTUAL-SKIN-HINT" || cur == "VIRTUAL-SKIN-SOC" || cur == "VIRTUAL-SKIN-CPU-LIGHT-ODPM" || cur == "VIRTUAL-SKIN-CPU-MID" || cur == "VIRTUAL-SKIN-CPU-ODPM")
     }
     tgt && /"HotThreshold":/ {
         line = $0
@@ -85,7 +85,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     # 遍历不同固件版本的服务名
     # ──────────────────────────────────────────────────────────
     restarted=false
-    for svc in vendor.thermal-hal-2-0 thermal-hal-2-0 thermalserviced; do
+    for svc in vendor.thermal-hal vendor.thermal-hal-2-0 thermal-hal-2-0 thermalserviced; do
         state=$(getprop "init.svc.$svc" 2>/dev/null)
         if [ "$state" = "running" ]; then
             stop "$svc" 2>/dev/null
