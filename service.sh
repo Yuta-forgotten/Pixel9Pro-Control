@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v3.3.1 — 开机服务 (WebUI 安全加固)
+# service.sh v4.0.0 — 开机服务 (M3 WebUI + 热区缓存)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → WiFi multicast → WebUI
 #
@@ -19,6 +19,7 @@
 MODDIR="${0%/*}"
 PORT=6210
 TOKEN_FILE="$MODDIR/.webui_token"
+THERMAL_CACHE="$MODDIR/.thermal_cache.json"
 LOCKDIR_BASE="$MODDIR/.locks"
 
 # ──────────────────────────────────────────────────────────
@@ -43,12 +44,13 @@ chmod 600 "$TOKEN_FILE" 2>/dev/null
 export PIXEL9PRO_MODDIR="$MODDIR"
 export PIXEL9PRO_WEBUI_PORT="$PORT"
 export PIXEL9PRO_WEBUI_TOKEN_FILE="$TOKEN_FILE"
+export PIXEL9PRO_THERMAL_CACHE="$THERMAL_CACHE"
 export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
 
 # ──────────────────────────────────────────────────────────
 # 2. 系统设置优化 (不影响用户体验的项)
 # ──────────────────────────────────────────────────────────
-log -t pixel9pro_ctrl "v3.3.1: Applying system optimizations..."
+log -t pixel9pro_ctrl "v4.0.0: Applying system optimizations..."
 
 # === Modem 功耗优化 (参考 Mori 帖子 + RMBD 模块) ===
 # 确保 mobile_data_always_on 关闭 (modem 休眠关键)
@@ -120,7 +122,7 @@ echo 65536 > /proc/sys/vm/min_free_kbytes 2>/dev/null
 # vfs_cache_pressure: 100→60, 保留更多 dentry/inode 缓存加速文件路径查找
 echo 60 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
 
-log -t pixel9pro_ctrl "v3.3.1: System optimizations applied (modem+radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.0.0: System optimizations applied (modem+radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 3. 应用 CPU 调度方案 (cpuset + sched_pixel 参数)
@@ -162,6 +164,24 @@ log -t pixel9pro_ctrl "CPU profile: $PROFILE"
     done
 ) &
 log -t pixel9pro_ctrl "WiFi multicast screen-aware started"
+
+# ──────────────────────────────────────────────────────────
+# 4.1 热区缓存后台任务
+#     busybox httpd 单线程，避免每个 CGI 都同步执行 dumpsys
+# ──────────────────────────────────────────────────────────
+(
+    . "$MODDIR/webroot/cgi-bin/_thermal_cache.sh"
+    while true; do
+        build_thermal_json > "${THERMAL_CACHE}.tmp" 2>/dev/null
+        if [ -s "${THERMAL_CACHE}.tmp" ]; then
+            mv "${THERMAL_CACHE}.tmp" "$THERMAL_CACHE"
+        else
+            rm -f "${THERMAL_CACHE}.tmp"
+        fi
+        sleep 5
+    done
+) &
+log -t pixel9pro_ctrl "Thermal cache task started"
 
 # ──────────────────────────────────────────────────────────
 # 5. 启动 HTTP 控制台

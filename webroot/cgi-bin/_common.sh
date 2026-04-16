@@ -8,6 +8,7 @@
 MODDIR="${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}"
 WEBUI_PORT="${PIXEL9PRO_WEBUI_PORT:-6210}"
 TOKEN_FILE="${PIXEL9PRO_WEBUI_TOKEN_FILE:-$MODDIR/.webui_token}"
+THERMAL_CACHE="${PIXEL9PRO_THERMAL_CACHE:-$MODDIR/.thermal_cache.json}"
 LOCKDIR_BASE="${PIXEL9PRO_LOCKDIR_BASE:-$MODDIR/.locks}"
 LOCK_PATH=""
 
@@ -20,7 +21,7 @@ json_status_headers() {
 }
 
 json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g;s/"/\\"/g'
+    printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\r//g;s/\n/\\n/g'
 }
 
 json_error() {

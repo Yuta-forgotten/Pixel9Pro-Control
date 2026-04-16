@@ -19,7 +19,7 @@ for cpu in 0 4 7; do
     gov=$(cat "$p/scaling_governor"  2>/dev/null || echo "unknown")
     resp=$(cat "$p/sched_pixel/response_time_ms"   2>/dev/null || echo 0)
     down=$(cat "$p/sched_pixel/down_rate_limit_us" 2>/dev/null || echo 0)
-    out="${out}${sep}{\"cpu\":${cpu},\"cur\":${cur},\"min\":${min},\"max\":${max},\"gov\":\"${gov}\",\"resp_ms\":${resp},\"down_us\":${down}}"
+    out="${out}${sep}{\"cpu\":${cpu},\"cur\":${cur},\"min\":${min},\"max\":${max},\"gov\":\"$(json_escape "$gov")\",\"resp_ms\":${resp},\"down_us\":${down}}"
     sep=","
 done
 printf '%s]' "$out"

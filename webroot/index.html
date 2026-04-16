@@ -3,2131 +3,372 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#d4f0e8">
-<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#eef4f0">
+<meta name="color-scheme" content="light dark">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' http://127.0.0.1:6210; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' http://127.0.0.1:6210; connect-src 'self' http://127.0.0.1:6210; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' http://127.0.0.1:6210">
 <title>温控调度控制台</title>
-<style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-/* 禁用 Chrome 长按选词/上下文菜单, 避免与自定义长按冲突 */
-*{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
-.modal-s-desc{-webkit-user-select:text;user-select:text} /* 弹窗详情允许选中复制 */
-
-:root {
-  --accent:    #3db8a4;
-  --accent-dk: #2a9a88;
-  --accent-dim:rgba(61,184,164,.18);
-  --coral:     #f0907a;
-  --lime:      #78c84a;
-
-  --text:   rgba(22,42,38,.88);
-  --text-2: rgba(22,42,38,.54);
-  --text-3: rgba(22,42,38,.30);
-
-  --g-bg:     rgba(255,255,255,.72);
-  --g-border: rgba(255,255,255,.82);
-  --g-shadow: 0 4px 22px rgba(40,90,76,.12);
-  --blur:     blur(20px) saturate(1.6) brightness(1.03);
-
-  --r-sm: 12px; --r-md: 16px; --r-lg: 22px;
-  --r-xl: 26px; --r-f:  9999px;
-  --dur:  200ms;
-  --ease: cubic-bezier(.2,0,0,1);
-  --spring: cubic-bezier(.34,1.56,.64,1);
-
-  --tab-h: 58px;
-  --tab-bg: rgba(212,240,232,.94);
-  --tab-solid: #d4f0e8;
-}
-
-html, body {
-  height: 100%;
-}
-
-/* APatch WebView 的底部安全区会露出根背景，这里把 html/body 固定成与 tab bar 一致的底色。 */
-html {
-  background: #d4f0e8;
-  overscroll-behavior: none;
-}
-
-body {
-  font-family: 'Google Sans','Roboto',system-ui,sans-serif;
-  color: var(--text);
-  overflow: hidden;
-  height: 100dvh;
-  display: flex;
-  flex-direction: column;
-  background: transparent;
-}
-
-/* ── Background: position:fixed + px offsets prevents resize-jitter ── */
-.bg-img {
-  position: fixed;
-  top: -40px; left: -40px; right: -40px; bottom: -40px;
-  background: url('/bg.jpg') center 18% / cover no-repeat;
-  filter: blur(7px) brightness(.90) saturate(1.15);
-  z-index: -2;
-}
-.bg-tint {
-  position: fixed; inset: 0; z-index: -1;
-  background: linear-gradient(158deg,
-    rgba(210,245,238,.62) 0%,
-    rgba(225,242,252,.50) 48%,
-    rgba(248,238,230,.58) 100%);
-}
-
-/* ── Glass card ─────────────────────────────────────────────── */
-.card {
-  background: var(--g-bg);
-  backdrop-filter: var(--blur);
-  -webkit-backdrop-filter: var(--blur);
-  border: 1px solid var(--g-border);
-  border-radius: var(--r-lg);
-  box-shadow: var(--g-shadow);
-  -webkit-backface-visibility: hidden;
-  backface-visibility: hidden;
-}
-
-/* ── Tab pages container ────────────────────────────────────── */
-.tab-pages {
-  flex: 1;
-  position: relative;
-  overflow: hidden;
-  touch-action: pan-y;
-  overscroll-behavior-x: none;
-}
-
-.tab-page {
-  position: absolute;
-  inset: 0;
-  overflow-y: auto;
-  overscroll-behavior-y: contain;
-  -webkit-overflow-scrolling: touch;
-  display: none;
-  padding: env(safe-area-inset-top, 0px) 14px 20px;
-}
-
-.tab-page.active { display: block; }
-
-.page-title {
-  font-size: 22px;
-  font-weight: 500;
-  color: var(--text);
-  padding: 14px 4px 2px;
-  margin-bottom: 8px;
-}
-
-.section-label {
-  font-size: 10.5px; font-weight: 600; letter-spacing: .13em;
-  text-transform: uppercase; color: var(--text-3);
-  padding: 6px 4px 0;
-}
-
-.col { display: flex; flex-direction: column; gap: 10px; padding-bottom: 24px; }
-
-/* ── Tab bar ────────────────────────────────────────────────── */
-.tab-bar {
-  flex-shrink: 0;
-  display: flex;
-  align-items: stretch;
-  height: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px));
-  background: var(--tab-bg);
-  backdrop-filter: blur(28px) saturate(1.8);
-  -webkit-backdrop-filter: blur(28px) saturate(1.8);
-  border-top: 1px solid rgba(255,255,255,.64);
-}
-
-.tab-item {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  padding-top: 8px;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  user-select: none;
-  position: relative;
-  color: var(--text-3);
-  transition: color var(--dur) var(--ease), opacity var(--dur) var(--ease);
-}
-
-.tab-item:active { opacity: .58; }
-
-.tab-item .ti-icon {
-  line-height: 0;
-  transition: transform .22s var(--spring);
-}
-
-.tab-item .ti-label {
-  font-size: 10.5px;
-  font-weight: 500;
-  transition: color var(--dur) var(--ease);
-}
-
-.tab-item.active { color: var(--accent-dk); }
-.tab-item.active .ti-icon { transform: scale(1.14); }
-
-/* Top indicator */
-.tab-item::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 22%; right: 22%;
-  height: 2.5px;
-  border-radius: 0 0 3px 3px;
-  background: var(--accent);
-  transform: scaleX(0);
-  transition: transform .26s var(--spring);
-}
-.tab-item.active::before { transform: scaleX(1); }
-
-/* ── Hero card ──────────────────────────────────────────────── */
-.hero-card {
-  position: relative; overflow: hidden;
-  padding: 20px 18px;
-  display: flex; align-items: center; gap: 14px;
-  transition: border-color var(--dur) var(--ease);
-}
-.hero-tint {
-  position: absolute; inset: 0; pointer-events: none;
-  border-radius: inherit;
-  transition: background var(--dur) var(--ease);
-}
-/* No ::after edge highlight — clean frosted glass look */
-.hero-icon {
-  width: 54px; height: 54px; flex-shrink: 0; position: relative; z-index: 1;
-  border-radius: var(--r-md);
-  background: rgba(255,255,255,.55); border: 1px solid rgba(255,255,255,.75);
-  display: flex; align-items: center; justify-content: center;
-  color: var(--accent-dk);
-}
-.hero-icon.pop { animation: iconpop .38s var(--spring) both }
-@keyframes iconpop {
-  0%  { transform: scale(.6); opacity: .3 }
-  60% { transform: scale(1.12) }
-  100%{ transform: scale(1); opacity: 1 }
-}
-.hero-info { flex: 1; min-width: 0; position: relative; z-index: 1; }
-.hero-label { font-size: 10.5px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase; color: var(--text-3); }
-.hero-mode  { font-size: 24px; font-weight: 400; line-height: 1.15; margin-top: 2px; color: var(--text); }
-.hero-desc  { font-size: 11.5px; color: var(--text-2); margin-top: 4px; line-height: 1.4; }
-
-.hero-card.mode-game     { border-color: rgba(235,115,80,.38) }
-.hero-card.mode-balanced { border-color: rgba(61,184,164,.42) }
-.hero-card.mode-battery  { border-color: rgba(120,200,74,.38) }
-.hero-card.mode-stock    { border-color: rgba(90,155,235,.38) }
-.hero-card.mode-unknown  { border-color: var(--g-border) }
-.hero-card.mode-game     .hero-tint { background: rgba(235,115,80,.08) }
-.hero-card.mode-balanced .hero-tint { background: rgba(61,184,164,.10) }
-.hero-card.mode-battery  .hero-tint { background: rgba(120,200,74,.08) }
-.hero-card.mode-stock    .hero-tint { background: rgba(90,155,235,.08) }
-.hero-card.mode-game     .hero-icon { background: rgba(235,115,80,.18); border-color: rgba(235,115,80,.32); color: #d06028; }
-.hero-card.mode-balanced .hero-icon { background: rgba(61,184,164,.18); border-color: rgba(61,184,164,.32); color: var(--accent-dk); }
-.hero-card.mode-battery  .hero-icon { background: rgba(120,200,74,.18); border-color: rgba(120,200,74,.32); color: #4a8a28; }
-.hero-card.mode-stock    .hero-icon { background: rgba(90,155,235,.18); border-color: rgba(90,155,235,.32); color: #3a6ea8; }
-
-/* ── Badge ──────────────────────────────────────────────────── */
-.badge {
-  font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
-  padding: 4px 12px; border-radius: var(--r-f);
-  background: rgba(61,184,164,.18); border: 1px solid rgba(61,184,164,.38);
-  color: var(--accent-dk);
-}
-.badge.off {
-  background: rgba(22,42,38,.06); border-color: rgba(22,42,38,.14); color: var(--text-3);
-}
-.badge.good {
-  background: rgba(120,200,74,.18); border: 1px solid rgba(120,200,74,.38); color: #4a8a28;
-}
-.badge.warn {
-  background: rgba(235,115,80,.18); border: 1px solid rgba(235,115,80,.38); color: #d06028;
-}
-
-/* ── Home: quick thermal snapshot ───────────────────────────── */
-.snap-card { padding: 16px 20px; }
-
-.snap-header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 12px;
-}
-.snap-title { font-size: 12px; font-weight: 500; color: var(--text-2); }
-
-.snap-body { display: flex; align-items: stretch; gap: 14px; }
-
-.snap-temp { display: flex; align-items: flex-end; gap: 3px; flex-shrink: 0; }
-.snap-temp-num {
-  font-size: 48px; font-weight: 200; line-height: 1;
-  font-variant-numeric: tabular-nums; letter-spacing: -.02em;
-  color: var(--accent-dk); transition: color .45s;
-}
-.snap-temp-unit { font-size: 17px; color: var(--text-2); margin-bottom: 5px; }
-
-.snap-divider {
-  width: 1px; align-self: stretch;
-  background: rgba(22,42,38,.10); flex-shrink: 0; margin: 2px 0;
-}
-
-.snap-sensors { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 8px; }
-
-.snap-chip {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 6px; font-size: 11.5px; color: var(--text-3);
-}
-.snap-chip-val { font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--text-2); }
-
-.snap-status {
-  font-size: 11px; color: var(--text-3); margin-top: 10px;
-}
-
-/* ── Home: device info card ─────────────────────────────────── */
-.info-card { padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; }
-.info-row { display: flex; align-items: center; justify-content: space-between; }
-.info-lbl { font-size: 11.5px; color: var(--text-3); }
-.info-val { font-size: 12px; font-weight: 500; color: var(--text-2); }
-
-/* 把功耗优化从”密集列表”拆成信息卡片，窄屏下更容易扫读。 */
-.opt-card { padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
-.opt-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.opt-copy { min-width: 0; }
-.opt-title { font-size: 12px; font-weight: 500; color: var(--text-2); }
-.opt-desc {
-  margin-top: 4px;
-  font-size: 11px;
-  line-height: 1.55;
-  color: var(--text-3);
-}
-.opt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.opt-item {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px 13px;
-  background: rgba(255,255,255,.54);
-  border: 1px solid rgba(255,255,255,.74);
-  border-radius: var(--r-md);
-}
-.opt-item-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-.opt-label {
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.45;
-  color: var(--text);
-}
-.opt-meta {
-  font-size: 10.5px;
-  line-height: 1.5;
-  color: var(--text-3);
-}
-.opt-item .badge { align-self: flex-start; }
-
-/* ── Thermal tab: full card ─────────────────────────────────── */
-.thermal-card { padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
-.th-header { display: flex; align-items: center; justify-content: space-between; }
-.th-title { font-size: 12px; font-weight: 500; color: var(--text-2); }
-
-.temp-display { display: flex; align-items: flex-end; gap: 8px; }
-.temp-num {
-  font-size: 48px; font-weight: 200; line-height: 1;
-  font-variant-numeric: tabular-nums; letter-spacing: -.02em;
-  transition: color .45s, text-shadow .45s;
-  color: var(--accent-dk);
-}
-.temp-unit { font-size: 20px; color: var(--text-2); margin-bottom: 7px; }
-.temp-meta { margin-left: auto; text-align: right; }
-.temp-zone   { font-size: 10.5px; color: var(--text-3); margin-bottom: 3px; }
-.temp-status { font-size: 12px; font-weight: 500; transition: color .4s; }
-
-.temp-bar-wrap { position: relative; padding-bottom: 26px; margin-top: 4px; }
-.temp-bar-track {
-  height: 5px; border-radius: var(--r-f); overflow: visible; position: relative;
-  background: linear-gradient(90deg,
-    rgba(61,184,164,.22) 0%,
-    rgba(212,160,64,.22) 65%,
-    rgba(235,110,80,.22) 100%);
-}
-.temp-bar-fill {
-  height: 100%; border-radius: var(--r-f);
-  transition: width .9s cubic-bezier(0,0,0,1), background .45s;
-}
-.temp-marker {
-  position: absolute; top: -5px; width: 2px; height: 15px;
-  border-radius: 1px; transform: translateX(-50%);
-}
-.temp-marker.stock { background: rgba(22,42,38,.28); }
-.temp-marker.mod   { background: var(--accent); }
-.temp-mlbl {
-  position: absolute; top: 14px; font-size: 9px;
-  white-space: nowrap; transform: translateX(-50%); color: var(--text-3);
-}
-.temp-mlbl.mod { color: var(--accent-dk); }
-
-.chips { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.chip {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 5px; padding: 8px 13px;
-  background: rgba(255,255,255,.58); border: 1px solid rgba(255,255,255,.75);
-  border-radius: var(--r-md); font-size: 11.5px; color: var(--text-3);
-}
-.chip-val { font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--text-2); }
-
-/* ── Profile / Preset cards ─────────────────────────────────── */
-.profile-list { display: flex; flex-direction: column; gap: 8px; }
-.profile-card {
-  display: flex; align-items: center; gap: 14px; padding: 14px 18px;
-  cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
-  position: relative; overflow: hidden;
-  background: rgba(255,255,255,.62);
-  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-  border: 1px solid rgba(255,255,255,.78);
-  border-radius: var(--r-xl);
-  box-shadow: 0 2px 14px rgba(40,90,76,.10);
-  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
-    box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease);
-}
-/* No ::before edge highlight — clean frosted glass look */
-.profile-card:active { transform: scale(.977); }
-.profile-card.selected {
-  background: rgba(61,184,164,.14); border-color: rgba(61,184,164,.52);
-  box-shadow: 0 0 0 1px rgba(61,184,164,.18), 0 4px 20px rgba(40,90,76,.12);
-}
-.profile-card.loading .p-icon { animation: pulse 1s ease-in-out infinite; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.38} }
-
-.p-icon {
-  width: 46px; height: 46px; flex-shrink: 0; border-radius: var(--r-md);
-  display: flex; align-items: center; justify-content: center;
-  border: 1px solid rgba(255,255,255,.68); background: rgba(255,255,255,.52);
-  color: var(--accent-dk);
-  transition: background var(--dur);
-}
-.profile-card[data-profile="game"]     .p-icon { background: rgba(235,115,80,.18); border-color: rgba(235,115,80,.32); color: #d06028; }
-.profile-card[data-profile="balanced"] .p-icon { background: rgba(61,184,164,.18); border-color: rgba(61,184,164,.32); color: var(--accent-dk); }
-.profile-card[data-profile="battery"]  .p-icon { background: rgba(120,200,74,.18); border-color: rgba(120,200,74,.32); color: #4a8a28; }
-.profile-card[data-profile="light"]    .p-icon { background: rgba(100,180,220,.18); border-color: rgba(100,180,220,.32); color: #3a7a9a; }
-.profile-card[data-profile="stock"]    .p-icon { background: rgba(90,155,235,.18); border-color: rgba(90,155,235,.32); color: #3a6ea8; }
-
-.hero-card.mode-light     { border-color: rgba(100,180,220,.38) }
-.hero-card.mode-light     .hero-tint { background: rgba(100,180,220,.08) }
-.hero-card.mode-light     .hero-icon { background: rgba(100,180,220,.18); border-color: rgba(100,180,220,.32); color: #3a7a9a; }
-.profile-card[data-offset="0"] .p-icon { background: rgba(90,155,235,.18); border-color: rgba(90,155,235,.32); color: #3a6ea8; }
-.profile-card[data-offset="2"] .p-icon { background: rgba(61,184,164,.18); border-color: rgba(61,184,164,.32); color: var(--accent-dk); }
-.profile-card[data-offset="4"] .p-icon { background: rgba(212,160,64,.18); border-color: rgba(212,160,64,.32); color: #8a5a10; }
-.profile-card[data-offset="6"] .p-icon { background: rgba(235,100,72,.18); border-color: rgba(235,100,72,.32); color: #c03820; }
-
-.p-info { flex: 1; min-width: 0; }
-.p-name { font-size: 15px; font-weight: 500; line-height: 1.2; color: var(--text); }
-.p-desc { font-size: 12px; color: var(--text-2); margin-top: 3px; line-height: 1.4; min-height: 34px; }
-
-.p-check {
-  width: 22px; height: 22px; flex-shrink: 0; border-radius: var(--r-f);
-  background: var(--accent); color: #fff;
-  display: flex; align-items: center; justify-content: center;
-  transform: scale(0); opacity: 0;
-  transition: transform var(--dur) var(--spring), opacity var(--dur);
-}
-.p-check svg { display: block; }
-.profile-card.selected .p-check { transform: scale(1); opacity: 1; }
-
-/* ── CPU status ─────────────────────────────────────────────── */
-.status-card { padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
-.status-header { display: flex; align-items: center; justify-content: space-between; }
-.status-title { font-size: 12px; font-weight: 500; color: var(--text-2); }
-.refresh-btn {
-  display: flex; align-items: center; gap: 5px; padding: 6px 13px;
-  background: rgba(255,255,255,.58); border: 1px solid rgba(255,255,255,.72);
-  border-radius: var(--r-f); font-family: inherit; font-size: 12px; color: var(--text-2);
-  cursor: pointer; -webkit-tap-highlight-color: transparent;
-  transition: background var(--dur), opacity var(--dur);
-}
-.refresh-btn:active { opacity: .6; }
-.ri { display: inline-block; }
-.refresh-btn.spinning .ri { animation: spin .7s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-
-.cpu-rows { display: flex; flex-direction: column; gap: 13px; }
-.cpu-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
-.cpu-label { font-size: 11.5px; font-weight: 500; color: var(--text-2); letter-spacing: .02em; }
-.cpu-freq  { font-size: 11.5px; color: var(--text-2); font-variant-numeric: tabular-nums; text-align: right; }
-.cpu-freq b { color: var(--text); font-weight: 500; }
-.cpu-bar-track { height: 4px; background: rgba(22,42,38,.10); border-radius: var(--r-f); overflow: hidden; }
-.cpu-bar-fill {
-  height: 100%; border-radius: var(--r-f);
-  transform-origin: left; transform: scaleX(0);
-  transition: transform .7s cubic-bezier(0,0,0,1), background .3s;
-}
-.cpu-row:nth-child(1) .cpu-bar-fill { background: linear-gradient(90deg,#3db8a4,#70d0c0); }
-.cpu-row:nth-child(2) .cpu-bar-fill { background: linear-gradient(90deg,#7aabe8,#a8c8f4); }
-.cpu-row:nth-child(3) .cpu-bar-fill { background: linear-gradient(90deg,#e89068,#f4b898); }
-.cpu-params { font-size: 10.5px; color: var(--text-3); margin-top: 3px; font-family: 'Roboto Mono', monospace; }
-.cpu-freq-unit { font-size: 10px; font-weight: 400; color: var(--text-3); }
-.cpu-freq-max  { font-size: 10.5px; opacity: .5; }
-
-/* ── Log card (统一玻璃容器，子元素不独立设边框) ──────────── */
-.log-card {
-  overflow: hidden;
-  background: var(--g-bg);
-  backdrop-filter: var(--blur);
-  -webkit-backdrop-filter: var(--blur);
-  border: 1px solid var(--g-border);
-  border-radius: var(--r-lg);
-  box-shadow: var(--g-shadow);
-}
-.log-toggle {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 13px 20px; cursor: pointer; user-select: none;
-  -webkit-tap-highlight-color: transparent;
-}
-.log-lbl { font-size: 12px; font-weight: 500; color: var(--text-2); }
-.log-arrow { font-size: 14px; color: var(--text-3); transition: transform var(--dur) var(--ease); }
-.log-card.open .log-arrow { transform: rotate(180deg); }
-.log-body { max-height: 0; overflow: hidden; transition: max-height .36s var(--ease); }
-.log-card.open .log-body { max-height: 240px; }
-.log-inner {
-  padding: 0 20px 16px;
-  border-top: 1px solid rgba(22,42,38,.06);
-  font-family: 'Roboto Mono', monospace;
-  font-size: 11px; line-height: 1.8; color: var(--text-2);
-  white-space: pre-wrap; word-break: break-all; overflow-y: auto; max-height: 200px;
-}
-.log-ok  { color: #1a8a5a; }
-.log-err { color: #c84030; }
-.log-warn{ color: #b07818; }
-.log-dim { color: var(--text-3); }
-
-/* ── Toast ────────────────────────���─────────────────────────── */
-.toast-wrap {
-  position: fixed;
-  bottom: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px) + 12px);
-  left: 50%; transform: translateX(-50%);
-  z-index: 9999; pointer-events: none;
-  display: flex; flex-direction: column; align-items: center; gap: 8px;
-}
-.toast {
-  background: rgba(22,50,44,.88);
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-  color: rgba(255,255,255,.92); border-radius: var(--r-f);
-  padding: 10px 22px; font-size: 13.5px; font-weight: 500;
-  white-space: nowrap; pointer-events: auto;
-  box-shadow: 0 4px 24px rgba(0,0,0,.22);
-  animation: t-in var(--dur) var(--ease) both;
-}
-.toast.out { animation: t-out var(--dur) ease both; }
-@keyframes t-in  { from{opacity:0;transform:translateY(14px) scale(.91)} }
-@keyframes t-out { to  {opacity:0;transform:translateY(7px)  scale(.96)} }
-
-/* ── Reboot modal ───────────────────────────────────────────── */
-.modal-wrap {
-  position: fixed; inset: 0; z-index: 400;
-  display: flex; align-items: flex-end; justify-content: center;
-  padding: 0 14px max(24px,env(safe-area-inset-bottom));
-  opacity: 0; pointer-events: none;
-  transition: opacity .22s var(--ease);
-}
-.modal-wrap.open { opacity: 1; pointer-events: auto; }
-.modal-bg {
-  position: absolute; inset: 0;
-  background: rgba(22,42,38,.38);
-}
-.modal-sheet {
-  position: relative; z-index: 1;
-  width: 100%; max-width: 420px;
-  background: rgba(255,255,255,.86);
-  backdrop-filter: blur(26px) saturate(1.6);
-  -webkit-backdrop-filter: blur(26px) saturate(1.6);
-  border: 1px solid rgba(255,255,255,.92);
-  border-radius: var(--r-xl);
-  box-shadow: 0 8px 48px rgba(40,90,76,.18);
-  padding: 30px 20px 22px;
-  text-align: center;
-  transform: translateY(28px) scale(.97);
-  transition: transform .32s var(--spring);
-}
-.modal-wrap.open .modal-sheet { transform: translateY(0) scale(1); }
-.modal-s-icon  { display: flex; align-items: center; justify-content: center; height: 44px; margin-bottom: 10px; color: var(--accent-dk); }
-.modal-s-title { font-size: 17px; font-weight: 600; color: var(--text); margin-bottom: 7px; }
-.modal-s-desc  { font-size: 13px; color: var(--text-2); line-height: 1.65; margin-bottom: 22px; }
-.modal-actions { display: flex; flex-direction: column; gap: 9px; }
-.mbtn {
-  width: 100%; padding: 14px 16px; border: none; border-radius: var(--r-md);
-  font-family: inherit; font-size: 14.5px; font-weight: 500;
-  cursor: pointer; -webkit-tap-highlight-color: transparent;
-  transition: opacity var(--dur), transform var(--dur) var(--spring);
-}
-.mbtn:active { opacity: .74; transform: scale(.97); }
-.mbtn-primary   { background: var(--accent); color: #fff; font-size: 15px; }
-.mbtn-secondary {
-  background: rgba(61,184,164,.14); color: var(--accent-dk);
-  border: 1px solid rgba(61,184,164,.28);
-}
-.mbtn-ghost {
-  background: rgba(22,42,38,.05); color: var(--text-3);
-  border: 1px solid rgba(22,42,38,.09); font-size: 13px;
-}
-
-@media (max-width: 390px) {
-  .opt-head { flex-direction: column; }
-  .opt-grid { grid-template-columns: 1fr; }
-}
-
-/* ── Home: compact CPU freq bars ───────────────────────────── */
-.home-cpu-card { padding: 16px 20px; }
-.home-cpu-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-.home-cpu-title { font-size: 12px; font-weight: 500; color: var(--text-2); }
-.home-cpu-rows { display: flex; flex-direction: column; gap: 10px; }
-.home-cpu-row { display: flex; align-items: center; gap: 10px; }
-.home-cpu-label { font-size: 11.5px; color: var(--text-3); width: 32px; flex-shrink: 0; text-align: right; }
-.home-cpu-bar { flex: 1; height: 4px; background: rgba(22,42,38,.08); border-radius: var(--r-f); overflow: hidden; }
-.home-cpu-fill {
-  height: 100%; border-radius: var(--r-f);
-  transform-origin: left; transform: scaleX(0);
-  transition: transform .7s cubic-bezier(0,0,0,1), background .3s;
-}
-.home-cpu-row:nth-child(1) .home-cpu-fill { background: linear-gradient(90deg,#3db8a4,#70d0c0); }
-.home-cpu-row:nth-child(2) .home-cpu-fill { background: linear-gradient(90deg,#7aabe8,#a8c8f4); }
-.home-cpu-row:nth-child(3) .home-cpu-fill { background: linear-gradient(90deg,#e89068,#f4b898); }
-.home-cpu-freq { display: flex; align-items: baseline; justify-content: flex-end; width: 68px; flex-shrink: 0; gap: 1px; }
-.home-cpu-num  { font-size: 12px; font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums; min-width: 30px; text-align: right; }
-.home-cpu-unit { font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
-
-/* ── Pull-to-refresh indicator ─────────────────────────────── */
-.pull-ind {
-  position: fixed;
-  top: env(safe-area-inset-top, 0px);
-  left: 50%;
-  transform: translateX(-50%) translateY(-56px);
-  width: 44px; height: 44px;
-  border-radius: 50%;
-  background: rgba(255,255,255,.92);
-  box-shadow: 0 2px 12px rgba(0,0,0,.16);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 200;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .18s;
-}
-.pull-ind.active { opacity: 1; }
-@keyframes pull-spin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
-}
-.pull-ind.spinning svg { animation: pull-spin .7s linear infinite; }
-
-/* ── Skeleton ───────────────────────────────────────────────── */
-@keyframes shimmer {
-  0%  { background-position: -200% 0 }
-  100%{ background-position:  200% 0 }
-}
-.skel {
-  background: linear-gradient(90deg,
-    rgba(22,42,38,.06) 25%, rgba(22,42,38,.12) 50%, rgba(22,42,38,.06) 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.6s ease-in-out infinite;
-  border-radius: 10px;
-}
-</style>
+<link rel="stylesheet" href="/app.css?v=4.0.3">
 </head>
 <body>
-
-<div class="bg-img" aria-hidden="true"></div>
-<div class="bg-tint" aria-hidden="true"></div>
-
-<div class="tab-pages" id="tab-pages">
-
-  <!-- ══════════════════ Tab 1: 状态 ══════════════════ -->
-  <div class="tab-page active" id="page-home" data-tab="home">
-    <div class="col">
-      <div class="page-title">状态总览</div>
-
-      <!-- ① Current mode hero -->
-      <div class="card hero-card mode-unknown" id="hero">
-        <div class="hero-tint"></div>
-        <div class="hero-icon" id="hero-icon">
-          <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+<div class="app-shell">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="topbar-row">
+        <div class="topbar-copy">
+          <div class="kicker">Pixel 9 Pro · UI v4.0.3</div>
+          <div class="topbar-title">温控调度控制台</div>
+          <div class="topbar-subtitle" id="topbar-subtitle">状态总览</div>
         </div>
-        <div class="hero-info">
-          <div class="hero-label">当前模式</div>
-          <div class="hero-mode" id="hero-mode">读取中…</div>
-          <div class="hero-desc"  id="hero-desc">正在读取当前配置</div>
-        </div>
-      </div>
-
-      <!-- ② 实时监控区 ─────────────────────────────────── -->
-      <div class="section-label">实时监控</div>
-
-      <!-- 温度快照 -->
-      <div class="card snap-card">
-        <div class="snap-header">
-          <span class="snap-title">VIRTUAL-SKIN</span>
-          <span class="badge" id="home-mod-badge">+4°C 激活</span>
-        </div>
-        <div id="home-thermal-skel">
-          <div class="skel" style="height:54px"></div>
-        </div>
-        <div id="home-thermal-content" style="display:none">
-          <div class="snap-body">
-            <div class="snap-temp">
-              <div class="snap-temp-num" id="home-temp-num">--</div>
-              <div class="snap-temp-unit">°C</div>
-            </div>
-            <div class="snap-divider"></div>
-            <div class="snap-sensors" id="home-sensor-chips"></div>
-          </div>
-          <div class="snap-status" id="home-temp-status"></div>
-        </div>
-      </div>
-
-      <!-- CPU 实时频率 (紧凑版) -->
-      <div class="card home-cpu-card">
-        <div class="home-cpu-header">
-          <span class="home-cpu-title">CPU 实时频率</span>
-        </div>
-        <div class="home-cpu-rows" id="home-cpu-rows">
-          <div class="skel" style="height:16px"></div>
-          <div class="skel" style="height:16px"></div>
-          <div class="skel" style="height:16px"></div>
-        </div>
-      </div>
-
-      <!-- 内存 / ZRAM 摘要 -->
-      <div class="card info-card" id="home-mem-card">
-        <div class="info-row">
-          <span class="info-lbl">ZRAM 占用</span>
-          <span class="info-val" id="rt-zram-usage">—</span>
-        </div>
-        <div class="info-row">
-          <span class="info-lbl">压缩率 / 实占</span>
-          <span class="info-val" id="rt-ratio">—</span>
-        </div>
-        <div class="info-row">
-          <span class="info-lbl">WebUI 内存</span>
-          <span class="info-val" id="rt-webui-mem">—</span>
-        </div>
-      </div>
-
-      <!-- ③ 设备信息 ──────────────────────────────────── -->
-      <div class="section-label">设备信息</div>
-      <div class="card info-card">
-        <div class="info-row">
-          <span class="info-lbl">设备</span>
-          <span class="info-val" id="info-model">Pixel 9 Pro</span>
-        </div>
-        <div class="info-row">
-          <span class="info-lbl">系统</span>
-          <span class="info-val" id="info-android">—</span>
-        </div>
-        <div class="info-row">
-          <span class="info-lbl">模块</span>
-          <span class="info-val" id="info-module">—</span>
-        </div>
-        <div class="info-row">
-          <span class="info-lbl">功耗优化</span>
-          <span class="info-val" id="rt-power">—</span>
-        </div>
-        <div class="info-row">
-          <span class="info-lbl">作者</span>
-          <span class="info-val">Yuta</span>
-        </div>
-      </div>
-
-      <!-- ④ 操作记录 ──────────────────────────────────── -->
-      <div class="log-card" id="log-card">
-        <div class="log-toggle" onclick="toggleLog()">
-          <span class="log-lbl">操作记录</span>
-          <span class="log-arrow">▾</span>
-        </div>
-        <div class="log-body">
-          <div class="log-inner" id="log-inner"><span class="log-dim">等待操作…</span></div>
-        </div>
-      </div>
-
-    </div>
-  </div>
-
-  <!-- ══════════════════ Tab 4: 优化 ══════════════════ -->
-  <div class="tab-page" id="page-optim" data-tab="optim">
-    <div class="col">
-      <div class="page-title">系统优化</div>
-
-      <!-- ① Memory / Swap tuning -->
-      <div class="section-label">内存优化</div>
-      <div class="card opt-card" id="swap-card">
-        <div class="opt-head">
-          <div class="opt-copy">
-            <div class="opt-title">ZRAM / Swap 参数</div>
-            <div class="opt-desc" id="swap-desc">模块开机自动配置 lz77eh 硬件压缩 + 11392MB + VM 参数优化，不依赖 Scene。</div>
-          </div>
-          <button class="refresh-btn" onclick="toggleSwapMode()" id="swap-toggle-btn">
-            <span id="swap-toggle-label">读取中…</span>
+        <div class="topbar-actions">
+          <button class="icon-btn" id="theme-open-btn" type="button" aria-label="打开主题设置">
+            <span id="theme-btn-icon" aria-hidden="true"></span>
+          </button>
+          <button class="icon-btn" id="refresh-all-btn" type="button" aria-label="刷新全部数据">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M17.65 6.35A7.95 7.95 0 0012 4V1L7 6l5 5V7a5 5 0 11-4.9 6H5.08A7 7 0 1017.65 6.35z"/></svg>
           </button>
         </div>
-        <div class="info-card" id="swap-rows" style="padding:10px 14px;gap:8px;background:transparent;border:none;box-shadow:none">
-          <div class="skel" style="height:120px"></div>
-        </div>
       </div>
-
-      <!-- ② Power optimization status -->
-      <div class="section-label">功耗优化</div>
-      <div class="card opt-card">
-        <div class="opt-head">
-          <div class="opt-copy">
-            <div class="opt-title">开机自动设置</div>
-            <div class="opt-desc">模块会在启动后把后台网络与扫描项压到推荐状态；需要时仍可在系统设置里临时重新开启。</div>
-          </div>
-          <button class="refresh-btn" onclick="refreshOpt()" id="opt-refresh-btn">
-            <span class="ri" id="opt-ri">↻</span> 刷新
-          </button>
-        </div>
-        <div class="opt-grid" id="opt-rows">
-          <div class="skel" style="height:108px"></div>
-          <div class="skel" style="height:108px"></div>
-          <div class="skel" style="height:108px"></div>
-          <div class="skel" style="height:108px"></div>
-        </div>
+      <div class="status-strip">
+        <span class="status-chip"><strong id="topbar-profile-chip">读取中</strong></span>
+        <span class="status-chip" id="topbar-thermal-chip">温控档位读取中</span>
+        <span class="status-chip" id="topbar-theme-chip">跟随系统</span>
       </div>
-
     </div>
-  </div>
+  </header>
 
-  <!-- ══════════════════ Tab 2: 性能 ══════════════════ -->
-  <div class="tab-page" id="page-perf" data-tab="perf">
-    <div class="col">
-      <div class="page-title">性能调度</div>
+  <main class="tab-pages" id="tab-pages">
+    <section class="tab-page active" id="page-home" data-tab="home">
+      <div class="page-stack">
+        <article class="hero-card mode-unknown" id="hero">
+          <div class="hero-icon" id="hero-icon" aria-hidden="true"></div>
+          <div class="hero-copy">
+            <div class="kicker">当前模式</div>
+            <div class="hero-mode" id="hero-mode">读取中…</div>
+            <div class="hero-desc" id="hero-desc">正在读取当前配置</div>
+          </div>
+        </article>
 
-      <!-- ① Real-time CPU frequency (信息在上) -->
-      <div class="section-label">实时频率</div>
-      <div class="card status-card" id="cpu-status-card">
-        <div class="status-header">
-          <span class="status-title">CPU 频率状态</span>
-          <button class="refresh-btn" onclick="refreshCpu()" id="refresh-btn">
-            <span class="ri" id="ri">↻</span> 刷新
-          </button>
-        </div>
-        <div class="cpu-rows" id="cpu-rows">
-          <div class="skel" style="height:48px"></div>
-          <div class="skel" style="height:48px"></div>
-          <div class="skel" style="height:48px"></div>
-        </div>
-      </div>
-
-      <!-- ② CPU mode cards (选择在下) -->
-      <div class="section-label">性能模式</div>
-      <div class="profile-list">
-
-        <div class="profile-card" data-profile="game" onclick="applyProfile('game')">
-          <div class="p-icon">
-            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>
-          </div>
-          <div class="p-info">
-            <div class="p-name">游戏模式</div>
-            <div class="p-desc">全核 cpu0-7 · 响应 8/8/8ms · ⚠️ 未测试，全核功耗较高</div>
-          </div>
-          <div class="p-check">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-          </div>
-        </div>
-
-        <div class="profile-card" data-profile="balanced" onclick="applyProfile('balanced')">
-          <div class="p-icon">
-            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>
-          </div>
-          <div class="p-info">
-            <div class="p-name">平衡模式</div>
-            <div class="p-desc">前台: cpu4-7 · 后台: cpu0-3 · 小核锁820MHz · 中核12ms · 大核8ms</div>
-          </div>
-          <div class="p-check">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-          </div>
-        </div>
-
-        <div class="profile-card" data-profile="light" onclick="applyProfile('light')">
-          <div class="p-icon">
-            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M6.05 4.14l-.39-.39c-.39-.39-1.02-.39-1.41 0l-.01.01c-.39.39-.39 1.02 0 1.41l.39.39c.39.39 1.01.39 1.41 0 .39-.39.39-1.02.01-1.42zM3.01 10.5H1.99c-.55 0-1.01.45-1.01 1s.46 1 1.01 1h1.02c.55 0 .99-.45.99-1s-.44-1-.99-1zm9-9.95c-.56 0-1 .44-1 1v1.02c0 .55.44 1 1 1s1-.45 1-1V1.55c0-.56-.44-1-1-1zm7.74 3.21c-.39-.39-1.02-.39-1.41-.01l-.39.39c-.39.39-.39 1.02 0 1.41.39.39 1.02.39 1.41 0l.39-.39c.39-.38.39-1.01 0-1.4zM17.93 18.86l.39.39c.39.39 1.02.39 1.41 0 .39-.39.39-1.02 0-1.41l-.39-.39c-.39-.39-1.02-.38-1.41.01-.38.39-.38 1.02 0 1.4zM21 10.5h-1.02c-.55 0-.99.45-.99 1s.44 1 .99 1H21c.55 0 1.01-.45 1.01-1s-.46-1-1.01-1zm-9 5.01c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zM12 6.5c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm-1 14.44v1.01c0 .55.44 1 1 1s1-.45 1-1v-1.01c0-.55-.44-1-1-1s-1 .44-1 1zm-7.74-3.21c.39.39 1.02.39 1.41 0l.39-.39c.38-.39.38-1.02 0-1.41-.39-.39-1.03-.39-1.41 0l-.39.39c-.39.39-.39 1.01 0 1.41z"/></svg>
-          </div>
-          <div class="p-info">
-            <div class="p-name">轻度模式</div>
-            <div class="p-desc">前台: cpu4-7 · 后台: cpu0-3 · 小核锁820MHz · 中核20ms · 大核16ms</div>
-          </div>
-          <div class="p-check">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-          </div>
-        </div>
-
-        <div class="profile-card" data-profile="battery" onclick="applyProfile('battery')">
-          <div class="p-icon">
-            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>
-          </div>
-          <div class="p-info">
-            <div class="p-name">省电模式</div>
-            <div class="p-desc">前台: cpu4-7 · 小核锁820MHz · 中核40ms · 大核30ms</div>
-          </div>
-          <div class="p-check">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-          </div>
-        </div>
-
-        <div class="profile-card" data-profile="stock" onclick="applyProfile('stock')">
-          <div class="p-icon">
-            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>
-          </div>
-          <div class="p-info">
-            <div class="p-name">默认模式</div>
-            <div class="p-desc">恢复系统默认 cpuset 与调度参数</div>
-          </div>
-          <div class="p-check">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-          </div>
-        </div>
-
-      </div>
-
-    </div>
-  </div>
-
-  <!-- ══════════════════ Tab 3: 温控 ══════════════════ -->
-  <div class="tab-page" id="page-thermal" data-tab="thermal">
-    <div class="col">
-      <div class="page-title">温控管理</div>
-
-      <!-- ① Full thermal display -->
-      <div class="section-label">机身温度详情</div>
-      <div class="card thermal-card">
-        <div class="th-header">
-          <span class="th-title">机身温度</span>
-          <span class="badge" id="th-mod-badge">+4°C 激活</span>
-        </div>
-
-        <div id="thermal-skel">
-          <div class="skel" style="height:52px"></div>
-        </div>
-
-        <div id="thermal-content" style="display:none">
-          <div class="temp-display">
-            <div class="temp-num" id="temp-num">--</div>
-            <div class="temp-unit">°C</div>
-            <div class="temp-meta">
-              <div class="temp-zone" id="temp-zone">VIRTUAL-SKIN</div>
+        <div class="section-block">
+          <div class="section-head">
+            <div class="section-copy">
+              <div class="kicker">实时监控</div>
+              <div class="section-title">当前状态</div>
             </div>
           </div>
+          <div class="metric-grid">
+            <article class="metric-card">
+              <div class="metric-head">
+                <div class="metric-title">机身温度</div>
+                <span class="badge default" id="home-mod-badge">+4°C 激活</span>
+              </div>
+              <div id="home-thermal-skel"><div class="skel" style="height:108px"></div></div>
+              <div id="home-thermal-content" hidden>
+                <div class="metric-value-row">
+                  <div class="metric-value" id="home-temp-num">--</div>
+                  <div class="metric-unit">°C</div>
+                </div>
+                <div class="topbar-subtitle" id="home-temp-status">读取中…</div>
+                <div class="sensor-list" id="home-sensor-list"></div>
+              </div>
+            </article>
 
-          <div class="temp-bar-wrap">
-            <div class="temp-bar-track">
-              <div class="temp-bar-fill" id="temp-fill" style="width:0%"></div>
-              <div class="temp-marker stock" id="mk-stock"     style="left:0%"></div>
-              <div class="temp-mlbl"         id="mk-stock-lbl" style="left:0%">39°C</div>
-              <div class="temp-marker mod"   id="mk-mod"       style="left:0%"></div>
-              <div class="temp-mlbl mod"     id="mk-mod-lbl"   style="left:0%">43°C mod</div>
+            <article class="metric-card">
+              <div class="metric-head">
+                <div class="metric-title">内存与待机</div>
+                <span class="badge off" id="home-power-badge">后台优化</span>
+              </div>
+              <div class="mini-list">
+                <div class="mini-row"><span>ZRAM 占用</span><strong id="rt-zram-usage">—</strong></div>
+                <div class="mini-row"><span>压缩率 / 实占</span><strong id="rt-ratio">—</strong></div>
+                <div class="mini-row"><span>WebUI 内存</span><strong id="rt-webui-mem">—</strong></div>
+                <div class="mini-row"><span>功耗优化</span><strong id="rt-power">—</strong></div>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="panel-title">CPU 实时频率</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="refresh-cpu-btn" type="button"><span>刷新</span></button>
             </div>
           </div>
+          <div class="home-cpu-rows" id="home-cpu-rows">
+            <div class="skel" style="height:16px"></div>
+            <div class="skel" style="height:16px"></div>
+            <div class="skel" style="height:16px"></div>
+          </div>
+        </article>
 
-          <div class="temp-status" id="temp-status" style="font-size:11.5px;color:var(--text-3);margin-top:2px"></div>
+        <article class="surface-card">
+          <div class="kicker">设备信息</div>
+          <div class="data-list" style="margin-top:10px">
+            <div class="data-row"><span class="data-key">设备</span><span class="data-val" id="info-model">Pixel 9 Pro</span></div>
+            <div class="data-row"><span class="data-key">系统</span><span class="data-val" id="info-android">—</span></div>
+            <div class="data-row"><span class="data-key">模块</span><span class="data-val" id="info-module">—</span></div>
+            <div class="data-row"><span class="data-key">作者</span><span class="data-val">Yuta</span></div>
+          </div>
+        </article>
 
-          <div class="chips" id="sensor-chips"></div>
+        <div class="log-card" id="log-card">
+          <div class="log-toggle" id="log-toggle">
+            <span class="log-label">操作记录</span>
+            <span class="log-arrow">▾</span>
+          </div>
+          <div class="log-body">
+            <div class="log-inner" id="log-inner"><span class="log-dim">等待操作…</span></div>
+          </div>
         </div>
       </div>
+    </section>
 
-      <!-- ② Thermal presets -->
-      <div class="section-label">节流阈值档位</div>
-      <div class="profile-list" id="thermal-list">
+    <section class="tab-page" id="page-perf" data-tab="perf">
+      <div class="page-stack">
+        <article class="summary-card">
+          <div class="kicker">当前策略</div>
+          <div class="summary-title" id="perf-current-name">读取中…</div>
+          <div class="summary-desc" id="perf-current-desc">正在读取当前性能模式。</div>
+        </article>
 
-        <div class="profile-card" data-offset="0" onclick="applyThermal(0)">
-          <div class="p-icon">
-            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M22 11h-4.17l3.24-3.24-1.41-1.42L15 11h-2V9l4.66-4.66-1.42-1.41L13 6.17V2h-2v4.17L7.76 2.93 6.34 4.34 11 9v2H9L4.34 6.34 2.93 7.76 6.17 11H2v2h4.17l-3.24 3.24 1.41 1.42L9 13h2v2l-4.66 4.66 1.42 1.41L11 17.83V22h2v-4.17l3.24 3.24 1.42-1.41L13 15v-2h2l4.66 4.66 1.41-1.42L17.83 13H22z"/></svg>
+        <div class="section-block">
+          <div class="section-head">
+            <div class="section-copy">
+              <div class="kicker">实时频率</div>
+              <div class="section-title">CPU 频率状态</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="open-cpu-detail-btn" type="button">参数</button>
+            </div>
           </div>
-          <div class="p-info">
-            <div class="p-name">默认节流</div>
-            <div class="p-desc">VIRTUAL-SKIN 39°C 开始节流（出厂默认）</div>
-          </div>
-          <div class="p-check">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-          </div>
+          <article class="surface-card">
+            <div class="cpu-rows" id="cpu-rows">
+              <div class="skel" style="height:48px"></div>
+              <div class="skel" style="height:48px"></div>
+              <div class="skel" style="height:48px"></div>
+            </div>
+          </article>
         </div>
 
-        <div class="profile-card" data-offset="2" onclick="applyThermal(2)">
-          <div class="p-icon">
-            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82zm-3 5.82c-1.1 0-2-.9-2-2 0-.72.4-1.35 1-1.71V8h2v7.29c.6.36 1 .99 1 1.71 0 1.1-.9 2-2 2z"/></svg>
+        <div class="section-block">
+          <div class="section-copy">
+            <div class="kicker">性能模式</div>
+            <div class="section-title">调度策略</div>
+            <div class="section-sub">选择当前生效的 CPU 响应与核心分配方式。</div>
           </div>
-          <div class="p-info">
-            <div class="p-name">轻度节流</div>
-            <div class="p-desc">VIRTUAL-SKIN 41°C 开始节流</div>
-          </div>
-          <div class="p-check">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-          </div>
+          <div class="profile-list" id="profile-list"></div>
         </div>
 
-        <div class="profile-card" data-offset="4" onclick="applyThermal(4)">
-          <div class="p-icon">
-            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-.36 3.6-1.21 4.62-2.58.39 1.29.59 2.65.59 4.04 0 2.65-2.15 4.8-4.8 4.8z"/></svg>
-          </div>
-          <div class="p-info">
-            <div class="p-name">常规节流</div>
-            <div class="p-desc">VIRTUAL-SKIN 43°C 开始节流 · 模块默认</div>
-          </div>
-          <div class="p-check">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-          </div>
-        </div>
-
-        <div class="profile-card" data-offset="6" onclick="applyThermal(6)">
-          <div class="p-icon">
-            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
-          </div>
-          <div class="p-info">
-            <div class="p-name">激进节流</div>
-            <div class="p-desc">VIRTUAL-SKIN 45°C 开始节流 · 高负载场景</div>
-          </div>
-          <div class="p-check">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-          </div>
-        </div>
-
+        <article class="note-card">
+          <div class="note-title">说明</div>
+          <div class="note-body">模块不直接对抗 Thermal HAL，而是通过 cpuset 与 sched_pixel 响应时间控制调度行为。切换后会立即刷新当前 CPU 状态。</div>
+        </article>
       </div>
-    </div>
-  </div>
+    </section>
 
-</div><!-- /tab-pages -->
+    <section class="tab-page" id="page-thermal" data-tab="thermal">
+      <div class="page-stack">
+        <article class="summary-card">
+          <div class="kicker">当前档位</div>
+          <div class="summary-title" id="thermal-current-name">常规节流</div>
+          <div class="summary-desc" id="thermal-current-desc">默认采用 +4°C 偏移，兼顾性能释放与安全阈值。</div>
+        </article>
 
-<!-- Bottom tab bar: 状态 | 性能 | 温控 -->
-<nav class="tab-bar">
-  <div class="tab-item active" id="tab-home" onclick="switchTab('home')">
-    <span class="ti-icon">
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
-    </span>
-    <span class="ti-label">状态</span>
-  </div>
-  <div class="tab-item" id="tab-perf" onclick="switchTab('perf')">
-    <span class="ti-icon">
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>
-    </span>
-    <span class="ti-label">性能</span>
-  </div>
-  <div class="tab-item" id="tab-thermal" onclick="switchTab('thermal')">
-    <span class="ti-icon">
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82zm-3 5.82c-1.1 0-2-.9-2-2 0-.72.4-1.35 1-1.71V8h2v7.29c.6.36 1 .99 1 1.71 0 1.1-.9 2-2 2z"/></svg>
-    </span>
-    <span class="ti-label">温控</span>
-  </div>
-  <div class="tab-item" id="tab-optim" onclick="switchTab('optim')">
-    <span class="ti-icon">
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M7.5 5.6L10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 00-1.41 0L1.29 18.96c-.39.39-.39 1.02 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.71 11.04c.39-.39.39-1.02 0-1.41l-2.34-2.34zM5.71 20.71L3.29 18.29l8.29-8.29 2.42 2.42-8.29 8.29z"/></svg>
-    </span>
-    <span class="ti-label">优化</span>
-  </div>
-</nav>
+        <div class="section-block">
+          <div class="section-copy">
+            <div class="kicker">机身温度</div>
+            <div class="section-title">温度详情</div>
+          </div>
+          <article class="thermal-card">
+            <div class="panel-head">
+              <div class="panel-title">VIRTUAL-SKIN</div>
+              <span class="badge default" id="th-mod-badge">+4°C 激活</span>
+            </div>
+            <div id="thermal-skel"><div class="skel" style="height:180px"></div></div>
+            <div id="thermal-content" hidden>
+              <div class="temp-display">
+                <div class="temp-num" id="temp-num">--</div>
+                <div class="temp-unit">°C</div>
+                <div class="temp-meta">
+                  <div class="temp-zone" id="temp-zone">VIRTUAL-SKIN</div>
+                  <div class="temp-status" id="temp-status">读取中</div>
+                </div>
+              </div>
+              <div class="temp-bar-wrap">
+                <div class="temp-bar-track">
+                  <div class="temp-bar-fill" id="temp-fill" style="width:0%"></div>
+                  <div class="temp-marker stock" id="mk-stock" style="left:0%"></div>
+                  <div class="temp-mlbl" id="mk-stock-lbl" style="left:0%">39°C</div>
+                  <div class="temp-marker mod" id="mk-mod" style="left:0%"></div>
+                  <div class="temp-mlbl mod" id="mk-mod-lbl" style="left:0%">43°C mod</div>
+                </div>
+              </div>
+              <div class="sensor-grid" id="sensor-grid"></div>
+            </div>
+          </article>
+        </div>
+
+        <div class="section-block">
+          <div class="section-copy">
+            <div class="kicker">节流阈值</div>
+            <div class="section-title">档位选择</div>
+            <div class="section-sub">点击卡片切换，右侧 i 按钮查看详情。</div>
+          </div>
+          <div class="profile-list" id="thermal-list"></div>
+        </div>
+
+        <article class="note-card">
+          <div class="note-title">安全提示</div>
+          <div class="note-body">55/59°C 安全阈值保持不变。偏移越高，性能释放越积极，但机身体感温度会上升得更快。</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-optim" data-tab="optim">
+      <div class="page-stack">
+        <article class="summary-card">
+          <div class="kicker">界面与主题</div>
+          <div class="appearance-row">
+            <div class="appearance-copy">
+              <div class="summary-title" style="font-size:20px;line-height:26px">显示模式</div>
+              <div class="section-sub" id="appearance-mode-label">跟随系统</div>
+              <div class="summary-desc" id="appearance-mode-desc">WebUI 主题仅影响界面显示，不改变模块行为。</div>
+            </div>
+            <button class="tiny-btn primary" id="theme-open-btn-2" type="button">主题设置</button>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">内存优化</div>
+              <div class="panel-title">ZRAM / Swap 参数</div>
+              <div class="panel-desc" id="swap-desc">模块开机自动配置 lz77eh 硬件压缩 + 11392MB + VM 参数优化，不依赖 Scene。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="swap-detail-btn" type="button">详情</button>
+              <button class="tiny-btn primary" id="swap-toggle-btn" type="button"><span id="swap-toggle-label">读取中…</span></button>
+            </div>
+          </div>
+          <div class="data-list" id="swap-rows" style="margin-top:14px">
+            <div class="skel" style="height:140px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">待机优化</div>
+              <div class="panel-title">开机自动设置</div>
+              <div class="panel-desc">模块会在启动后把后台网络与扫描项压到推荐状态；需要时仍可在系统设置里临时恢复。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="opt-refresh-btn" type="button"><span id="opt-refresh-label">刷新</span></button>
+            </div>
+          </div>
+          <div class="opt-grid" id="opt-rows" style="margin-top:14px">
+            <div class="skel" style="height:72px"></div>
+            <div class="skel" style="height:72px"></div>
+            <div class="skel" style="height:72px"></div>
+          </div>
+        </article>
+
+        <article class="note-card">
+          <div class="note-title">说明</div>
+          <div class="note-body">功耗优化项主要在开机时应用一次，界面中的刷新用于读取当前系统状态，不会主动替你恢复被手动改回的开关。</div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" aria-label="主导航">
+    <button class="tab-item active" id="tab-home" data-tab="home" type="button">
+      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg></span>
+      <span class="ti-label">状态</span>
+    </button>
+    <button class="tab-item" id="tab-perf" data-tab="perf" type="button">
+      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg></span>
+      <span class="ti-label">性能</span>
+    </button>
+    <button class="tab-item" id="tab-thermal" data-tab="thermal" type="button">
+      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82z"/></svg></span>
+      <span class="ti-label">温控</span>
+    </button>
+    <button class="tab-item" id="tab-optim" data-tab="optim" type="button">
+      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M7.5 5.6L10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 00-1.41 0L1.29 18.96c-.39.39-.39 1.02 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.71 11.04c.39-.39.39-1.02 0-1.41l-2.34-2.34z"/></svg></span>
+      <span class="ti-label">优化</span>
+    </button>
+  </nav>
+</div>
 
 <div class="toast-wrap" id="toast-wrap"></div>
 
-<!-- 下拉刷新指示器 (MD3 arc) -->
-<div class="pull-ind" id="pull-ind">
+<div class="pull-ind" id="pull-ind" aria-hidden="true">
   <svg viewBox="0 0 44 44" width="28" height="28">
-    <circle class="pull-arc" cx="22" cy="22" r="10" fill="none"
-      stroke="var(--accent)" stroke-width="2.8"
-      stroke-linecap="round"
-      stroke-dasharray="62.83" stroke-dashoffset="62.83"
-      transform="rotate(-90 22 22)"/>
+    <circle class="pull-arc" cx="22" cy="22" r="10" fill="none" stroke="var(--primary)" stroke-width="2.8" stroke-linecap="round" stroke-dasharray="62.83" stroke-dashoffset="62.83" transform="rotate(-90 22 22)"></circle>
   </svg>
 </div>
 
-<!-- 重启确认弹窗 -->
-<div class="modal-wrap" id="modal-reboot">
-  <div class="modal-bg"></div><!-- 无 onclick：强制用户明确选择 -->
+<div class="modal-wrap" id="modal-theme">
+  <div class="modal-bg"></div>
   <div class="modal-sheet">
-    <div class="modal-s-icon">
-      <svg viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+    <div class="sheet-handle"></div>
+    <div class="modal-sheet-body">
+      <div class="modal-s-title">界面主题</div>
+      <div class="modal-s-desc">主题只影响 WebUI 的显示层，不影响温控、调度和系统参数本身。</div>
+      <div class="theme-grid">
+        <button class="theme-choice" type="button" data-theme-option="system">
+          <span class="theme-choice-copy"><span class="theme-choice-title">跟随系统</span><span class="theme-choice-desc">按系统或 WebView 当前配色自动切换。</span></span>
+          <span class="theme-choice-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+        </button>
+        <button class="theme-choice" type="button" data-theme-option="light">
+          <span class="theme-choice-copy"><span class="theme-choice-title">浅色模式</span><span class="theme-choice-desc">适合白天、强光和需要更高可读性的场景。</span></span>
+          <span class="theme-choice-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+        </button>
+        <button class="theme-choice" type="button" data-theme-option="dark">
+          <span class="theme-choice-copy"><span class="theme-choice-title">深色模式</span><span class="theme-choice-desc">适合夜间和低照度环境，降低眩光和视觉噪声。</span></span>
+          <span class="theme-choice-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+        </button>
+      </div>
+      <div class="modal-actions"><button class="mbtn mbtn-ghost" id="theme-close-btn" type="button">关闭</button></div>
     </div>
-    <div class="modal-s-title">温控服务未能自动重启</div>
-    <div class="modal-s-desc">节流阈值已切换并保存，但无法在线重启温控服务。<br>须重启手机后新配置才能生效。</div>
-    <div class="modal-actions">
-      <button class="mbtn mbtn-primary"   onclick="doReboot()">立即重启手机</button>
-      <button class="mbtn mbtn-secondary" onclick="closeRebootModal()">稍后重启</button>
-      <button class="mbtn mbtn-ghost"     onclick="cancelThermal()">取消修改</button>
+  </div>
+</div>
+
+<div class="modal-wrap" id="modal-reboot">
+  <div class="modal-bg"></div>
+  <div class="modal-sheet">
+    <div class="sheet-handle"></div>
+    <div class="modal-sheet-body">
+      <div class="modal-s-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg></div>
+      <div class="modal-s-title">温控服务未能自动重启</div>
+      <div class="modal-s-desc">节流阈值已切换并保存，但当前无法在线重启 thermal 服务。需要整机重启后新配置才会生效。</div>
+      <div class="modal-actions">
+        <button class="mbtn mbtn-primary" id="reboot-now-btn" type="button">立即重启手机</button>
+        <button class="mbtn mbtn-secondary" id="reboot-later-btn" type="button">稍后重启</button>
+        <button class="mbtn mbtn-ghost" id="reboot-cancel-btn" type="button">取消修改</button>
+      </div>
     </div>
   </div>
 </div>
 
 <div class="modal-wrap" id="modal-detail">
-  <div class="modal-bg" onclick="closeDetailModal()"></div>
-  <div class="modal-sheet" style="max-height:80vh;overflow-y:auto">
-    <div class="modal-s-title" id="detail-title">模式详情</div>
-    <div class="modal-s-desc" id="detail-body" style="text-align:left;font-size:13px;line-height:1.8"></div>
-    <div class="modal-actions">
-      <button class="mbtn mbtn-secondary" onclick="closeDetailModal()">关闭</button>
+  <div class="modal-bg"></div>
+  <div class="modal-sheet">
+    <div class="sheet-handle"></div>
+    <div class="modal-sheet-body">
+      <div class="modal-s-title" id="detail-title">详情</div>
+      <div class="detail-content" id="detail-body"></div>
+      <div class="modal-actions"><button class="mbtn mbtn-ghost" id="detail-close-btn" type="button">关闭</button></div>
     </div>
   </div>
 </div>
 
-<script>
-// APatch/KernelSU WebView 兼容（参考 AdGuardHome 方案）：
-// APatch 通过 WebViewAssetLoader 将 webroot 映射到 https://mui.kernelsu.org/
-// 从该域名 fetch localhost CGI 会失败，需重定向到真实 HTTP 服务。
-// 仅当不在 127.0.0.1:6210 时触发重定向，覆盖 file:/content:/https://mui.* 所有场景。
-if(location.host!=='127.0.0.1:6210')document.location='http://127.0.0.1:6210';
-'use strict';
-
-const API={
-  profile:     '/cgi-bin/profile.sh',
-  status:      '/cgi-bin/status.sh',
-  info:        '/cgi-bin/info.sh',
-  thermal:     '/cgi-bin/thermal.sh',
-  thermal_set: '/cgi-bin/set_thermal.sh',
-  reboot:      '/cgi-bin/reboot.sh',
-  optimize:    '/cgi-bin/optimize.sh',
-  swap:        '/cgi-bin/swap.sh',
-};
-
-/* ── WebUI Token (安全认证) ────────────────────────────────── */
-let _webuiToken='';
-async function _fetchToken(){
-  try{
-    const d=await fetch(API.info,{cache:'no-store'}).then(r=>r.json());
-    if(d.webui_token) _webuiToken=d.webui_token;
-  }catch(_){}
-}
-function _authHeaders(){
-  const h={'Content-Type':'application/json'};
-  if(_webuiToken) h['X-PIXEL9PRO-TOKEN']=_webuiToken;
-  return h;
-}
-
-// Material You SVG 图标（26×26，用于 hero-icon）
-const ICONS={
-  game:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>`,
-  balanced:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>`,
-  light:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><path d="M6.05 4.14l-.39-.39c-.39-.39-1.02-.39-1.41 0l-.01.01c-.39.39-.39 1.02 0 1.41l.39.39c.39.39 1.01.39 1.41 0 .39-.39.39-1.02.01-1.42zM3.01 10.5H1.99c-.55 0-1.01.45-1.01 1s.46 1 1.01 1h1.02c.55 0 .99-.45.99-1s-.44-1-.99-1zm9-9.95c-.56 0-1 .44-1 1v1.02c0 .55.44 1 1 1s1-.45 1-1V1.55c0-.56-.44-1-1-1zm7.74 3.21c-.39-.39-1.02-.39-1.41-.01l-.39.39c-.39.39-.39 1.02 0 1.41.39.39 1.02.39 1.41 0l.39-.39c.39-.38.39-1.01 0-1.4zM17.93 18.86l.39.39c.39.39 1.02.39 1.41 0 .39-.39.39-1.02 0-1.41l-.39-.39c-.39-.39-1.02-.38-1.41.01-.38.39-.38 1.02 0 1.4zM21 10.5h-1.02c-.55 0-.99.45-.99 1s.44 1 .99 1H21c.55 0 1.01-.45 1.01-1s-.46-1-1.01-1zm-9 5.01c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zM12 6.5c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm-1 14.44v1.01c0 .55.44 1 1 1s1-.45 1-1v-1.01c0-.55-.44-1-1-1s-1 .44-1 1zm-7.74-3.21c.39.39 1.02.39 1.41 0l.39-.39c.38-.39.38-1.02 0-1.41-.39-.39-1.03-.39-1.41 0l-.39.39c-.39.39-.39 1.01 0 1.41z"/></svg>`,
-  battery:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>`,
-  stock:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>`,
-  unknown:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M11 18h2v-2h-2v2zm1-16C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14c-2.21 0-4 1.79-4 4h2c0-1.1.9-2 2-2s2 .9 2 2c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5 0-2.21-1.79-4-4-4z"/></svg>`,
-};
-
-const PROFILES={
-  game:    {name:'游戏模式',        desc:'top-app: cpu0-7 全核 · 响应 8/8/8ms · ⚠️ 全核功耗较高', cls:'mode-game'},
-  balanced:{name:'平衡模式',        desc:'前台: cpu4-7 · 后台: cpu0-3 · 小核锁820MHz · 中核12ms · 大核8ms', cls:'mode-balanced'},
-  light:   {name:'轻度模式',        desc:'前台: cpu4-7 · 后台: cpu0-3 · 小核锁820MHz · 中核20ms · 大核16ms', cls:'mode-light'},
-  battery: {name:'省电模式',        desc:'前台: cpu4-7 · 小核锁820MHz · 中核40ms · 大核30ms', cls:'mode-battery'},
-  stock:   {name:'默认模式', desc:'恢复系统默认 cpuset 与调度参数', cls:'mode-stock'},
-  unknown: {name:'未选择',          desc:'前往「性能」标签页选择调度模式', cls:'mode-unknown'},
-};
-
-const CLUSTERS=[
-  {label:'Cluster 0  (小核 · cpu0-3)', maxHz:1950000},
-  {label:'Cluster 1  (中核 · cpu4-6)', maxHz:2600000},
-  {label:'Cluster 2  (大核 · cpu7)',   maxHz:3105000},
-];
-
-const TEMP_MIN=25, TEMP_MAX=60, THRESH_STOCK=39, THRESH_MOD=43;
-
-/* 统一维护 tab 顺序，给点击切换和手势切换共用。 */
-const TAB_ORDER=['home','perf','thermal','optim'];
-let _currentTab='home';
-let _suppressClickUntil=0;
-
-function switchTab(tab){
-  if(tab===_currentTab) return;
-  _currentTab=tab;
-  document.querySelectorAll('.tab-page').forEach(p=>p.classList.remove('active'));
-  document.querySelectorAll('.tab-item').forEach(i=>i.classList.remove('active'));
-  document.getElementById('page-'+tab).classList.add('active');
-  document.getElementById('tab-' +tab).classList.add('active');
-}
-
-function getSwipeTargetTab(deltaX, deltaY){
-  const absX=Math.abs(deltaX);
-  const absY=Math.abs(deltaY);
-  if(absX<60 || absX<=absY*1.5) return '';
-  const nextIndex=TAB_ORDER.indexOf(_currentTab)+(deltaX<0?1:-1);
-  if(nextIndex<0 || nextIndex>=TAB_ORDER.length) return '';
-  return TAB_ORDER[nextIndex];
-}
-
-/* 横向手势切页只在明确的左右滑动时触发，避免和页面纵向滚动、卡片点击打架。 */
-function bindTabSwipe(){
-  const host=document.getElementById('tab-pages');
-  if(!host) return;
-  let gesture=null;
-
-  function findTouch(touchList,id){
-    for(let i=0;i<touchList.length;i++){
-      if(touchList[i].identifier===id) return touchList[i];
-    }
-    return null;
-  }
-
-  host.addEventListener('touchstart',evt=>{
-    if(evt.touches.length!==1) return;
-    if(document.getElementById('modal-reboot').classList.contains('open')) return;
-    const page=evt.target.closest('.tab-page');
-    if(!page||!page.classList.contains('active')) return;
-    const touch=evt.touches[0];
-    gesture={
-      id:touch.identifier,
-      startX:touch.clientX,
-      startY:touch.clientY,
-      lastX:touch.clientX,
-      lastY:touch.clientY,
-      horizontal:null,
-    };
-  },{passive:true});
-
-  host.addEventListener('touchmove',evt=>{
-    if(!gesture) return;
-    const touch=findTouch(evt.touches,gesture.id)||findTouch(evt.changedTouches,gesture.id);
-    if(!touch) return;
-    gesture.lastX=touch.clientX;
-    gesture.lastY=touch.clientY;
-    const deltaX=touch.clientX-gesture.startX;
-    const deltaY=touch.clientY-gesture.startY;
-    if(gesture.horizontal===null){
-      if(Math.abs(deltaX)<12 && Math.abs(deltaY)<12) return;
-      gesture.horizontal=Math.abs(deltaX)>Math.abs(deltaY)*1.15;
-    }
-    if(gesture.horizontal && evt.cancelable) evt.preventDefault();
-  },{passive:false});
-
-  function finishSwipe(){
-    if(!gesture) return;
-    const targetTab=getSwipeTargetTab(gesture.lastX-gesture.startX,gesture.lastY-gesture.startY);
-    gesture=null;
-    if(!targetTab) return;
-    _suppressClickUntil=Date.now()+350;
-    switchTab(targetTab);
-  }
-
-  host.addEventListener('touchend',finishSwipe,{passive:true});
-  host.addEventListener('touchcancel',()=>{ gesture=null; },{passive:true});
-}
-
-document.addEventListener('click',evt=>{
-  if(Date.now()>=_suppressClickUntil) return;
-  evt.preventDefault();
-  evt.stopPropagation();
-},true);
-
-/* ── Pull-to-refresh ───────────────────────────────────────── */
-let _pullY0=0, _pullOn=false, _pullDist=0, _pullBusy=false;
-
-const PULL_CIRC=62.83; // 2π×10
-
-function bindPullToRefresh(){
-  const ind=document.getElementById('pull-ind');
-  const arc=ind.querySelector('.pull-arc');
-
-  function setArc(p){
-    // p: 0→no arc, 1→full circle; stroke-dashoffset shrinks as user pulls
-    arc.style.strokeDashoffset=PULL_CIRC*(1-p*.85);
-  }
-  function showInd(y){
-    // slide down smoothly, capped at 16px below safe-area
-    const drop=Math.min(y*.4,16);
-    ind.style.transform=`translateX(-50%) translateY(${drop}px)`;
-  }
-  function hideInd(){
-    ind.style.transform='translateX(-50%) translateY(-56px)';
-    ind.classList.remove('active','spinning');
-    arc.style.strokeDashoffset=PULL_CIRC;
-  }
-
-  document.querySelectorAll('.tab-page').forEach(page=>{
-    page.addEventListener('touchstart',e=>{
-      if(_pullBusy||e.touches.length!==1) return;
-      if(page.scrollTop<=0){ _pullY0=e.touches[0].clientY; _pullOn=true; _pullDist=0; }
-    },{passive:true});
-
-    page.addEventListener('touchmove',e=>{
-      if(!_pullOn) return;
-      const dy=e.touches[0].clientY-_pullY0;
-      if(page.scrollTop>0){ _pullOn=false; ind.classList.remove('active'); return; }
-      if(dy>0){
-        _pullDist=dy;
-        const p=Math.min(dy/90,1);
-        ind.classList.add('active');
-        showInd(dy);
-        setArc(p);
-        if(e.cancelable) e.preventDefault();
-      }else{
-        _pullOn=false; hideInd();
-      }
-    },{passive:false});
-
-    page.addEventListener('touchend',()=>{
-      if(!_pullOn) return;
-      _pullOn=false;
-      if(_pullDist>90&&!_pullBusy){
-        _pullBusy=true;
-        // stay visible, switch to spinner
-        ind.classList.add('spinning');
-        setArc(1);
-        showInd(40); // 40*0.4=16px drop — sits comfortably below notch
-        doFullRefresh().finally(()=>{
-          _pullBusy=false;
-          hideInd();
-        });
-      }else{
-        hideInd();
-      }
-    },{passive:true});
-  });
-}
-
-async function doFullRefresh(){
-  showToast('正在刷新…',1200);
-  await Promise.all([refreshCpu(),refreshThermal(),refreshSwap()]);
-  refreshOpt(); loadInfo();
-  showToast('已刷新');
-}
-
-/* ── Reboot modal ───────────────────────────────────────────── */
-let _pendingThermalOffset=4, _prevThermalOffset=4;
-
-function openRebootModal(pending,prev){
-  _pendingThermalOffset=pending; _prevThermalOffset=prev;
-  document.getElementById('modal-reboot').classList.add('open');
-}
-function closeDetailModal(){document.getElementById('modal-detail').classList.remove('open');}
-function closeRebootModal(){
-  document.getElementById('modal-reboot').classList.remove('open');
-  showToast('已保存，重启手机后生效');
-}
-async function cancelThermal(){
-  document.getElementById('modal-reboot').classList.remove('open');
-  try{
-    await apiFetch(API.thermal_set,{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({offset:_prevThermalOffset}),
-    });
-    updateThermalUI(_prevThermalOffset);
-    showToast('已撤销，恢复原档位');
-  }catch(_){ showToast('撤销失败，请手动重新选择'); }
-}
-async function doReboot(){
-  document.getElementById('modal-reboot').classList.remove('open');
-  showToast('正在重启设备…');
-  try{ await fetch(API.reboot,{method:'POST',headers:_authHeaders()}); }catch(_){}
-}
-
-/* ── Utilities ──────────────────────────────────────────────── */
-async function apiFetch(path,opts={}){
-  // 写操作自动附加 token header
-  if(opts.method==='POST'){
-    opts.headers=Object.assign({},_authHeaders(),opts.headers||{});
-  }
-  const r=await fetch(path,{cache:'no-store',...opts});
-  if(!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-function showToast(msg,dur=2500){
-  const c=document.getElementById('toast-wrap');
-  const el=document.createElement('div');
-  el.className='toast'; el.textContent=msg; c.appendChild(el);
-  setTimeout(()=>{
-    el.classList.add('out');
-    // {once:true} 防止监听器累积；400ms 兜底确保节点释放
-    el.addEventListener('animationend',()=>el.remove(),{once:true});
-    setTimeout(()=>{ if(el.isConnected) el.remove(); },400);
-  },dur);
-}
-
-function appendLog(text,type=''){
-  const el=document.getElementById('log-inner');
-  // 首次调用清除占位符
-  if(el.querySelector('.log-dim:only-child')) el.innerHTML='';
-  const sp=document.createElement('div');
-  if(type) sp.className='log-'+type;
-  sp.textContent='['+new Date().toLocaleTimeString()+'] '+text;
-  el.appendChild(sp);
-  // 限制最多 30 条，防止无限增长
-  while(el.childNodes.length>30) el.removeChild(el.firstChild);
-  el.scrollTop=el.scrollHeight;
-}
-
-function toggleLog(){ document.getElementById('log-card').classList.toggle('open'); }
-
-/* ── Temperature helpers ────────────────────────────────────── */
-function tempHex(t){
-  if(t<36) return '#2a9a88';
-  if(t<40) return '#4aaa3a';
-  if(t<44) return '#c09020';
-  if(t<48) return '#c06830';
-  return '#b83020';
-}
-
-function tempStatus(t){
-  if(t<36) return '凉爽';
-  if(t<39) return '正常';
-  if(t<43) return '已超出原始阈值，节流延迟策略生效中';
-  if(t<47) return '系统已开始限频降温';
-  if(t<50) return '持续高温，深度节流中';
-  return '设备过热，严重节流';
-}
-
-function barPct(t){
-  return Math.min(Math.max((t-TEMP_MIN)/(TEMP_MAX-TEMP_MIN),0),1)*100;
-}
-
-// 标记位置是常量，只定位一次
-let _markersDone=false;
-function positionMarkers(){
-  const sp=barPct(THRESH_STOCK), mp=barPct(THRESH_MOD);
-  document.getElementById('mk-stock').style.left    =sp+'%';
-  document.getElementById('mk-stock-lbl').style.left=sp+'%';
-  document.getElementById('mk-mod').style.left      =mp+'%';
-  document.getElementById('mk-mod-lbl').style.left  =mp+'%';
-}
-
-/* ── Hero ───────────────────────────────────────────────────── */
-function updateHero(key){
-  const p=PROFILES[key]||PROFILES.unknown;
-  const hero=document.getElementById('hero');
-  const icon=document.getElementById('hero-icon');
-  hero.className='card hero-card '+p.cls;
-  document.getElementById('hero-mode').textContent=p.name;
-  updateHeroDesc();
-  // 使用 innerHTML 渲染 SVG 图标
-  icon.innerHTML=ICONS[key]||ICONS.unknown;
-  icon.classList.remove('pop');
-  void icon.offsetWidth; // force reflow to restart animation
-  icon.classList.add('pop');
-  document.querySelectorAll('.profile-card[data-profile]').forEach(c=>
-    c.classList.toggle('selected',c.dataset.profile===key));
-}
-
-function updateHeroDesc(){
-  const parts=[];
-  const tn=THERMAL_PRESETS[currentOffset];
-  if(tn) parts.push(tn.name);
-  if(_swapMode==='optimized') parts.push('VM 已优化');
-  else if(_swapMode==='stock') parts.push('VM 默认');
-  document.getElementById('hero-desc').textContent=parts.join(' · ')||'读取中…';
-}
-
-/* ── Profile (CPU mode) ─────────────────────────────────────── */
-let busy=false, currentProfile='unknown';
-
-async function applyProfile(profile){
-  if(_longPressed){_longPressed=false;return;}
-  if(busy||profile===currentProfile) return;
-  busy=true;
-  const card=document.querySelector(`.profile-card[data-profile="${profile}"]`);
-  card.classList.add('loading');
-  appendLog(`切换到 ${PROFILES[profile].name}…`,'dim');
-  document.getElementById('log-card').classList.add('open');
-  try{
-    const data=await apiFetch(API.profile,{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({profile}),
-    });
-    if(data.ok){
-      currentProfile=profile;
-      updateHero(profile);
-      showToast(`切换至：${PROFILES[profile].name}`);
-      appendLog(`${PROFILES[profile].name} 已应用`,'ok');
-      refreshCpu();
-    }else{
-      showToast('切换失败：'+(data.error||'未知'));
-      appendLog(data.error||'切换失败','err');
-    }
-  }catch(e){
-    showToast('请求失败，检查服务是否运行');
-    appendLog(String(e),'err');
-  }finally{
-    card.classList.remove('loading');
-    busy=false;
-  }
-}
-
-/* ── CPU frequency ──────────────────────────────────────────── */
-function fmtMhz(hz){
-  if(!hz||isNaN(hz)) return '—';
-  return (hz/1000).toFixed(0)+' MHz';
-}
-
-// 缓存 DOM 引用，避免每 3s 销毁/重建（减少 GC 压力）
-let _cpuRowRefs=null, _homeCpuRefs=null, _cpuFetching=false, _lastClusters=null;
-
-const HOME_CPU_LABELS=['小核','中核','大核'];
-
-function ensureHomeCpuRows(clusters){
-  const box=document.getElementById('home-cpu-rows');
-  if(_homeCpuRefs&&_homeCpuRefs.length===clusters.length) return;
-  box.innerHTML='';
-  _homeCpuRefs=clusters.map((c,i)=>{
-    const row=document.createElement('div'); row.className='home-cpu-row';
-    const lbl=document.createElement('span'); lbl.className='home-cpu-label';
-    lbl.textContent=HOME_CPU_LABELS[i]||'C'+i;
-    const bar=document.createElement('div'); bar.className='home-cpu-bar';
-    const fill=document.createElement('div'); fill.className='home-cpu-fill';
-    bar.appendChild(fill);
-    // 数字和单位分开，固定 MHz 位置不随数字宽度偏移
-    const wrap=document.createElement('span'); wrap.className='home-cpu-freq';
-    const num=document.createElement('span'); num.className='home-cpu-num';
-    const unit=document.createElement('span'); unit.className='home-cpu-unit';
-    unit.textContent=' MHz';
-    wrap.appendChild(num); wrap.appendChild(unit);
-    row.appendChild(lbl); row.appendChild(bar); row.appendChild(wrap);
-    box.appendChild(row);
-    return {fill,num,unit,maxHz:(CLUSTERS[i]||{}).maxHz||3105000};
-  });
-}
-
-async function refreshCpu(){
-  if(_cpuFetching) return;
-  _cpuFetching=true;
-  const btn=document.getElementById('refresh-btn');
-  btn.classList.add('spinning');
-  try{
-    const clusters=await apiFetch(API.status);
-    _lastClusters=clusters;
-    const box=document.getElementById('cpu-rows');
-
-    // ── 性能页详细 CPU 面板 ──
-    if(!_cpuRowRefs||_cpuRowRefs.length!==clusters.length){
-      box.innerHTML='';
-      _cpuRowRefs=clusters.map((c,i)=>{
-        const info=CLUSTERS[i]||{};
-        const row=document.createElement('div'); row.className='cpu-row';
-        const head=document.createElement('div'); head.className='cpu-row-head';
-        const lbl=document.createElement('span'); lbl.className='cpu-label';
-        lbl.textContent=info.label||'cpu'+c.cpu;
-        const freq=document.createElement('span'); freq.className='cpu-freq';
-        const freqN=document.createElement('b');
-        const freqU=document.createElement('span'); freqU.textContent=' MHz'; freqU.className='cpu-freq-unit';
-        const freqS=document.createElement('span'); freqS.className='cpu-freq-max';
-        freq.appendChild(freqN);
-        freq.appendChild(freqU);
-        freq.appendChild(freqS);
-        head.appendChild(lbl); head.appendChild(freq);
-        const track=document.createElement('div'); track.className='cpu-bar-track';
-        const fill=document.createElement('div'); fill.className='cpu-bar-fill';
-        track.appendChild(fill);
-        const params=document.createElement('div'); params.className='cpu-params';
-        row.appendChild(head); row.appendChild(track); row.appendChild(params);
-        box.appendChild(row);
-        return {freqN,freqS,fill,params,maxHz:info.maxHz||3105000};
-      });
-    }
-
-    clusters.forEach((c,i)=>{
-      const r=_cpuRowRefs[i]; if(!r) return;
-      const maxHz=c.max>0?c.max:r.maxHz;
-      r.freqN.textContent=(!c.cur||isNaN(c.cur))?'—':(c.cur/1000).toFixed(0);
-      r.freqS.textContent=' / '+(maxHz/1000).toFixed(0)+' MHz';
-      r.fill.style.transform=`scaleX(${Math.min(c.cur/maxHz,1).toFixed(3)})`;
-      r.params.textContent=`resp=${c.resp_ms}ms · down=${c.down_us}µs · gov=${c.gov}`;
-    });
-
-    // ── 状态页紧凑 CPU 频率 ──
-    ensureHomeCpuRows(clusters);
-    clusters.forEach((c,i)=>{
-      const r=_homeCpuRefs[i]; if(!r) return;
-      const maxHz=c.max>0?c.max:r.maxHz;
-      const noData=!c.cur||isNaN(c.cur);
-      r.num.textContent=noData?'—':(c.cur/1000).toFixed(0);
-      r.unit.style.display=noData?'none':'';
-      r.fill.style.transform=`scaleX(${noData?0:Math.min(c.cur/maxHz,1).toFixed(3)})`;
-    });
-
-  }catch(e){
-    _cpuRowRefs=null; _homeCpuRefs=null;
-    const box=document.getElementById('cpu-rows');
-    box.textContent='';
-    const err=document.createElement('div');
-    err.style.cssText='color:#b83020;font-size:12px';
-    err.textContent='获取频率失败：'+e.message;
-    box.appendChild(err);
-  }finally{
-    btn.classList.remove('spinning');
-    _cpuFetching=false;
-  }
-}
-
-/* ── Thermal ────────────────────────────────────────────────── */
-let thermalErr=0, _thermalFetching=false;
-let _chipRefs=null, _homeChipRefs=null;
-
-const ZONE_LABELS={
-  'VIRTUAL-SKIN':   '机身温度',
-  'SKIN':           '机身温度',
-  'soc_therm':      'CPU / SoC',
-  'battery':        '电池温度',
-  'charging_therm': '充电 IC',
-  'btmspkr_therm':  '底部扬声器',
-};
-
-async function refreshThermal(){
-  if(_thermalFetching) return; // 防止并发堆积
-  _thermalFetching=true;
-  try{
-    const zones=await apiFetch(API.thermal);
-    thermalErr=0;
-    if(!zones||zones.length===0){ showThermalNA('未读取到热区数据'); return; }
-
-    const skinZone=zones.find(z=>z.zone==='VIRTUAL-SKIN')||zones.find(z=>z.zone==='SKIN');
-    const secondary=zones.filter(z=>z!==skinZone&&
-      ['soc_therm','battery','charging_therm','btmspkr_therm'].includes(z.zone));
-
-    // ── 首页快照 ──────────────────────────────────────────────
-    document.getElementById('home-thermal-skel').style.display='none';
-    document.getElementById('home-thermal-content').style.display='block';
-
-    if(skinZone){
-      const tc=skinZone.temp/1000;
-      const hex=tempHex(tc);
-      const homeNum=document.getElementById('home-temp-num');
-      homeNum.textContent=tc.toFixed(1);
-      homeNum.style.color=hex;
-      const stEl=document.getElementById('home-temp-status');
-      stEl.textContent=tempStatus(tc);
-      stEl.style.color=hex;
-    }else{
-      document.getElementById('home-temp-num').textContent='--';
-      document.getElementById('home-temp-status').textContent='VIRTUAL-SKIN 未找到';
-    }
-
-    // 首页次要传感器（紧凑列表，in-place 更新）
-    const homeChipsEl=document.getElementById('home-sensor-chips');
-    const zoneKeys=secondary.map(z=>z.zone).join(',');
-    if(!_homeChipRefs||_homeChipRefs.map(r=>r.zone).join(',')!==zoneKeys){
-      homeChipsEl.innerHTML='';
-      _homeChipRefs=secondary.map(z=>{
-        const row=document.createElement('div'); row.className='snap-chip';
-        const lbl=document.createElement('span');
-        lbl.textContent=ZONE_LABELS[z.zone]||z.zone;
-        const val=document.createElement('span'); val.className='snap-chip-val';
-        row.appendChild(lbl); row.appendChild(val);
-        homeChipsEl.appendChild(row);
-        return {zone:z.zone,val};
-      });
-    }
-    secondary.forEach((z,i)=>{
-      const r=_homeChipRefs[i]; if(!r) return;
-      const tc=z.temp/1000;
-      r.val.textContent=tc.toFixed(1)+'°C';
-      r.val.style.color=tempHex(tc);
-    });
-
-    // ── 温控标签页详情 ────────────────────────────────────────
-    document.getElementById('thermal-skel').style.display='none';
-    document.getElementById('thermal-content').style.display='block';
-    if(!_markersDone){ positionMarkers(); _markersDone=true; }
-
-    if(skinZone){
-      const tc=skinZone.temp/1000;
-      const hex=tempHex(tc);
-      const numEl=document.getElementById('temp-num');
-      numEl.textContent=tc.toFixed(1);
-      numEl.style.color=hex;
-      numEl.style.textShadow=`0 0 26px ${hex}55`;
-      document.getElementById('temp-zone').textContent  =ZONE_LABELS[skinZone.zone]||skinZone.zone;
-      document.getElementById('temp-status').textContent=tempStatus(tc);
-      document.getElementById('temp-status').style.color=hex;
-      const fill=document.getElementById('temp-fill');
-      fill.style.width=barPct(tc)+'%';
-      fill.style.background=`linear-gradient(90deg,${hex}70,${hex})`;
-    }else{
-      document.getElementById('temp-num').textContent   ='--';
-      document.getElementById('temp-zone').textContent  ='VIRTUAL-SKIN';
-      document.getElementById('temp-status').textContent='未找到热区，请确认已注册';
-      document.getElementById('temp-status').style.color='';
-    }
-
-    // 温控页 2×2 芯片网格（in-place 更新）
-    const chipsEl=document.getElementById('sensor-chips');
-    if(!_chipRefs||_chipRefs.map(r=>r.zone).join(',')!==zoneKeys){
-      chipsEl.innerHTML='';
-      _chipRefs=secondary.map(z=>{
-        const chip=document.createElement('div'); chip.className='chip';
-        const lbl=document.createElement('span');
-        lbl.textContent=ZONE_LABELS[z.zone]||z.zone;
-        const val=document.createElement('span'); val.className='chip-val';
-        chip.appendChild(lbl); chip.appendChild(val);
-        chipsEl.appendChild(chip);
-        return {zone:z.zone,val};
-      });
-    }
-    secondary.forEach((z,i)=>{
-      const r=_chipRefs[i]; if(!r) return;
-      const tc=z.temp/1000;
-      r.val.textContent=tc.toFixed(1)+'°C';
-      r.val.style.color=tempHex(tc);
-    });
-
-  }catch(e){
-    thermalErr++;
-    _chipRefs=null; _homeChipRefs=null; // 出错时强制下次重建
-    if(thermalErr===1) showThermalNA('热区 CGI 请求失败');
-  }finally{
-    _thermalFetching=false;
-  }
-}
-
-function showThermalNA(msg){
-  // 首页
-  document.getElementById('home-thermal-skel').style.display='none';
-  document.getElementById('home-thermal-content').style.display='block';
-  document.getElementById('home-temp-num').textContent='--';
-  document.getElementById('home-temp-status').textContent=msg;
-  // 温控页
-  document.getElementById('thermal-skel').style.display='none';
-  document.getElementById('thermal-content').style.display='block';
-  document.getElementById('temp-num').textContent   ='--';
-  document.getElementById('temp-zone').textContent  ='VIRTUAL-SKIN';
-  document.getElementById('temp-status').textContent=msg;
-  document.getElementById('temp-status').style.color='';
-}
-
-/* ── Device info ────────────────────────────────────────────── */
-async function loadInfo(){
-  try{
-    const d=await apiFetch(API.info);
-    document.getElementById('info-model').textContent  =d.model  ||'Pixel 9 Pro';
-    document.getElementById('info-android').textContent=d.version?'Android '+d.version:'?';
-    if(d.module_version){
-      document.getElementById('info-module').textContent=d.module_version;
-    }
-    // WebUI httpd 内存占用
-    const webuiEl=document.getElementById('rt-webui-mem');
-    if(webuiEl&&d.httpd_rss_kb){
-      webuiEl.textContent=d.httpd_rss_kb<1024?d.httpd_rss_kb+'KB':(d.httpd_rss_kb/1024).toFixed(1)+'MB';
-    }else if(webuiEl){ webuiEl.textContent='—'; }
-    // Cache buster：versionCode 变化时强制单次硬刷新
-    const vc=d.version_code||'';
-    if(vc&&localStorage.getItem('_modVC')!==vc){
-      localStorage.setItem('_modVC',vc);
-      if(!sessionStorage.getItem('_reloaded')){
-        sessionStorage.setItem('_reloaded','1');
-        location.reload();
-        return;
-      }
-    }
-    sessionStorage.removeItem('_reloaded');
-  }catch(_){}
-}
-
-async function loadSavedProfile(){
-  try{
-    const d=await apiFetch(API.profile);
-    const saved=d.profile||'unknown';
-    currentProfile=PROFILES[saved]?saved:'unknown';
-    updateHero(currentProfile);
-  }catch(_){ updateHero('unknown'); }
-}
-
-/* ── Thermal preset ─────────────────────────────────────────── */
-const THERMAL_PRESETS={
-  0:{name:'默认节流'},
-  2:{name:'轻度节流'},
-  4:{name:'常规节流'},
-  6:{name:'激进节流'},
-};
-
-let currentOffset=4, thermalBusy=false;
-
-function updateThermalUI(offset){
-  currentOffset=offset;
-  document.querySelectorAll('#thermal-list .profile-card').forEach(c=>
-    c.classList.toggle('selected',parseInt(c.dataset.offset)===offset));
-  const label=offset===0?'默认节流':`+${offset}°C 激活`;
-  const off=offset===0;
-  ['home-mod-badge','th-mod-badge'].forEach(id=>{
-    const el=document.getElementById(id);
-    el.textContent=label;
-    el.classList.toggle('off',off);
-  });
-  updateHeroDesc();
-}
-
-async function applyThermal(offset){
-  if(_longPressed){_longPressed=false;return;}
-  if(thermalBusy||offset===currentOffset) return;
-  const prevOff=currentOffset;
-  thermalBusy=true;
-  const card=document.querySelector(`#thermal-list .profile-card[data-offset="${offset}"]`);
-  card.classList.add('loading');
-  const preset=THERMAL_PRESETS[offset]||{name:`+${offset}°C`};
-  appendLog(`切换温控档位 ${preset.name}…`,'dim');
-  document.getElementById('log-card').classList.add('open');
-  try{
-    const data=await apiFetch(API.thermal_set,{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({offset}),
-    });
-    if(data.ok){
-      updateThermalUI(offset);
-      if(data.restarted){
-        showToast(`${preset.name} · 温控服务已重启，立即生效`);
-        appendLog(`${preset.name} 已重启温控服务`,'ok');
-      }else{
-        appendLog(`${preset.name} 已保存（需重启生效）`,'warn');
-        openRebootModal(offset,prevOff);
-      }
-    }else{
-      showToast('切换失败：'+(data.error||'未知'));
-      appendLog(data.error||'切换失败','err');
-    }
-  }catch(e){
-    showToast('请求失败，检查服务是否运行');
-    appendLog(String(e),'err');
-  }finally{
-    card.classList.remove('loading');
-    thermalBusy=false;
-  }
-}
-
-async function loadThermalPreset(){
-  try{
-    const d=await apiFetch(API.thermal_set);
-    updateThermalUI(d.offset??4);
-  }catch(_){ updateThermalUI(4); }
-}
-
-/* ── Polling with Page Visibility API ───────────────────────── */
-let _cpuTimer=null, _thermalTimer=null, _swapTimer=null;
-
-function startPolling(){
-  if(_cpuTimer) return;
-  _cpuTimer    =setInterval(refreshCpu,     3000);
-  _thermalTimer=setInterval(refreshThermal, 5000);
-  _swapTimer   =setInterval(refreshSwap,   10000);
-}
-
-function stopPolling(){
-  clearInterval(_cpuTimer); clearInterval(_thermalTimer); clearInterval(_swapTimer);
-  _cpuTimer=_thermalTimer=_swapTimer=null;
-}
-
-// 页面隐藏时暂停轮询，恢复可见时立即更新并重启
-document.addEventListener('visibilitychange',()=>{
-  if(document.hidden){
-    stopPolling();
-  }else{
-    refreshCpu(); refreshThermal();
-    startPolling();
-  }
-});
-
-/* 功耗优化状态改为卡片式渲染，状态、说明和刷新逻辑都集中在这一段。 */
-/* ── Optimization status ────────────────────────────────────── */
-const OPT_ITEMS=[
-  {key:'mobile_data_always_on',    label:'移动数据常开',  hint:'避免蜂窝与 WiFi 双链路同时常驻待机。', good:'0'},
-  {key:'wfc_ims_enabled',          label:'VoWiFi 通话',  hint:'减少 IWLAN 搜网与 IMS 常驻唤醒。',    good:'0'},
-  {key:'wifi_scan_always_enabled', label:'WiFi 后台扫描',hint:'避免熄屏后继续做环境 WiFi 扫描。',     good:'0'},
-  {key:'ble_scan_always_enabled',  label:'BLE 后台扫描', hint:'压低蓝牙扫描与附近设备发现频率。',     good:'0'},
-  {key:'adaptive_connectivity',    label:'自适应连接',   hint:'减少蜂窝 / WiFi 的自动切换判断。',     good:'0'},
-  {key:'network_recommendations',  label:'网络推荐',     hint:'关闭后台网络评分与推荐广播。',         good:'0'},
-  {key:'nearby_sharing',           label:'附近共享',     hint:'降低 Nearby Sharing 的持续扫描开销。', good:'0'},
-  {key:'multicast',                label:'WiFi Multicast',hint:'息屏时关闭组播，减少 WLAN 唤醒。',    good:'off'},
-];
-
-function getOptBadge(val,item){
-  if(val===item.good) return {className:'badge good', text:'已关闭'};
-  if(val==='1'||val==='on') return {className:'badge warn', text:'已开启'};
-  return {className:'badge off', text:'未设置'};
-}
-
-let _optFetching=false;
-async function refreshOpt(){
-  if(_optFetching) return;
-  _optFetching=true;
-  const btn=document.getElementById('opt-refresh-btn');
-  btn.classList.add('spinning');
-  try{
-    const d=await apiFetch(API.optimize);
-    const box=document.getElementById('opt-rows');
-    box.innerHTML='';
-    OPT_ITEMS.forEach(item=>{
-      const val=d[item.key]||'null';
-      const spec=getOptBadge(val,item);
-      const row=document.createElement('div');
-      row.className='opt-item';
-      const head=document.createElement('div');
-      head.className='opt-item-head';
-      const lbl=document.createElement('div');
-      lbl.className='opt-label';
-      lbl.textContent=item.label;
-      const badge=document.createElement('span');
-      badge.className=spec.className;
-      badge.textContent=spec.text;
-      const meta=document.createElement('div');
-      meta.className='opt-meta';
-      meta.textContent=item.hint;
-      head.appendChild(lbl);
-      head.appendChild(badge);
-      row.appendChild(head);
-      row.appendChild(meta);
-      box.appendChild(row);
-    });
-    // 更新状态页功耗摘要
-    const goodCount=OPT_ITEMS.filter(i=>d[i.key]===i.good).length;
-    const rtP=document.getElementById('rt-power');
-    if(rtP) rtP.textContent=goodCount+'/'+OPT_ITEMS.length+' 项已优化';
-  }catch(e){
-    const box=document.getElementById('opt-rows');
-    box.innerHTML='<div class="opt-item" style="grid-column:1/-1"><div class="opt-label" style="color:#b83020">获取失败</div><div class="opt-meta">'+e.message+'</div></div>';
-  }finally{
-    btn.classList.remove('spinning');
-    _optFetching=false;
-  }
-}
-
-/* ── Swap / Memory tuning ──────────────────────────────────── */
-const SWAP_OPT={swappiness:100,min_free_kbytes:65536,vfs_cache_pressure:60};
-const SWAP_STK={swappiness:150,min_free_kbytes:27386,vfs_cache_pressure:100};
-let _swapMode='unknown';
-
-function fmtBytes(b){
-  b=Number(b); if(b<=0) return '0';
-  if(b<1048576) return (b/1024).toFixed(0)+'KB';
-  if(b<1073741824) return (b/1048576).toFixed(0)+'MB';
-  return (b/1073741824).toFixed(2)+'GB';
-}
-
-function updateSwapToggle(){
-  const el=document.getElementById('swap-toggle-label');
-  el.textContent=_swapMode==='optimized'?'恢复默认':'应用优化';
-}
-
-function renderSwapCard(d){
-  const box=document.getElementById('swap-rows');
-  const ratio=d.zram_orig_bytes>0?((d.zram_compr_bytes/d.zram_orig_bytes)*100).toFixed(1):'—';
-  const isEH=d.zram_algo==='lz77eh';
-  const sizeGB=(d.zram_disksize/1073741824).toFixed(1);
-  const stockGB=(d.stock_zram_size/1073741824).toFixed(1);
-  const isTarget=Math.abs(d.zram_disksize-11945377792)<536870912;
-
-  document.getElementById('swap-desc').textContent=
-    isEH?'Emerald Hill 硬件压缩 · 压缩率 '+ratio+'% · 占用 '+fmtBytes(d.zram_mem_used_bytes)
-        :'算法 '+d.zram_algo+' · 重启后自动切换为 lz77eh';
-
-  // 统一使用 info-row 布局，与"设备信息"卡片一致
-  const rows=[
-    {lbl:'ZRAM 算法', val:isEH?'硬件加速':d.zram_algo,     cls:isEH?'good':'warn'},
-    {lbl:'ZRAM 大小', val:sizeGB+'GB',                       cls:isTarget?'good':'off'},
-    {lbl:'swappiness', val:String(d.swappiness),             cls:d.swappiness==100?'good':d.swappiness==150?'warn':''},
-    {lbl:'min_free_kbytes', val:String(d.min_free_kbytes),   cls:d.min_free_kbytes==65536?'good':d.min_free_kbytes==27386?'warn':''},
-    {lbl:'vfs_cache_pressure',val:String(d.vfs_cache_pressure),cls:d.vfs_cache_pressure==60?'good':d.vfs_cache_pressure==100?'warn':''},
-  ];
-
-  let html='';
-  rows.forEach((r,i)=>{
-    // 在 ZRAM 和 VM 参数之间加分隔
-    if(i===2) html+='<div style="height:1px;background:rgba(22,42,38,.08);margin:4px 0"></div>';
-    html+='<div class="info-row">';
-    html+='<span class="info-lbl">'+r.lbl+'</span>';
-    html+='<span class="badge '+r.cls+'" style="font-size:10.5px;padding:3px 10px">'+r.val+'</span>';
-    html+='</div>';
-  });
-  box.innerHTML=html;
-}
-
-let _swapFetching=false;
-async function refreshSwap(){
-  if(_swapFetching) return;
-  _swapFetching=true;
-  try{
-    const d=await apiFetch(API.swap);
-    _swapMode=d.mode||'custom';
-    updateSwapToggle();
-    updateHeroDesc();
-    renderSwapCard(d);
-    // 更新状态页内存摘要
-    const el=id=>document.getElementById(id);
-    const pct=d.zram_disksize>0?((d.zram_orig_bytes/d.zram_disksize)*100).toFixed(0):'0';
-    const algoTag=d.zram_algo==='lz77eh'?' · lz77eh':'';
-    const usageEl=el('rt-zram-usage'); if(usageEl) usageEl.textContent=pct+'% ('+fmtBytes(d.zram_orig_bytes)+' / '+(d.zram_disksize/1073741824).toFixed(1)+'GB)'+algoTag;
-    const ratioEl=el('rt-ratio'); if(ratioEl) ratioEl.textContent=d.zram_orig_bytes>0?((d.zram_compr_bytes/d.zram_orig_bytes)*100).toFixed(1)+'% → 实占 '+fmtBytes(d.zram_mem_used_bytes):'—';
-    // WebUI 内存由 info.sh 提供，此处不更新
-  }catch(e){
-    document.getElementById('swap-rows').innerHTML=
-      '<div class="opt-item" style="grid-column:1/-1"><div class="opt-label" style="color:#b83020">获取失败</div><div class="opt-meta">'+e.message+'</div></div>';
-  }finally{ _swapFetching=false; }
-}
-
-async function toggleSwapMode(){
-  const newMode=_swapMode==='optimized'?'stock':'optimized';
-  try{
-    const d=await apiFetch(API.swap,{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({mode:newMode}),
-    });
-    if(d.ok){
-      showToast(newMode==='optimized'?'VM 参数已优化（即时生效）':'已恢复默认 VM 参数');
-      appendLog(newMode==='optimized'?'Swap 优化参数已应用':'Swap 已恢复默认','ok');
-      refreshSwap();
-    }else{ showToast('操作失败：'+(d.error||'未知')); }
-  }catch(e){ showToast('请求失败'); }
-}
-
-/* ── Init ───────────────────────────────────────────────────── */
-let _longPressed=false;
-(async()=>{
-  bindTabSwipe();
-  bindPullToRefresh();
-  // 先获取安全 token，后续写操作需要
-  await _fetchToken();
-  // 分批加载: busybox httpd 单线程, 并发过多会排队卡住
-  await Promise.all([loadInfo(),loadSavedProfile(),loadThermalPreset()]);
-  refreshCpu();
-  await refreshThermal();
-  // 非首屏数据延后, 避免阻塞
-  // 优化页数据延迟预加载(2s后), 切换时已就绪; 加载完更新状态页摘要
-  setTimeout(()=>{ refreshOpt(); },2000);
-  setTimeout(()=>{ refreshSwap(); },3000);
-  startPolling();
-
-  // Long-press on profile cards → show detail modal
-  const PROFILE_DETAILS={
-    game:'<b>游戏模式</b><br><br><b>cpuset</b>: top-app → cpu0-7 全核<br><b>response_time</b>: 小核8ms / 中核8ms / 大核8ms<br><br>游戏进程(top-app)可使用全部核心，升降频极快。<br><br><b>⚠️ 未经长时间测试</b>，全核高频运行功耗大，可能发热明显。建议仅短时使用。',
-    balanced:'<b>平衡模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核200ms / 中核12ms / 大核8ms<br><br>前台App只用中+大核，小核通过200ms超长响应时间锁死820MHz最低频，即使被调度也只能跑最低频。',
-    light:'<b>轻度模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核200ms / 中核20ms / 大核16ms<br><br>与平衡模式相同的核心分配，但中大核升频更慢(20ms/16ms)，日常轻度使用更省电。',
-    battery:'<b>省电模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核500ms / 中核40ms / 大核30ms<br><br>全面保守调度，小核完全锁最低频，中大核升频很慢，降频极快。',
-    stock:'<b>默认模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，foreground → cpu0-6<br><b>response_time</b>: 小核16ms / 中核64ms / 大核200ms<br><br>恢复出厂sched_pixel参数，Android调度器自主管理。'
-  };
-  document.querySelectorAll('.profile-card[data-profile]').forEach(card=>{
-    let lpt;
-    card.addEventListener('touchstart',()=>{_longPressed=false;lpt=setTimeout(()=>{_longPressed=true;openDetailModal(card.dataset.profile);},500);},{passive:true});
-    card.addEventListener('touchend',()=>clearTimeout(lpt),{passive:true});
-    card.addEventListener('touchmove',()=>clearTimeout(lpt),{passive:true});
-  });
-  function openDetailModal(p){
-    document.getElementById('detail-title').textContent=PROFILES[p]?.name||'详情';
-    document.getElementById('detail-body').innerHTML=PROFILE_DETAILS[p]||'';
-    document.getElementById('modal-detail').classList.add('open');
-  }
-
-  // Long-press on swap card → show memory tuning details
-  const SWAP_DETAIL=`
-<b>ZRAM 算法: lz77eh (Emerald Hill 硬件加速)</b><br>
-Tensor G4 内置的固定功能硬件压缩引擎，压缩/解压由专用电路完成，CPU 零开销、零发热。<br>
-出厂默认 lz4（软件压缩），模块通过 persist 属性 + service.sh 切换为 lz77eh。<br>
-实测压缩率: lz77eh 29.5% vs lz4 38.1%（越低越好）。<br><br>
-
-<b>ZRAM 大小: 11392MB (75% RAM)</b><br>
-出厂默认 50% RAM ≈ 8GB。模块扩容到 11392MB，可容纳更多后台 APP 内存。<br>
-算法和大小在开机后约 48 秒由 service.sh 自动配置（swapoff → reset → swapon，耗时 ~0.2s），用户无感知。<br><br>
-
-<b>swappiness: 100 (默认 150)</b><br>
-控制内核换出匿名页（APP 内存）到 ZRAM 的激进程度。<br>
-值越高 → 越积极换出匿名页，保留文件缓存；值越低 → 优先保留匿名页。<br>
-16GB 设备上 150 过于激进：实测 43% 的换出页面立刻又被需要（workingset refault），造成无效的压缩/解压开销。降到 100 减少无效换页。<br><br>
-
-<b>min_free_kbytes: 65536 (默认 27386)</b><br>
-内核保留的最小空闲内存量，决定 kswapd（后台内存回收线程）的唤醒时机。<br>
-27MB 时 kswapd 在空闲仅剩 ~100MB 才醒来，常来不及回收，导致进程自己做 direct reclaim（阻塞式，引起微卡顿）。<br>
-提到 64MB 后 kswapd 在 ~200MB 就开始后台回收，减少 allocstall 和卡顿。<br><br>
-
-<b>vfs_cache_pressure: 60 (默认 100)</b><br>
-控制内核回收 dentry（目录项）和 inode（文件元数据）缓存的倾向。<br>
-值越低 → 越倾向保留这些缓存，加速文件路径查找（stat/open 等系统调用）。<br>
-对 APP 启动和文件操作有帮助。60 是常见的调优值。`;
-
-  (function(){
-    const sc=document.getElementById('swap-card');
-    if(!sc) return;
-    let lpt;
-    sc.addEventListener('touchstart',e=>{
-      if(e.target.closest('.refresh-btn')) return;
-      lpt=setTimeout(()=>{
-        document.getElementById('detail-title').textContent='内存优化详情';
-        document.getElementById('detail-body').innerHTML=SWAP_DETAIL;
-        document.getElementById('modal-detail').classList.add('open');
-      },500);
-    },{passive:true});
-    sc.addEventListener('touchend',()=>clearTimeout(lpt),{passive:true});
-    sc.addEventListener('touchmove',()=>clearTimeout(lpt),{passive:true});
-  })();
-
-  // Long-press on CPU status card → show full sched_pixel params
-  (function(){
-    const cc=document.getElementById('cpu-status-card');
-    if(!cc) return;
-    let clpt;
-    cc.addEventListener('touchstart',e=>{
-      if(e.target.closest('.refresh-btn')) return;
-      clpt=setTimeout(()=>{
-        const cls=_lastClusters;
-        const CPUSET={
-          game:    'top-app: cpu0-7 全核\nforeground: cpu0-7\nbackground: cpu0-3',
-          balanced:'top-app: cpu4-7\nforeground: cpu4-6\nbackground: cpu0-3',
-          light:   'top-app: cpu4-7\nforeground: cpu4-6\nbackground: cpu0-3',
-          battery: 'top-app: cpu4-7\nforeground: cpu4-6\nbackground: cpu0-3',
-          stock:   'top-app: cpu0-7 (系统默认)\nforeground: cpu0-6\nbackground: cpu0-3',
-        };
-        const cpuset=(CPUSET[currentProfile]||'未设置').split('\n')
-          .map(l=>'<div>'+l+'</div>').join('');
-        let rows='';
-        if(cls&&cls.length){
-          cls.forEach((c,i)=>{
-            const info=CLUSTERS[i]||{};
-            const maxHz=c.max>0?c.max:info.maxHz||0;
-            rows+=`<br><b>${info.label||'Cluster '+i}</b><br>`+
-              `cur: ${c.cur?(c.cur/1000).toFixed(0)+' MHz':'—'} / max: ${maxHz?(maxHz/1000).toFixed(0)+' MHz':'—'}<br>`+
-              `resp_time: ${c.resp_ms??'—'}ms · down_rate: ${c.down_us??'—'}µs<br>`+
-              `governor: ${c.gov||'—'}`;
-          });
-        }else{
-          rows='<br>暂无数据，请先刷新一次';
-        }
-        document.getElementById('detail-title').textContent='CPU 调度参数详情';
-        document.getElementById('detail-body').innerHTML=
-          '<b>cpuset 分配 ('+( PROFILES[currentProfile]?.name||'未知' )+')</b><br>'+cpuset+rows;
-        document.getElementById('modal-detail').classList.add('open');
-      },500);
-    },{passive:true});
-    cc.addEventListener('touchend',()=>clearTimeout(clpt),{passive:true});
-    cc.addEventListener('touchmove',()=>clearTimeout(clpt),{passive:true});
-  })();
-
-  // Long-press on thermal preset cards → show thermal details
-  const THERMAL_DETAILS={
-    0:`<b>默认节流 (原厂阈值)</b><br><br>
-<b>VIRTUAL-SKIN 39°C</b> 开始降频<br>
-CPU-LIGHT-ODPM: 37°C 触发轻度降频<br>
-CPU-MID / CPU-ODPM: 39°C 中度降频<br><br>
-这是 Google 出厂设置，较为保守。日常使用中 VIRTUAL-SKIN 经常在 37-39°C，导致频繁触发降频又解除，反复升降频反而增加功耗和发热。`,
-    2:`<b>轻度节流</b><br>+2°C 偏移<br><br>
-<b>VIRTUAL-SKIN 41°C</b> 开始降频<br>
-CPU-LIGHT-ODPM: 39°C → 42°C<br>
-CPU-MID / CPU-ODPM: 41°C → 45°C<br><br>
-阈值整体上移 2°C，减少日常温度波动区间内的误触发。大部分日常场景下不会触发降频。`,
-    4:`<b>常规节流 (模块默认)</b><br>+4°C 偏移<br><br>
-<b>VIRTUAL-SKIN 43°C</b> 开始降频<br>
-CPU-LIGHT-ODPM: 37°C → 42°C<br>
-CPU-MID / CPU-ODPM: 39°C → 45°C<br>
-CPU-ODPM 深度节流: 41°C → 48°C<br><br>
-渐进式三级降频: 42°C 轻度 → 45°C 中度 → 48°C 深度。大核频率天花板从 1396MHz 提升到 2294MHz（Level 1），给 CPU 更大的性能空间。55/59°C 安全阈值保持不变。`,
-    6:`<b>激进节流</b><br>+6°C 偏移<br><br>
-<b>VIRTUAL-SKIN 45°C</b> 开始降频<br>
-CPU-LIGHT-ODPM: 37°C → 44°C<br>
-CPU-MID / CPU-ODPM: 39°C → 47°C<br>
-CPU-ODPM 深度节流: 41°C → 50°C<br><br>
-最大限度延迟降频介入，允许 CPU 在更高温度��维持高频。手机会更烫，但性能释放最充分。55/59°C 安全阈值保持不变，不会损坏硬件。`,
-  };
-  document.querySelectorAll('#thermal-list .profile-card[data-offset]').forEach(card=>{
-    let tlpt;
-    card.addEventListener('touchstart',()=>{
-      _longPressed=false;
-      tlpt=setTimeout(()=>{
-        _longPressed=true;
-        const off=card.dataset.offset;
-        document.getElementById('detail-title').textContent=THERMAL_PRESETS[off]?.name||'温控详情';
-        document.getElementById('detail-body').innerHTML=THERMAL_DETAILS[off]||'';
-        document.getElementById('modal-detail').classList.add('open');
-      },500);
-    },{passive:true});
-    card.addEventListener('touchend',()=>clearTimeout(tlpt),{passive:true});
-    card.addEventListener('touchmove',()=>clearTimeout(tlpt),{passive:true});
-  });
-})();
-</script>
+<script src="/app.js?v=4.0.3"></script>
 </body>
 </html>
