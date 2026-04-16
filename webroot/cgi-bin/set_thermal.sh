@@ -7,12 +7,18 @@
 #        2. 尝试重启 thermalserviced（无需整机重启）
 #        3. 保存 offset 到 .thermal_offset
 ##############################################################
-MODDIR="/data/adb/modules/pixel9pro_control"
+. "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
+
+require_loopback
+
 OFFSET_FILE="$MODDIR/.thermal_offset"
 STOCK_JSON="$MODDIR/system/vendor/etc/thermal_stock.json"
 OUT_JSON="$MODDIR/system/vendor/etc/thermal_info_config.json"
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
+    require_json_post
+    require_token
+    acquire_lock "thermal"
     len="${CONTENT_LENGTH:-0}"
     [ "$len" -gt 512 ] 2>/dev/null && len=512
     body=$(dd bs=1 count="$len" 2>/dev/null)
@@ -22,16 +28,12 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     case "$offset" in
         0|2|4|6) ;;
         *)
-            printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
-            printf '{"ok":false,"error":"invalid offset: %s"}\n' "$offset"
-            exit 0
+            json_error '400 Bad Request' "invalid offset: $offset"
             ;;
     esac
 
     if [ ! -f "$STOCK_JSON" ]; then
-        printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
-        printf '{"ok":false,"error":"stock json not found"}\n'
-        exit 0
+        json_error '500 Internal Server Error' 'stock json not found'
     fi
 
     # ──────────────────────────────────────────────────────────
@@ -74,9 +76,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     if [ $? -ne 0 ] || [ ! -s "${OUT_JSON}.tmp" ]; then
         rm -f "${OUT_JSON}.tmp"
-        printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
-        printf '{"ok":false,"error":"awk failed"}\n'
-        exit 0
+        json_error '500 Internal Server Error' 'awk failed'
     fi
 
     mv "${OUT_JSON}.tmp" "$OUT_JSON"
@@ -84,7 +84,6 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     # ──────────────────────────────────────────────────────────
     # 尝试重启温控服务使修改立即生效（无需整机重启）
-    # 遍历不同固件版本的服务名
     # ──────────────────────────────────────────────────────────
     restarted=false
     for svc in vendor.thermal-hal vendor.thermal-hal-2-0 thermal-hal-2-0 thermalserviced; do
@@ -99,16 +98,17 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         fi
     done
 
-    printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
+    json_headers
     printf '{"ok":true,"offset":%s,"restarted":%s}\n' "$offset" "$restarted"
 
-else
-    # GET: 返回当前保存的温控档位
+elif [ "$REQUEST_METHOD" = "GET" ]; then
     offset=$(cat "$OFFSET_FILE" 2>/dev/null | tr -d ' \n\r\t')
     case "$offset" in
         0|2|4|6) ;;
         *) offset="4" ;;
     esac
-    printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
+    json_headers
     printf '{"offset":%s}\n' "$offset"
+else
+    json_error '405 Method Not Allowed' 'GET or POST only'
 fi

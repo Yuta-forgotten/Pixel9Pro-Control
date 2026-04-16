@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v3.2.1 — 开机服务
+# service.sh v3.3.1 — 开机服务 (WebUI 安全加固)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → WiFi multicast → WebUI
 #
@@ -18,6 +18,8 @@
 ##############################################################
 MODDIR="${0%/*}"
 PORT=6210
+TOKEN_FILE="$MODDIR/.webui_token"
+LOCKDIR_BASE="$MODDIR/.locks"
 
 # ──────────────────────────────────────────────────────────
 # 1. 等待系统完全启动
@@ -28,9 +30,25 @@ done
 sleep 20
 
 # ──────────────────────────────────────────────────────────
+# 1.1 WebUI 安全: token 生成 + 环境变量导出
+# ──────────────────────────────────────────────────────────
+mkdir -p "$LOCKDIR_BASE" 2>/dev/null
+if [ ! -s "$TOKEN_FILE" ]; then
+    token=$(dd if=/dev/urandom bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    [ -n "$token" ] || token="$(date +%s 2>/dev/null)_$$"
+    printf '%s' "$token" > "$TOKEN_FILE"
+fi
+chmod 600 "$TOKEN_FILE" 2>/dev/null
+
+export PIXEL9PRO_MODDIR="$MODDIR"
+export PIXEL9PRO_WEBUI_PORT="$PORT"
+export PIXEL9PRO_WEBUI_TOKEN_FILE="$TOKEN_FILE"
+export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
+
+# ──────────────────────────────────────────────────────────
 # 2. 系统设置优化 (不影响用户体验的项)
 # ──────────────────────────────────────────────────────────
-log -t pixel9pro_ctrl "v3.2.1: Applying system optimizations..."
+log -t pixel9pro_ctrl "v3.3.1: Applying system optimizations..."
 
 # === Modem 功耗优化 (参考 Mori 帖子 + RMBD 模块) ===
 # 确保 mobile_data_always_on 关闭 (modem 休眠关键)
@@ -102,7 +120,7 @@ echo 65536 > /proc/sys/vm/min_free_kbytes 2>/dev/null
 # vfs_cache_pressure: 100→60, 保留更多 dentry/inode 缓存加速文件路径查找
 echo 60 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
 
-log -t pixel9pro_ctrl "v3.2.3: System optimizations applied (modem+radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v3.3.1: System optimizations applied (modem+radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 3. 应用 CPU 调度方案 (cpuset + sched_pixel 参数)
@@ -157,13 +175,13 @@ done
 
 if [ -n "$BB" ]; then
     chmod 755 "$MODDIR/webroot/cgi-bin/"* 2>/dev/null
-    pkill -f "busybox httpd -p $PORT" 2>/dev/null
+    pkill -f "httpd -p .*${PORT}" 2>/dev/null
     sleep 1
     if "$BB" nc -z 127.0.0.1 $PORT 2>/dev/null; then
         log -t pixel9pro_ctrl "WARNING: port $PORT already in use"
     else
-        "$BB" httpd -p $PORT -h "$MODDIR/webroot"
-        log -t pixel9pro_ctrl "WebUI: http://127.0.0.1:$PORT"
+        "$BB" httpd -p "127.0.0.1:$PORT" -h "$MODDIR/webroot"
+        log -t pixel9pro_ctrl "WebUI(loopback): http://127.0.0.1:$PORT"
     fi
 else
     log -t pixel9pro_ctrl "WARNING: busybox not found"

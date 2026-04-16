@@ -4,9 +4,14 @@
 # GET  → 返回当前 swap/VM 参数 + ZRAM 状态 JSON
 # POST → 切换 optimized / stock VM 参数 (即时生效, 无需重启)
 ##############################################################
-printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
+. "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
+
+require_loopback
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
+    require_json_post
+    require_token
+    acquire_lock "swap"
     len="${CONTENT_LENGTH:-0}"
     [ "$len" -gt 512 ] 2>/dev/null && len=512
     body=$(dd bs=1 count="$len" 2>/dev/null)
@@ -16,19 +21,22 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             echo 100 > /proc/sys/vm/swappiness
             echo 65536 > /proc/sys/vm/min_free_kbytes
             echo 60 > /proc/sys/vm/vfs_cache_pressure
+            json_headers
             printf '{"ok":true,"mode":"optimized"}'
             ;;
         stock)
             echo 150 > /proc/sys/vm/swappiness
             echo 27386 > /proc/sys/vm/min_free_kbytes
             echo 100 > /proc/sys/vm/vfs_cache_pressure
+            json_headers
             printf '{"ok":true,"mode":"stock"}'
             ;;
         *)
-            printf '{"ok":false,"error":"invalid mode"}'
+            json_error '400 Bad Request' 'invalid mode'
             ;;
     esac
-else
+elif [ "$REQUEST_METHOD" = "GET" ]; then
+    json_headers
     sw=$(cat /proc/sys/vm/swappiness 2>/dev/null)
     mfk=$(cat /proc/sys/vm/min_free_kbytes 2>/dev/null)
     vcp=$(cat /proc/sys/vm/vfs_cache_pressure 2>/dev/null)
@@ -53,7 +61,9 @@ else
     fi
 
     printf '{"swappiness":%s,"min_free_kbytes":%s,"vfs_cache_pressure":%s,"zram_algo":"%s","zram_disksize":%s,"stock_zram_size":%s,"zram_orig_bytes":%s,"zram_compr_bytes":%s,"zram_mem_used_bytes":%s,"mode":"%s"}' \
-        "${sw:-0}" "${mfk:-0}" "${vcp:-0}" "${algo:-unknown}" \
+        "${sw:-0}" "${mfk:-0}" "${vcp:-0}" "$(json_escape "${algo:-unknown}")" \
         "${disksize:-0}" "${stock_zram_bytes:-0}" \
         "${orig:-0}" "${compr:-0}" "${mem_used:-0}" "$mode"
+else
+    json_error '405 Method Not Allowed' 'GET or POST only'
 fi

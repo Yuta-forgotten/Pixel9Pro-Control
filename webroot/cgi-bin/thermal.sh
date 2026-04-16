@@ -5,7 +5,11 @@
 # VIRTUAL-SKIN: 来自 dumpsys thermalservice（单位 °C → ×1000 = mC）
 # 其余传感器: 来自 sysfs（单位已是 mC）
 ##############################################################
-printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
+. "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
+
+require_loopback
+[ "$REQUEST_METHOD" = "GET" ] || json_error '405 Method Not Allowed' 'GET only'
+json_headers
 
 out="["
 sep=""

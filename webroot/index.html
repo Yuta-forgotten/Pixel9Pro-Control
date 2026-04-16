@@ -1081,6 +1081,20 @@ const API={
   swap:        '/cgi-bin/swap.sh',
 };
 
+/* ── WebUI Token (安全认证) ────────────────────────────────── */
+let _webuiToken='';
+async function _fetchToken(){
+  try{
+    const d=await fetch(API.info,{cache:'no-store'}).then(r=>r.json());
+    if(d.webui_token) _webuiToken=d.webui_token;
+  }catch(_){}
+}
+function _authHeaders(){
+  const h={'Content-Type':'application/json'};
+  if(_webuiToken) h['X-PIXEL9PRO-TOKEN']=_webuiToken;
+  return h;
+}
+
 // Material You SVG 图标（26×26，用于 hero-icon）
 const ICONS={
   game:`<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>`,
@@ -1294,11 +1308,15 @@ async function cancelThermal(){
 async function doReboot(){
   document.getElementById('modal-reboot').classList.remove('open');
   showToast('正在重启设备…');
-  try{ await fetch(API.reboot,{method:'POST'}); }catch(_){}
+  try{ await fetch(API.reboot,{method:'POST',headers:_authHeaders()}); }catch(_){}
 }
 
 /* ── Utilities ──────────────────────────────────────────────── */
 async function apiFetch(path,opts={}){
+  // 写操作自动附加 token header
+  if(opts.method==='POST'){
+    opts.headers=Object.assign({},_authHeaders(),opts.headers||{});
+  }
   const r=await fetch(path,{cache:'no-store',...opts});
   if(!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
@@ -1954,6 +1972,8 @@ let _longPressed=false;
 (async()=>{
   bindTabSwipe();
   bindPullToRefresh();
+  // 先获取安全 token，后续写操作需要
+  await _fetchToken();
   // 分批加载: busybox httpd 单线程, 并发过多会排队卡住
   await Promise.all([loadInfo(),loadSavedProfile(),loadThermalPreset()]);
   refreshCpu();
