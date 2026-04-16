@@ -1,6 +1,15 @@
-# Pixel 9 Pro Control Module v3.3.0
+# Pixel 9 Pro Control Module v4.0.3
 
-> APatch/KernelSU 模块 — Pixel 9 Pro (Tensor G4) 温控 + CPU 调度 + ZRAM 优化 + 待机功耗优化
+> APatch/KernelSU 模块 — Pixel 9 Pro (Tensor G4) 温控 + CPU 调度 + ZRAM 优化 + 待机功耗优化 + Material 3 WebUI
+
+## 版本选择
+
+| 版本 | 特点 | 适合 |
+|------|------|------|
+| **[v3.3.1](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v3.3.1)** | 安全加固 | 类玻璃态 UI / 稳定核心功能 |
+| **[v4.0.3](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v4.0.3)** | Material 3 重构 + 深色模式 + 热区缓存 | 新 UI 和 bug |
+
+两个版本的核心功能完全一致，v4 版本需要卸载v3版本后安装。
 
 ## 功能
 
@@ -36,12 +45,27 @@
 - 关闭 BLE/WiFi 后台扫描、自适应连接、网络推荐、附近共享
 - 所有设置仅在开机时执行一次，可在系统设置中临时恢复
 
-### WebUI 控制 (v3.3)
-- 端口 6210，`http://127.0.0.1:6210` 访问
-- **状态页**：当前模式 Hero 卡（含温控档位 · VM 状态）+ 实时温度/CPU 频率条/ZRAM 摘要 + 设备信息 + 操作记录
-- **性能页**：实时 CPU 频率详情 + 模式切换
-- **温控页**：实时机身温度 + 传感器矩阵 + 节流档位切换
-- **优化页**：ZRAM/Swap 参数面板 + 功耗优化状态
+### WebUI 控制
+
+端口 6210，`http://127.0.0.1:6210` 访问（仅绑定 127.0.0.1 回环）。
+
+**v4.0.3 Material 3 Expressive + 深色模式**：
+- 深色模式：跟随系统 / 浅色 / 深色 三选一，localStorage 持久化
+- 热区数据走 5s 后台缓存，避免 busybox httpd 单线程被 dumpsys 阻塞
+- 所有 fetch 请求 AbortController 8s 超时，轮询收敛（CPU 3s / thermal 8s / swap 30s）
+
+**四个页面**：
+- **状态**：模式 Hero + 实时温度/CPU 频率/ZRAM 摘要 + 设备信息 + 操作记录
+- **性能**：实时 CPU 频率详情 + 5 种模式切换 + 参数详情按钮
+- **温控**：实时机身温度 + 传感器矩阵 + 4 档节流切换
+- **优化**：ZRAM/Swap 参数面板 + 8 项待机优化状态
+
+### WebUI 安全 (v3.3.1 起)
+- httpd 绑定 `127.0.0.1:6210`
+- 启动时生成随机 token，所有写操作强制 `X-PIXEL9PRO-TOKEN` 头校验
+- 写操作强制 `Content-Type: application/json`，触发 CORS preflight 阻断跨域 CSRF
+- profile / set_thermal / swap 加服务端 mkdir 互斥锁，防并发写抖动
+- v4.0.3 额外收紧 CSP `script-src 'self'`（去 unsafe-inline）
 
 ## 背景
 
@@ -53,7 +77,7 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 ### 关于 foreground cpuset
 
-`foreground` cpuset 由 Android 框架层在 OOM adj 重算时强制写回系统默认值 `0-6`，无法通过文件覆盖修改。小核 `response_time_ms=200ms` 大部分时候锁定 820MHz，调度器应该会优先选择响应更快的中核
+`foreground` cpuset 由 Android 框架层在 OOM adj 重算时强制写回系统默认值 `0-6`，无法通过文件覆盖修改。小核 `response_time_ms=200ms` 大部分时候锁定 820MHz，调度器应该会优先选择响应更快的中核。
 
 ### 关于 down_rate_limit_us
 
@@ -61,9 +85,11 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 ## 安装
 
-1. 下载 ZIP
+1. 从 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 下载 zip（v3.3.1 或 v4.0.3）
 2. APatch / KernelSU → 模块 → 从存储安装
-3. 重启
+3. **整机重启**（service.sh 在 late_start 阶段执行，必须重启才能生效）
+4. 打开 `http://127.0.0.1:6210` 验证 WebUI
+
 
 ## 兼容性
 
@@ -75,19 +101,26 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 ### 卡二屏（卡在开机动画）
 
-| 原因                              | 说明                                                                            | 解决                                                         |
-| ------------------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `thermal_info_config.json` 格式错误 | JSON 语法不合法，Thermal HAL 拒绝加载导致系统服务崩溃循环                                         | 进入安全模式或 Recovery 删除 `/data/adb/modules/pixel9pro_control/` |
-| `service.sh` 阻塞启动               | 脚本中的死循环在 `late_start` 阶段阻塞系统初始化                                               | 同上                                                         |
-| 连续安装模块                          | 短时间内多次 `apd module install` 引发 OverlayFS 竞态，thermal-service 崩溃 → watchdog 死循环 | 每次安装后等待完整重启再操作                                             |
+| 原因 | 说明 | 解决 |
+|------|------|------|
+| `thermal_info_config.json` 格式错误 | JSON 语法不合法，Thermal HAL 拒绝加载 | 安全模式删除 `/data/adb/modules/pixel9pro_control/` |
+| `service.sh` 阻塞启动 | 脚本中的死循环阻塞 late_start | 同上 |
+| 连续安装模块 (B06) | 短时间内多次 `apd module install`，OverlayFS 竞态导致 thermal-service 崩溃 → watchdog 循环 | 每次安装等 ≥30s 再操作 |
+| 禁用温控模块后重启 (B08) | Android 17 Beta 3 的 thermal HAL 对 overlay mount 卸载敏感，见 `dmesg` 里 `"lazy service...unable to"` | 不要先禁用再装新版，直接覆盖安装 |
 
 **紧急恢复**：长按电源键强制关机 → 开机进入第二屏时电源+音量下进安全模式 → 重启
+
+### Chrome Beta 缓存 (B09)
+
+Chrome Beta 对本地 `http://` 资源缓存激进，升级模块后可能仍看到旧 UI。验证方法：顶栏 kicker 显示 `Pixel 9 Pro · UI vX.Y.Z`，对不上就是缓存命中。
+
+**绕过**：访问 `http://127.0.0.1:6210/?r=<随机数>`，或 Chrome 设置→网站设置→127.0.0.1→清除站点数据。
 
 ## 致谢与参考
 
 - **Sun_Dream（酷安）** — cpuset 路由 + sched_pixel 调度思路（小核移出前台、response_time 控制升频）
-- **[RMBD (Reduce Modem Battery Drain)](https://github.com/Ethan-Ming/Reduce_Modem_Battery-Drain)**
-- **[WZL203/Pixel-8-pro-thermal-SOC-Charging-control](https://github.com/WZL203/Pixel-8-pro-thermal-SOC-Charging-controlnl)** — Pixel thermal_info_config.json 温控配置参考
+- **[RMBD (Reduce Modem Battery Drain)](https://github.com/Ethan-Ming/Reduce_Modem_Battery-Drain)** — 待机功耗优化参考
+- **[WZL203/Pixel-8-pro-thermal-SOC-Charging-control](https://github.com/WZL203/Pixel-8-pro-thermal-SOC-Charging-control)** — Pixel thermal_info_config.json 温控配置参考
 
 ## 免责声明
 
