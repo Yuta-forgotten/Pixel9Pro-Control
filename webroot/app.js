@@ -13,6 +13,8 @@ const API = {
   reboot: '/cgi-bin/reboot.sh',
   optimize: '/cgi-bin/optimize.sh',
   swap: '/cgi-bin/swap.sh',
+  nrSwitch: '/cgi-bin/nr_switch.sh',
+  ntp: '/cgi-bin/ntp.sh',
 };
 
 const STORAGE_THEME_KEY = 'pixel9pro_theme_mode';
@@ -49,7 +51,7 @@ const PROFILES = {
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     modeClass: 'mode-game',
-    detail: '<b>游戏模式</b><br><br><b>cpuset</b>: top-app → cpu0-7 全核<br><b>response_time</b>: 小核 8ms / 中核 8ms / 大核 8ms<br><br>游戏进程可使用全部核心，升频和降频都极快。由于全核高频功耗更高，建议在重负载和短时性能场景下使用。'
+    detail: '<b>游戏模式</b><br><br><b>cpuset</b>: top-app → cpu0-7 全核<br><b>response_time</b>: 小核 8ms / 中核 8ms / 大核 8ms<br><br>游戏进程可使用全部核心，升频和降频都极快。全核高频功耗较高，适用于重负载和短时性能场景。'
   },
   balanced: {
     name: '平衡模式',
@@ -114,7 +116,7 @@ const THERMAL_PRESETS = {
   4: {
     name: '常规节流',
     summary: '模块默认档位，VIRTUAL-SKIN 43°C 开始节流。',
-    detail: '<b>常规节流（模块默认）</b><br><br>在默认基础上整体上移 <b>+4°C</b>，VIRTUAL-SKIN 43°C 才开始介入。兼顾性能释放与日常可控温度，是模块默认建议值。',
+    detail: '<b>常规节流（模块默认）</b><br><br>在默认基础上整体上移 <b>+4°C</b>，VIRTUAL-SKIN 43°C 才开始介入。兼顾性能释放与日常可控温度，为模块默认档位。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67z"/></svg>'
   },
   6: {
@@ -127,6 +129,15 @@ const THERMAL_PRESETS = {
 
 const SWAP_DETAIL = '<b>ZRAM 算法: lz77eh (Emerald Hill 硬件加速)</b><br>Tensor G4 内置固定功能压缩引擎，压缩和解压由专用硬件完成，CPU 几乎不参与，适合高频换页场景。<br><br><b>ZRAM 大小: 11392MB (75% RAM)</b><br>原厂默认约为 50% RAM。模块将容量扩容到 11392MB，让更多后台匿名页驻留在 ZRAM 中。<br><br><b>swappiness: 100</b><br>降低匿名页被过度换出的激进程度，减少无效 swap-in / swap-out。<br><br><b>min_free_kbytes: 65536</b><br>提前唤醒 kswapd，减少 direct reclaim 带来的主线程阻塞。<br><br><b>vfs_cache_pressure: 60</b><br>保留更多 inode / dentry 缓存，有利于文件路径查询与应用启动。';
 
+const NR_SWITCH_DETAIL = '<b>NR 息屏降级 (Screen-Off LTE Switch)</b><br><br>开启后，息屏超过 <b>60 秒</b> 时网络模式从 5G NR 切换到 LTE，降低调制解调器射频功耗。亮屏时立即恢复 5G/NR 模式，<b>5GA / 5G CA 能力完全保留</b>。<br><br><b>防抖机制</b><br>- 息屏后等待 60 秒再切换，快速亮屏不会触发<br>- 恢复 NR 后冷却 10 分钟，避免频繁亮灭导致来回切换<br><br><b>原理</b><br>NR_SA Band 41 (100MHz) 射频功耗远高于 LTE 20MHz。息屏时降级为 LTE 可使调制解调器进入更深低功耗态，预期节省 30-50% 蜂窝待机功耗。<br><br><b>注意</b><br>- 切换期间可能有 1-2 秒网络短暂中断<br>- 开启热点时自动跳过降级，保障共享连接<br>- 息屏下载或后台大流量时可关闭此功能<br>- 功能状态即时生效，无需重启';
+
+const NTP_SERVERS = [
+  { id: 'ntp.aliyun.com', name: '阿里云', desc: '阿里云公共 NTP 服务' },
+  { id: 'ntp.myhuaweicloud.com', name: '华为云', desc: '华为云 NTP 服务' },
+  { id: 'ntp1.xiaomi.com', name: '小米', desc: '小米 NTP 服务' },
+  { id: 'time.android.com', name: 'Google 默认', desc: 'Pixel 出厂默认 NTP 服务器' },
+];
+
 const ZONE_LABELS = {
   'VIRTUAL-SKIN': '机身温度',
   'SKIN': '机身温度',
@@ -137,12 +148,12 @@ const ZONE_LABELS = {
 };
 
 const OPT_ITEMS = [
-  { key: 'mobile_data_always_on', label: '移动数据常开', hint: '避免蜂窝与 WiFi 双链路同时常驻待机。', good: '0' },
-  { key: 'wfc_ims_enabled', label: 'VoWiFi 通话', hint: '减少 IWLAN 搜网与 IMS 常驻唤醒。', good: '0' },
+  { key: 'mobile_data_always_on', label: '移动数据常开', hint: '关闭后不影响 5G/CA 能力，但可能略微增加 WiFi→蜂窝回切时延。', good: '0' },
+  { key: 'wfc_ims_enabled', label: 'VoWiFi 通话', hint: '保 5G 分支不再强制修改，避免影响 Wi-Fi Calling / 室内通话连续性。', good: 'unmanaged' },
   { key: 'wifi_scan_always_enabled', label: 'WiFi 后台扫描', hint: '避免熄屏后继续进行环境 WiFi 扫描。', good: '0' },
   { key: 'ble_scan_always_enabled', label: 'BLE 后台扫描', hint: '降低蓝牙扫描与附近设备发现频率。', good: '0' },
-  { key: 'adaptive_connectivity', label: '自适应连接', hint: '减少蜂窝 / WiFi 自动切换判断。', good: '0' },
-  { key: 'network_recommendations', label: '网络推荐', hint: '关闭后台网络评分和推荐广播。', good: '0' },
+  { key: 'adaptive_connectivity', label: '自适应连接', hint: '关闭后不改变 5G/CA 能力，但可能影响 WiFi/蜂窝自动切换与评分。', good: '0' },
+  { key: 'network_recommendations', label: '网络推荐', hint: '关闭后不影响 5G 状态，系统不再自动评估和排序可用 WiFi 网络。', good: '0' },
   { key: 'nearby_sharing', label: '附近共享', hint: '降低 Nearby Sharing 的持续扫描开销。', good: '0' },
   { key: 'multicast', label: 'WiFi Multicast', hint: '息屏时关闭组播，减少 WLAN 唤醒。', good: 'off' }
 ];
@@ -160,6 +171,10 @@ const state = {
   swapBusy: false,
   swapLoading: false,
   optLoading: false,
+  nrSwitch: 'off',
+  nrBusy: false,
+  ntpServer: 'time.android.com',
+  ntpBusy: false,
   cpuRows: null,
   homeCpuRows: null,
   sensorRefs: null,
@@ -226,6 +241,13 @@ function initRefs() {
   refs.swapRows = $('swap-rows');
   refs.optRows = $('opt-rows');
   refs.optRefreshLabel = $('opt-refresh-label');
+  refs.nrSwitchDesc = $('nr-switch-desc');
+  refs.nrSwitchToggleLabel = $('nr-switch-toggle-label');
+  refs.nrSwitchRows = $('nr-switch-rows');
+  refs.ntpDesc = $('ntp-desc');
+  refs.ntpSyncLabel = $('ntp-sync-label');
+  refs.ntpServerList = $('ntp-server-list');
+  refs.ntpInfoRows = $('ntp-info-rows');
   refs.themeModal = $('modal-theme');
   refs.themeChoices = Array.from(document.querySelectorAll('[data-theme-option]'));
   refs.rebootModal = $('modal-reboot');
@@ -236,6 +258,7 @@ function initRefs() {
   refs.pullInd = $('pull-ind');
   refs.pullArc = refs.pullInd.querySelector('.pull-arc');
   refs.tabPages = $('tab-pages');
+  refs.topbar = document.querySelector('.topbar');
 }
 
 function getResolvedTheme(mode) {
@@ -345,12 +368,24 @@ async function apiFetch(path, opts = {}) {
   return response.json();
 }
 
+function syncTopbar() {
+  const page = document.querySelector('.tab-page.active');
+  refs.topbar.classList.toggle('compact', page && page.scrollTop > 40);
+}
+
+function bindTopbarScroll() {
+  document.querySelectorAll('.tab-page').forEach((page) => {
+    page.addEventListener('scroll', syncTopbar, { passive: true });
+  });
+}
+
 function switchTab(tab) {
   if (tab === state.currentTab) return;
   state.currentTab = tab;
   document.querySelectorAll('.tab-page').forEach((page) => page.classList.toggle('active', page.dataset.tab === tab));
   document.querySelectorAll('.tab-item').forEach((item) => item.classList.toggle('active', item.dataset.tab === tab));
   refs.topbarSubtitle.textContent = TAB_META[tab] || '控制台';
+  syncTopbar();
 }
 
 function getSwipeTargetTab(deltaX, deltaY) {
@@ -897,6 +932,138 @@ async function refreshOptimize() {
   }
 }
 
+function renderNrSwitchRows(data) {
+  refs.nrSwitchRows.innerHTML = '';
+  const isOn = data.nr_switch === 'on';
+  const modeNum = Number(data.current_mode);
+  const isLte = !Number.isNaN(modeNum) && modeNum < 23;
+  const modeLabel = Number.isNaN(modeNum) ? data.current_mode : (isLte ? `LTE (${data.current_mode})` : `NR (${data.current_mode})`);
+  const rows = [
+    { label: '功能状态', value: isOn ? '已开启' : '已关闭', cls: isOn ? 'good' : 'off' },
+    { label: '当前网络模式', value: modeLabel, cls: isLte ? 'warn' : 'good' },
+    { label: '保存的 NR 模式值', value: data.saved_nr_mode, cls: 'off' }
+  ];
+  rows.forEach((row) => refs.nrSwitchRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
+  refs.nrSwitchToggleLabel.textContent = isOn ? '关闭' : '开启';
+  refs.nrSwitchDesc.textContent = isOn
+    ? '已开启 · 息屏 60s 后切 LTE，亮屏或热点开启时保持 NR'
+    : '息屏超过 60 秒后切换到 LTE，亮屏立即恢复。热点开启时不降级。';
+}
+
+async function refreshNrSwitch() {
+  try {
+    const data = await apiFetch(API.nrSwitch, { timeoutMs: 6000 });
+    state.nrSwitch = data.nr_switch || 'off';
+    renderNrSwitchRows(data);
+  } catch (err) {
+    refs.nrSwitchRows.innerHTML = `<div class="note-body" style="color:var(--danger)">获取失败：${err.message}</div>`;
+  }
+}
+
+async function toggleNrSwitch() {
+  if (state.nrBusy) return;
+  state.nrBusy = true;
+  try {
+    const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', timeoutMs: 8000 });
+    if (data.ok) {
+      state.nrSwitch = data.nr_switch;
+      showToast(data.nr_switch === 'on' ? 'NR 息屏降级已开启' : 'NR 息屏降级已关闭');
+      appendLog(data.nr_switch === 'on' ? 'NR 息屏降级: 开启' : 'NR 息屏降级: 关闭', 'ok');
+      refreshNrSwitch();
+    } else {
+      showToast('操作失败');
+    }
+  } catch (_) {
+    showToast('请求失败');
+  } finally {
+    state.nrBusy = false;
+  }
+}
+
+function renderNtpCard(data) {
+  refs.ntpServerList.innerHTML = '';
+  const current = data.ntp_server || 'time.android.com';
+  state.ntpServer = current;
+  NTP_SERVERS.forEach((srv) => {
+    const card = document.createElement('div');
+    card.className = `opt-item${srv.id === current ? ' ntp-selected' : ''}`;
+    card.style.cursor = 'pointer';
+    card.innerHTML = `
+      <div class="opt-item-head">
+        <div class="opt-label">${srv.name}</div>
+        <span class="badge ${srv.id === current ? 'good' : 'off'}">${srv.id === current ? '当前' : '切换'}</span>
+      </div>
+      <div class="opt-meta">${srv.id} · ${srv.desc}</div>`;
+    card.addEventListener('click', () => setNtpServer(srv.id));
+    refs.ntpServerList.appendChild(card);
+  });
+  refs.ntpInfoRows.innerHTML = '';
+  refs.ntpInfoRows.appendChild(buildInfoRow('设备时间', data.device_time || '—', ''));
+  refs.ntpInfoRows.appendChild(buildInfoRow('自动同步', data.auto_time === '1' ? '已开启' : '已关闭', data.auto_time === '1' ? 'good' : 'warn'));
+  const ntpLabel = NTP_SERVERS.find((s) => s.id === current)?.name || current;
+  refs.ntpDesc.textContent = `当前: ${ntpLabel} (${current})`;
+}
+
+async function refreshNtp() {
+  try {
+    const data = await apiFetch(API.ntp, { timeoutMs: 6000 });
+    renderNtpCard(data);
+  } catch (err) {
+    refs.ntpServerList.innerHTML = `<div class="note-body" style="color:var(--danger)">获取失败：${err.message}</div>`;
+  }
+}
+
+async function setNtpServer(server) {
+  if (state.ntpBusy || server === state.ntpServer) return;
+  state.ntpBusy = true;
+  try {
+    const data = await apiFetch(API.ntp, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ server }),
+      timeoutMs: 10000
+    });
+    if (data.ok) {
+      const label = NTP_SERVERS.find((s) => s.id === server)?.name || server;
+      showToast(`NTP 已切换为 ${label} 并同步`);
+      appendLog(`NTP: ${server}`, 'ok');
+      refreshNtp();
+    } else {
+      showToast(`切换失败：${data.error || '未知'}`);
+    }
+  } catch (_) {
+    showToast('请求失败');
+  } finally {
+    state.ntpBusy = false;
+  }
+}
+
+async function syncNtp() {
+  if (state.ntpBusy) return;
+  state.ntpBusy = true;
+  refs.ntpSyncLabel.textContent = '同步中…';
+  try {
+    const data = await apiFetch(API.ntp, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'sync' }),
+      timeoutMs: 10000
+    });
+    if (data.ok) {
+      showToast('时间已同步');
+      appendLog(`NTP 同步完成: ${data.device_time}`, 'ok');
+      refreshNtp();
+    } else {
+      showToast('同步失败');
+    }
+  } catch (_) {
+    showToast('同步请求失败');
+  } finally {
+    refs.ntpSyncLabel.textContent = '立即同步';
+    state.ntpBusy = false;
+  }
+}
+
 async function applyProfile(profile) {
   if (profile === state.currentProfile || state.cpuBusy) return;
   const card = refs.profileList.querySelector(`[data-profile="${profile}"]`);
@@ -1000,6 +1167,8 @@ async function doFullRefresh() {
   showToast('正在刷新…', 1000);
   await Promise.all([refreshCpu(), refreshThermal(), refreshSwap()]);
   refreshOptimize();
+  refreshNrSwitch();
+  refreshNtp();
   loadInfo();
   showToast('已刷新');
 }
@@ -1034,6 +1203,9 @@ function bindStaticEvents() {
   $('swap-toggle-btn').addEventListener('click', toggleSwapMode);
   $('swap-detail-btn').addEventListener('click', () => openDetail('内存优化详情', SWAP_DETAIL));
   $('opt-refresh-btn').addEventListener('click', refreshOptimize);
+  $('nr-switch-toggle-btn').addEventListener('click', toggleNrSwitch);
+  $('nr-switch-detail-btn').addEventListener('click', () => openDetail('NR 息屏降级详情', NR_SWITCH_DETAIL));
+  $('ntp-sync-btn').addEventListener('click', syncNtp);
   $('log-toggle').addEventListener('click', () => refs.logCard.classList.toggle('open'));
   $('theme-close-btn').addEventListener('click', closeThemeSheet);
   $('detail-close-btn').addEventListener('click', closeDetailModal);
@@ -1092,6 +1264,7 @@ async function init() {
   bindStaticEvents();
   bindTabSwipe();
   bindPullToRefresh();
+  bindTopbarScroll();
   refs.topbarSubtitle.textContent = TAB_META[state.currentTab];
   positionMarkers();
   await loadInfo();
@@ -1100,6 +1273,8 @@ async function init() {
   await refreshThermal();
   window.setTimeout(refreshOptimize, 1000);
   window.setTimeout(refreshSwap, 1400);
+  window.setTimeout(refreshNrSwitch, 1800);
+  window.setTimeout(refreshNtp, 2200);
   startPolling();
 }
 

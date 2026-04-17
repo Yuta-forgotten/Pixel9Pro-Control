@@ -38,9 +38,10 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     # ──────────────────────────────────────────────────────────
     # 用 awk 将目标传感器的 HotThreshold 数值整体 +offset
-    # 目标传感器：VIRTUAL-SKIN / VIRTUAL-SKIN-HINT / VIRTUAL-SKIN-SOC
+    # 目标传感器 (Pro + Pro XL 共有):
+    #   VIRTUAL-SKIN / VIRTUAL-SKIN-HINT / VIRTUAL-SKIN-SOC
+    #   VIRTUAL-SKIN-CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU
     # HotThreshold 中的 "NAN" 字符串跳过，其余浮点数 +offset
-    # 不修改 HotHysteresis，不修改充电链路传感器
     # ──────────────────────────────────────────────────────────
     awk -v off="$offset" '
     /"Name":/ {
@@ -48,7 +49,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         sub(/.*"Name": *"/, "", n)
         sub(/".*/, "", n)
         cur = n
-        tgt = (cur == "VIRTUAL-SKIN" || cur == "VIRTUAL-SKIN-HINT" || cur == "VIRTUAL-SKIN-SOC" || cur == "VIRTUAL-SKIN-CPU-LIGHT-ODPM" || cur == "VIRTUAL-SKIN-CPU-MID" || cur == "VIRTUAL-SKIN-CPU-ODPM")
+        tgt = (cur == "VIRTUAL-SKIN" || cur == "VIRTUAL-SKIN-HINT" || cur == "VIRTUAL-SKIN-SOC" || cur == "VIRTUAL-SKIN-CPU-LIGHT-ODPM" || cur == "VIRTUAL-SKIN-CPU-MID" || cur == "VIRTUAL-SKIN-CPU-ODPM" || cur == "VIRTUAL-SKIN-CPU-HIGH" || cur == "VIRTUAL-SKIN-GPU")
     }
     tgt && /"HotThreshold":/ {
         line = $0

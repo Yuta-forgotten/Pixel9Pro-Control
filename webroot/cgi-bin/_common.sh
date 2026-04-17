@@ -63,20 +63,39 @@ require_token() {
     [ "$actual" = "$expected" ] || json_error '403 Forbidden' 'invalid token'
 }
 
-# 文件锁 (mkdir 原子操作)
+# 文件锁 (mkdir 原子操作 + 过期自动回收)
 acquire_lock() {
     name="$1"
     mkdir -p "$LOCKDIR_BASE" 2>/dev/null
     LOCK_PATH="$LOCKDIR_BASE/${name}.lock"
     if mkdir "$LOCK_PATH" 2>/dev/null; then
+        echo "$$" > "$LOCK_PATH/pid" 2>/dev/null
         trap 'release_lock' EXIT INT TERM
         return 0
+    fi
+    # 检查持有锁的进程是否仍然存活
+    _lock_pid=$(cat "$LOCK_PATH/pid" 2>/dev/null)
+    _stale=0
+    if [ -z "$_lock_pid" ]; then
+        _stale=1
+    elif ! kill -0 "$_lock_pid" 2>/dev/null; then
+        _stale=1
+    fi
+    if [ "$_stale" -eq 1 ]; then
+        rm -f "$LOCK_PATH/pid" 2>/dev/null
+        rmdir "$LOCK_PATH" 2>/dev/null
+        if mkdir "$LOCK_PATH" 2>/dev/null; then
+            echo "$$" > "$LOCK_PATH/pid" 2>/dev/null
+            trap 'release_lock' EXIT INT TERM
+            return 0
+        fi
     fi
     json_error '409 Conflict' "${name} busy"
 }
 
 release_lock() {
     if [ -n "$LOCK_PATH" ]; then
+        rm -f "$LOCK_PATH/pid" 2>/dev/null
         rmdir "$LOCK_PATH" 2>/dev/null
         LOCK_PATH=""
     fi

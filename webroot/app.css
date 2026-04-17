@@ -99,7 +99,10 @@ button{border:none;background:none;padding:0;color:inherit}
   flex-shrink:0;
   background:var(--surface);
   border-bottom:1px solid var(--line);
+  transition:box-shadow var(--mid) var(--ease);
 }
+
+.topbar.compact{box-shadow:0 2px 8px rgba(0,0,0,.06)}
 
 .topbar-inner{
   min-height:var(--topbar-h);
@@ -107,7 +110,35 @@ button{border:none;background:none;padding:0;color:inherit}
   display:flex;
   flex-direction:column;
   gap:10px;
+  transition:padding var(--mid) var(--ease),gap var(--mid) var(--ease),min-height var(--mid) var(--ease);
 }
+
+.topbar.compact .topbar-inner{
+  min-height:auto;
+  padding:calc(env(safe-area-inset-top,0px) + 6px) 16px 8px;
+  gap:0;
+}
+
+.topbar .kicker,
+.topbar .topbar-subtitle,
+.topbar .status-strip{
+  overflow:hidden;
+  transition:opacity var(--fast) var(--ease),max-height var(--mid) var(--ease),margin var(--mid) var(--ease);
+}
+
+.topbar .kicker{max-height:20px}
+.topbar .topbar-subtitle{max-height:24px}
+.topbar .status-strip{max-height:80px}
+
+.topbar.compact .kicker,
+.topbar.compact .topbar-subtitle,
+.topbar.compact .status-strip{
+  opacity:0;
+  max-height:0;
+  margin:0;
+}
+
+.topbar.compact .topbar-title{margin-top:0}
 
 .topbar-row,
 .section-head,
@@ -305,7 +336,8 @@ button{border:none;background:none;padding:0;color:inherit}
 .sensor-list,
 .theme-grid,
 .modal-actions,
-.opt-grid{
+.opt-grid,
+.ntp-server-list{
   display:flex;
   flex-direction:column;
   gap:10px;
@@ -695,6 +727,11 @@ button{border:none;background:none;padding:0;color:inherit}
   border-radius:18px;
   background:var(--surface-2);
   border:1px solid var(--line);
+  transition:border-color .2s,background .2s;
+}
+.opt-item.ntp-selected{
+  border-color:var(--primary);
+  background:var(--primary-container,rgba(35,167,140,.08));
 }
 
 .opt-label{

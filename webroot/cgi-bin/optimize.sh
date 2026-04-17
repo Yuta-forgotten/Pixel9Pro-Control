@@ -10,12 +10,21 @@ require_loopback
 json_headers
 
 mda=$(settings get global mobile_data_always_on 2>/dev/null | tr -d ' \n\r')
-wfc=$(settings get global wfc_ims_enabled 2>/dev/null | tr -d ' \n\r')
 wscan=$(settings get global wifi_scan_always_enabled 2>/dev/null | tr -d ' \n\r')
 bscan=$(settings get global ble_scan_always_enabled 2>/dev/null | tr -d ' \n\r')
-adapt=$(settings get secure adaptive_connectivity_enabled 2>/dev/null | tr -d ' \n\r')
+adapt_legacy=$(settings get secure adaptive_connectivity_enabled 2>/dev/null | tr -d ' \n\r')
+adapt_wifi=$(settings get secure adaptive_connectivity_wifi_enabled 2>/dev/null | tr -d ' \n\r')
 netrec=$(settings get global network_recommendations_enabled 2>/dev/null | tr -d ' \n\r')
 nearby=$(settings get global nearby_sharing_enabled 2>/dev/null | tr -d ' \n\r')
+
+# Keep-5G 分支不再托管 VoWiFi / WFC，避免对 Wi-Fi Calling 造成确定性副作用。
+wfc="unmanaged"
+
+case "${adapt_legacy}:${adapt_wifi}" in
+    0:0) adapt="0" ;;
+    1:*|*:1) adapt="1" ;;
+    *) adapt="${adapt_legacy:-$adapt_wifi}" ;;
+esac
 
 # multicast: 检查 wlan0 接口标志位
 mc="off"

@@ -10,7 +10,7 @@
 <meta http-equiv="Expires" content="0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' http://127.0.0.1:6210; connect-src 'self' http://127.0.0.1:6210; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' http://127.0.0.1:6210">
 <title>温控调度控制台</title>
-<link rel="stylesheet" href="/app.css?v=4.0.3">
+<link rel="stylesheet" href="/app.css?v=4.1.0">
 </head>
 <body>
 <div class="app-shell">
@@ -18,7 +18,7 @@
     <div class="topbar-inner">
       <div class="topbar-row">
         <div class="topbar-copy">
-          <div class="kicker">Pixel 9 Pro · UI v4.0.3</div>
+          <div class="kicker">Pixel 9 Pro · UI v4.1.0</div>
           <div class="topbar-title">温控调度控制台</div>
           <div class="topbar-subtitle" id="topbar-subtitle">状态总览</div>
         </div>
@@ -265,7 +265,7 @@
             <div class="panel-copy">
               <div class="kicker">待机优化</div>
               <div class="panel-title">开机自动设置</div>
-              <div class="panel-desc">模块会在启动后把后台网络与扫描项压到推荐状态；需要时仍可在系统设置里临时恢复。</div>
+              <div class="panel-desc">模块在开机时将后台网络与扫描项设为优化状态，需要时可在系统设置里恢复。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn" id="opt-refresh-btn" type="button"><span id="opt-refresh-label">刷新</span></button>
@@ -275,6 +275,42 @@
             <div class="skel" style="height:72px"></div>
             <div class="skel" style="height:72px"></div>
             <div class="skel" style="height:72px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">蜂窝省电</div>
+              <div class="panel-title">NR 息屏降级</div>
+              <div class="panel-desc" id="nr-switch-desc">息屏超过 60 秒后切换到 LTE，亮屏立即恢复。热点开启时不降级。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="nr-switch-detail-btn" type="button">详情</button>
+              <button class="tiny-btn primary" id="nr-switch-toggle-btn" type="button"><span id="nr-switch-toggle-label">读取中…</span></button>
+            </div>
+          </div>
+          <div class="data-list" id="nr-switch-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">时间同步</div>
+              <div class="panel-title">NTP 服务器</div>
+              <div class="panel-desc" id="ntp-desc">选择 NTP 时间同步服务器，修正设备时钟偏差。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn primary" id="ntp-sync-btn" type="button"><span id="ntp-sync-label">立即同步</span></button>
+            </div>
+          </div>
+          <div class="ntp-server-list" id="ntp-server-list" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+          <div class="data-list" id="ntp-info-rows" style="margin-top:10px">
+            <div class="skel" style="height:32px"></div>
           </div>
         </article>
 
@@ -369,6 +405,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=4.0.3"></script>
+<script src="/app.js?v=4.1.0"></script>
 </body>
 </html>

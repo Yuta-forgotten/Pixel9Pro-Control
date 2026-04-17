@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.0.0 — 开机服务 (M3 WebUI + 热区缓存)
+# service.sh v4.1.0 — 开机服务 (M3 WebUI + 热区缓存)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → WiFi multicast → WebUI
 #
@@ -21,6 +21,46 @@ PORT=6210
 TOKEN_FILE="$MODDIR/.webui_token"
 THERMAL_CACHE="$MODDIR/.thermal_cache.json"
 LOCKDIR_BASE="$MODDIR/.locks"
+
+restore_ntp_server() {
+    NTP_SAVE="$MODDIR/.ntp_server"
+    if [ -s "$NTP_SAVE" ]; then
+        _saved=$(cat "$NTP_SAVE" 2>/dev/null | tr -d ' \n\r')
+        case "$_saved" in
+            ntp.aliyun.com|ntp.myhuaweicloud.com|ntp1.xiaomi.com|time.android.com)
+                settings put global ntp_server "$_saved" 2>/dev/null
+                log -t pixel9pro_ctrl "NTP server restored: $_saved"
+                ;;
+        esac
+    fi
+}
+
+apply_keep5g_standby_settings() {
+    # 保留 5G / 5GA / CA 能力时，仍然建议关闭 mobile_data_always_on。
+    # AOSP 定义表明该项仅用于在 Wi-Fi 等高优先级网络存在时，让蜂窝数据链路继续常驻以加快切换。
+    # 关闭它不会取消 NR 注册或 CA 能力，但在 Wi-Fi -> 蜂窝回切时可能带来轻微时延。
+    settings put global mobile_data_always_on 0 2>/dev/null
+
+    # keep-5G 分支显式不强制关闭 VoWiFi / WFC。
+    # AOSP 中 wfc_ims_enabled 是 Wi-Fi Calling 用户开关；强制关闭会明确影响室内弱覆盖场景的通话连续性。
+    # 该项对 5G/5GA/CA 能力本身没有收益，因此本版暂停托管。
+
+    # 扫描与 Nearby 相关项对 5G 能力本身无直接影响，仅减少息屏扫描和发现流量。
+    settings put global nearby_sharing_enabled 0 2>/dev/null
+    settings put secure nearby_sharing_slice_enabled 0 2>/dev/null
+    settings put global wifi_scan_always_enabled 0 2>/dev/null
+    settings put global ble_scan_always_enabled 0 2>/dev/null
+
+    # AOSP Settings/Settings app 显示 Adaptive Connectivity 会联动 WifiManager#setWifiScoringEnabled。
+    # 关闭它不会改变 5G 注册状态，但可能影响 Wi-Fi/蜂窝自动切换与评分策略。
+    # 兼容当前机型实测存在的双键位：旧键 adaptive_connectivity_enabled，新键 adaptive_connectivity_wifi_enabled。
+    settings put secure adaptive_connectivity_enabled 0 2>/dev/null
+    settings put secure adaptive_connectivity_wifi_enabled 0 2>/dev/null
+
+    # Network recommendations 只影响 NetworkScoreService / recommendation provider，不改变 5G 能力。
+    # 关闭后可能削弱系统对候选 Wi-Fi 的推荐与自动评分，因此仅在保 5G 待机分支里作为“可接受副作用”处理。
+    settings put global network_recommendations_enabled 0 2>/dev/null
+}
 
 # ──────────────────────────────────────────────────────────
 # 1. 等待系统完全启动
@@ -48,38 +88,19 @@ export PIXEL9PRO_THERMAL_CACHE="$THERMAL_CACHE"
 export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
 
 # ──────────────────────────────────────────────────────────
-# 2. 系统设置优化 (不影响用户体验的项)
+# 2. 系统设置优化 (保 5G 分支)
 # ──────────────────────────────────────────────────────────
-log -t pixel9pro_ctrl "v4.0.0: Applying system optimizations..."
+log -t pixel9pro_ctrl "v4.1.0: Applying keep-5G standby optimizations..."
 
-# === Modem 功耗优化 (参考 Mori 帖子 + RMBD 模块) ===
-# 确保 mobile_data_always_on 关闭 (modem 休眠关键)
-settings put global mobile_data_always_on 0 2>/dev/null
-
-# 关闭 VoWiFi / WiFi Calling (IWLAN 持续搜索注册是 modem 唤醒源)
-# 中国广电走 NR SA VoLTE 通话, 不需要 VoWiFi
-# 如需恢复: settings put global wfc_ims_enabled 1
-settings put global wfc_ims_enabled 0 2>/dev/null
+# === Modem / 待机优化 (参考 Mori 帖子 + RMBD 模块) ===
+# 开机时先应用 keep-5G 分支设置，再由后续延迟复写兜住开机后被系统回写的项目。
+apply_keep5g_standby_settings
+restore_ntp_server
 
 # 开机时先全局关闭 WiFi multicast (RMBD 基础策略)
 # 后续由 screen-aware 循环在亮屏时恢复
 dumpsys wifi disable-multicast 2>/dev/null
 ip link set wlan0 multicast off 2>/dev/null
-
-# === 射频扫描优化 ===
-# 关闭附近共享 (减少 BLE/WiFi 扫描, 来自 RMBD 模块)
-settings put global nearby_sharing_enabled 0 2>/dev/null
-settings put secure nearby_sharing_slice_enabled 0 2>/dev/null
-
-# 确保 WiFi/BLE 后台扫描关闭
-settings put global wifi_scan_always_enabled 0 2>/dev/null
-settings put global ble_scan_always_enabled 0 2>/dev/null
-
-# 关闭自适应连接 (Pixel 特有, 频繁切换 WiFi/蜂窝增加 modem 活动)
-settings put secure adaptive_connectivity_enabled 0 2>/dev/null
-
-# 关闭网络推荐 (减少后台网络评分/切换)
-settings put global network_recommendations_enabled 0 2>/dev/null
 
 # === 内核 I/O 参数优化 ===
 echo 3000 > /proc/sys/vm/dirty_writeback_centisecs 2>/dev/null
@@ -122,7 +143,17 @@ echo 65536 > /proc/sys/vm/min_free_kbytes 2>/dev/null
 # vfs_cache_pressure: 100→60, 保留更多 dentry/inode 缓存加速文件路径查找
 echo 60 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
 
-log -t pixel9pro_ctrl "v4.0.0: System optimizations applied (modem+radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.1.0: Keep-5G standby settings applied (radio+kernel+swap+zram)"
+
+# Android 17 / Pixel 组件在用户解锁后仍可能回写部分 secure/global key。
+# 对保 5G 分支无直接负面影响的项做一次延迟复写，避免 adaptive connectivity /
+# network recommendations 这类设置在 late_start 之后被拉回默认值。
+(
+    sleep 120
+    apply_keep5g_standby_settings
+    restore_ntp_server
+    log -t pixel9pro_ctrl "Keep-5G standby settings re-applied after late boot"
+) &
 
 # ──────────────────────────────────────────────────────────
 # 3. 应用 CPU 调度方案 (cpuset + sched_pixel 参数)
@@ -164,6 +195,90 @@ log -t pixel9pro_ctrl "CPU profile: $PROFILE"
     done
 ) &
 log -t pixel9pro_ctrl "WiFi multicast screen-aware started"
+
+# ──────────────────────────────────────────────────────────
+# 4.2 NR 息屏降级 (息屏 → LTE, 亮屏 → 恢复 5G/NR)
+#     防抖: 息屏满 60s 后切 LTE; 恢复 NR 后 120s 冷却期不切
+#     默认关闭，需通过 WebUI 手动开启
+# ──────────────────────────────────────────────────────────
+NR_SWITCH_FILE="$MODDIR/.nr_screen_switch"
+NR_MODE_FILE="$MODDIR/.nr_saved_mode"
+[ -f "$NR_SWITCH_FILE" ] || echo "off" > "$NR_SWITCH_FILE"
+(
+    _nr_key="preferred_network_mode1"
+    _v=$(settings get global preferred_network_mode1 2>/dev/null | tr -d ' \n\r')
+    if [ -z "$_v" ] || [ "$_v" = "null" ]; then
+        _nr_key="preferred_network_mode"
+    fi
+
+    _cur=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
+    if [ -n "$_cur" ] && [ "$_cur" != "null" ] && [ "$_cur" -ge 23 ] 2>/dev/null; then
+        echo "$_cur" > "$NR_MODE_FILE"
+    elif [ ! -s "$NR_MODE_FILE" ]; then
+        echo "33" > "$NR_MODE_FILE"
+    fi
+
+    _state="5g"
+    _off_since=0
+    _nr_restored=0
+    _DELAY=60
+    _COOLDOWN=600
+    _LTE=9
+
+    while true; do
+        _enabled=$(cat "$NR_SWITCH_FILE" 2>/dev/null)
+        _now=$(date +%s 2>/dev/null || echo 0)
+
+        if [ "$_enabled" != "on" ]; then
+            if [ "$_state" = "lte" ]; then
+                settings put global "$_nr_key" "$(cat "$NR_MODE_FILE" 2>/dev/null || echo 33)" 2>/dev/null
+                _state="5g"
+                _nr_restored=$_now
+                log -t pixel9pro_ctrl "NR switch: disabled, restored NR"
+            fi
+            _off_since=0
+            sleep 5
+            continue
+        fi
+
+        _scr=$(dumpsys display 2>/dev/null | grep "mScreenState=" | head -1 | sed 's/.*mScreenState=//' | tr -d ' ')
+        [ -z "$_scr" ] && _scr=$(dumpsys power 2>/dev/null | grep "mWakefulness=" | head -1 | sed 's/.*mWakefulness=//' | tr -d ' ')
+
+        case "$_scr" in
+            OFF|Dozing|Asleep)
+                if [ "$_state" = "5g" ]; then
+                    [ "$_off_since" -eq 0 ] && _off_since=$_now
+                    _elapsed=$((_now - _off_since))
+                    _since_nr=$((_now - _nr_restored))
+                    if [ "$_elapsed" -ge "$_DELAY" ] && [ "$_since_nr" -ge "$_COOLDOWN" ]; then
+                        _tether=0
+                        for _tif in swlan0 wlan1 wlan2 ap0 rndis0 ncm0; do
+                            [ -d "/sys/class/net/$_tif" ] && _tether=1 && break
+                        done
+                        if [ "$_tether" -eq 0 ]; then
+                            _cur=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
+                            [ -n "$_cur" ] && [ "$_cur" != "null" ] && [ "$_cur" -ge 23 ] 2>/dev/null && echo "$_cur" > "$NR_MODE_FILE"
+                            settings put global "$_nr_key" "$_LTE" 2>/dev/null
+                            _state="lte"
+                            log -t pixel9pro_ctrl "NR switch: off ${_elapsed}s, switched to LTE"
+                        fi
+                    fi
+                fi
+                ;;
+            *)
+                _off_since=0
+                if [ "$_state" = "lte" ]; then
+                    settings put global "$_nr_key" "$(cat "$NR_MODE_FILE" 2>/dev/null || echo 33)" 2>/dev/null
+                    _state="5g"
+                    _nr_restored=$_now
+                    log -t pixel9pro_ctrl "NR switch: screen on, restored NR"
+                fi
+                ;;
+        esac
+        sleep 5
+    done
+) &
+log -t pixel9pro_ctrl "NR screen-aware switch initialized (default: off)"
 
 # ──────────────────────────────────────────────────────────
 # 4.1 热区缓存后台任务
