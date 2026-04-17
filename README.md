@@ -6,8 +6,8 @@
 
 | 版本 | 特点 | 适合 |
 |------|------|------|
-| **[v3.3.1](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v3.3.1)** | 安全加固版 | 类玻璃态 UI / 稳定核心功能 |
-| **[v4.1.0](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v4.1.0)** | Material 3 + 双机型 + NR 息屏降级 | Pro & Pro XL 全功能 |
+| **[v3.3.1](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v3.3.1)** | 安全加固版 | 类玻璃态 UI / 核心功能 |
+| **[v4.1.0](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v4.1.0)** | Material 3 + 双机型 + NR 息屏降级 | 支持Pro XL |
 
 两个版本的核心功能一致，v4 版本需要卸载 v3 版本后安装。
 
@@ -15,10 +15,10 @@
 
 | 设备 | 代号 | 状态 |
 |------|------|------|
-| Pixel 9 Pro | caiman | 完整支持 (主开发机型) |
-| Pixel 9 Pro XL | komodo | 完整支持 (v4.1.0 起) |
+| Pixel 9 Pro | caiman | 完整支持 |
+| Pixel 9 Pro XL | komodo | 支持 (v4.1.0 起) |
 
-安装时自动检测机型，刷入对应的温控配置。两个设备共享同一 SoC (Tensor G4)，所有功能均可用。
+安装时自动检测机型，刷入对应的温控配置。
 
 ## 功能
 
@@ -38,12 +38,12 @@
 
 | 档位 | VIRTUAL-SKIN 起始节流 | 说明 |
 |------|----------------------|------|
-| 默认节流 | 39°C (原厂) | 恢复出厂阈值 |
+| 默认节流 | 39°C (原厂) | 出厂阈值 |
 | 轻度节流 | 41°C (+2°C) | 减少日常误触发 |
 | 常规节流 | 43°C (+4°C) | **模块默认**，兼顾性能释放与温控 |
-| 激进节流 | 45°C (+6°C) | 高负载短时冲刺 |
+| 激进节流 | 45°C (+6°C) | 未测试 |
 
-偏移覆盖 8 个 VIRTUAL-SKIN 节流传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU），安全阈值 (55°C/59°C) 保留不动。切换后自动重启 thermal 服务，无需整机重启。
+偏移覆盖 8 个 VIRTUAL-SKIN 节流传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU），安全阈值 (55°C/59°C) 保留不动。切换后自动重启 thermal 服务。
 
 ### ZRAM / 内存优化
 
@@ -51,10 +51,9 @@
 - **容量**：11392MB（默认 ~8GB / 50% RAM，模块扩展至 75% RAM）
 - **VM 参数**：swappiness 150→100 · min_free_kbytes 27386→65536 · vfs_cache_pressure 100→60
 
-### 待机功耗优化 (保 5G)
+### 待机功耗优化 (保障 5G连接)
 
-- 关闭 `mobile_data_always_on`（不影响 5G/CA 能力，可能略增 WiFi→蜂窝回切时延）
-- **不强制关闭 VoWiFi**（避免影响 Wi-Fi Calling / 室内通话连续性）
+- 关闭 `mobile_data_always_on`（不影响 5G/CA 能力，略增 WiFi→蜂窝回切时延）
 - WiFi multicast 息屏自动关闭
 - 关闭 BLE/WiFi 后台扫描、自适应连接、网络推荐、附近共享
 - 开机后延迟复写一次易被系统回弹的待机项
@@ -82,11 +81,6 @@
 - 顶栏滚动自动收起
 - 下拉刷新 + 左右滑动切换页面
 
-**四个页面**：
-- **状态**：模式 Hero + 实时温度/CPU 频率/ZRAM 摘要 + 设备信息 + 操作记录
-- **性能**：实时 CPU 频率详情 + 5 种模式切换
-- **温控**：实时机身温度 + 传感器矩阵 + 4 档节流切换
-- **优化**：ZRAM/Swap 参数 + 待机优化状态 + NR 息屏降级 + NTP 服务器
 
 ### WebUI 安全
 
@@ -118,7 +112,7 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 ## 兼容性
 
-- **设备**：Pixel 9 Pro (caiman) / Pixel 9 Pro XL (komodo)
+- **设备**：Pixel 9 Pro (caiman) ， Pixel 9 Pro XL (komodo)（未经测试）
 - **系统**：基于 **Android 17 Beta 3 (SDK 37)** 开发和测试
 - **Root**：APatch 0.10+ / KernelSU
 
@@ -160,7 +154,7 @@ Chrome 对本地 `http://` 资源缓存激进。验证方法：顶栏 kicker 显
 
 **用户应在充分理解上述风险的前提下自行决定是否安装和使用本模块。作者不对因使用本模块造成的任何直接或间接损害承担责任，包括但不限于设备损坏、数据丢失、电池损耗或保修失效。**
 
-### 商标声明
+### 声明
 
 - **Pixel** 是 Google LLC 的注册商标。
 - **Android** 是 Google LLC 的注册商标。
