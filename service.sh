@@ -135,13 +135,21 @@ else
     log -t pixel9pro_ctrl "ZRAM: already $TARGET_ALGO $(($TARGET_SIZE / 1048576))MB, skip"
 fi
 
-# === Swap / 内存回收调优 (即时生效) ===
-# swappiness: 150→100, 减少无效换页(stock 150 在16GB设备上43%页面被无谓换出又换回)
-echo 100 > /proc/sys/vm/swappiness 2>/dev/null
-# min_free_kbytes: 27MB→64MB, 提前唤醒 kswapd 减少 direct reclaim 和 allocstall
-echo 65536 > /proc/sys/vm/min_free_kbytes 2>/dev/null
-# vfs_cache_pressure: 100→60, 保留更多 dentry/inode 缓存加速文件路径查找
-echo 60 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
+# === Swap / 内存回收调优 (按上次用户选择恢复) ===
+SWAP_MODE=$(cat "$MODDIR/.swap_mode" 2>/dev/null | tr -d ' \n\r')
+case "$SWAP_MODE" in
+    stock)
+        echo 150 > /proc/sys/vm/swappiness 2>/dev/null
+        echo 27386 > /proc/sys/vm/min_free_kbytes 2>/dev/null
+        echo 100 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
+        log -t pixel9pro_ctrl "Swap: restored stock VM params"
+        ;;
+    *)
+        echo 100 > /proc/sys/vm/swappiness 2>/dev/null
+        echo 65536 > /proc/sys/vm/min_free_kbytes 2>/dev/null
+        echo 60 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
+        ;;
+esac
 
 log -t pixel9pro_ctrl "v4.1.0: Keep-5G standby settings applied (radio+kernel+swap+zram)"
 

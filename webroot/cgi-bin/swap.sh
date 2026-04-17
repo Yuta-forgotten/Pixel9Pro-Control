@@ -8,6 +8,8 @@
 
 require_loopback
 
+SWAP_MODE_FILE="$MODDIR/.swap_mode"
+
 if [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
     require_token
@@ -21,6 +23,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             echo 100 > /proc/sys/vm/swappiness
             echo 65536 > /proc/sys/vm/min_free_kbytes
             echo 60 > /proc/sys/vm/vfs_cache_pressure
+            echo "optimized" > "$SWAP_MODE_FILE"
             json_headers
             printf '{"ok":true,"mode":"optimized"}'
             ;;
@@ -28,6 +31,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             echo 150 > /proc/sys/vm/swappiness
             echo 27386 > /proc/sys/vm/min_free_kbytes
             echo 100 > /proc/sys/vm/vfs_cache_pressure
+            echo "stock" > "$SWAP_MODE_FILE"
             json_headers
             printf '{"ok":true,"mode":"stock"}'
             ;;
