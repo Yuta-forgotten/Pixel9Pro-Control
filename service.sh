@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.1.0 — 开机服务 (M3 WebUI + 热区缓存)
+# service.sh v4.2.0 — 开机服务 (M3 WebUI + 热区缓存 + 温度历史 + 功耗统计)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → WiFi multicast → WebUI
 #
@@ -90,7 +90,7 @@ export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
 # ──────────────────────────────────────────────────────────
 # 2. 系统设置优化 (保 5G 分支)
 # ──────────────────────────────────────────────────────────
-log -t pixel9pro_ctrl "v4.1.0: Applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.2.0: Applying keep-5G standby optimizations..."
 
 # === Modem / 待机优化 (参考 Mori 帖子 + RMBD 模块) ===
 # 开机时先应用 keep-5G 分支设置，再由后续延迟复写兜住开机后被系统回写的项目。
@@ -151,7 +151,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.1.0: Keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.2.0: Keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # Android 17 / Pixel 组件在用户解锁后仍可能回写部分 secure/global key。
 # 对保 5G 分支无直接负面影响的项做一次延迟复写，避免 adaptive connectivity /
@@ -167,22 +167,20 @@ log -t pixel9pro_ctrl "v4.1.0: Keep-5G standby settings applied (radio+kernel+sw
 # 3. 应用 CPU 调度方案 (cpuset + sched_pixel 参数)
 # ──────────────────────────────────────────────────────────
 PROFILE=$(cat "$MODDIR/.current_profile" 2>/dev/null || echo 'light')
-sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" 2>/dev/null
+sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" "$MODDIR" 2>/dev/null
 log -t pixel9pro_ctrl "CPU profile: $PROFILE"
 
 # ──────────────────────────────────────────────────────────
 # 4. WiFi multicast 息屏自动关闭 (参考 RMBD_screen_aware)
 #    息屏时关闭 multicast 减少 WiFi radio 唤醒
+#    息屏 sleep 15s, 亮屏 sleep 5s — 减少无意义唤醒
 # ──────────────────────────────────────────────────────────
 (
     WLAN_IF="wlan0"
     LAST_STATE=""
     while true; do
-        # 读取屏幕状态
         SCREEN=$(dumpsys display 2>/dev/null | grep "mScreenState=" | head -1 | sed 's/.*mScreenState=//' | tr -d ' ')
-        if [ -z "$SCREEN" ]; then
-            SCREEN=$(dumpsys power 2>/dev/null | grep "mWakefulness=" | head -1 | sed 's/.*mWakefulness=//' | tr -d ' ')
-        fi
+        [ -z "$SCREEN" ] && SCREEN=$(dumpsys power 2>/dev/null | grep "mWakefulness=" | head -1 | sed 's/.*mWakefulness=//' | tr -d ' ')
 
         case "$SCREEN" in
             OFF|Dozing|Asleep)
@@ -191,15 +189,16 @@ log -t pixel9pro_ctrl "CPU profile: $PROFILE"
                     dumpsys wifi disable-multicast 2>/dev/null
                     LAST_STATE="off"
                 fi
+                sleep 15
                 ;;
             *)
                 if [ "$LAST_STATE" != "on" ]; then
                     ip link set "$WLAN_IF" multicast on 2>/dev/null
                     LAST_STATE="on"
                 fi
+                sleep 5
                 ;;
         esac
-        sleep 5
     done
 ) &
 log -t pixel9pro_ctrl "WiFi multicast screen-aware started"
@@ -245,7 +244,7 @@ NR_MODE_FILE="$MODDIR/.nr_saved_mode"
                 log -t pixel9pro_ctrl "NR switch: disabled, restored NR"
             fi
             _off_since=0
-            sleep 5
+            sleep 15
             continue
         fi
 
@@ -272,6 +271,7 @@ NR_MODE_FILE="$MODDIR/.nr_saved_mode"
                         fi
                     fi
                 fi
+                sleep 15
                 ;;
             *)
                 _off_since=0
@@ -281,30 +281,56 @@ NR_MODE_FILE="$MODDIR/.nr_saved_mode"
                     _nr_restored=$_now
                     log -t pixel9pro_ctrl "NR switch: screen on, restored NR"
                 fi
+                sleep 5
                 ;;
         esac
-        sleep 5
     done
 ) &
 log -t pixel9pro_ctrl "NR screen-aware switch initialized (default: off)"
 
 # ──────────────────────────────────────────────────────────
-# 4.1 热区缓存后台任务
+# 4.1 热区缓存后台任务 + 温度历史持久化 (屏幕感知)
 #     busybox httpd 单线程，避免每个 CGI 都同步执行 dumpsys
+#     亮屏 5s / 息屏 60s 采集温度，同时追加到 .thermal_history (CSV)
+#     历史文件格式: epoch_sec,temp_millideg (VIRTUAL-SKIN)
+#     保留最近 8640 条 ≈ 12 小时
 # ──────────────────────────────────────────────────────────
+THERMAL_HISTORY="$MODDIR/.thermal_history"
+THERMAL_HISTORY_MAX=8640
 (
     . "$MODDIR/webroot/cgi-bin/_thermal_cache.sh"
+    _hist_count=0
     while true; do
-        build_thermal_json > "${THERMAL_CACHE}.tmp" 2>/dev/null
-        if [ -s "${THERMAL_CACHE}.tmp" ]; then
+        _json=$(build_thermal_json 2>/dev/null)
+        if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
+            printf '%s' "$_json" > "${THERMAL_CACHE}.tmp"
             mv "${THERMAL_CACHE}.tmp" "$THERMAL_CACHE"
+
+            _vs_temp=$(printf '%s' "$_json" | sed 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/')
+            if [ -n "$_vs_temp" ] && [ "$_vs_temp" != "$_json" ]; then
+                printf '%s,%s\n' "$(date +%s)" "$_vs_temp" >> "$THERMAL_HISTORY"
+                _hist_count=$((_hist_count + 1))
+                if [ "$_hist_count" -ge 360 ]; then
+                    _lines=$(wc -l < "$THERMAL_HISTORY" 2>/dev/null)
+                    if [ "${_lines:-0}" -gt "$THERMAL_HISTORY_MAX" ]; then
+                        _trim=$((_lines - THERMAL_HISTORY_MAX))
+                        sed -i "1,${_trim}d" "$THERMAL_HISTORY" 2>/dev/null
+                    fi
+                    _hist_count=0
+                fi
+            fi
         else
             rm -f "${THERMAL_CACHE}.tmp"
         fi
-        sleep 5
+        _scr=$(dumpsys display 2>/dev/null | grep "mScreenState=" | head -1 | sed 's/.*mScreenState=//' | tr -d ' ')
+        [ -z "$_scr" ] && _scr=$(dumpsys power 2>/dev/null | grep "mWakefulness=" | head -1 | sed 's/.*mWakefulness=//' | tr -d ' ')
+        case "$_scr" in
+            OFF|Dozing|Asleep) sleep 60 ;;
+            *) sleep 5 ;;
+        esac
     done
 ) &
-log -t pixel9pro_ctrl "Thermal cache task started"
+log -t pixel9pro_ctrl "Thermal cache + history task started (screen-aware)"
 
 # ──────────────────────────────────────────────────────────
 # 5. 启动 HTTP 控制台
