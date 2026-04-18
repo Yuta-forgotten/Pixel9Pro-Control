@@ -191,6 +191,7 @@ function $(id){ return document.getElementById(id); }
 
 function initRefs() {
   refs.topbarSubtitle = $('topbar-subtitle');
+  refs.topbarKicker = $('topbar-kicker');
   refs.topbarProfileChip = $('topbar-profile-chip');
   refs.topbarThermalChip = $('topbar-thermal-chip');
   refs.topbarThemeChip = $('topbar-theme-chip');
@@ -775,6 +776,9 @@ async function loadInfo() {
     refs.infoModel.textContent = data.model || 'Pixel 9 Pro';
     refs.infoAndroid.textContent = data.version ? `Android ${data.version}` : '—';
     refs.infoModule.textContent = data.module_version || '—';
+    refs.topbarKicker.textContent = data.module_version
+      ? `Pixel 9 Pro · UI ${data.module_version}`
+      : 'Pixel 9 Pro · UI';
     refs.rtWebuiMem.textContent = data.httpd_rss_kb
       ? data.httpd_rss_kb < 1024 ? `${data.httpd_rss_kb}KB` : `${(data.httpd_rss_kb / 1024).toFixed(1)}MB`
       : '—';
