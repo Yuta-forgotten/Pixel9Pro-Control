@@ -1,11 +1,11 @@
-# Pixel 9 Pro Control Module v4.2.3
+# Pixel 9 Pro Control Module v4.2.6
 
 > APatch / KernelSU 模块。目标设备为 Pixel 9 Pro / Pro XL (Tensor G4)。包含温控偏移、CPU 调度模式、ZRAM 参数、待机设置和本地 WebUI。
 
 ## 当前版本
 
-- Release: `v4.2.3`
-- Asset: `pixel9pro_control_v4.2.3.zip`
+- Release: `v4.2.6`
+- Asset: `pixel9pro_control_v4.2.6.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -63,20 +63,23 @@
   - `min_free_kbytes=65536`
   - `vfs_cache_pressure=60`
 
-### 待机设置
+### 待机策略
 
-- `mobile_data_always_on=0`
-- `wifi_scan_always_enabled=0`
-- `ble_scan_always_enabled=0`
-- `adaptive_connectivity_enabled=0`
-- `adaptive_connectivity_wifi_enabled=0`
-- `network_recommendations_enabled=0`
-- `nearby_sharing_enabled=0`
-- `nearby_sharing_slice_enabled=0`
-- Wi-Fi multicast: 亮屏开启，息屏关闭
-- `wfc_ims_enabled`: 不托管
+- `special / 5G / CA / IMS` 能力保留，不再走“多关开关 = 更省电”的旧思路
+- 核心项：
+  - `adaptive_connectivity_enabled=1`
+  - `adaptive_connectivity_wifi_enabled=1`
+  - `network_recommendations_enabled=1`
+- 次级收敛项：
+  - `mobile_data_always_on=0`
+  - `wifi_scan_always_enabled=0`
+  - `ble_scan_always_enabled=0`
+  - `nearby_sharing_enabled=0`
+  - `nearby_sharing_slice_enabled=0`
+- Wi-Fi multicast：亮屏开启，息屏关闭
+- `wfc_ims_enabled`：不托管
 
-以上设置不以关闭 5G/5GA/CA 为前提。
+当前 WebUI 中，“优化”页更偏向审计这些状态是否和当前策略一致，而不再把关闭更多系统开关当作主目标。
 
 ### NR 息屏降级 (v4.0.5+)
 
@@ -85,6 +88,29 @@
 - 恢复后冷却时间：`600` 秒
 - 热点开启时跳过切换
 - 默认状态：关闭
+
+### UECap 自动策略 (v4.2.5+)
+
+- `special`：完整国际底座
+  - 恢复 `global special` 为基底
+  - 保留完整国际增量
+  - 同时保留中国高价值组合，包括 `n79+n41+n28`
+- `balanced`：中国精修实验档
+  - 基于你给的中国组合清单与已知问题组合做精修
+  - 保留 `3CC`
+  - 仅用于人工实验，不作为自动默认
+- `universal`：最保守通用表
+  - 作为深省电 / 排障备用，不作为自动默认
+
+自动策略：
+
+- 默认常驻 `special`（国际底座）
+- 节电更多依赖：
+  - `Adaptive Connectivity`
+  - `network_recommendations`
+  - `NR 屏熄降级`
+
+这套策略的目标不是先删除 `3CC` 再谈节电，而是在保留完整能力底座的前提下，把中国向精修作为可选实验版本。
 
 ### NTP 服务器选择 (v4.0.5+)
 
@@ -130,7 +156,7 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 ## 安装
 
-1. 从 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 下载发行包 `pixel9pro_control_v4.2.3.zip`
+1. 从 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 下载发行包 `pixel9pro_control_v4.2.5.zip`
 2. **不要**使用 GitHub 自动生成的 `Source code (zip)`，也不要自己把上层目录再压一层；安装器要求 ZIP 根目录直接包含 `module.prop`
 3. 如果使用 **KernelSU** 且需要 `system/vendor` 覆盖（本模块的温控 JSON 属于此类），先安装 metamodule，例如 `meta-overlayfs` 或 `Hybrid Mount`，然后重启一次
 4. APatch / KernelSU → 模块 → 从存储安装
@@ -159,11 +185,11 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 - 自己手动压缩时把 `pixel9pro_control_v2/` 整个目录包进去了，导致 `module.prop`/`customize.sh` 不在 ZIP 根目录
 - 某些 KSU/APatch 分支管理器仍会优先找 `META-INF/com/google/android/update-binary`
 
-`v4.2.3` 发行包同时提供：
+`v4.2.5` 发行包同时提供：
 - 原生 root-module 布局（ZIP 根目录直接放 `module.prop` / `customize.sh` / `service.sh`）
 - Magisk 兼容 `META-INF` 入口
 
-如果你仍看到这个错误，先确认安装的确实是发布页资产 `pixel9pro_control_v4.2.3.zip`，而不是源码压缩包。
+如果你仍看到这个错误，先确认安装的确实是发布页资产 `pixel9pro_control_v4.2.5.zip`，而不是源码压缩包。
 
 ### 卡二屏（卡在开机动画）
 

@@ -10,7 +10,7 @@
 <meta http-equiv="Expires" content="0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' http://127.0.0.1:6210; connect-src 'self' http://127.0.0.1:6210; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' http://127.0.0.1:6210">
 <title>温控调度控制台</title>
-<link rel="stylesheet" href="/app.css?v=4.2.3">
+<link rel="stylesheet" href="/app.css?v=4.2.6">
 </head>
 <body>
 <div class="app-shell">
@@ -78,21 +78,21 @@
               </div>
             </article>
 
-            <article class="metric-card">
-              <div class="metric-head">
-                <div class="metric-title">内存与待机</div>
-                <div style="display:flex;align-items:center;gap:6px">
-                  <button class="tiny-btn sm" id="energy-btn" type="button">功耗</button>
-                  <span class="badge off" id="home-power-badge">后台优化</span>
-                </div>
-              </div>
-              <div class="mini-list">
-                <div class="mini-row"><span>ZRAM 占用</span><strong id="rt-zram-usage">—</strong></div>
-                <div class="mini-row"><span>压缩率 / 实占</span><strong id="rt-ratio">—</strong></div>
-                <div class="mini-row"><span>WebUI 内存</span><strong id="rt-webui-mem">—</strong></div>
-                <div class="mini-row"><span>功耗优化</span><strong id="rt-power">—</strong></div>
-              </div>
-            </article>
+        <article class="metric-card">
+          <div class="metric-head">
+            <div class="metric-title">内存与系统</div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <button class="tiny-btn sm" id="energy-btn" type="button">功耗</button>
+              <span class="badge off" id="home-power-badge">待机审计</span>
+            </div>
+          </div>
+          <div class="mini-list">
+            <div class="mini-row"><span>ZRAM 占用</span><strong id="rt-zram-usage">—</strong></div>
+            <div class="mini-row"><span>压缩率 / 实占</span><strong id="rt-ratio">—</strong></div>
+            <div class="mini-row"><span>WebUI 内存</span><strong id="rt-webui-mem">—</strong></div>
+            <div class="mini-row"><span>待机策略</span><strong id="rt-power">—</strong></div>
+          </div>
+        </article>
           </div>
         </div>
 
@@ -257,35 +257,17 @@
         <article class="surface-card">
           <div class="panel-head">
             <div class="panel-copy">
-              <div class="kicker">内存优化</div>
-              <div class="panel-title">ZRAM / Swap 参数</div>
-              <div class="panel-desc" id="swap-desc">模块开机自动配置 lz77eh 硬件压缩 + 11392MB + VM 参数优化，不依赖 Scene。</div>
+              <div class="kicker">基带能力</div>
+              <div class="panel-title">UECap 策略</div>
+              <div class="panel-desc" id="uecap-desc">默认自动：global special 常驻；新 binarypb 必须先过主机侧 audit，再做临时 bind 灰度。</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn" id="swap-detail-btn" type="button">详情</button>
-              <button class="tiny-btn primary" id="swap-toggle-btn" type="button"><span id="swap-toggle-label">读取中…</span></button>
+              <button class="tiny-btn" id="uecap-detail-btn" type="button">详情</button>
+              <button class="tiny-btn primary" id="uecap-toggle-btn" type="button"><span id="uecap-toggle-label">读取中…</span></button>
             </div>
           </div>
-          <div class="data-list" id="swap-rows" style="margin-top:14px">
-            <div class="skel" style="height:140px"></div>
-          </div>
-        </article>
-
-        <article class="surface-card">
-          <div class="panel-head">
-            <div class="panel-copy">
-              <div class="kicker">待机优化</div>
-              <div class="panel-title">开机自动设置</div>
-              <div class="panel-desc">模块在开机时将后台网络与扫描项设为优化状态，需要时可在系统设置里恢复。</div>
-            </div>
-            <div class="header-actions">
-              <button class="tiny-btn" id="opt-refresh-btn" type="button"><span id="opt-refresh-label">刷新</span></button>
-            </div>
-          </div>
-          <div class="opt-grid" id="opt-rows" style="margin-top:14px">
-            <div class="skel" style="height:72px"></div>
-            <div class="skel" style="height:72px"></div>
-            <div class="skel" style="height:72px"></div>
+          <div class="data-list" id="uecap-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
           </div>
         </article>
 
@@ -303,6 +285,42 @@
           </div>
           <div class="data-list" id="nr-switch-rows" style="margin-top:14px">
             <div class="skel" style="height:48px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">待机审计</div>
+              <div class="panel-title">网络与待机策略</div>
+              <div class="panel-desc">当前页面不再把“多关开关 = 更省电”当主目标，而是核对系统是否处于“保留能力、按需节电”的当前策略。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="opt-detail-btn" type="button">详情</button>
+              <button class="tiny-btn" id="opt-refresh-btn" type="button"><span id="opt-refresh-label">刷新</span></button>
+            </div>
+          </div>
+          <div class="opt-grid" id="opt-rows" style="margin-top:14px">
+            <div class="skel" style="height:72px"></div>
+            <div class="skel" style="height:72px"></div>
+            <div class="skel" style="height:72px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">内存优化</div>
+              <div class="panel-title">ZRAM / Swap 参数</div>
+              <div class="panel-desc" id="swap-desc">模块开机自动配置 lz77eh 硬件压缩 + 11392MB + VM 参数优化，不依赖 Scene。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="swap-detail-btn" type="button">详情</button>
+              <button class="tiny-btn primary" id="swap-toggle-btn" type="button"><span id="swap-toggle-label">读取中…</span></button>
+            </div>
+          </div>
+          <div class="data-list" id="swap-rows" style="margin-top:14px">
+            <div class="skel" style="height:140px"></div>
           </div>
         </article>
 
@@ -327,7 +345,7 @@
 
         <article class="note-card">
           <div class="note-title">说明</div>
-          <div class="note-body">功耗优化项主要在开机时应用一次，界面中的刷新用于读取当前系统状态，不会主动替你恢复被手动改回的开关。</div>
+          <div class="note-body">优化页现在更偏向“审计当前策略是否与项目结论一致”，而不是把越多系统开关改成关闭越好。真正仍值得手动切换的，主要是 UECap、NR 息屏降级和 ZRAM / VM 参数。</div>
         </article>
       </div>
     </section>
@@ -416,6 +434,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=4.2.3"></script>
+<script src="/app.js?v=4.2.6"></script>
 </body>
 </html>

@@ -15,6 +15,7 @@ const API = {
   optimize: '/cgi-bin/optimize.sh',
   swap: '/cgi-bin/swap.sh',
   nrSwitch: '/cgi-bin/nr_switch.sh',
+  uecap: '/cgi-bin/uecap.sh',
   ntp: '/cgi-bin/ntp.sh',
   energy: '/cgi-bin/energy.sh',
 };
@@ -133,6 +134,9 @@ const SWAP_DETAIL = '<b>ZRAM 算法: lz77eh (Emerald Hill 硬件加速)</b><br>T
 
 const NR_SWITCH_DETAIL = '<b>NR 息屏降级 (Screen-Off LTE Switch)</b><br><br>开启后，息屏超过 <b>60 秒</b> 时网络模式从 5G NR 切换到 LTE，降低调制解调器射频功耗。亮屏时立即恢复 5G/NR 模式，<b>5GA / 5G CA 能力完全保留</b>。<br><br><b>防抖机制</b><br>- 息屏后等待 60 秒再切换，快速亮屏不会触发<br>- 恢复 NR 后冷却 10 分钟，避免频繁亮灭导致来回切换<br><br><b>原理</b><br>NR_SA Band 41 (100MHz) 射频功耗远高于 LTE 20MHz。息屏时降级为 LTE 可使调制解调器进入更深低功耗态，预期节省 30-50% 蜂窝待机功耗。<br><br><b>注意</b><br>- 切换期间可能有 1-2 秒网络短暂中断<br>- 开启热点时自动跳过降级，保障共享连接<br>- 息屏下载或后台大流量时可关闭此功能<br>- 功能状态即时生效，无需重启';
 
+const UECAP_DETAIL = '<b>UECap 策略</b><br><br><b>special（国际底座）</b><br>当前自动默认恢复为 `global special` 基底，保留完整国际增量和全部中国高价值组合，不删除 `n79+n41+n28`。<br><br><b>balanced（中国精修实验档）</b><br>保留 `n79`、`n79+n41`、`n79+n28`、`n79+n41+n28` 等中国组合，并基于你给的清单做精修；用于人工实验，不作为自动默认。<br><br><b>PLMN / 5G+</b><br>模块一的 PLMN / 5G+ 改进已单独整理成带 overlay 的双版本模块源，但在你这台机当前固件上相关 payload 与 stock 一致。<br><br><b>自动策略</b><br>- 默认自动：`special` 常驻<br>- 节电更多依赖 Google 风格的 `Adaptive Connectivity` 与 `NR 屏熄降级`<br>- 不再把删除 3CC 当作默认优化手段';
+const STANDBY_AUDIT_DETAIL = '<b>网络与待机策略</b><br><br><b>当前思路已经变了</b><br>当前项目不再把“多关几个系统开关”当成待机优化主线。现在更接近 Google / Apple 的公开思路：<br>- 保留 5G / CA / IMS 能力<br>- 优先依赖 `Adaptive Connectivity`、`network_recommendations`、`NR 屏熄降级` 和应用侧噪音治理<br><br><b>核心审计项</b><br>- `Adaptive Connectivity`：应为开启<br>- `network_recommendations`：应为开启<br>- `mobile_data_always_on`：当前仍建议关闭，但它只是次级项，不再是主卖点<br>- `WiFi Multicast`：屏幕感知控制<br><br><b>附属收敛项</b><br>- WiFi / BLE 扫描<br>- Nearby Sharing<br>- 这些仍可收敛，但不应压过网络驻留、通话连续性和系统自带节电策略<br><br><b>明确不再托管</b><br>- `wfc_ims_enabled`<br>它会直接影响室内通话连续性，因此当前项目明确不再替用户强制改写。';
+
 const NTP_SERVERS = [
   { id: 'ntp.aliyun.com', name: '阿里云', desc: '阿里云公共 NTP 服务' },
   { id: 'ntp.myhuaweicloud.com', name: '华为云', desc: '华为云 NTP 服务' },
@@ -149,15 +153,18 @@ const ZONE_LABELS = {
   'btmspkr_therm': '底部扬声器'
 };
 
-const OPT_ITEMS = [
-  { key: 'mobile_data_always_on', label: '移动数据常开', hint: '关闭后不影响 5G/CA 能力，但可能略微增加 WiFi→蜂窝回切时延。', good: '0' },
-  { key: 'wfc_ims_enabled', label: 'VoWiFi 通话', hint: '保 5G 分支不再强制修改，避免影响 Wi-Fi Calling / 室内通话连续性。', good: 'unmanaged' },
-  { key: 'wifi_scan_always_enabled', label: 'WiFi 后台扫描', hint: '避免熄屏后继续进行环境 WiFi 扫描。', good: '0' },
-  { key: 'ble_scan_always_enabled', label: 'BLE 后台扫描', hint: '降低蓝牙扫描与附近设备发现频率。', good: '0' },
-  { key: 'adaptive_connectivity', label: '自适应连接', hint: '关闭后不改变 5G/CA 能力，但可能影响 WiFi/蜂窝自动切换与评分。', good: '0' },
-  { key: 'network_recommendations', label: '网络推荐', hint: '关闭后不影响 5G 状态，系统不再自动评估和排序可用 WiFi 网络。', good: '0' },
-  { key: 'nearby_sharing', label: '附近共享', hint: '降低 Nearby Sharing 的持续扫描开销。', good: '0' },
-  { key: 'multicast', label: 'WiFi Multicast', hint: '息屏时关闭组播，减少 WLAN 唤醒。', good: 'off' }
+const STANDBY_AUDIT_CORE = [
+  { key: 'adaptive_connectivity', label: '自适应连接', hint: '当前策略把它视为核心节电路径之一：保留 full capability，由系统按业务需求决定何时更积极使用 5G。', good: '1', goodText: '已开启', badOn: '已关闭' },
+  { key: 'network_recommendations', label: '网络推荐', hint: '为 Pixel 的自适应连接和 Wi-Fi 评分提供支撑；当前结论是恢复开启，不再为了“多关开关”而关闭。', good: '1', goodText: '已开启', badOn: '已关闭' },
+  { key: 'mobile_data_always_on', label: '移动数据常开', hint: '这是次级策略项。关闭后不影响 5G/CA 能力，但可能略微增加 WiFi→蜂窝回切时延；现在只做审计，不再把它当成主卖点。', good: '0', goodText: '已关闭', badOn: '已开启' },
+  { key: 'multicast', label: 'WiFi Multicast', hint: '这是屏幕感知项：息屏关闭、亮屏恢复。它仍有价值，但属于局部 WLAN 噪音治理，不再代表整体待机策略。', good: 'screen_aware', goodText: '屏幕感知', badOn: '状态异常' }
+];
+
+const STANDBY_AUDIT_SECONDARY = [
+  { key: 'wifi_scan_always_enabled', label: 'WiFi 后台扫描', hint: '保留为静态收敛项，但不再作为主策略展示。', good: '0', goodText: '已关闭', badOn: '已开启' },
+  { key: 'ble_scan_always_enabled', label: 'BLE 后台扫描', hint: '保留为静态收敛项，但优先级低于网络驻留和 IMS 连续性。', good: '0', goodText: '已关闭', badOn: '已开启' },
+  { key: 'nearby_sharing', label: '附近共享', hint: '属于附属扫描项，关闭可减少噪音，但不是当前功耗主矛盾。', good: '0', goodText: '已关闭', badOn: '已开启' },
+  { key: 'wfc_ims_enabled', label: 'VoWiFi 通话', hint: '当前项目明确不再托管 WFC，避免对室内通话连续性造成确定性副作用。', good: 'unmanaged', goodText: '不托管', badOn: '已改写' }
 ];
 
 const refs = {};
@@ -175,6 +182,9 @@ const state = {
   optLoading: false,
   nrSwitch: 'off',
   nrBusy: false,
+  uecapMode: 'unknown',
+  uecapPolicy: 'auto',
+  uecapBusy: false,
   ntpServer: 'time.android.com',
   ntpBusy: false,
   cpuRows: null,
@@ -247,6 +257,9 @@ function initRefs() {
   refs.nrSwitchDesc = $('nr-switch-desc');
   refs.nrSwitchToggleLabel = $('nr-switch-toggle-label');
   refs.nrSwitchRows = $('nr-switch-rows');
+  refs.uecapDesc = $('uecap-desc');
+  refs.uecapToggleLabel = $('uecap-toggle-label');
+  refs.uecapRows = $('uecap-rows');
   refs.ntpDesc = $('ntp-desc');
   refs.ntpSyncLabel = $('ntp-sync-label');
   refs.ntpServerList = $('ntp-server-list');
@@ -667,15 +680,31 @@ function renderSwapCard(data) {
   rows.forEach((row) => refs.swapRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 }
 
-function renderOptimizeRows(data) {
-  refs.optRows.innerHTML = '';
-  OPT_ITEMS.forEach((item) => {
+function standbyStatus(item, value) {
+  if (item.key === 'multicast') {
+    return value === 'off'
+      ? { cls: 'good', text: '息屏已关' }
+      : value === 'on'
+        ? { cls: 'off', text: item.goodText }
+        : { cls: 'warn', text: item.badOn };
+  }
+  if (value === item.good) return { cls: 'good', text: item.goodText };
+  if (value === '1' || value === 'on') return { cls: 'warn', text: item.badOn };
+  if (value === 'unmanaged') return { cls: 'off', text: item.goodText };
+  return { cls: 'off', text: '未设置' };
+}
+
+function appendAuditSection(container, title, items, data) {
+  const header = document.createElement('div');
+  header.className = 'section-copy';
+  header.style.margin = '2px 0 2px';
+  header.style.gridColumn = '1 / -1';
+  header.innerHTML = `<div class="kicker">${title}</div>`;
+  container.appendChild(header);
+
+  items.forEach((item) => {
     const value = data[item.key] || 'null';
-    const stateSpec = value === item.good
-      ? { cls: 'good', text: '已关闭' }
-      : (value === '1' || value === 'on')
-        ? { cls: 'warn', text: '已开启' }
-        : { cls: 'off', text: '未设置' };
+    const stateSpec = standbyStatus(item, value);
     const row = document.createElement('div');
     row.className = 'opt-item';
     row.innerHTML = `
@@ -684,12 +713,24 @@ function renderOptimizeRows(data) {
         <span class="badge ${stateSpec.cls}">${stateSpec.text}</span>
       </div>
       <div class="opt-meta">${item.hint}</div>`;
-    refs.optRows.appendChild(row);
+    container.appendChild(row);
   });
-  const goodCount = OPT_ITEMS.filter((item) => data[item.key] === item.good).length;
-  refs.rtPower.textContent = `${goodCount}/${OPT_ITEMS.length} 项已优化`;
-  refs.homePowerBadge.textContent = `${goodCount}/${OPT_ITEMS.length}`;
-  refs.homePowerBadge.className = `badge ${goodCount === OPT_ITEMS.length ? 'good' : 'off'}`;
+}
+
+function renderOptimizeRows(data) {
+  refs.optRows.innerHTML = '';
+  appendAuditSection(refs.optRows, '核心策略', STANDBY_AUDIT_CORE, data);
+  appendAuditSection(refs.optRows, '附属收敛项', STANDBY_AUDIT_SECONDARY, data);
+
+  const coreIssues = [
+    data.adaptive_connectivity !== '1',
+    data.network_recommendations !== '1',
+    data.mobile_data_always_on !== '0'
+  ].filter(Boolean).length;
+
+  refs.rtPower.textContent = coreIssues === 0 ? '能力优先' : `待核查 ${coreIssues} 项`;
+  refs.homePowerBadge.textContent = coreIssues === 0 ? '能力优先' : '待核查';
+  refs.homePowerBadge.className = `badge ${coreIssues === 0 ? 'good' : 'warn'}`;
 }
 
 function ensureHomeCpuRows(clusters) {
@@ -956,6 +997,34 @@ function renderNrSwitchRows(data) {
     : '息屏超过 60 秒后切换到 LTE，亮屏立即恢复。热点开启时不降级。';
 }
 
+function uecapLabel(mode) {
+  if (mode === 'special') return '高铁强化';
+  if (mode === 'balanced') return '中国精修实验';
+  if (mode === 'universal') return '深省电 / 通用';
+  if (mode === 'custom') return '自定义 / 第三方';
+  return '未知';
+}
+
+function renderUecapRows(data) {
+  refs.uecapRows.innerHTML = '';
+  const requested = data.requested_mode || 'special';
+  const active = data.active_mode || 'custom';
+  const policy = data.policy || 'auto';
+  const reason = data.reason || 'unknown';
+  const rows = [
+    { label: '当前策略', value: policy === 'auto' ? '自动' : '手动锁定', cls: policy === 'auto' ? 'good' : 'warn' },
+    { label: '目标档位', value: uecapLabel(requested), cls: requested === 'special' ? 'good' : 'warn' },
+    { label: '当前激活', value: uecapLabel(active), cls: active === requested ? 'good' : 'warn' },
+    { label: '判定原因', value: reason.replace(/_/g, ' '), cls: 'off' },
+    { label: '目标哈希', value: (data.target_hash || 'unknown').slice(0, 12), cls: 'off' },
+  ];
+  rows.forEach((row) => refs.uecapRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
+  refs.uecapToggleLabel.textContent = policy === 'auto' ? '锁高铁' : '恢复自动';
+  refs.uecapDesc.textContent = policy === 'auto'
+    ? '自动策略已启用 · global special 常驻，节电更多依赖自适应连接与息屏降级'
+    : `手动锁定中 · 当前强制 ${uecapLabel(requested)}`;
+}
+
 async function refreshNrSwitch() {
   try {
     const data = await apiFetch(API.nrSwitch, { timeoutMs: 6000 });
@@ -963,6 +1032,17 @@ async function refreshNrSwitch() {
     renderNrSwitchRows(data);
   } catch (err) {
     refs.nrSwitchRows.innerHTML = `<div class="note-body" style="color:var(--danger)">获取失败：${err.message}</div>`;
+  }
+}
+
+async function refreshUecap() {
+  try {
+    const data = await apiFetch(API.uecap, { timeoutMs: 6000 });
+    state.uecapMode = data.requested_mode || 'special';
+    state.uecapPolicy = data.policy || 'auto';
+    renderUecapRows(data);
+  } catch (err) {
+    refs.uecapRows.innerHTML = `<div class="note-body" style="color:var(--danger)">获取失败：${err.message}</div>`;
   }
 }
 
@@ -983,6 +1063,35 @@ async function toggleNrSwitch() {
     showToast('请求失败');
   } finally {
     state.nrBusy = false;
+  }
+}
+
+async function toggleUecap() {
+  if (state.uecapBusy) return;
+  state.uecapBusy = true;
+  try {
+    const payload = state.uecapPolicy === 'auto'
+      ? { policy: 'manual', mode: 'special' }
+      : { policy: 'auto' };
+    const data = await apiFetch(API.uecap, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      timeoutMs: 8000
+    });
+    if (data.ok) {
+      state.uecapMode = data.requested_mode || 'balanced';
+      state.uecapPolicy = data.policy || 'auto';
+      showToast(data.policy === 'manual' ? '已手动锁定高铁强化 UECap' : '已恢复自动 UECap 策略');
+      appendLog(data.policy === 'manual' ? 'UECap 策略: 手动高铁强化' : 'UECap 策略: 自动', 'ok');
+      renderUecapRows(data);
+    } else {
+      showToast(`切换失败：${data.error || '未知'}`);
+    }
+  } catch (_) {
+    showToast('请求失败');
+  } finally {
+    state.uecapBusy = false;
   }
 }
 
@@ -1405,6 +1514,7 @@ async function doFullRefresh() {
   await Promise.all([refreshCpu(), refreshThermal(), refreshSwap()]);
   refreshOptimize();
   refreshNrSwitch();
+  refreshUecap();
   refreshNtp();
   loadInfo();
   showToast('已刷新');
@@ -1415,7 +1525,7 @@ function startPolling() {
   state.timers.cpu = window.setInterval(refreshCpu, 3000);
   state.timers.thermal = window.setInterval(refreshThermal, 8000);
   state.timers.swap = window.setInterval(refreshSwap, 30000);
-  state.timers.slow = window.setInterval(function() { refreshOptimize(); loadInfo(); }, 60000);
+  state.timers.slow = window.setInterval(function() { refreshOptimize(); refreshUecap(); loadInfo(); }, 60000);
 }
 
 function stopPolling() {
@@ -1441,9 +1551,12 @@ function bindStaticEvents() {
   $('refresh-cpu-btn').addEventListener('click', refreshCpu);
   $('swap-toggle-btn').addEventListener('click', toggleSwapMode);
   $('swap-detail-btn').addEventListener('click', () => openDetail('内存优化详情', SWAP_DETAIL));
+  $('opt-detail-btn').addEventListener('click', () => openDetail('网络与待机策略详情', STANDBY_AUDIT_DETAIL));
   $('opt-refresh-btn').addEventListener('click', refreshOptimize);
   $('nr-switch-toggle-btn').addEventListener('click', toggleNrSwitch);
   $('nr-switch-detail-btn').addEventListener('click', () => openDetail('NR 息屏降级详情', NR_SWITCH_DETAIL));
+  $('uecap-toggle-btn').addEventListener('click', toggleUecap);
+  $('uecap-detail-btn').addEventListener('click', () => openDetail('UECap 策略详情', UECAP_DETAIL));
   $('ntp-sync-btn').addEventListener('click', syncNtp);
   $('temp-chart-btn').addEventListener('click', openTempChart);
   $('energy-btn').addEventListener('click', openEnergyDetail);
@@ -1516,7 +1629,8 @@ async function init() {
   window.setTimeout(refreshOptimize, 1000);
   window.setTimeout(refreshSwap, 1400);
   window.setTimeout(refreshNrSwitch, 1800);
-  window.setTimeout(refreshNtp, 2200);
+  window.setTimeout(refreshUecap, 2200);
+  window.setTimeout(refreshNtp, 2600);
   startPolling();
 }
 

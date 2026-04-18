@@ -1,6 +1,6 @@
 id=pixel9pro_control
 name=Pixel 9 Pro 温控调度控制台
-version=v4.2.3
-versionCode=30
+version=v4.2.6
+versionCode=33
 author=Yuta
-description=温控阈值优化(4档) · CPU调度(5模式) · ZRAM lz77eh硬件加速 · UI版本显示修正 · KSU/APatch兼容修正 · Material 3 WebUI
+description=温控阈值优化(4档) · CPU调度(5模式) · ZRAM lz77eh硬件加速 · UECap 自动策略 · KSU/APatch兼容修正 · Material 3 WebUI
