@@ -1,4 +1,4 @@
-# Pixel 9 Pro Control Module v4.2.0
+# Pixel 9 Pro Control Module v4.2.1
 
 > APatch/KernelSU 模块 — Pixel 9 Pro / Pro XL (Tensor G4) 温控 + CPU 调度 + ZRAM 优化 + 待机功耗优化 + Material 3 WebUI
 
@@ -8,7 +8,7 @@
 |------|------|------|
 | **[v3.3.1](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v3.3.1)** | 安全加固版 | 类玻璃态 UI / 核心功能 |
 | **[v4.1.0](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v4.1.0)** | Material 3 + 双机型 + NR 息屏降级 | 支持Pro XL |
-| **[v4.2.0](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v4.2.0)** | 后端温度历史 + 功耗统计分析 | 完整数据驱动 |
+| **[v4.2.1](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v4.2.1)** | 后端温度历史 + 功耗统计分析 | 完整数据驱动 |
 
 三个版本的核心功能一致，v4 版本需要卸载 v3 版本后安装。
 

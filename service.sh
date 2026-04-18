@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.2.0 — 开机服务 (M3 WebUI + 热区缓存 + 温度历史 + 功耗统计)
+# service.sh v4.2.1 — 开机服务 (M3 WebUI + 热区缓存 + 温度历史 + 功耗统计)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → WiFi multicast → WebUI
 #
@@ -90,7 +90,7 @@ export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
 # ──────────────────────────────────────────────────────────
 # 2. 系统设置优化 (保 5G 分支)
 # ──────────────────────────────────────────────────────────
-log -t pixel9pro_ctrl "v4.2.0: Applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.2.1: Applying keep-5G standby optimizations..."
 
 # === Modem / 待机优化 (参考 Mori 帖子 + RMBD 模块) ===
 # 开机时先应用 keep-5G 分支设置，再由后续延迟复写兜住开机后被系统回写的项目。
@@ -151,7 +151,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.2.0: Keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.2.1: Keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # Android 17 / Pixel 组件在用户解锁后仍可能回写部分 secure/global key。
 # 对保 5G 分支无直接负面影响的项做一次延迟复写，避免 adaptive connectivity /
