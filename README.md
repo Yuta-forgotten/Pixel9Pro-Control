@@ -1,4 +1,4 @@
-# Pixel 9 Pro Control Module v4.2.1
+# Pixel 9 Pro Control Module v4.2.2
 
 > APatch/KernelSU 模块 — Pixel 9 Pro / Pro XL (Tensor G4) 温控 + CPU 调度 + ZRAM 优化 + 待机功耗优化 + Material 3 WebUI
 
@@ -8,6 +8,7 @@
 |------|------|------|
 | **[v3.3.1](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v3.3.1)** | 安全加固版 | 类玻璃态 UI / 核心功能 |
 | **[v4.1.0](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v4.1.0)** | Material 3 + 双机型 + NR 息屏降级 | 支持Pro XL |
+| **v4.2.2** | KSU 兼容修正 + 安装包兼容入口 | APatch / KernelSU 双支持 |
 | **[v4.2.1](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v4.2.1)** | 后端温度历史 + 功耗统计分析 | 完整数据驱动 |
 
 三个版本的核心功能一致，v4 版本需要卸载 v3 版本后安装。
@@ -105,19 +106,37 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 ## 安装
 
-1. 从 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 下载 zip
-2. APatch / KernelSU → 模块 → 从存储安装
-3. 安装器自动检测机型 (Pro / Pro XL) 并刷入对应温控配置
-4. **整机重启**
-5. 打开 `http://127.0.0.1:6210` 验证 WebUI
+1. 从 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 下载发行包 `pixel9pro_control_v4.2.2.zip`
+2. **不要**使用 GitHub 自动生成的 `Source code (zip)`，也不要自己把上层目录再压一层；安装器要求 ZIP 根目录直接包含 `module.prop`
+3. 如果使用 **KernelSU** 且需要 `system/vendor` 覆盖（本模块的温控 JSON 属于此类），先安装 metamodule，例如 `meta-overlayfs` 或 `Hybrid Mount`，然后重启一次
+4. APatch / KernelSU → 模块 → 从存储安装
+5. 安装器自动检测机型 (Pro / Pro XL) 并刷入对应温控配置
+6. **整机重启**
+7. 打开 `http://127.0.0.1:6210` 验证 WebUI
 
 ## 兼容性
 
 - **设备**：Pixel 9 Pro (caiman) ， Pixel 9 Pro XL (komodo)（未经测试）
 - **系统**：基于 **Android 17 Beta 3 (SDK 37)** 开发和测试
-- **Root**：APatch 0.10+ / KernelSU
+- **Root**：APatch 0.10+（完整支持）
+- **Root**：KernelSU 0.9+（v4.2.2 起支持 `/data/adb/ksu/bin/busybox`；`system/vendor` 覆盖需预装 metamodule）
 
 ## 已知问题与故障排除
+
+### 安装器报 `Error: specified file not found in archive`
+
+这类错误通常不是脚本逻辑本身崩了，而是安装器在 ZIP 根目录找不到它要提取的入口文件。
+
+最高概率原因：
+- 选错了文件：用了 GitHub 的 `Source code (zip)`，它会多包一层顶级目录
+- 自己手动压缩时把 `pixel9pro_control_v2/` 整个目录包进去了，导致 `module.prop`/`customize.sh` 不在 ZIP 根目录
+- 某些 KSU/APatch 分支管理器仍会优先找 `META-INF/com/google/android/update-binary`
+
+`v4.2.2` 发行包同时提供：
+- 原生 root-module 布局（ZIP 根目录直接放 `module.prop` / `customize.sh` / `service.sh`）
+- Magisk 兼容 `META-INF` 入口，降低旧安装器/分支管理器的兼容性问题
+
+如果你仍看到这个错误，先确认安装的确实是发布页资产 `pixel9pro_control_v4.2.2.zip`，而不是源码压缩包。
 
 ### 卡二屏（卡在开机动画）
 

@@ -1,0 +1,22 @@
+#!/sbin/sh
+OUTFD=$2
+ZIPFILE=$3
+
+for _util in \
+    /data/adb/ap/bin/util_functions.sh \
+    /data/adb/ksu/bin/util_functions.sh \
+    /data/adb/ksu/util_functions.sh \
+    /data/adb/magisk/util_functions.sh; do
+    if [ -f "$_util" ]; then
+        . "$_util"
+        break
+    fi
+done
+
+if ! type install_module >/dev/null 2>&1; then
+    echo "- failed to load util_functions.sh" >&2
+    exit 1
+fi
+
+install_module
+exit 0

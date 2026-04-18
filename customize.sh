@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# customize.sh v4.2.1 — 安装时配置 (APatch / Magisk)
+# customize.sh v4.2.2 — 安装时配置 (APatch / KernelSU / Magisk)
 # 检测机型 → 刷入对应温控配置 → 应用已保存的偏移量
 ##############################################################
 
@@ -12,11 +12,31 @@ OFFSET_FILE="$MODPATH/.thermal_offset"
 PROFILE_FILE="$MODPATH/.current_profile"
 DEVICE_FILE="$MODPATH/.device_variant"
 
+detect_root_impl() {
+    if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
+        echo "APatch"
+    elif [ "${KSU:-}" = "true" ] || [ -d /data/adb/ksu ]; then
+        echo "KernelSU"
+    elif [ -d /data/adb/magisk ]; then
+        echo "Magisk"
+    else
+        echo "Unknown"
+    fi
+}
+
 device=$(getprop ro.product.device 2>/dev/null)
+ROOT_IMPL=$(detect_root_impl)
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Pixel 9 Pro 温控调度控制台"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+ui_print "  Root: $ROOT_IMPL"
+
+if [ "$ROOT_IMPL" = "KernelSU" ]; then
+    ui_print "  ⚠ KernelSU 下如需 system/vendor 覆盖"
+    ui_print "    请先安装 metamodule（如 meta-overlayfs / Hybrid Mount）并重启"
+    ui_print ""
+fi
 
 case "$device" in
     komodo)

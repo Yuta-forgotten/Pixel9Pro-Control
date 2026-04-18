@@ -20,6 +20,8 @@
 # ============================================================
 
 PROFILE="${1:-balanced}"
+MODDIR="${2:-${0%/scripts/*}}"
+GAME_TEMP_LIMIT=41000
 
 CPU0="/sys/devices/system/cpu/cpu0/cpufreq"
 CPU4="/sys/devices/system/cpu/cpu4/cpufreq"
@@ -35,18 +37,35 @@ apply_sched_pixel() {
     write_if_exists "$CPU7/sched_pixel/response_time_ms"   "$3"
 }
 
+get_skin_temp() {
+    _cache="$MODDIR/.thermal_cache.json"
+    if [ -s "$_cache" ]; then
+        sed 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/' "$_cache" 2>/dev/null
+    else
+        dumpsys thermalservice 2>/dev/null | grep 'mName=VIRTUAL-SKIN,' | head -1 | sed 's/.*mValue=\([0-9.]*\).*/\1/' | awk '{printf "%d", $1*1000}'
+    fi
+}
+
 case "$PROFILE" in
 
     game)
         # ── 游戏模式 ─────────────────────────────────────────
-        # top-app → 全核 0-7, 升频极灵敏 (response 8ms)
-        # 不写 scaling_max_freq — 让温控v3在42°C+渐进介入
-        apply_sched_pixel 8 8 8
+        # 温度门控: VIRTUAL-SKIN ≥ 41°C 时拒绝切换, 返回错误
+        _skin=$(get_skin_temp)
+        if [ -n "$_skin" ] && [ "$_skin" -ge "$GAME_TEMP_LIMIT" ] 2>/dev/null; then
+            _t_c=$(awk "BEGIN{printf \"%.1f\", $_skin/1000}")
+            log -t pixel9pro_ctrl "CPU: GAME blocked — VIRTUAL-SKIN ${_t_c}°C >= $(awk "BEGIN{printf \"%.0f\", $GAME_TEMP_LIMIT/1000}")°C"
+            echo "BLOCKED:${_skin}"
+            exit 1
+        fi
+        # top-app → 全核 0-7
+        # 小核 8ms 全力, 中核 8ms, 大核 12ms (给 PID 控制器回旋余���, 避免 uclamp 激进降频)
+        apply_sched_pixel 8 8 12
         cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: GAME [top-app→0-7, response 8/8/8ms]"
+        log -t pixel9pro_ctrl "CPU: GAME [top-app→0-7, response 8/8/12ms, temp_gate=${_skin:-?}]"
         ;;
 
     balanced)

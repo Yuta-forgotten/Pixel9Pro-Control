@@ -18,7 +18,22 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     newprof=$(printf '%s' "$body" | sed 's/.*"profile"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/')
     case "$newprof" in
         game|balanced|light|battery|stock)
-            sh "$MODDIR/scripts/cpu_profile.sh" "$newprof" 2>/dev/null
+            _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$newprof" "$MODDIR" 2>/dev/null)
+            _rc=$?
+            if [ "$_rc" -ne 0 ]; then
+                case "$_result" in
+                    BLOCKED:*)
+                        _temp_raw=${_result#BLOCKED:}
+                        _temp_c=$(awk "BEGIN{printf \"%.1f\", ${_temp_raw:-0}/1000}")
+                        json_headers
+                        printf '{"ok":false,"error":"温度过高 (%s°C)，游戏模式需冷却到 41°C 以下"}\n' "$_temp_c"
+                        ;;
+                    *)
+                        json_error '500 Internal Server Error' 'profile script failed'
+                        ;;
+                esac
+                exit 0
+            fi
             printf '%s' "$newprof" > "$MODDIR/.current_profile"
             json_headers
             printf '{"ok":true,"profile":"%s"}\n' "$newprof"

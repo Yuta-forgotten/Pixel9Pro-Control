@@ -10,7 +10,7 @@
 <meta http-equiv="Expires" content="0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' http://127.0.0.1:6210; connect-src 'self' http://127.0.0.1:6210; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' http://127.0.0.1:6210">
 <title>温控调度控制台</title>
-<link rel="stylesheet" href="/app.css?v=4.1.0">
+<link rel="stylesheet" href="/app.css?v=4.2.1">
 </head>
 <body>
 <div class="app-shell">
@@ -18,7 +18,7 @@
     <div class="topbar-inner">
       <div class="topbar-row">
         <div class="topbar-copy">
-          <div class="kicker">Pixel 9 Pro · UI v4.1.0</div>
+          <div class="kicker">Pixel 9 Pro · UI v4.2.1</div>
           <div class="topbar-title">温控调度控制台</div>
           <div class="topbar-subtitle" id="topbar-subtitle">状态总览</div>
         </div>
@@ -62,7 +62,10 @@
             <article class="metric-card">
               <div class="metric-head">
                 <div class="metric-title">机身温度</div>
-                <span class="badge default" id="home-mod-badge">+4°C 激活</span>
+                <div style="display:flex;align-items:center;gap:6px">
+                  <button class="tiny-btn sm" id="home-temp-chart-btn" type="button">历史</button>
+                  <span class="badge default" id="home-mod-badge">+4°C 激活</span>
+                </div>
               </div>
               <div id="home-thermal-skel"><div class="skel" style="height:108px"></div></div>
               <div id="home-thermal-content" hidden>
@@ -78,7 +81,10 @@
             <article class="metric-card">
               <div class="metric-head">
                 <div class="metric-title">内存与待机</div>
-                <span class="badge off" id="home-power-badge">后台优化</span>
+                <div style="display:flex;align-items:center;gap:6px">
+                  <button class="tiny-btn sm" id="energy-btn" type="button">功耗</button>
+                  <span class="badge off" id="home-power-badge">后台优化</span>
+                </div>
               </div>
               <div class="mini-list">
                 <div class="mini-row"><span>ZRAM 占用</span><strong id="rt-zram-usage">—</strong></div>
@@ -180,9 +186,14 @@
         </article>
 
         <div class="section-block">
-          <div class="section-copy">
-            <div class="kicker">机身温度</div>
-            <div class="section-title">温度详情</div>
+          <div class="section-head">
+            <div class="section-copy">
+              <div class="kicker">机身温度</div>
+              <div class="section-title">温度详情</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="temp-chart-btn" type="button">历史</button>
+            </div>
           </div>
           <article class="thermal-card">
             <div class="panel-head">
@@ -405,6 +416,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=4.1.0"></script>
+<script src="/app.js?v=4.2.1"></script>
 </body>
 </html>

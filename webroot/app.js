@@ -9,12 +9,14 @@ const API = {
   status: '/cgi-bin/status.sh',
   info: '/cgi-bin/info.sh',
   thermal: '/cgi-bin/thermal.sh',
+  thermalHistory: '/cgi-bin/thermal.sh?history=1',
   thermalSet: '/cgi-bin/set_thermal.sh',
   reboot: '/cgi-bin/reboot.sh',
   optimize: '/cgi-bin/optimize.sh',
   swap: '/cgi-bin/swap.sh',
   nrSwitch: '/cgi-bin/nr_switch.sh',
   ntp: '/cgi-bin/ntp.sh',
+  energy: '/cgi-bin/energy.sh',
 };
 
 const STORAGE_THEME_KEY = 'pixel9pro_theme_mode';
@@ -46,12 +48,12 @@ const THEME_ICONS = {
 const PROFILES = {
   game: {
     name: '游戏模式',
-    summary: 'top-app 使用全核 0-7，响应 8/8/8ms，性能释放最积极。',
-    desc: 'top-app: cpu0-7 全核 · 响应 8/8/8ms · 全核功耗较高',
+    summary: 'top-app 全核 0-7，大核 12ms 防 PID 激进降频。≥41°C 禁止开启。',
+    desc: 'top-app: cpu0-7 全核 · 响应 8/8/12ms · ≥41°C 温度门控',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     modeClass: 'mode-game',
-    detail: '<b>游戏模式</b><br><br><b>cpuset</b>: top-app → cpu0-7 全核<br><b>response_time</b>: 小核 8ms / 中核 8ms / 大核 8ms<br><br>游戏进程可使用全部核心，升频和降频都极快。全核高频功耗较高，适用于重负载和短时性能场景。'
+    detail: '<b>游戏模式</b><br><br><b>cpuset</b>: top-app → cpu0-7 全核<br><b>response_time</b>: 小核 8ms / 中核 8ms / 大核 12ms<br><br>大核 response_time 设为 12ms 而非 8ms，给 Thermal HAL 的 PID 功率控制器留出调节空间，避免 thermal-uclamp-7 在 VIRTUAL-SKIN-CPU-HIGH 触发 PID 后将大核激进压到 1164MHz。<br><br><b>温度门控</b>: VIRTUAL-SKIN ≥ 41°C 时禁止切换到游戏模式。高温下强制全核冲频会让 SoC 内核温度急升（实测可达 91°C），触发 uclamp 深度降频反而降低性能。'
   },
   balanced: {
     name: '平衡模式',
@@ -179,7 +181,7 @@ const state = {
   homeCpuRows: null,
   sensorRefs: null,
   homeSensorRefs: null,
-  timers: { cpu: null, thermal: null, swap: null },
+  timers: { cpu: null, thermal: null, swap: null, slow: null },
   lastClusters: null,
   pull: { y0: 0, active: false, dist: 0, busy: false },
   thermalModal: { pending: 4, prev: 4 }
@@ -1064,6 +1066,237 @@ async function syncNtp() {
   }
 }
 
+function drawTempCanvas(container, data) {
+  if (!data || data.length < 2) {
+    container.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">数据采集中，后台每 5 秒记录一次</div>';
+    return null;
+  }
+  container.innerHTML = '';
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'display:block;width:100%;height:200px';
+  container.appendChild(canvas);
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.offsetWidth || 380;
+  const h = 200;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const pad = { top: 12, right: 8, bottom: 26, left: 38 };
+  const plotW = w - pad.left - pad.right;
+  const plotH = h - pad.top - pad.bottom;
+  const temps = data.map((p) => p.temp);
+  const realMin = Math.min(...temps);
+  const realMax = Math.max(...temps);
+  const avg = temps.reduce((a, b) => a + b, 0) / temps.length;
+  let minT = realMin;
+  let maxT = realMax;
+  if (maxT - minT < 2) { minT -= 1; maxT += 1; } else { minT = Math.floor(minT); maxT = Math.ceil(maxT); }
+  const isDark = document.documentElement.dataset.theme === 'dark';
+  const gridColor = isDark ? 'rgba(234,243,238,0.10)' : 'rgba(20,34,28,0.10)';
+  const labelColor = isDark ? 'rgba(238,245,241,0.54)' : 'rgba(20,32,28,0.50)';
+  const strokeColor = isDark ? '#83e8ce' : '#006b57';
+  const areaColor = isDark ? 'rgba(131,232,206,0.08)' : 'rgba(0,107,87,0.06)';
+  const gridN = 4;
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 1;
+  ctx.font = '11px system-ui,sans-serif';
+  ctx.fillStyle = labelColor;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i <= gridN; i++) {
+    const y = pad.top + (plotH / gridN) * i;
+    const t = maxT - ((maxT - minT) / gridN) * i;
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+    ctx.fillText(`${t.toFixed(0)}°`, pad.left - 4, y);
+  }
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const xN = 4;
+  const t0 = data[0].ts;
+  const t1 = data[data.length - 1].ts;
+  const timeSpan = t1 - t0 || 1;
+  for (let i = 0; i <= xN; i++) {
+    const x = pad.left + (plotW / xN) * i;
+    const ts = t0 + (timeSpan / xN) * i;
+    const d = new Date(ts * 1000);
+    ctx.fillText(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`, x, h - pad.bottom + 6);
+  }
+  let plotData = data;
+  if (data.length > plotW) {
+    const step = Math.ceil(data.length / plotW);
+    plotData = data.filter((_, i) => i % step === 0 || i === data.length - 1);
+  }
+  ctx.beginPath();
+  plotData.forEach((p, i) => {
+    const x = pad.left + ((p.ts - t0) / timeSpan) * plotW;
+    const y = pad.top + ((maxT - p.temp) / (maxT - minT)) * plotH;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = strokeColor;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+  ctx.lineTo(pad.left + ((plotData[plotData.length - 1].ts - t0) / timeSpan) * plotW, pad.top + plotH);
+  ctx.lineTo(pad.left + ((plotData[0].ts - t0) / timeSpan) * plotW, pad.top + plotH);
+  ctx.closePath();
+  ctx.fillStyle = areaColor;
+  ctx.fill();
+  return { min: realMin, max: realMax, avg, count: data.length };
+}
+
+function fmtDuration(sec) {
+  if (sec >= 3600) return `${Math.floor(sec / 3600)}小时${Math.floor((sec % 3600) / 60)}分`;
+  if (sec >= 60) return `${Math.floor(sec / 60)}分${Math.floor(sec % 60)}秒`;
+  return `${Math.floor(sec)}秒`;
+}
+
+function renderHistoryStats(statsEl, data, result) {
+  if (!result || !data.length) { statsEl.innerHTML = ''; return; }
+  const threshold = THRESH_STOCK + state.currentOffset;
+  let highSec = 0;
+  for (let i = 1; i < data.length; i++) {
+    if (data[i - 1].temp >= threshold) highSec += data[i].ts - data[i - 1].ts;
+  }
+  const elapsed = data[data.length - 1].ts - data[0].ts;
+  statsEl.innerHTML = '';
+  const rows = [
+    { label: '数据范围', value: fmtDuration(elapsed) },
+    { label: '采样点', value: `${data.length} 个` },
+    { label: '最高温度', value: `${result.max.toFixed(1)}°C`, cls: result.max >= threshold ? 'warn' : 'good' },
+    { label: '最低温度', value: `${result.min.toFixed(1)}°C`, cls: 'good' },
+    { label: '平均温度', value: `${result.avg.toFixed(1)}°C` },
+    { label: `节流时长 (≥${threshold}°C)`, value: fmtDuration(highSec), cls: highSec > 60 ? 'warn' : 'good' },
+  ];
+  rows.forEach((row) => statsEl.appendChild(buildInfoRow(row.label, row.value, row.cls || '')));
+}
+
+async function fetchTempHistory(minutes) {
+  try {
+    const data = await apiFetch(`${API.thermal}?history=1&minutes=${minutes}`, { timeoutMs: 6000 });
+    if (!data || !data.points) return [];
+    return data.points.map((p) => ({ ts: p[0], temp: p[1] / 1000 }));
+  } catch (_) {
+    return [];
+  }
+}
+
+function openTempChart() {
+  refs.detailTitle.textContent = '温度历史';
+  const ranges = [
+    { min: 10, label: '10 分钟', chart: true },
+    { min: 60, label: '1 小时', chart: false },
+    { min: 180, label: '3 小时', chart: false },
+    { min: 720, label: '12 小时', chart: false },
+  ];
+  let active = 10;
+  refs.detailBody.innerHTML =
+    '<div class="chart-range-chips" id="chart-ranges"></div>' +
+    '<div id="chart-area"></div>';
+  const chipsEl = document.getElementById('chart-ranges');
+  const areaEl = document.getElementById('chart-area');
+  const draw = async (rangeMin) => {
+    active = rangeMin;
+    const isChart = ranges.find((r) => r.min === rangeMin)?.chart;
+    chipsEl.querySelectorAll('.chart-chip').forEach((b) => b.classList.toggle('active', Number(b.dataset.range) === rangeMin));
+    areaEl.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">加载中…</div>';
+    const data = await fetchTempHistory(rangeMin);
+    if (!data || data.length < 2) {
+      areaEl.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">数据不足，后台每 5 秒记录一次</div>';
+      return;
+    }
+    const temps = data.map((p) => p.temp);
+    const realMin = Math.min(...temps);
+    const realMax = Math.max(...temps);
+    const avg = temps.reduce((a, b) => a + b, 0) / temps.length;
+    const threshold = THRESH_STOCK + state.currentOffset;
+    let highSec = 0;
+    for (let i = 1; i < data.length; i++) {
+      if (data[i - 1].temp >= threshold) highSec += data[i].ts - data[i - 1].ts;
+    }
+    const elapsed = data[data.length - 1].ts - data[0].ts;
+    areaEl.innerHTML = '';
+    if (isChart) {
+      const chartWrap = document.createElement('div');
+      chartWrap.className = 'chart-wrap';
+      areaEl.appendChild(chartWrap);
+      drawTempCanvas(chartWrap, data);
+      const summary = document.createElement('div');
+      summary.className = 'chart-stats';
+      summary.innerHTML = `<span>最低 ${realMin.toFixed(1)}°C</span><span>平均 ${avg.toFixed(1)}°C</span><span>最高 ${realMax.toFixed(1)}°C</span>`;
+      areaEl.appendChild(summary);
+    }
+    const statsWrap = document.createElement('div');
+    statsWrap.style.cssText = isChart ? 'margin-top:16px;padding-top:12px;border-top:1px solid var(--line)' : '';
+    const heading = document.createElement('div');
+    heading.style.cssText = 'font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px';
+    heading.textContent = isChart ? '统计' : '温度统计';
+    statsWrap.appendChild(heading);
+    const statsList = document.createElement('div');
+    statsList.className = 'data-list';
+    const rows = [
+      { label: '最高温度', value: `${realMax.toFixed(1)}°C`, cls: realMax >= threshold ? 'warn' : 'good' },
+      { label: '最低温度', value: `${realMin.toFixed(1)}°C`, cls: 'good' },
+      { label: '平均温度', value: `${avg.toFixed(1)}°C`, cls: avg >= threshold ? 'warn' : '' },
+      { label: `节流时长 (≥${threshold}°C)`, value: fmtDuration(highSec), cls: highSec > 60 ? 'warn' : 'good' },
+      { label: '数据范围', value: fmtDuration(elapsed) },
+      { label: '采样点', value: `${data.length} 个` },
+    ];
+    rows.forEach((row) => statsList.appendChild(buildInfoRow(row.label, row.value, row.cls || '')));
+    statsWrap.appendChild(statsList);
+    areaEl.appendChild(statsWrap);
+  };
+  ranges.forEach((r) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `chart-chip${r.min === active ? ' active' : ''}`;
+    btn.dataset.range = String(r.min);
+    btn.textContent = r.label;
+    btn.addEventListener('click', () => draw(r.min));
+    chipsEl.appendChild(btn);
+  });
+  refs.detailModal.classList.add('open');
+  window.setTimeout(() => draw(active), 80);
+}
+
+async function openEnergyDetail() {
+  refs.detailTitle.textContent = '功耗统计';
+  refs.detailBody.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在分析 batterystats，约需 2-3 秒…</div>';
+  refs.detailModal.classList.add('open');
+  try {
+    const d = await apiFetch(API.energy, { timeoutMs: 12000 });
+    let html = '';
+    html += `<div style="margin-bottom:14px"><b>电池概览</b></div>`;
+    html += '<div class="data-list">';
+    html += `<div class="data-row"><span class="data-key">电池容量</span><span class="data-val">${d.cap} mAh</span></div>`;
+    html += `<div class="data-row"><span class="data-key">预估耗电</span><span class="data-val">${d.drain} mAh</span></div>`;
+    html += `<div class="data-row"><span class="data-key">亮屏耗电</span><span class="data-val">${d.scron} mAh</span></div>`;
+    html += `<div class="data-row"><span class="data-key">息屏耗电</span><span class="data-val">${d.scroff} mAh</span></div>`;
+    html += `<div class="data-row"><span class="data-key">使用时长</span><span class="data-val">${d.bat_time || '—'}</span></div>`;
+    html += '</div>';
+    html += `<div style="margin:16px 0 10px;padding-top:12px;border-top:1px solid var(--line)"><b>系统分项 (mAh)</b></div>`;
+    html += '<div class="data-list">';
+    html += `<div class="data-row"><span class="data-key">屏幕</span><span class="data-val">${d.screen}</span></div>`;
+    html += `<div class="data-row"><span class="data-key">CPU</span><span class="data-val">${d.cpu}</span></div>`;
+    html += `<div class="data-row"><span class="data-key">蜂窝</span><span class="data-val">${d.cell}</span></div>`;
+    html += `<div class="data-row"><span class="data-key">WiFi</span><span class="data-val">${d.wifi}</span></div>`;
+    html += `<div class="data-row"><span class="data-key">唤醒锁</span><span class="data-val">${d.wakelock}</span></div>`;
+    html += '</div>';
+    if (d.apps && d.apps.length) {
+      html += `<div style="margin:16px 0 10px;padding-top:12px;border-top:1px solid var(--line)"><b>高耗电应用 Top ${d.apps.length}</b></div>`;
+      html += '<div class="data-list">';
+      d.apps.forEach((app, i) => {
+        const name = app.pkg.length > 30 ? app.pkg.slice(0, 28) + '…' : app.pkg;
+        html += `<div class="data-row"><span class="data-key">${i + 1}. ${name}</span><span class="badge ${app.mah > 200 ? 'warn' : 'off'}">${app.mah} mAh</span></div>`;
+      });
+      html += '</div>';
+    }
+    refs.detailBody.innerHTML = html;
+  } catch (err) {
+    refs.detailBody.innerHTML = `<div style="color:var(--danger);text-align:center;padding:24px 0">${err.message}</div>`;
+  }
+}
+
 async function applyProfile(profile) {
   if (profile === state.currentProfile || state.cpuBusy) return;
   const card = refs.profileList.querySelector(`[data-profile="${profile}"]`);
@@ -1178,13 +1411,15 @@ function startPolling() {
   state.timers.cpu = window.setInterval(refreshCpu, 3000);
   state.timers.thermal = window.setInterval(refreshThermal, 8000);
   state.timers.swap = window.setInterval(refreshSwap, 30000);
+  state.timers.slow = window.setInterval(function() { refreshOptimize(); loadInfo(); }, 60000);
 }
 
 function stopPolling() {
   clearInterval(state.timers.cpu);
   clearInterval(state.timers.thermal);
   clearInterval(state.timers.swap);
-  state.timers.cpu = state.timers.thermal = state.timers.swap = null;
+  clearInterval(state.timers.slow);
+  state.timers.cpu = state.timers.thermal = state.timers.swap = state.timers.slow = null;
 }
 
 function bindStaticEvents() {
@@ -1206,6 +1441,9 @@ function bindStaticEvents() {
   $('nr-switch-toggle-btn').addEventListener('click', toggleNrSwitch);
   $('nr-switch-detail-btn').addEventListener('click', () => openDetail('NR 息屏降级详情', NR_SWITCH_DETAIL));
   $('ntp-sync-btn').addEventListener('click', syncNtp);
+  $('temp-chart-btn').addEventListener('click', openTempChart);
+  $('energy-btn').addEventListener('click', openEnergyDetail);
+  $('home-temp-chart-btn').addEventListener('click', openTempChart);
   $('log-toggle').addEventListener('click', () => refs.logCard.classList.toggle('open'));
   $('theme-close-btn').addEventListener('click', closeThemeSheet);
   $('detail-close-btn').addEventListener('click', closeDetailModal);

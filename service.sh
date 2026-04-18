@@ -1,8 +1,13 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.2.1 — 开机服务 (M3 WebUI + 热区缓存 + 温度历史 + 功耗统计)
+# service.sh v4.2.2 — 开机服务 (M3 WebUI + 热区缓存 + 温度历史 + 功耗统计)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → WiFi multicast → WebUI
+#
+# v4.2.2 变更:
+#   - 新增 KernelSU busybox 路径检测
+#   - 增加 command -v busybox 兜底
+#   - 启动日志增加 root 框架标识
 #
 # v3.2.1: 恢复背景图 + 新增轻度模式 + 长按查看模式详情
 # v3.2.0 变更:
@@ -21,6 +26,20 @@ PORT=6210
 TOKEN_FILE="$MODDIR/.webui_token"
 THERMAL_CACHE="$MODDIR/.thermal_cache.json"
 LOCKDIR_BASE="$MODDIR/.locks"
+
+detect_root_impl() {
+    if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
+        echo "apatch"
+    elif [ "${KSU:-}" = "true" ] || [ -d /data/adb/ksu ]; then
+        echo "kernelsu"
+    elif [ -d /data/adb/magisk ]; then
+        echo "magisk"
+    else
+        echo "unknown"
+    fi
+}
+
+ROOT_IMPL=$(detect_root_impl)
 
 restore_ntp_server() {
     NTP_SAVE="$MODDIR/.ntp_server"
@@ -90,7 +109,7 @@ export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
 # ──────────────────────────────────────────────────────────
 # 2. 系统设置优化 (保 5G 分支)
 # ──────────────────────────────────────────────────────────
-log -t pixel9pro_ctrl "v4.2.1: Applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.2.2[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === Modem / 待机优化 (参考 Mori 帖子 + RMBD 模块) ===
 # 开机时先应用 keep-5G 分支设置，再由后续延迟复写兜住开机后被系统回写的项目。
@@ -151,7 +170,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.2.1: Keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.2.2[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # Android 17 / Pixel 组件在用户解锁后仍可能回写部分 secure/global key。
 # 对保 5G 分支无直接负面影响的项做一次延迟复写，避免 adaptive connectivity /
@@ -337,10 +356,16 @@ log -t pixel9pro_ctrl "Thermal cache + history task started (screen-aware)"
 # ──────────────────────────────────────────────────────────
 BB=""
 for _bb in /data/adb/ap/bin/busybox \
+            /data/adb/ksu/bin/busybox \
             /data/adb/magisk/busybox \
             /sbin/busybox; do
     [ -x "$_bb" ] && BB="$_bb" && break
 done
+
+if [ -z "$BB" ]; then
+    _bb=$(command -v busybox 2>/dev/null)
+    [ -n "$_bb" ] && [ -x "$_bb" ] && BB="$_bb"
+fi
 
 if [ -n "$BB" ]; then
     chmod 755 "$MODDIR/webroot/cgi-bin/"* 2>/dev/null
@@ -350,8 +375,8 @@ if [ -n "$BB" ]; then
         log -t pixel9pro_ctrl "WARNING: port $PORT already in use"
     else
         "$BB" httpd -p "127.0.0.1:$PORT" -h "$MODDIR/webroot"
-        log -t pixel9pro_ctrl "WebUI(loopback): http://127.0.0.1:$PORT"
+        log -t pixel9pro_ctrl "WebUI(loopback)[$ROOT_IMPL]: http://127.0.0.1:$PORT"
     fi
 else
-    log -t pixel9pro_ctrl "WARNING: busybox not found"
+    log -t pixel9pro_ctrl "WARNING[$ROOT_IMPL]: busybox not found"
 fi

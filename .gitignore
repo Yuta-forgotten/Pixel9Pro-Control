@@ -1,5 +1,10 @@
 # Build output
 *.zip
+dist/
+
+# Local project metadata / release drafts
+.ai_changelog.yaml
+RELEASE_v*.md
 
 # Nested repo copy (accidental, should not exist)
 Pixel9Pro-Control/
