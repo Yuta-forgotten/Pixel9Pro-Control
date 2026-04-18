@@ -1,24 +1,20 @@
 # Pixel 9 Pro Control Module v4.2.3
 
-> APatch/KernelSU 模块 — Pixel 9 Pro / Pro XL (Tensor G4) 温控 + CPU 调度 + ZRAM 优化 + 待机功耗优化 + Material 3 WebUI
+> APatch / KernelSU 模块。目标设备为 Pixel 9 Pro / Pro XL (Tensor G4)。包含温控偏移、CPU 调度模式、ZRAM 参数、待机设置和本地 WebUI。
 
-## 版本选择
+## 当前版本
 
-| 版本 | 特点 | 适合 |
-|------|------|------|
-| **[v3.3.1](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v3.3.1)** | 安全加固版 | 类玻璃态 UI / 核心功能 |
-| **[v4.1.0](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v4.1.0)** | Material 3 + 双机型 + NR 息屏降级 | 支持Pro XL |
-| **v4.2.3** | UI 版本显示修正 + KSU 兼容修正 | APatch / KernelSU 双支持 |
-| **[v4.2.1](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/tag/v4.2.1)** | 后端温度历史 + 功耗统计分析 | 完整数据驱动 |
-
-三个版本的核心功能一致，v4 版本需要卸载 v3 版本后安装。
+- Release: `v4.2.3`
+- Asset: `pixel9pro_control_v4.2.3.zip`
+- Module id: `pixel9pro_control`
+- WebUI: `http://127.0.0.1:6210`
 
 ## 支持设备
 
 | 设备 | 代号 | 状态 |
 |------|------|------|
-| Pixel 9 Pro | caiman | 完整支持 |
-| Pixel 9 Pro XL | komodo | 支持 (v4.1.0 起) |
+| Pixel 9 Pro | caiman | APatch 实机验证 |
+| Pixel 9 Pro XL | komodo | 机型分支已适配；未完成本项目实机复核 |
 
 安装时自动检测机型，刷入对应的温控配置。
 
@@ -26,62 +22,90 @@
 
 ### CPU 调度 (5 种模式)
 
-| 模式 | top-app | 小核 resp | 中核 resp | 大核 resp |
-|------|---------|-----------|-----------|-----------|
-| 游戏 | cpu0-7 全核 | 8ms | 8ms | 8ms |
-| 平衡 | cpu4-7 | 200ms (锁820MHz) | 12ms | 8ms |
-| 轻度 | cpu4-7 | 200ms (锁820MHz) | 20ms | 16ms |
-| 省电 | cpu4-7 | 500ms (锁820MHz) | 40ms | 30ms |
-| 默认 | cpu0-7 (系统默认) | 16ms | 64ms | 200ms |
+| 模式 | top-app | 小核策略 | 小核 resp | 中核 resp | 大核 resp |
+|------|---------|----------|-----------|-----------|-----------|
+| 游戏 | cpu0-7 | 不锁最低频 | 8ms | 8ms | 8ms |
+| 平衡 | cpu4-7 | 最低频 820MHz | 200ms | 12ms | 8ms |
+| 轻度 | cpu4-7 | 最低频 820MHz | 200ms | 20ms | 16ms |
+| 省电 | cpu4-7 | 最低频 820MHz | 500ms | 40ms | 30ms |
+| 默认 | cpu0-7 | 系统默认 | 16ms | 64ms | 200ms |
 
-通过 WebUI 切换，不与 Thermal HAL 冲突。
+调度通过 `cpuset` 和 `sched_pixel response_time_ms` 控制；不直接写 `scaling_max_freq`。
 
 ### 温控优化 (4 档可调)
 
-| 档位 | VIRTUAL-SKIN 起始节流 | 说明 |
-|------|----------------------|------|
-| 默认节流 | 39°C (原厂) | 出厂阈值 |
-| 轻度节流 | 41°C (+2°C) | 减少日常误触发 |
-| 常规节流 | 43°C (+4°C) | **模块默认**，兼顾性能释放与温控 |
-| 激进节流 | 45°C (+6°C) | 未测试 |
+| 档位 | Offset | VIRTUAL-SKIN 首档 | 说明 |
+|------|--------|-------------------|------|
+| 默认节流 | +0°C | 39°C | 原厂阈值 |
+| 轻度节流 | +2°C | 41°C | 全档整体 +2°C |
+| 常规节流 | +4°C | 43°C | 安装默认值 |
+| 激进节流 | +6°C | 45°C | 全档整体 +6°C |
 
-偏移覆盖 8 个 VIRTUAL-SKIN 节流传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU），安全阈值 (55°C/59°C) 保留不动。切换后自动重启 thermal 服务。
+偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器：
+
+- `VIRTUAL-SKIN`
+- `VIRTUAL-SKIN-HINT`
+- `VIRTUAL-SKIN-SOC`
+- `VIRTUAL-SKIN-CPU-LIGHT-ODPM`
+- `VIRTUAL-SKIN-CPU-MID`
+- `VIRTUAL-SKIN-CPU-ODPM`
+- `VIRTUAL-SKIN-CPU-HIGH`
+- `VIRTUAL-SKIN-GPU`
+
+安全阈值 `55°C / 59°C` 保留不变。切换后尝试重启 thermal 服务。
 
 ### ZRAM / 内存优化
 
-- **算法**：lz77eh (Emerald Hill 硬件加速)，Tensor G4 内置固定功能压缩电路，CPU 零开销
-- **容量**：11392MB（默认 ~8GB / 50% RAM，模块扩展至 75% RAM）
-- **VM 参数**：swappiness 150→100 · min_free_kbytes 27386→65536 · vfs_cache_pressure 100→60
+- 算法：`lz77eh`
+- 容量：`11392MB`
+- VM 参数：
+  - `swappiness=100`
+  - `min_free_kbytes=65536`
+  - `vfs_cache_pressure=60`
 
-### 待机功耗优化 (保障 5G连接)
+### 待机设置
 
-- 关闭 `mobile_data_always_on`（不影响 5G/CA 能力，略增 WiFi→蜂窝回切时延）
-- WiFi multicast 息屏自动关闭
-- 关闭 BLE/WiFi 后台扫描、自适应连接、网络推荐、附近共享
-- 开机后延迟复写一次易被系统回弹的待机项
-- 所有设置均以保留 5G / 5GA / 5G CA 能力为前提
+- `mobile_data_always_on=0`
+- `wifi_scan_always_enabled=0`
+- `ble_scan_always_enabled=0`
+- `adaptive_connectivity_enabled=0`
+- `adaptive_connectivity_wifi_enabled=0`
+- `network_recommendations_enabled=0`
+- `nearby_sharing_enabled=0`
+- `nearby_sharing_slice_enabled=0`
+- Wi-Fi multicast: 亮屏开启，息屏关闭
+- `wfc_ims_enabled`: 不托管
+
+以上设置不以关闭 5G/5GA/CA 为前提。
 
 ### NR 息屏降级 (v4.0.5+)
 
-- 息屏超过 60 秒后将网络模式从 5G NR 切换到 LTE，降低调制解调器射频功耗
-- 亮屏时立即恢复 5G/NR 模式
-- 恢复 NR 后冷却 10 分钟，避免频繁亮灭导致来回切换
-- 开启热点时自动跳过降级，保障共享连接
-- 默认关闭，通过 WebUI 手动开启
+- 息屏超过 `60` 秒后将网络模式切换到 LTE
+- 亮屏时恢复保存的 NR 模式
+- 恢复后冷却时间：`600` 秒
+- 热点开启时跳过切换
+- 默认状态：关闭
 
 ### NTP 服务器选择 (v4.0.5+)
 
-支持在阿里云 / 华为云 / 小米 / Google 默认四个 NTP 服务器间切换，开机自动恢复用户选择。
+可选项：
+
+- `ntp.aliyun.com`
+- `ntp.myhuaweicloud.com`
+- `ntp1.xiaomi.com`
+- `time.android.com`
+
+开机时恢复上次选择。
 
 ### WebUI 控制
 
 端口 6210，`http://127.0.0.1:6210` 访问（仅绑定 127.0.0.1 回环）。
 
-- Material 3 Expressive + 深色模式（跟随系统 / 浅色 / 深色）
-- 热区数据 5s 后台缓存，避免 busybox httpd 单线程被 dumpsys 阻塞
-- 所有 fetch 请求 AbortController 8s 超时
-- 顶栏滚动自动收起
-- 下拉刷新 + 左右滑动切换页面
+- 主题模式：`system / light / dark`
+- 热区数据后台缓存：亮屏 `5s`，息屏 `60s`
+- fetch 超时：`8s`
+- 下拉刷新
+- 左右滑动切换页面
 
 
 ### WebUI 安全
@@ -100,9 +124,9 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 - `cpuset` — 任务核心分配 (top-app / background)
 - `response_time_ms` — governor 升频响应时间
 
-> **foreground cpuset**：由 Android 框架层在 OOM adj 重算时强制写回系统默认值 `0-6`，无法通过文件覆盖修改。小核 `response_time_ms=200ms` 大部分时候锁定 820MHz，调度器优先选择响应更快的中核。
+> `foreground cpuset` 由 Android 框架层在 OOM adj 重算时写回 `0-6`，不通过文件覆盖修改。
 >
-> **down_rate_limit_us**：内核根据 `response_time_ms` 自动计算的只读派生值，不可独立写入。
+> `down_rate_limit_us` 为内核根据 `response_time_ms` 计算的派生值，不单独写入。
 
 ## 安装
 
@@ -116,25 +140,28 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 ## 兼容性
 
-- **设备**：Pixel 9 Pro (caiman) ， Pixel 9 Pro XL (komodo)（未经测试）
-- **系统**：基于 **Android 17 Beta 3 (SDK 37)** 开发和测试
-- **Root**：APatch 0.10+（完整支持）
-- **Root**：KernelSU 0.9+（v4.2.3 起支持 `/data/adb/ksu/bin/busybox`；`system/vendor` 覆盖需预装 metamodule）
+- 设备：
+  - `Pixel 9 Pro (caiman)`
+  - `Pixel 9 Pro XL (komodo)`
+- 系统：`Android 17 Beta 3 (SDK 37)` 为当前开发与验证基线
+- Root：
+  - `APatch 0.10+`：已完成本项目实机验证
+  - `KernelSU 0.9+`：代码路径已兼容；`system/vendor` 覆盖需预装 metamodule；未完成 KSU 真机闭环验证
 
 ## 已知问题与故障排除
 
 ### 安装器报 `Error: specified file not found in archive`
 
-这类错误通常不是脚本逻辑本身崩了，而是安装器在 ZIP 根目录找不到它要提取的入口文件。
+该错误通常表示安装器在 ZIP 根目录找不到需要提取的入口文件。
 
-最高概率原因：
+常见原因：
 - 选错了文件：用了 GitHub 的 `Source code (zip)`，它会多包一层顶级目录
 - 自己手动压缩时把 `pixel9pro_control_v2/` 整个目录包进去了，导致 `module.prop`/`customize.sh` 不在 ZIP 根目录
 - 某些 KSU/APatch 分支管理器仍会优先找 `META-INF/com/google/android/update-binary`
 
 `v4.2.3` 发行包同时提供：
 - 原生 root-module 布局（ZIP 根目录直接放 `module.prop` / `customize.sh` / `service.sh`）
-- Magisk 兼容 `META-INF` 入口，降低旧安装器/分支管理器的兼容性问题
+- Magisk 兼容 `META-INF` 入口
 
 如果你仍看到这个错误，先确认安装的确实是发布页资产 `pixel9pro_control_v4.2.3.zip`，而不是源码压缩包。
 
@@ -151,7 +178,7 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 ### Chrome 缓存
 
-Chrome 对本地 `http://` 资源缓存激进。验证方法：顶栏 kicker 显示 `Pixel 9 Pro · UI vX.Y.Z`，版本号不对就是缓存命中。
+Chrome 对本地 `http://` 资源缓存较强。验证方法：顶栏 kicker 显示 `Pixel 9 Pro · UI vX.Y.Z`，版本号不对就是缓存命中。
 
 **绕过**：访问 `http://127.0.0.1:6210/?r=<随机数>`，或 Chrome 设置→网站设置→127.0.0.1→清除站点数据。
 
