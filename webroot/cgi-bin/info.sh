@@ -33,3 +33,4 @@ fi
 
 printf '{"model":"%s","version":"%s","version_code":"%s","module_version":"%s","httpd_rss_kb":%s,"webui_token":"%s","baseband_installed":%s,"baseband_version":"%s"}' \
     "$(json_escape "$model")" "$(json_escape "$version")" "$vc" "$mv" "${httpd_rss:-0}" "$(json_escape "$token")" "$baseband_installed" "$(json_escape "$baseband_version")"
+

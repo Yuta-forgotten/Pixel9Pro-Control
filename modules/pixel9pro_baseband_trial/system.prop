@@ -1,0 +1,7 @@
+# Pixel 5G By Sun Dream
+
+#---For prop basic -----------------
+persist.dbg.volte_avail_ovr=1
+persist.dbg.vt_avail_ovr=0
+persist.dbg.wfc_avail_ovr=1
+

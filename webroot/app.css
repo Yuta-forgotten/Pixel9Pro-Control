@@ -1118,6 +1118,49 @@ button{border:none;background:none;padding:0;color:inherit}
   font-variant-numeric:tabular-nums;
 }
 
+.uecap-btn-group{
+  display:flex;
+  gap:8px;
+  margin-top:14px;
+}
+
+.uecap-btn{
+  flex:1;
+  min-height:40px;
+  padding:8px 6px;
+  border-radius:14px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  font-size:13px;
+  line-height:18px;
+  font-weight:600;
+  color:var(--text-2);
+  cursor:pointer;
+  -webkit-tap-highlight-color:transparent;
+  transition:background var(--mid) var(--ease),color var(--mid) var(--ease),border-color var(--mid) var(--ease),transform var(--fast) var(--ease);
+}
+
+.uecap-btn:active{transform:scale(.97)}
+.uecap-btn:disabled{opacity:.5;cursor:not-allowed}
+
+.uecap-btn.active{
+  background:var(--primary-container);
+  color:var(--on-primary-container);
+  border-color:transparent;
+}
+
+.uecap-btn.pending{
+  background:var(--warn-container);
+  color:var(--warn);
+  border-color:transparent;
+  animation:pulse 1s ease-in-out infinite;
+}
+
+.uecap-btn.pending.verifying{
+  background:var(--primary-container);
+  color:var(--on-primary-container);
+}
+
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{
     animation-duration:.01ms!important;

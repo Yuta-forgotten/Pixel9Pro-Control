@@ -12,12 +12,13 @@ const API = {
   thermalHistory: '/cgi-bin/thermal.sh?history=1',
   thermalSet: '/cgi-bin/set_thermal.sh',
   reboot: '/cgi-bin/reboot.sh',
-  optimize: '/cgi-bin/optimize.sh',
   swap: '/cgi-bin/swap.sh',
   nrSwitch: '/cgi-bin/nr_switch.sh',
   uecap: '/cgi-bin/uecap.sh',
+  thermalBurst: '/cgi-bin/thermal_burst.sh',
   ntp: '/cgi-bin/ntp.sh',
   energy: '/cgi-bin/energy.sh',
+  checkBaseband: '/cgi-bin/check_baseband.sh',
 };
 
 const STORAGE_THEME_KEY = 'pixel9pro_theme_mode';
@@ -25,8 +26,8 @@ const TAB_ORDER = ['home', 'perf', 'thermal', 'optim'];
 const TAB_META = {
   home: '状态总览',
   perf: '性能调度',
-  thermal: '温控管理',
-  optim: '系统优化',
+  thermal: '温控阈值',
+  optim: '连接与优化',
 };
 const CLUSTERS = [
   { label: 'Cluster 0 (小核 · cpu0-3)', maxHz: 1950000 },
@@ -49,17 +50,17 @@ const THEME_ICONS = {
 const PROFILES = {
   game: {
     name: '游戏模式',
-    summary: 'top-app 全核 0-7，大核 12ms 防 PID 激进降频。≥41°C 禁止开启。',
-    desc: 'top-app: cpu0-7 全核 · 响应 8/8/12ms · ≥41°C 温度门控',
+    summary: 'top-app 全核 0-7，大核 12ms，兼顾爆发性能和高温稳定性。≥41°C 禁止开启。',
+    desc: '前台: cpu0-7 · 响应 8/8/12ms · ≥41°C 禁止切换',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     modeClass: 'mode-game',
-    detail: '<b>游戏模式</b><br><br><b>cpuset</b>: top-app → cpu0-7 全核<br><b>response_time</b>: 小核 8ms / 中核 8ms / 大核 12ms<br><br>大核 response_time 设为 12ms 而非 8ms，给 Thermal HAL 的 PID 功率控制器留出调节空间，避免 thermal-uclamp-7 在 VIRTUAL-SKIN-CPU-HIGH 触发 PID 后将大核激进压到 1164MHz。<br><br><b>温度门控</b>: VIRTUAL-SKIN ≥ 41°C 时禁止切换到游戏模式。高温下强制全核冲频会让 SoC 内核温度急升（实测可达 91°C），触发 uclamp 深度降频反而降低性能。'
+    detail: '<b>游戏模式</b><br><br><b>cpuset</b>: top-app → cpu0-7 全核<br><b>response_time</b>: 小核 8ms / 中核 8ms / 大核 12ms<br><br>大核 response_time 设为 12ms 而不是 8ms，是为了给 Thermal HAL 的 PID 功率控制器留出调节空间，避免高温时大核被过于激进地压到低频。<br><br><b>高温保护</b>: VIRTUAL-SKIN ≥ 41°C 时禁止切换到游戏模式。高温下强行全核冲频会让 SoC 温度迅速抬升，反而更容易触发系统的强力降温。'
   },
   balanced: {
     name: '平衡模式',
-    summary: '前台优先中大核，小核锁 820MHz，日常流畅与温度控制兼顾。',
-    desc: '前台: cpu4-7 · 后台: cpu0-3 · 小核锁 820MHz · 中核 12ms · 大核 8ms',
+    summary: '前台优先中大核，小核尽量维持低频，兼顾流畅度和温度表现。',
+    desc: '前台: cpu4-7 · 后台: cpu0-3 · 中核 12ms · 大核 8ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     modeClass: 'mode-balanced',
@@ -67,8 +68,8 @@ const PROFILES = {
   },
   light: {
     name: '轻度模式',
-    summary: '核心分配与平衡相同，但中大核升频更慢，适合长时轻负载。',
-    desc: '前台: cpu4-7 · 后台: cpu0-3 · 小核锁 820MHz · 中核 20ms · 大核 16ms',
+    summary: '核心分配与平衡相同，但中大核升频更慢，适合长时间轻负载。',
+    desc: '前台: cpu4-7 · 后台: cpu0-3 · 中核 20ms · 大核 16ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.8 1.42-1.42zM1 13h3v-2H1v2zm10-9h2V1h-2v3zm7.45 1.46l1.79-1.8-1.41-1.41-1.8 1.79 1.42 1.42zM17.24 19.16l1.8 1.79 1.41-1.41-1.79-1.8-1.42 1.42zM20 11v2h3v-2h-3zM11 20h2v3h-2v-3zm-7.45-2.54l-1.79 1.8 1.41 1.41 1.8-1.79-1.42-1.42zM12 6a6 6 0 100 12 6 6 0 000-12z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.8 1.42-1.42zM1 13h3v-2H1v2zm10-9h2V1h-2v3zm7.45 1.46l1.79-1.8-1.41-1.41-1.8 1.79 1.42 1.42zM17.24 19.16l1.8 1.79 1.41-1.41-1.79-1.8-1.42 1.42zM20 11v2h3v-2h-3zM11 20h2v3h-2v-3zm-7.45-2.54l-1.79 1.8 1.41 1.41 1.8-1.79-1.42-1.42zM12 6a6 6 0 100 12 6 6 0 000-12z"/></svg>',
     modeClass: 'mode-light',
@@ -77,7 +78,7 @@ const PROFILES = {
   battery: {
     name: '省电模式',
     summary: '更保守的升频策略，适合低发热和续航优先场景。',
-    desc: '前台: cpu4-7 · 小核锁 820MHz · 中核 40ms · 大核 30ms',
+    desc: '前台: cpu4-7 · 中核 40ms · 大核 30ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     modeClass: 'mode-battery',
@@ -105,27 +106,27 @@ const PROFILES = {
 
 const THERMAL_PRESETS = {
   0: {
-    name: '默认节流',
-    summary: '恢复出厂 39°C 阈值。',
-    detail: '<b>默认节流</b><br><br><b>VIRTUAL-SKIN 39°C</b> 开始节流。维持 Google 出厂阈值，保守但更容易在日常高温边缘频繁进出限频。',
+    name: '出厂阈值',
+    summary: '恢复出厂 39°C 介入点。',
+    detail: '<b>出厂阈值</b><br><br><b>VIRTUAL-SKIN 39°C</b> 开始介入。保持 Google 出厂温控口径，保守但更容易在日常高温边缘频繁触发降温。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/></svg>'
   },
   2: {
-    name: '轻度节流',
-    summary: 'VIRTUAL-SKIN 41°C 开始节流。',
-    detail: '<b>轻度节流</b><br><br>在默认基础上整体上移 <b>+2°C</b>。适合减少日常温度波动区间的误触发，同时保留较明显的安全冗余。',
+    name: '轻度放宽',
+    summary: 'VIRTUAL-SKIN 41°C 开始介入。',
+    detail: '<b>轻度放宽</b><br><br>在出厂基础上整体上移 <b>+2°C</b>。适合减少日常温度波动带来的频繁触发，同时保留较明显的安全余量。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82z"/></svg>'
   },
   4: {
-    name: '常规节流',
-    summary: '模块默认档位，VIRTUAL-SKIN 43°C 开始节流。',
-    detail: '<b>常规节流（模块默认）</b><br><br>在默认基础上整体上移 <b>+4°C</b>，VIRTUAL-SKIN 43°C 才开始介入。兼顾性能释放与日常可控温度，为模块默认档位。',
+    name: '日常推荐',
+    summary: '模块默认档，VIRTUAL-SKIN 43°C 开始介入。',
+    detail: '<b>日常推荐（模块默认）</b><br><br>在出厂基础上整体上移 <b>+4°C</b>，VIRTUAL-SKIN 43°C 才开始介入。兼顾性能表现、机身温度和日常稳定性，是模块默认档位。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67z"/></svg>'
   },
   6: {
-    name: '激进节流',
-    summary: 'VIRTUAL-SKIN 45°C 开始节流。',
-    detail: '<b>激进节流</b><br><br>在默认基础上整体上移 <b>+6°C</b>，显著延迟限频介入。适合高负载短时冲刺，但机身体感温度会上升得更快。',
+    name: '性能优先',
+    summary: 'VIRTUAL-SKIN 45°C 开始介入。',
+    detail: '<b>性能优先</b><br><br>在出厂基础上整体上移 <b>+6°C</b>，显著延后系统降温介入。适合短时高负载冲刺，但机身体感温度会更快上升。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>'
   }
 };
@@ -134,8 +135,24 @@ const SWAP_DETAIL = '<b>ZRAM 算法: lz77eh (Emerald Hill 硬件加速)</b><br>T
 
 const NR_SWITCH_DETAIL = '<b>NR 息屏降级 (Screen-Off LTE Switch)</b><br><br>开启后，息屏超过 <b>60 秒</b> 时网络模式从 5G NR 切换到 LTE，降低调制解调器射频功耗。亮屏时立即恢复 5G/NR 模式，<b>5GA / 5G CA 能力完全保留</b>。<br><br><b>防抖机制</b><br>- 息屏后等待 60 秒再切换，快速亮屏不会触发<br>- 恢复 NR 后冷却 10 分钟，避免频繁亮灭导致来回切换<br><br><b>原理</b><br>NR_SA Band 41 (100MHz) 射频功耗远高于 LTE 20MHz。息屏时降级为 LTE 可使调制解调器进入更深低功耗态，预期节省 30-50% 蜂窝待机功耗。<br><br><b>注意</b><br>- 切换期间可能有 1-2 秒网络短暂中断<br>- 开启热点时自动跳过降级，保障共享连接<br>- 息屏下载或后台大流量时可关闭此功能<br>- 功能状态即时生效，无需重启';
 
-const UECAP_DETAIL = '<b>UECap 策略</b><br><br><b>special（国际底座）</b><br>当前自动默认恢复为 `global special` 基底，保留完整国际增量和全部中国高价值组合，不删除 `n79+n41+n28`。<br><br><b>balanced（中国精修实验档）</b><br>保留 `n79`、`n79+n41`、`n79+n28`、`n79+n41+n28` 等中国组合，并基于你给的清单做精修；用于人工实验，不作为自动默认。<br><br><b>PLMN / 5G+</b><br>模块一的 PLMN / 5G+ 改进已单独整理成带 overlay 的双版本模块源，但在你这台机当前固件上相关 payload 与 stock 一致。<br><br><b>自动策略</b><br>- 默认自动：`special` 常驻<br>- 节电更多依赖 Google 风格的 `Adaptive Connectivity` 与 `NR 屏熄降级`<br>- 不再把删除 3CC 当作默认优化手段';
-const STANDBY_AUDIT_DETAIL = '<b>网络与待机策略</b><br><br><b>当前思路已经变了</b><br>当前项目不再把“多关几个系统开关”当成待机优化主线。现在更接近 Google / Apple 的公开思路：<br>- 保留 5G / CA / IMS 能力<br>- 优先依赖 `Adaptive Connectivity`、`network_recommendations`、`NR 屏熄降级` 和应用侧噪音治理<br><br><b>核心审计项</b><br>- `Adaptive Connectivity`：应为开启<br>- `network_recommendations`：应为开启<br>- `mobile_data_always_on`：当前仍建议关闭，但它只是次级项，不再是主卖点<br>- `WiFi Multicast`：屏幕感知控制<br><br><b>附属收敛项</b><br>- WiFi / BLE 扫描<br>- Nearby Sharing<br>- 这些仍可收敛，但不应压过网络驻留、通话连续性和系统自带节电策略<br><br><b>明确不再托管</b><br>- `wfc_ims_enabled`<br>它会直接影响室内通话连续性，因此当前项目明确不再替用户强制改写。';
+const UECAP_MODES = [
+  { id: 'special', name: '全场景增强', desc: '受管默认 · stock +52 组增强组合' },
+  { id: 'balanced', name: '国内优选', desc: 'trial_minimal_cn_combo · stock +25 组中国组合' },
+  { id: 'universal', name: '省电保守', desc: 'stock 等价副本 · 回到原厂能力表' },
+];
+
+const UECAP_DETAIL = '<b>UE 能力配置说明</b><br><br><b>先区分两个“默认”</b><br>- <b>系统原生 / stock</b>：手机出厂自带的 UECap binarypb<br>- <b>模块默认</b>：控制模块接管后默认使用 <b>special</b><br><br><b>系统原生 / stock</b><br>当前 stock hash 为 <code>0E37F39C...</code>，comboGroups=<b>7213</b>。当前仓库里的 <b>省电保守 (universal)</b> 与 stock hash 完全一致，属于原厂等价副本。只安装 <b>pixel9pro_baseband_trial</b> 时，UECap 也会停留在这一档。<br><br><b>全场景增强 (special)</b><br>对应 <b>global special</b>，当前 hash <code>69DF3BF6...</code>，相对 stock 新增 <b>52</b> 组组合（7213→7266），包含 n79 单载、n41+n79、n79+n28、n41+n79+n28，以及更多 n78 / EN-DC 组合。适合高速移动、弱覆盖和频繁切换。<br><br><b>国内优选 (balanced)</b><br>当前实际对应 <b>trial_minimal_cn_combo</b>，hash <code>2870BA9C...</code>，相对 stock 只新增 <b>25</b> 组中国相关 NR 组合（7213→7238），不删除、不改写原厂字段；主要补入 n28 / n41 / n79 相关组合。适合国内长期日常测试。<br><br><b>省电保守 (universal)</b><br>当前与 stock 完全等价（added/removed/modified = 0），作用就是回到原厂能力表，而不是再套一层新的保守表。<br><br><b>切换方式</b><br>切换时只重启蜂窝 modem，不影响 Wi-Fi / 蓝牙。WebUI 会在切换后自动校验当前配置和目标摘要，确认一致后才提示成功。';
+const BASEBAND_DETAIL = '<b>基带配置模块 (pixel9pro_baseband_trial)</b><br><br><b>提供内容</b><br>- 5G / IMS 属性：VoLTE、Wi-Fi Calling 开关<br>- CarrierSettings：运营商配置覆盖<br>- China MCFG：移动 / 联通 / 电信相关 modem 配置<br><br><b>不包含</b><br>- UECap binarypb 管理（由 pixel9pro_control 负责）<br>- 温控、CPU 调度、ZRAM 和 WebUI';
+const UECAP_VERIFY_INTERVAL_MS = 1500;
+const UECAP_VERIFY_TIMEOUT_MS = 15000;
+const WEBUI_IDLE_MS = 45000;
+const POLL_MIN_DELAY_MS = 900;
+const POLL_INTERVALS = {
+  cpu: { home: 5000, perf: 4000, relaxedHome: 12000, relaxedPerf: 9000 },
+  thermal: { home: 12000, thermal: 10000, relaxedHome: 24000, relaxedThermal: 20000 },
+  optim: { home: 45000, optim: 30000, relaxedHome: 120000, relaxedOptim: 90000 },
+  slow: { home: 90000, optim: 75000, relaxedHome: 180000, relaxedOptim: 150000 },
+};
 
 const NTP_SERVERS = [
   { id: 'ntp.aliyun.com', name: '阿里云', desc: '阿里云公共 NTP 服务' },
@@ -153,20 +170,6 @@ const ZONE_LABELS = {
   'btmspkr_therm': '底部扬声器'
 };
 
-const STANDBY_AUDIT_CORE = [
-  { key: 'adaptive_connectivity', label: '自适应连接', hint: '当前策略把它视为核心节电路径之一：保留 full capability，由系统按业务需求决定何时更积极使用 5G。', good: '1', goodText: '已开启', badOn: '已关闭' },
-  { key: 'network_recommendations', label: '网络推荐', hint: '为 Pixel 的自适应连接和 Wi-Fi 评分提供支撑；当前结论是恢复开启，不再为了“多关开关”而关闭。', good: '1', goodText: '已开启', badOn: '已关闭' },
-  { key: 'mobile_data_always_on', label: '移动数据常开', hint: '这是次级策略项。关闭后不影响 5G/CA 能力，但可能略微增加 WiFi→蜂窝回切时延；现在只做审计，不再把它当成主卖点。', good: '0', goodText: '已关闭', badOn: '已开启' },
-  { key: 'multicast', label: 'WiFi Multicast', hint: '这是屏幕感知项：息屏关闭、亮屏恢复。它仍有价值，但属于局部 WLAN 噪音治理，不再代表整体待机策略。', good: 'screen_aware', goodText: '屏幕感知', badOn: '状态异常' }
-];
-
-const STANDBY_AUDIT_SECONDARY = [
-  { key: 'wifi_scan_always_enabled', label: 'WiFi 后台扫描', hint: '保留为静态收敛项，但不再作为主策略展示。', good: '0', goodText: '已关闭', badOn: '已开启' },
-  { key: 'ble_scan_always_enabled', label: 'BLE 后台扫描', hint: '保留为静态收敛项，但优先级低于网络驻留和 IMS 连续性。', good: '0', goodText: '已关闭', badOn: '已开启' },
-  { key: 'nearby_sharing', label: '附近共享', hint: '属于附属扫描项，关闭可减少噪音，但不是当前功耗主矛盾。', good: '0', goodText: '已关闭', badOn: '已开启' },
-  { key: 'wfc_ims_enabled', label: 'VoWiFi 通话', hint: '当前项目明确不再托管 WFC，避免对室内通话连续性造成确定性副作用。', good: 'unmanaged', goodText: '不托管', badOn: '已改写' }
-];
-
 const refs = {};
 const state = {
   currentTab: 'home',
@@ -179,19 +182,28 @@ const state = {
   thermalBusy: false,
   swapBusy: false,
   swapLoading: false,
-  optLoading: false,
   nrSwitch: 'off',
   nrBusy: false,
   uecapMode: 'unknown',
-  uecapPolicy: 'auto',
+  uecapActiveMode: 'unknown',
   uecapBusy: false,
+  uecapPendingMode: '',
+  uecapVerifyState: 'idle',
+  uecapVerifyMessage: '',
+  uecapExpectedHash: '',
+  uecapVerifyNonce: 0,
   ntpServer: 'time.android.com',
   ntpBusy: false,
   cpuRows: null,
   homeCpuRows: null,
   sensorRefs: null,
   homeSensorRefs: null,
-  timers: { cpu: null, thermal: null, swap: null, slow: null },
+  poller: {
+    timer: null,
+    running: false,
+    lastInteractionAt: 0,
+    lastRun: { cpu: 0, thermal: 0, optim: 0, slow: 0 }
+  },
   lastClusters: null,
   pull: { y0: 0, active: false, dist: 0, busy: false },
   thermalModal: { pending: 4, prev: 4 }
@@ -220,8 +232,6 @@ function initRefs() {
   refs.rtZramUsage = $('rt-zram-usage');
   refs.rtRatio = $('rt-ratio');
   refs.rtWebuiMem = $('rt-webui-mem');
-  refs.rtPower = $('rt-power');
-  refs.homePowerBadge = $('home-power-badge');
   refs.infoModel = $('info-model');
   refs.infoAndroid = $('info-android');
   refs.infoModule = $('info-module');
@@ -252,14 +262,14 @@ function initRefs() {
   refs.swapDesc = $('swap-desc');
   refs.swapToggleLabel = $('swap-toggle-label');
   refs.swapRows = $('swap-rows');
-  refs.optRows = $('opt-rows');
-  refs.optRefreshLabel = $('opt-refresh-label');
   refs.nrSwitchDesc = $('nr-switch-desc');
   refs.nrSwitchToggleLabel = $('nr-switch-toggle-label');
   refs.nrSwitchRows = $('nr-switch-rows');
   refs.uecapDesc = $('uecap-desc');
-  refs.uecapToggleLabel = $('uecap-toggle-label');
+  refs.uecapBtnGroup = $('uecap-btn-group');
   refs.uecapRows = $('uecap-rows');
+  refs.basebandDesc = $('baseband-desc');
+  refs.basebandRows = $('baseband-rows');
   refs.ntpDesc = $('ntp-desc');
   refs.ntpSyncLabel = $('ntp-sync-label');
   refs.ntpServerList = $('ntp-server-list');
@@ -319,17 +329,37 @@ function initTheme() {
   else mq.addListener(handle);
 }
 
-function openThemeSheet(){ refs.themeModal.classList.add('open'); }
-function closeThemeSheet(){ refs.themeModal.classList.remove('open'); }
+function pushModalState(name) {
+  history.pushState({ modal: name }, '');
+}
+
+function popModalIfTop(name) {
+  if (history.state && history.state.modal === name) history.back();
+}
+
+function openThemeSheet(){
+  refs.themeModal.classList.add('open');
+  pushModalState('theme');
+  queueNextPoll(computeNextPollDelay());
+}
+function closeThemeSheet(){
+  refs.themeModal.classList.remove('open');
+  popModalIfTop('theme');
+  queueNextPoll(POLL_MIN_DELAY_MS);
+}
 
 function openRebootModal(pending, prev) {
   state.thermalModal.pending = pending;
   state.thermalModal.prev = prev;
   refs.rebootModal.classList.add('open');
+  pushModalState('reboot');
+  queueNextPoll(computeNextPollDelay());
 }
 
 function closeRebootModal() {
   refs.rebootModal.classList.remove('open');
+  popModalIfTop('reboot');
+  queueNextPoll(POLL_MIN_DELAY_MS);
   showToast('已保存，重启手机后生效');
 }
 
@@ -337,9 +367,23 @@ function openDetail(title, html) {
   refs.detailTitle.textContent = title;
   refs.detailBody.innerHTML = html;
   refs.detailModal.classList.add('open');
+  pushModalState('detail');
+  queueNextPoll(computeNextPollDelay());
 }
 
-function closeDetailModal(){ refs.detailModal.classList.remove('open'); }
+function closeDetailModal(){
+  refs.detailModal.classList.remove('open');
+  popModalIfTop('detail');
+  queueNextPoll(POLL_MIN_DELAY_MS);
+}
+
+function errorBlock(msg) {
+  const el = document.createElement('div');
+  el.className = 'note-body';
+  el.style.cssText = 'color:var(--danger)';
+  el.textContent = msg;
+  return el;
+}
 
 function showToast(msg, dur = 2500) {
   const el = document.createElement('div');
@@ -384,6 +428,101 @@ async function apiFetch(path, opts = {}) {
   return response.json();
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function noteUserActivity() {
+  state.poller.lastInteractionAt = Date.now();
+  if (!document.hidden && state.poller.running) queueNextPoll(POLL_MIN_DELAY_MS);
+}
+
+function isAnyModalOpen() {
+  return Boolean(
+    (refs.detailModal && refs.detailModal.classList.contains('open'))
+    || (refs.themeModal && refs.themeModal.classList.contains('open'))
+    || (refs.rebootModal && refs.rebootModal.classList.contains('open'))
+  );
+}
+
+function isPollingRelaxed() {
+  return isAnyModalOpen() || (Date.now() - state.poller.lastInteractionAt) >= WEBUI_IDLE_MS;
+}
+
+function getPollInterval(key) {
+  const relaxed = isPollingRelaxed();
+  switch (key) {
+    case 'cpu':
+      if (state.currentTab === 'perf') return relaxed ? POLL_INTERVALS.cpu.relaxedPerf : POLL_INTERVALS.cpu.perf;
+      if (state.currentTab === 'home') return relaxed ? POLL_INTERVALS.cpu.relaxedHome : POLL_INTERVALS.cpu.home;
+      return 0;
+    case 'thermal':
+      if (state.currentTab === 'thermal') return relaxed ? POLL_INTERVALS.thermal.relaxedThermal : POLL_INTERVALS.thermal.thermal;
+      if (state.currentTab === 'home') return relaxed ? POLL_INTERVALS.thermal.relaxedHome : POLL_INTERVALS.thermal.home;
+      return 0;
+    case 'optim':
+      if (state.currentTab === 'optim') return relaxed ? POLL_INTERVALS.optim.relaxedOptim : POLL_INTERVALS.optim.optim;
+      if (state.currentTab === 'home') return relaxed ? POLL_INTERVALS.optim.relaxedHome : POLL_INTERVALS.optim.home;
+      return 0;
+    case 'slow':
+      if (state.currentTab === 'optim') return relaxed ? POLL_INTERVALS.slow.relaxedOptim : POLL_INTERVALS.slow.optim;
+      if (state.currentTab === 'home') return relaxed ? POLL_INTERVALS.slow.relaxedHome : POLL_INTERVALS.slow.home;
+      return 0;
+    default:
+      return 0;
+  }
+}
+
+function markPollFresh(keys, at = Date.now()) {
+  keys.forEach((key) => { state.poller.lastRun[key] = at; });
+}
+
+function computeNextPollDelay(now = Date.now()) {
+  const delays = [];
+  ['cpu', 'thermal', 'optim', 'slow'].forEach((key) => {
+    const interval = getPollInterval(key);
+    if (!interval) return;
+    delays.push(Math.max(interval - (now - state.poller.lastRun[key]), POLL_MIN_DELAY_MS));
+  });
+  return delays.length ? Math.min(...delays) : POLL_INTERVALS.slow.relaxedHome;
+}
+
+function queueNextPoll(delayMs = POLL_MIN_DELAY_MS) {
+  clearTimeout(state.poller.timer);
+  state.poller.timer = null;
+  if (!state.poller.running || document.hidden) return;
+  state.poller.timer = window.setTimeout(runPollCycle, Math.max(delayMs, POLL_MIN_DELAY_MS));
+}
+
+async function runPollCycle() {
+  if (!state.poller.running || document.hidden) return;
+  const now = Date.now();
+  const jobs = [];
+
+  if (shouldPollCpu() && !state.cpuBusy && (now - state.poller.lastRun.cpu) >= getPollInterval('cpu')) {
+    jobs.push({ key: 'cpu', run: () => refreshCpu() });
+  }
+  if (shouldPollThermal() && !state.thermalBusy && (now - state.poller.lastRun.thermal) >= getPollInterval('thermal')) {
+    jobs.push({ key: 'thermal', run: () => refreshThermal() });
+  }
+  if (shouldPollOptim() && !state.swapLoading && (now - state.poller.lastRun.optim) >= getPollInterval('optim')) {
+    jobs.push({ key: 'optim', run: () => refreshSwap() });
+  }
+  if (shouldPollOptim() && (now - state.poller.lastRun.slow) >= getPollInterval('slow')) {
+    jobs.push({
+      key: 'slow',
+      run: () => Promise.allSettled([refreshUecap(), refreshBaseband(), loadInfo()])
+    });
+  }
+
+  if (jobs.length) {
+    markPollFresh(jobs.map((job) => job.key), now);
+    await Promise.allSettled(jobs.map((job) => job.run()));
+  }
+
+  queueNextPoll(computeNextPollDelay());
+}
+
 function syncTopbar() {
   const page = document.querySelector('.tab-page.active');
   refs.topbar.classList.toggle('compact', page && page.scrollTop > 40);
@@ -402,6 +541,8 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-item').forEach((item) => item.classList.toggle('active', item.dataset.tab === tab));
   refs.topbarSubtitle.textContent = TAB_META[tab] || '控制台';
   syncTopbar();
+  noteUserActivity();
+  refreshCurrentTabData();
 }
 
 function getSwipeTargetTab(deltaX, deltaY) {
@@ -519,10 +660,10 @@ function tempHex(t) {
 function tempStatus(t) {
   if (t < 36) return '凉爽';
   if (t < 39) return '正常';
-  if (t < 43) return '已超出原始阈值，延迟节流策略生效中';
-  if (t < 47) return '系统已开始限频降温';
-  if (t < 50) return '持续高温，深度节流中';
-  return '设备过热，严重节流';
+  if (t < 43) return '已高于原厂阈值，当前仍在放宽区间';
+  if (t < 47) return '系统已开始主动降温';
+  if (t < 50) return '温度持续偏高，系统正在加强降温';
+  return '温度过高，系统已严格限制性能';
 }
 
 function barPct(t) {
@@ -552,17 +693,17 @@ function syncHeroDesc() {
   const parts = [];
   const preset = THERMAL_PRESETS[state.currentOffset];
   if (preset) parts.push(preset.name);
-  if (state.swapMode === 'optimized') parts.push('VM 已优化');
-  else if (state.swapMode === 'stock') parts.push('VM 默认');
-  refs.heroDesc.textContent = parts.join(' · ') || '读取中…';
+  if (state.swapMode === 'optimized') parts.push('内存已优化');
+  else if (state.swapMode === 'stock') parts.push('内存默认');
+  refs.heroDesc.textContent = parts.join(' · ') || '正在读取配置…';
 }
 
 function syncThermalUi() {
   const preset = THERMAL_PRESETS[state.currentOffset] || THERMAL_PRESETS[4];
-  refs.topbarThermalChip.textContent = state.currentOffset === 0 ? '默认节流' : `温控 ${preset.name}`;
+  refs.topbarThermalChip.textContent = state.currentOffset === 0 ? '出厂阈值' : `温控 ${preset.name}`;
   refs.thermalCurrentName.textContent = preset.name;
   refs.thermalCurrentDesc.textContent = preset.summary;
-  const label = state.currentOffset === 0 ? '默认节流' : `+${state.currentOffset}°C 激活`;
+  const label = state.currentOffset === 0 ? '出厂阈值' : `+${state.currentOffset}°C 已启用`;
   [refs.homeModBadge, refs.thModBadge].forEach((el) => {
     el.textContent = label;
     el.className = `badge ${state.currentOffset === 0 ? 'off' : 'default'}`;
@@ -680,58 +821,6 @@ function renderSwapCard(data) {
   rows.forEach((row) => refs.swapRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 }
 
-function standbyStatus(item, value) {
-  if (item.key === 'multicast') {
-    return value === 'off'
-      ? { cls: 'good', text: '息屏已关' }
-      : value === 'on'
-        ? { cls: 'off', text: item.goodText }
-        : { cls: 'warn', text: item.badOn };
-  }
-  if (value === item.good) return { cls: 'good', text: item.goodText };
-  if (value === '1' || value === 'on') return { cls: 'warn', text: item.badOn };
-  if (value === 'unmanaged') return { cls: 'off', text: item.goodText };
-  return { cls: 'off', text: '未设置' };
-}
-
-function appendAuditSection(container, title, items, data) {
-  const header = document.createElement('div');
-  header.className = 'section-copy';
-  header.style.margin = '2px 0 2px';
-  header.style.gridColumn = '1 / -1';
-  header.innerHTML = `<div class="kicker">${title}</div>`;
-  container.appendChild(header);
-
-  items.forEach((item) => {
-    const value = data[item.key] || 'null';
-    const stateSpec = standbyStatus(item, value);
-    const row = document.createElement('div');
-    row.className = 'opt-item';
-    row.innerHTML = `
-      <div class="opt-item-head">
-        <div class="opt-label">${item.label}</div>
-        <span class="badge ${stateSpec.cls}">${stateSpec.text}</span>
-      </div>
-      <div class="opt-meta">${item.hint}</div>`;
-    container.appendChild(row);
-  });
-}
-
-function renderOptimizeRows(data) {
-  refs.optRows.innerHTML = '';
-  appendAuditSection(refs.optRows, '核心策略', STANDBY_AUDIT_CORE, data);
-  appendAuditSection(refs.optRows, '附属收敛项', STANDBY_AUDIT_SECONDARY, data);
-
-  const coreIssues = [
-    data.adaptive_connectivity !== '1',
-    data.network_recommendations !== '1',
-    data.mobile_data_always_on !== '0'
-  ].filter(Boolean).length;
-
-  refs.rtPower.textContent = coreIssues === 0 ? '能力优先' : `待核查 ${coreIssues} 项`;
-  refs.homePowerBadge.textContent = coreIssues === 0 ? '能力优先' : '待核查';
-  refs.homePowerBadge.className = `badge ${coreIssues === 0 ? 'good' : 'warn'}`;
-}
 
 function ensureHomeCpuRows(clusters) {
   if (state.homeCpuRows && state.homeCpuRows.length === clusters.length) return;
@@ -814,12 +903,15 @@ function ensureSensorRefs(container, key, zones, className) {
 async function loadInfo() {
   try {
     const data = await apiFetch(API.info);
-    refs.infoModel.textContent = data.model || 'Pixel 9 Pro';
+    const deviceModel = data.model || '—';
+    refs.infoModel.textContent = deviceModel;
     refs.infoAndroid.textContent = data.version ? `Android ${data.version}` : '—';
     refs.infoModule.textContent = data.module_version || '—';
     refs.topbarKicker.textContent = data.module_version
-      ? `Pixel 9 Pro · UI ${data.module_version}`
-      : 'Pixel 9 Pro · UI';
+      ? `${deviceModel} · UI ${data.module_version}`
+      : `${deviceModel} · UI`;
+    const basebandCard = $('baseband-card');
+    if (basebandCard) basebandCard.hidden = deviceModel !== 'Pixel 9 Pro';
     refs.rtWebuiMem.textContent = data.httpd_rss_kb
       ? data.httpd_rss_kb < 1024 ? `${data.httpd_rss_kb}KB` : `${(data.httpd_rss_kb / 1024).toFixed(1)}MB`
       : '—';
@@ -881,7 +973,14 @@ async function refreshCpu() {
       home.fill.style.transform = `scaleX(${!cluster.cur ? 0 : Math.min(cluster.cur / maxHz, 1).toFixed(3)})`;
     });
   } catch (err) {
-    refs.cpuRows.innerHTML = `<div class="note-body" style="color:var(--danger)">获取频率失败：${err.message}</div>`;
+    state.cpuRows = null;
+    state.homeCpuRows = null;
+    const el = document.createElement('div');
+    el.className = 'note-body';
+    el.style.color = 'var(--danger)';
+    el.textContent = '获取频率失败：' + err.message;
+    refs.cpuRows.innerHTML = '';
+    refs.cpuRows.appendChild(el);
   } finally {
     refs.refreshBtn.disabled = false;
     state.cpuBusy = false;
@@ -958,26 +1057,12 @@ async function refreshSwap() {
     refs.rtRatio.textContent = data.zram_orig_bytes > 0 ? `${((data.zram_compr_bytes / data.zram_orig_bytes) * 100).toFixed(1)}% → 实占 ${fmtBytes(data.zram_mem_used_bytes)}` : '—';
     syncHeroDesc();
   } catch (err) {
-    refs.swapRows.innerHTML = `<div class="note-body" style="color:var(--danger)">获取失败：${err.message}</div>`;
+    refs.swapRows.innerHTML = ''; refs.swapRows.appendChild(errorBlock('获取失败：' + err.message));
   } finally {
     state.swapLoading = false;
   }
 }
 
-async function refreshOptimize() {
-  if (state.optLoading) return;
-  state.optLoading = true;
-  refs.optRefreshLabel.textContent = '读取中…';
-  try {
-    const data = await apiFetch(API.optimize, { timeoutMs: 6000 });
-    renderOptimizeRows(data);
-  } catch (err) {
-    refs.optRows.innerHTML = `<div class="opt-item"><div class="opt-label" style="color:var(--danger)">获取失败</div><div class="opt-meta">${err.message}</div></div>`;
-  } finally {
-    refs.optRefreshLabel.textContent = '刷新';
-    state.optLoading = false;
-  }
-}
 
 function renderNrSwitchRows(data) {
   refs.nrSwitchRows.innerHTML = '';
@@ -988,41 +1073,95 @@ function renderNrSwitchRows(data) {
   const rows = [
     { label: '功能状态', value: isOn ? '已开启' : '已关闭', cls: isOn ? 'good' : 'off' },
     { label: '当前网络模式', value: modeLabel, cls: isLte ? 'warn' : 'good' },
-    { label: '保存的 NR 模式值', value: data.saved_nr_mode, cls: 'off' }
+    { label: '恢复用 NR 模式值', value: data.saved_nr_mode, cls: 'off' }
   ];
   rows.forEach((row) => refs.nrSwitchRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
   refs.nrSwitchToggleLabel.textContent = isOn ? '关闭' : '开启';
   refs.nrSwitchDesc.textContent = isOn
-    ? '已开启 · 息屏 60s 后切 LTE，亮屏或热点开启时保持 NR'
-    : '息屏超过 60 秒后切换到 LTE，亮屏立即恢复。热点开启时不降级。';
+    ? '已开启：灭屏 60 秒后切到 LTE，亮屏自动恢复 NR'
+    : '灭屏超过 60 秒后切到 LTE，亮屏自动恢复；热点开启时不降级。';
 }
 
 function uecapLabel(mode) {
-  if (mode === 'special') return '高铁强化';
-  if (mode === 'balanced') return '中国精修实验';
-  if (mode === 'universal') return '深省电 / 通用';
-  if (mode === 'custom') return '自定义 / 第三方';
+  if (mode === 'special') return '全场景增强';
+  if (mode === 'balanced') return '国内优选';
+  if (mode === 'universal') return '省电保守';
+  if (mode === 'custom') return '系统原生 / 第三方';
   return '未知';
+}
+
+function getUecapModeHash(data, mode) {
+  if (!data || !mode) return '';
+  return data[`${mode}_hash`] || '';
+}
+
+function getUecapVerifyRow(data, requested, active) {
+  if (state.uecapVerifyState === 'failed') {
+    return {
+      label: '配置校验',
+      value: state.uecapVerifyMessage || '未在时限内确认，请手动刷新复查',
+      cls: 'warn'
+    };
+  }
+
+  if (state.uecapPendingMode) {
+    const label = uecapLabel(state.uecapPendingMode);
+    if (state.uecapVerifyState === 'switching') {
+      return { label: '配置校验', value: `${label}：切换中`, cls: 'warn' };
+    }
+    if (state.uecapVerifyState === 'verifying') {
+      return { label: '配置校验', value: `${label}：正在校验配置`, cls: 'warn' };
+    }
+  }
+
+  const expectedHash = getUecapModeHash(data, requested);
+  const targetHash = data.target_hash || '';
+  const confirmed = requested === active && (!expectedHash || expectedHash === targetHash);
+  return {
+    label: '配置校验',
+    value: confirmed ? '已确认' : '待确认',
+    cls: confirmed ? 'good' : 'warn'
+  };
+}
+
+function renderUecapBtnGroup(activeMode) {
+  const selectedMode = state.uecapPendingMode || activeMode;
+  refs.uecapBtnGroup.innerHTML = '';
+  UECAP_MODES.forEach((m) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    const isSelected = m.id === selectedMode;
+    const isPending = state.uecapBusy && m.id === state.uecapPendingMode;
+    btn.className = `uecap-btn${isSelected ? ' active' : ''}${isPending ? ' pending' : ''}${isPending && state.uecapVerifyState === 'verifying' ? ' verifying' : ''}`;
+    btn.dataset.mode = m.id;
+    btn.textContent = isPending
+      ? (state.uecapVerifyState === 'switching' ? '切换中...' : '校验中...')
+      : m.name;
+    btn.disabled = state.uecapBusy;
+    btn.addEventListener('click', () => setUecapMode(m.id));
+    refs.uecapBtnGroup.appendChild(btn);
+  });
 }
 
 function renderUecapRows(data) {
   refs.uecapRows.innerHTML = '';
-  const requested = data.requested_mode || 'special';
+  const requested = data.requested_mode || state.uecapMode || 'special';
   const active = data.active_mode || 'custom';
-  const policy = data.policy || 'auto';
-  const reason = data.reason || 'unknown';
+  state.uecapMode = requested;
+  state.uecapActiveMode = active;
+  const modeInfo = UECAP_MODES.find((m) => m.id === requested);
+  refs.uecapDesc.textContent = state.uecapPendingMode
+    ? `${uecapLabel(state.uecapPendingMode)}：已提交切换，正在校验当前配置。`
+    : modeInfo ? `${modeInfo.desc} · 切换后自动校验配置是否生效。` : '选择 UE 能力配置，切换后会自动校验是否生效。';
+  renderUecapBtnGroup(requested);
+  const verifyRow = getUecapVerifyRow(data, requested, active);
   const rows = [
-    { label: '当前策略', value: policy === 'auto' ? '自动' : '手动锁定', cls: policy === 'auto' ? 'good' : 'warn' },
-    { label: '目标档位', value: uecapLabel(requested), cls: requested === 'special' ? 'good' : 'warn' },
-    { label: '当前激活', value: uecapLabel(active), cls: active === requested ? 'good' : 'warn' },
-    { label: '判定原因', value: reason.replace(/_/g, ' '), cls: 'off' },
-    { label: '目标哈希', value: (data.target_hash || 'unknown').slice(0, 12), cls: 'off' },
+    { label: '已选配置', value: uecapLabel(requested), cls: requested === active ? 'good' : 'off' },
+    { label: '当前配置', value: uecapLabel(active), cls: active === requested ? 'good' : 'warn' },
+    verifyRow,
+    { label: '配置摘要', value: (data.target_hash || 'unknown').slice(0, 12), cls: 'off' },
   ];
   rows.forEach((row) => refs.uecapRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
-  refs.uecapToggleLabel.textContent = policy === 'auto' ? '锁高铁' : '恢复自动';
-  refs.uecapDesc.textContent = policy === 'auto'
-    ? '自动策略已启用 · global special 常驻，节电更多依赖自适应连接与息屏降级'
-    : `手动锁定中 · 当前强制 ${uecapLabel(requested)}`;
 }
 
 async function refreshNrSwitch() {
@@ -1031,7 +1170,7 @@ async function refreshNrSwitch() {
     state.nrSwitch = data.nr_switch || 'off';
     renderNrSwitchRows(data);
   } catch (err) {
-    refs.nrSwitchRows.innerHTML = `<div class="note-body" style="color:var(--danger)">获取失败：${err.message}</div>`;
+    refs.nrSwitchRows.innerHTML = ''; refs.nrSwitchRows.appendChild(errorBlock('获取失败：' + err.message));
   }
 }
 
@@ -1039,11 +1178,83 @@ async function refreshUecap() {
   try {
     const data = await apiFetch(API.uecap, { timeoutMs: 6000 });
     state.uecapMode = data.requested_mode || 'special';
-    state.uecapPolicy = data.policy || 'auto';
+    state.uecapActiveMode = data.active_mode || 'custom';
+    const expectedHash = getUecapModeHash(data, state.uecapMode);
+    if (!state.uecapPendingMode && state.uecapVerifyState === 'failed' && state.uecapMode === state.uecapActiveMode && (!expectedHash || expectedHash === data.target_hash)) {
+      state.uecapVerifyState = 'idle';
+      state.uecapVerifyMessage = '';
+    }
     renderUecapRows(data);
   } catch (err) {
-    refs.uecapRows.innerHTML = `<div class="note-body" style="color:var(--danger)">获取失败：${err.message}</div>`;
+    refs.uecapRows.innerHTML = ''; refs.uecapRows.appendChild(errorBlock('获取失败：' + err.message));
   }
+}
+
+async function verifyUecapSwitch(mode, expectedHash, initialData) {
+  const nonce = ++state.uecapVerifyNonce;
+  const label = UECAP_MODES.find((m) => m.id === mode)?.name || mode;
+  const deadline = Date.now() + UECAP_VERIFY_TIMEOUT_MS;
+  let lastData = initialData || null;
+  let lastErr = '';
+
+  state.uecapPendingMode = mode;
+  state.uecapExpectedHash = expectedHash || '';
+  state.uecapVerifyState = 'switching';
+  renderUecapRows(lastData || {
+    requested_mode: mode,
+    active_mode: state.uecapActiveMode || 'custom',
+    target_hash: expectedHash || 'unknown'
+  });
+
+  await sleep(1800);
+
+  while (state.uecapVerifyNonce === nonce && Date.now() < deadline) {
+    state.uecapVerifyState = 'verifying';
+    if (lastData) renderUecapRows(lastData);
+
+    try {
+      const data = await apiFetch(API.uecap, { timeoutMs: 6000 });
+      lastData = data;
+      state.uecapMode = data.requested_mode || mode;
+      state.uecapActiveMode = data.active_mode || 'custom';
+      renderUecapRows(data);
+
+      const confirmedHash = expectedHash || getUecapModeHash(data, mode);
+      const confirmed = data.requested_mode === mode
+        && data.active_mode === mode
+        && (!confirmedHash || data.target_hash === confirmedHash);
+
+      if (confirmed) {
+        state.uecapBusy = false;
+        state.uecapPendingMode = '';
+        state.uecapExpectedHash = '';
+        state.uecapVerifyState = 'idle';
+        state.uecapVerifyMessage = '';
+        renderUecapRows(data);
+        showToast(`UE 能力配置已切换为 ${label}`);
+        appendLog(`UE 配置已确认: ${label}`, 'ok');
+        return;
+      }
+    } catch (err) {
+      lastErr = err.message || 'request failed';
+    }
+
+    await sleep(UECAP_VERIFY_INTERVAL_MS);
+  }
+
+  if (state.uecapVerifyNonce !== nonce) return;
+
+  state.uecapBusy = false;
+  state.uecapPendingMode = '';
+  state.uecapExpectedHash = '';
+  state.uecapVerifyState = 'failed';
+  state.uecapVerifyMessage = lastErr
+    ? `15 秒内未确认（${lastErr}）`
+    : '15 秒内未确认，请手动刷新复查';
+
+  if (lastData) renderUecapRows(lastData);
+  showToast(`${label} 已提交切换，但 15 秒内未完成校验，请手动刷新复查`, 4200);
+  appendLog(`UE 配置待复查: ${label}`, 'warn');
 }
 
 async function toggleNrSwitch() {
@@ -1066,32 +1277,83 @@ async function toggleNrSwitch() {
   }
 }
 
-async function toggleUecap() {
-  if (state.uecapBusy) return;
+async function setUecapMode(mode) {
+  if (state.uecapBusy || (mode === state.uecapMode && state.uecapVerifyState !== 'failed')) return;
+  const label = UECAP_MODES.find((m) => m.id === mode)?.name || mode;
   state.uecapBusy = true;
+  state.uecapPendingMode = mode;
+  state.uecapVerifyState = 'switching';
+  state.uecapVerifyMessage = `${label}：正在提交切换`;
+  renderUecapRows({
+    requested_mode: state.uecapMode || mode,
+    active_mode: state.uecapActiveMode || 'custom',
+    target_hash: state.uecapExpectedHash || 'unknown'
+  });
   try {
-    const payload = state.uecapPolicy === 'auto'
-      ? { policy: 'manual', mode: 'special' }
-      : { policy: 'auto' };
     const data = await apiFetch(API.uecap, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      timeoutMs: 8000
+      body: JSON.stringify({ policy: 'manual', mode }),
+      timeoutMs: 12000
     });
     if (data.ok) {
-      state.uecapMode = data.requested_mode || 'balanced';
-      state.uecapPolicy = data.policy || 'auto';
-      showToast(data.policy === 'manual' ? '已手动锁定高铁强化 UECap' : '已恢复自动 UECap 策略');
-      appendLog(data.policy === 'manual' ? 'UECap 策略: 手动高铁强化' : 'UECap 策略: 自动', 'ok');
+      state.uecapMode = data.requested_mode || mode;
+      state.uecapActiveMode = data.active_mode || state.uecapActiveMode || 'custom';
+      const expectedHash = getUecapModeHash(data, mode) || data.target_hash || '';
+      state.uecapExpectedHash = expectedHash;
+      state.uecapVerifyState = data.reloading ? 'switching' : 'verifying';
       renderUecapRows(data);
+      showToast(`${label}：已提交切换，正在校验配置`, 2600);
+      appendLog(`UE 配置已提交: ${label}，等待校验结果`, 'ok');
+      await verifyUecapSwitch(mode, expectedHash, data);
     } else {
       showToast(`切换失败：${data.error || '未知'}`);
+      state.uecapBusy = false;
+      state.uecapPendingMode = '';
+      state.uecapExpectedHash = '';
+      state.uecapVerifyState = 'failed';
+      state.uecapVerifyMessage = data.error || '提交失败';
+      await refreshUecap();
     }
   } catch (_) {
     showToast('请求失败');
-  } finally {
     state.uecapBusy = false;
+    state.uecapPendingMode = '';
+    state.uecapExpectedHash = '';
+    state.uecapVerifyState = 'failed';
+    state.uecapVerifyMessage = '请求失败，请重试';
+    await refreshUecap();
+  }
+}
+
+function renderBasebandRows(data) {
+  refs.basebandRows.innerHTML = '';
+  if (!data.installed) {
+    refs.basebandDesc.textContent = '未检测到独立基带模块，当前运营商配置和 MCFG 使用系统默认。';
+    refs.basebandRows.appendChild(buildInfoRow('安装状态', '未安装', 'off'));
+    return;
+  }
+  refs.basebandDesc.textContent = `已安装 ${data.version || ''}，可提供 CarrierSettings、MCFG 和 IMS 相关配置。`;
+  const props = data.props || {};
+  const cs = data.carrier_settings || {};
+  const mcfg = data.mcfg || {};
+  const rows = [
+    { label: '安装状态', value: '已安装', cls: 'good' },
+    { label: '版本', value: data.version || '未知', cls: 'off' },
+    { label: 'VoLTE', value: props.volte_avail_ovr === '1' ? '已启用' : '未启用', cls: props.volte_avail_ovr === '1' ? 'good' : 'warn' },
+    { label: 'Wi-Fi Calling', value: props.wfc_avail_ovr === '1' ? '已启用' : '未启用', cls: props.wfc_avail_ovr === '1' ? 'good' : 'warn' },
+    { label: '运营商配置', value: cs.installed ? `${cs.count} 项` : '未安装', cls: cs.installed ? 'good' : 'off' },
+    { label: '国内 MCFG', value: mcfg.installed ? `${mcfg.count} 个 mbn` : '未安装', cls: mcfg.installed ? 'good' : 'off' },
+  ];
+  rows.forEach((row) => refs.basebandRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
+}
+
+async function refreshBaseband() {
+  try {
+    const data = await apiFetch(API.checkBaseband, { timeoutMs: 6000 });
+    renderBasebandRows(data);
+  } catch (err) {
+    refs.basebandRows.innerHTML = ''; refs.basebandRows.appendChild(errorBlock('获取失败：' + err.message));
   }
 }
 
@@ -1124,7 +1386,7 @@ async function refreshNtp() {
     const data = await apiFetch(API.ntp, { timeoutMs: 6000 });
     renderNtpCard(data);
   } catch (err) {
-    refs.ntpServerList.innerHTML = `<div class="note-body" style="color:var(--danger)">获取失败：${err.message}</div>`;
+    refs.ntpServerList.innerHTML = ''; refs.ntpServerList.appendChild(errorBlock('获取失败：' + err.message));
   }
 }
 
@@ -1259,9 +1521,78 @@ function drawTempCanvas(container, data) {
 }
 
 function fmtDuration(sec) {
-  if (sec >= 3600) return `${Math.floor(sec / 3600)}小时${Math.floor((sec % 3600) / 60)}分`;
-  if (sec >= 60) return `${Math.floor(sec / 60)}分${Math.floor(sec % 60)}秒`;
-  return `${Math.floor(sec)}秒`;
+  const value = Number(sec);
+  if (!Number.isFinite(value) || value < 0) return '—';
+  if (value >= 3600) return `${Math.floor(value / 3600)}小时${Math.floor((value % 3600) / 60)}分`;
+  if (value >= 60) return `${Math.floor(value / 60)}分${Math.floor(value % 60)}秒`;
+  return `${Math.floor(value)}秒`;
+}
+
+function fmtDateTime(ts) {
+  const value = Number(ts);
+  if (!Number.isFinite(value) || value <= 0) return '—';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(value * 1000)).replace(/\//g, '-');
+}
+
+function fmtMah(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? `${num.toFixed(1)} mAh` : '—';
+}
+
+function fmtSignedPercent(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '—';
+  return `${num > 0 ? '+' : ''}${num}%`;
+}
+
+function fmtBatteryStatus(status) {
+  switch (status) {
+    case 'Charging': return '充电中';
+    case 'Discharging': return '放电中';
+    case 'Full': return '已充满';
+    case 'Not charging': return '未充电';
+    default: return status || '未知';
+  }
+}
+
+function fmtSessionResetReason(reason) {
+  switch (reason) {
+    case 'charged_10m': return '连续充电 10 分钟后重新拔线';
+    case 'full_replug': return '充满后重新拔线';
+    case 'boot_init': return '模块首次初始化';
+    default: return reason || '—';
+  }
+}
+
+function fmtBatterystatsWindow(label) {
+  if (!label) return '—';
+  if (/Statistics since last charge/i.test(label)) return '自上次充满以来';
+  if (/Daily stats/i.test(label)) return 'Daily stats';
+  return label;
+}
+
+async function fetchEnergyDetailWithRetry() {
+  let lastErr;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await apiFetch(API.energy, { timeoutMs: 16000 });
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err?.message || err || '');
+      if (attempt === 0 && (/Failed to fetch/i.test(msg) || /request timeout/i.test(msg) || /HTTP 5\d\d/.test(msg))) {
+        await sleep(450);
+        continue;
+      }
+      break;
+    }
+  }
+  throw lastErr;
 }
 
 function renderHistoryStats(statsEl, data, result) {
@@ -1279,7 +1610,7 @@ function renderHistoryStats(statsEl, data, result) {
     { label: '最高温度', value: `${result.max.toFixed(1)}°C`, cls: result.max >= threshold ? 'warn' : 'good' },
     { label: '最低温度', value: `${result.min.toFixed(1)}°C`, cls: 'good' },
     { label: '平均温度', value: `${result.avg.toFixed(1)}°C` },
-    { label: `节流时长 (≥${threshold}°C)`, value: fmtDuration(highSec), cls: highSec > 60 ? 'warn' : 'good' },
+    { label: `高于阈值时长 (≥${threshold}°C)`, value: fmtDuration(highSec), cls: highSec > 60 ? 'warn' : 'good' },
   ];
   rows.forEach((row) => statsEl.appendChild(buildInfoRow(row.label, row.value, row.cls || '')));
 }
@@ -1294,13 +1625,25 @@ async function fetchTempHistory(minutes) {
   }
 }
 
+async function triggerThermalBurst() {
+  try {
+    await apiFetch(API.thermalBurst, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      timeoutMs: 4000
+    });
+  } catch (_) {}
+}
+
 function openTempChart() {
+  triggerThermalBurst();
   refs.detailTitle.textContent = '温度历史';
   const ranges = [
-    { min: 10, label: '10 分钟', chart: true },
-    { min: 60, label: '1 小时', chart: false },
-    { min: 180, label: '3 小时', chart: false },
-    { min: 720, label: '12 小时', chart: false },
+    { min: 10, label: '10分钟', chart: true },
+    { min: 30, label: '30分钟', chart: true },
+    { min: 150, label: '2.5h', chart: false },
+    { min: 720, label: '12h', chart: false },
   ];
   let active = 10;
   refs.detailBody.innerHTML =
@@ -1315,7 +1658,7 @@ function openTempChart() {
     areaEl.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">加载中…</div>';
     const data = await fetchTempHistory(rangeMin);
     if (!data || data.length < 2) {
-      areaEl.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">数据不足，后台每 5 秒记录一次</div>';
+      areaEl.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">数据不足，等待短时采样继续积累</div>';
       return;
     }
     const temps = data.map((p) => p.temp);
@@ -1351,7 +1694,7 @@ function openTempChart() {
       { label: '最高温度', value: `${realMax.toFixed(1)}°C`, cls: realMax >= threshold ? 'warn' : 'good' },
       { label: '最低温度', value: `${realMin.toFixed(1)}°C`, cls: 'good' },
       { label: '平均温度', value: `${avg.toFixed(1)}°C`, cls: avg >= threshold ? 'warn' : '' },
-      { label: `节流时长 (≥${threshold}°C)`, value: fmtDuration(highSec), cls: highSec > 60 ? 'warn' : 'good' },
+      { label: `高于阈值时长 (≥${threshold}°C)`, value: fmtDuration(highSec), cls: highSec > 60 ? 'warn' : 'good' },
       { label: '数据范围', value: fmtDuration(elapsed) },
       { label: '采样点', value: `${data.length} 个` },
     ];
@@ -1377,42 +1720,105 @@ async function openEnergyDetail() {
   refs.detailBody.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在分析 batterystats，约需 2-3 秒…</div>';
   refs.detailModal.classList.add('open');
   try {
-    const d = await apiFetch(API.energy, { timeoutMs: 12000 });
-    let html = '';
-    html += `<div style="margin-bottom:14px"><b>电池概览</b></div>`;
-    html += '<div class="data-list">';
-    html += `<div class="data-row"><span class="data-key">电池容量</span><span class="data-val">${d.cap} mAh</span></div>`;
-    html += `<div class="data-row"><span class="data-key">预估耗电</span><span class="data-val">${d.drain} mAh</span></div>`;
-    html += `<div class="data-row"><span class="data-key">亮屏耗电</span><span class="data-val">${d.scron} mAh</span></div>`;
-    html += `<div class="data-row"><span class="data-key">息屏耗电</span><span class="data-val">${d.scroff} mAh</span></div>`;
-    html += `<div class="data-row"><span class="data-key">使用时长</span><span class="data-val">${d.bat_time || '—'}</span></div>`;
-    html += '</div>';
-    html += `<div style="margin:16px 0 10px;padding-top:12px;border-top:1px solid var(--line)"><b>系统分项 (mAh)</b></div>`;
-    html += '<div class="data-list">';
-    html += `<div class="data-row"><span class="data-key">屏幕</span><span class="data-val">${d.screen}</span></div>`;
-    html += `<div class="data-row"><span class="data-key">CPU</span><span class="data-val">${d.cpu}</span></div>`;
-    html += `<div class="data-row"><span class="data-key">蜂窝</span><span class="data-val">${d.cell}</span></div>`;
-    html += `<div class="data-row"><span class="data-key">WiFi</span><span class="data-val">${d.wifi}</span></div>`;
-    html += `<div class="data-row"><span class="data-key">唤醒锁</span><span class="data-val">${d.wakelock}</span></div>`;
-    html += '</div>';
+    const d = await fetchEnergyDetailWithRetry();
+    const esc = (v) => v == null || v === '' ? '—' : String(v);
+    const frag = document.createDocumentFragment();
+    const heading = (txt, desc = '') => {
+      const h = document.createElement('div');
+      h.style.cssText = 'margin:16px 0 10px;padding-top:12px;border-top:1px solid var(--line)';
+      const b = document.createElement('b');
+      b.textContent = txt;
+      h.appendChild(b);
+      if (desc) {
+        const p = document.createElement('div');
+        p.style.cssText = 'margin-top:6px;font-size:12px;line-height:18px;color:var(--text-3)';
+        p.textContent = desc;
+        h.appendChild(p);
+      }
+      return h;
+    };
+    const row = (k, v, cls) => { const r = document.createElement('div'); r.className = 'data-row'; const sk = document.createElement('span'); sk.className = 'data-key'; sk.textContent = k; const sv = document.createElement('span'); sv.className = cls || 'data-val'; sv.textContent = v; r.appendChild(sk); r.appendChild(sv); return r; };
+    const scope = d.scope || {};
+    const today = d.today || {};
+    const charge = d.charge_state || {};
+    const bs = d.batterystats_window || {};
+
+    const intro = document.createElement('div');
+    intro.style.cssText = 'margin-bottom:14px;font-size:13px;line-height:20px;color:var(--text-2)';
+    intro.textContent = '默认按“当前放电会话”看范围；系统分项和应用排行仍来自 Android batterystats 当前窗口。';
+    frag.appendChild(intro);
+
+    frag.appendChild(heading('统计范围', '当前会话由模块维护，避免把长期 batterystats 累计误当成这一次切换后的结果。'));
+    const list0 = document.createElement('div'); list0.className = 'data-list';
+    list0.appendChild(row('默认口径', '当前放电会话', 'badge good'));
+    list0.appendChild(row('当前状态', fmtBatteryStatus(charge.status), /Charging|Full/.test(charge.status || '') ? 'badge warn' : 'badge off'));
+    list0.appendChild(row('会话开始', fmtDateTime(scope.start_ts)));
+    list0.appendChild(row('已持续', fmtDuration(scope.elapsed_sec)));
+    list0.appendChild(row('电量变化', Number.isFinite(Number(scope.level_start)) && Number.isFinite(Number(scope.level_now))
+      ? `${scope.level_start}% → ${scope.level_now}% (消耗 ${Number(scope.level_drop || 0)}%)`
+      : '—'));
+    list0.appendChild(row('观测放电', fmtMah(scope.used_mah)));
+    list0.appendChild(row('最近重置原因', fmtSessionResetReason(scope.reset_reason)));
+    list0.appendChild(row('重置规则', esc(scope.reset_rule)));
+    frag.appendChild(list0);
+
+    frag.appendChild(heading('今日累计', '基于模块低频采样汇总，适合看今天到目前为止的大致收支。'));
+    const listToday = document.createElement('div'); listToday.className = 'data-list';
+    listToday.appendChild(row('今日起点', fmtDateTime(today.start_ts)));
+    listToday.appendChild(row('首个样本', fmtDateTime(today.window_start_ts)));
+    listToday.appendChild(row('观察时长', fmtDuration(today.elapsed_sec)));
+    listToday.appendChild(row('采样点', Number.isFinite(Number(today.samples)) ? `${today.samples} 个` : '0 个'));
+    listToday.appendChild(row('今日放电', fmtMah(today.discharge_mah)));
+    listToday.appendChild(row('今日回充', fmtMah(today.charge_mah)));
+    listToday.appendChild(row('净电量变化', fmtSignedPercent(today.net_level_delta), Number(today.net_level_delta) < 0 ? 'badge warn' : 'badge good'));
+    frag.appendChild(listToday);
+
+    frag.appendChild(heading('Android batterystats', esc(bs.note)));
+    const listBs = document.createElement('div'); listBs.className = 'data-list';
+    listBs.appendChild(row('系统窗口', fmtBatterystatsWindow(bs.window_label)));
+    listBs.appendChild(row('Daily stats', esc(bs.daily_label)));
+    listBs.appendChild(row('在电池上时长', esc(bs.time_on_battery || d.bat_time)));
+    listBs.appendChild(row('快照时间', fmtDateTime(d.generated_at)));
+    listBs.appendChild(row('缓存有效期', Number.isFinite(Number(d.cache_ttl_sec)) ? `${d.cache_ttl_sec} 秒` : '—'));
+    frag.appendChild(listBs);
+
+    frag.appendChild(heading('Android 功耗估算', '下面这些系统分项和 Top 应用，都来自上面的 batterystats 窗口。'));
+    const list1 = document.createElement('div'); list1.className = 'data-list';
+    list1.appendChild(row('当前电量', Number.isFinite(Number(charge.level)) ? `${charge.level}%` : '—'));
+    list1.appendChild(row('电池容量', esc(d.cap) + ' mAh'));
+    list1.appendChild(row('预估耗电', esc(d.drain) + ' mAh'));
+    list1.appendChild(row('亮屏耗电', esc(d.scron) + ' mAh'));
+    list1.appendChild(row('息屏耗电', esc(d.scroff) + ' mAh'));
+    list1.appendChild(row('系统统计时长', esc(d.bat_time)));
+    frag.appendChild(list1);
+    frag.appendChild(heading('系统分项 (mAh)'));
+    const list2 = document.createElement('div'); list2.className = 'data-list';
+    list2.appendChild(row('屏幕', esc(d.screen)));
+    list2.appendChild(row('CPU', esc(d.cpu)));
+    list2.appendChild(row('蜂窝', esc(d.cell)));
+    list2.appendChild(row('WiFi', esc(d.wifi)));
+    list2.appendChild(row('唤醒锁', esc(d.wakelock)));
+    frag.appendChild(list2);
     if (d.apps && d.apps.length) {
-      html += `<div style="margin:16px 0 10px;padding-top:12px;border-top:1px solid var(--line)"><b>高耗电应用 Top ${d.apps.length}</b></div>`;
-      html += '<div class="data-list">';
+      frag.appendChild(heading('高耗电应用 Top ' + d.apps.length));
+      const list3 = document.createElement('div'); list3.className = 'data-list';
       d.apps.forEach((app, i) => {
-        const name = app.pkg.length > 30 ? app.pkg.slice(0, 28) + '…' : app.pkg;
-        html += `<div class="data-row"><span class="data-key">${i + 1}. ${name}</span><span class="badge ${app.mah > 200 ? 'warn' : 'off'}">${app.mah} mAh</span></div>`;
+        const name = String(app.pkg || '').length > 30 ? String(app.pkg).slice(0, 28) + '…' : String(app.pkg || '');
+        list3.appendChild(row((i + 1) + '. ' + name, esc(app.mah) + ' mAh', 'badge ' + (app.mah > 200 ? 'warn' : 'off')));
       });
-      html += '</div>';
+      frag.appendChild(list3);
     }
-    refs.detailBody.innerHTML = html;
+    refs.detailBody.innerHTML = '';
+    refs.detailBody.appendChild(frag);
   } catch (err) {
-    refs.detailBody.innerHTML = `<div style="color:var(--danger);text-align:center;padding:24px 0">${err.message}</div>`;
+    refs.detailBody.innerHTML = ''; refs.detailBody.appendChild(errorBlock(err.message));
   }
 }
 
 async function applyProfile(profile) {
   if (profile === state.currentProfile || state.cpuBusy) return;
   const card = refs.profileList.querySelector(`[data-profile="${profile}"]`);
+  if (!card) return;
   card.classList.add('loading');
   appendLog(`切换到 ${PROFILES[profile].name}…`, 'dim');
   refs.logCard.classList.add('open');
@@ -1442,8 +1848,9 @@ async function applyThermal(offset) {
   if (offset === state.currentOffset || state.thermalBusy) return;
   const prev = state.currentOffset;
   const card = refs.thermalList.querySelector(`[data-offset="${offset}"]`);
+  if (!card) return;
   card.classList.add('loading');
-  appendLog(`切换温控档位 ${THERMAL_PRESETS[offset].name}…`, 'dim');
+  appendLog(`切换温控阈值 ${THERMAL_PRESETS[offset].name}…`, 'dim');
   refs.logCard.classList.add('open');
   try {
     const data = await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ offset }), timeoutMs: 8000 });
@@ -1455,7 +1862,7 @@ async function applyThermal(offset) {
         showToast(`${THERMAL_PRESETS[offset].name} · thermal 服务已重启`);
         appendLog(`${THERMAL_PRESETS[offset].name} 已重启 thermal 服务`, 'ok');
       } else {
-        appendLog(`${THERMAL_PRESETS[offset].name} 已保存（需重启生效）`, 'warn');
+        appendLog(`${THERMAL_PRESETS[offset].name} 已保存（重启后生效）`, 'warn');
         openRebootModal(offset, prev);
       }
     } else {
@@ -1512,31 +1919,79 @@ async function toggleSwapMode() {
 async function doFullRefresh() {
   showToast('正在刷新…', 1000);
   await Promise.all([refreshCpu(), refreshThermal(), refreshSwap()]);
-  refreshOptimize();
-  refreshNrSwitch();
-  refreshUecap();
-  refreshNtp();
-  loadInfo();
+  await Promise.allSettled([refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp(), loadInfo()]);
+  markPollFresh(['cpu', 'thermal', 'optim', 'slow']);
+  queueNextPoll(computeNextPollDelay());
   showToast('已刷新');
 }
 
+function shouldPollCpu() {
+  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'perf');
+}
+
+function shouldPollThermal() {
+  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'thermal');
+}
+
+function shouldPollOptim() {
+  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'optim');
+}
+
+function refreshCurrentTabData() {
+  if (document.hidden) return;
+  const now = Date.now();
+  if (state.currentTab === 'home') {
+    markPollFresh(['cpu', 'thermal', 'optim', 'slow'], now);
+    refreshCpu();
+    refreshThermal();
+    refreshSwap();
+    refreshNrSwitch();
+    refreshUecap();
+    refreshBaseband();
+    refreshNtp();
+    loadInfo();
+    queueNextPoll(computeNextPollDelay(now));
+    return;
+  }
+  if (state.currentTab === 'perf') {
+    markPollFresh(['cpu'], now);
+    refreshCpu();
+    queueNextPoll(computeNextPollDelay(now));
+    return;
+  }
+  if (state.currentTab === 'thermal') {
+    markPollFresh(['thermal'], now);
+    refreshThermal();
+    queueNextPoll(computeNextPollDelay(now));
+    return;
+  }
+  if (state.currentTab === 'optim') {
+    markPollFresh(['optim', 'slow'], now);
+    refreshSwap();
+    refreshNrSwitch();
+    refreshUecap();
+    refreshBaseband();
+    refreshNtp();
+    loadInfo();
+    queueNextPoll(computeNextPollDelay(now));
+  }
+}
+
 function startPolling() {
-  if (state.timers.cpu) return;
-  state.timers.cpu = window.setInterval(refreshCpu, 3000);
-  state.timers.thermal = window.setInterval(refreshThermal, 8000);
-  state.timers.swap = window.setInterval(refreshSwap, 30000);
-  state.timers.slow = window.setInterval(function() { refreshOptimize(); refreshUecap(); loadInfo(); }, 60000);
+  if (state.poller.running) return;
+  state.poller.running = true;
+  queueNextPoll(computeNextPollDelay());
 }
 
 function stopPolling() {
-  clearInterval(state.timers.cpu);
-  clearInterval(state.timers.thermal);
-  clearInterval(state.timers.swap);
-  clearInterval(state.timers.slow);
-  state.timers.cpu = state.timers.thermal = state.timers.swap = state.timers.slow = null;
+  state.poller.running = false;
+  clearTimeout(state.poller.timer);
+  state.poller.timer = null;
 }
 
 function bindStaticEvents() {
+  window.addEventListener('pointerdown', noteUserActivity, { passive: true });
+  document.addEventListener('keydown', noteUserActivity);
   document.querySelectorAll('.tab-item').forEach((button) => button.addEventListener('click', () => switchTab(button.dataset.tab)));
   document.querySelectorAll('[data-theme-option]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -1551,12 +2006,11 @@ function bindStaticEvents() {
   $('refresh-cpu-btn').addEventListener('click', refreshCpu);
   $('swap-toggle-btn').addEventListener('click', toggleSwapMode);
   $('swap-detail-btn').addEventListener('click', () => openDetail('内存优化详情', SWAP_DETAIL));
-  $('opt-detail-btn').addEventListener('click', () => openDetail('网络与待机策略详情', STANDBY_AUDIT_DETAIL));
-  $('opt-refresh-btn').addEventListener('click', refreshOptimize);
   $('nr-switch-toggle-btn').addEventListener('click', toggleNrSwitch);
   $('nr-switch-detail-btn').addEventListener('click', () => openDetail('NR 息屏降级详情', NR_SWITCH_DETAIL));
-  $('uecap-toggle-btn').addEventListener('click', toggleUecap);
-  $('uecap-detail-btn').addEventListener('click', () => openDetail('UECap 策略详情', UECAP_DETAIL));
+  $('uecap-detail-btn').addEventListener('click', () => openDetail('UE 能力配置说明', UECAP_DETAIL));
+  $('baseband-detail-btn').addEventListener('click', () => openDetail('基带模块说明', BASEBAND_DETAIL));
+  $('baseband-refresh-btn').addEventListener('click', refreshBaseband);
   $('ntp-sync-btn').addEventListener('click', syncNtp);
   $('temp-chart-btn').addEventListener('click', openTempChart);
   $('energy-btn').addEventListener('click', openEnergyDetail);
@@ -1601,17 +2055,30 @@ function bindStaticEvents() {
       openDetail(THERMAL_PRESETS[offset].name, THERMAL_PRESETS[offset].detail);
     }
   });
+  window.addEventListener('popstate', (evt) => {
+    const s = evt.state;
+    if (refs.detailModal.classList.contains('open')) { refs.detailModal.classList.remove('open'); return; }
+    if (refs.themeModal.classList.contains('open')) { refs.themeModal.classList.remove('open'); return; }
+    if (refs.rebootModal.classList.contains('open')) { refs.rebootModal.classList.remove('open'); return; }
+  });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stopPolling();
     else {
-      refreshCpu();
-      refreshThermal();
+      state.poller.lastInteractionAt = Date.now();
+      refreshCurrentTabData();
       startPolling();
     }
   });
 }
 
+async function refreshDeferredInitData() {
+  markPollFresh(['optim', 'slow']);
+  await Promise.allSettled([refreshSwap(), refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp()]);
+  queueNextPoll(computeNextPollDelay());
+}
+
 async function init() {
+  const bootAt = Date.now();
   initRefs();
   initTheme();
   renderProfileCards();
@@ -1622,15 +2089,14 @@ async function init() {
   bindTopbarScroll();
   refs.topbarSubtitle.textContent = TAB_META[state.currentTab];
   positionMarkers();
+  state.poller.lastInteractionAt = bootAt;
+  markPollFresh(['cpu', 'thermal', 'optim', 'slow'], bootAt);
   await loadInfo();
   await Promise.all([loadSavedProfile(), loadThermalPreset()]);
   await refreshCpu();
   await refreshThermal();
-  window.setTimeout(refreshOptimize, 1000);
-  window.setTimeout(refreshSwap, 1400);
-  window.setTimeout(refreshNrSwitch, 1800);
-  window.setTimeout(refreshUecap, 2200);
-  window.setTimeout(refreshNtp, 2600);
+  markPollFresh(['cpu', 'thermal']);
+  window.setTimeout(refreshDeferredInitData, 1000);
   startPolling();
 }
 

@@ -1,34 +1,61 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.2.5 — 开机服务 (M3 WebUI + 热区缓存 + 温度历史 + 功耗统计)
+# service.sh v4.3.11 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
-# 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → WiFi multicast → WebUI
+# 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → 统一后台 → WebUI
 #
-# v4.2.5 变更:
-#   - 新增 balanced 中间 UECap 能力表
-#   - 新增自动 UECap 策略：balanced 常驻，按信号/流量/切换抖动临时升 special
-#   - 修复 NR 息屏降级分支里的 POSIX shell 语法问题
+# v4.3.11 变更:
+#   - 修正 UECap 参数说明：universal=stock 等价副本，balanced=trial_minimal_cn_combo
+#   - README / docs 技术参数口径同步到当前 payload hash/audit
 #
-# v4.2.4 变更:
-#   - 新增 UECap 档位管理（special / universal）
-#   - 支持在 keep-5G 基础上按场景切换更激进或更保守的 UE capability
+# v4.3.10 变更:
+#   - WebUI 中文文案整体重构：UE 能力配置、温控阈值、基带模块说明改为更自然的中文口径
 #
-# v4.2.2 变更:
-#   - 新增 KernelSU busybox 路径检测
-#   - 增加 command -v busybox 兜底
-#   - 启动日志增加 root 框架标识
+# v4.3.9 变更:
+#   - WebUI 固定四路 setInterval 改为单调度器，按当前 tab 计算下次唤醒时间
+#   - 用户闲置 45 秒或弹窗打开时自动降频，减少前台页面无效轮询
 #
-# v3.2.1: 恢复背景图 + 新增轻度模式 + 长按查看模式详情
-# v3.2.0 变更:
-#   - 小核锁最低频策略 + WebUI优化 + APatch WebView适配
-# v3.1.1 变更:
-#   - WebUI文案修正(匹配sched_pixel+cpuset实际行为)
-#   - CGI安全加固(CONTENT_LENGTH上限/reboot方法检查)
-# v3.1 变更:
-#   - 移除 app 后台限制 (不应该由模块决定)
-#   - 新增 WiFi multicast 息屏控制 (参考 RMBD 模块)
-#   - 新增 mobile_data_always_on 检查
-#   - 内核参数优化保留
+# v4.3.8 变更:
+#   - 功耗详情 CGI 增加短时缓存，减少重复解析 batterystats 带来的瞬时失败
+#   - WebUI 功耗详情在网络错误时自动重试一次
+#
+# v4.3.7 变更:
+#   - 新增低频电池采样与放电会话状态机，功耗详情明确区分“当前放电会话 / 今日累计 / batterystats 窗口”
+#   - 温度历史短时窗口调整为 10 分钟 / 30 分钟，两者都显示曲线 + 统计
+#
+# v4.3.6 变更:
+#   - WebUI 轮询按当前 tab 收口，避免前台停在无关页时继续刷新全部数据
+#   - NR 已降级到 LTE 的息屏阶段改为较短复查周期，同时保持息屏热缓存低频更新
+#
+# v4.3.5 变更:
+#   - WebUI UECap 切换后改为回读 active_mode/hash 校验
+#   - 不再用“约 5 秒后生效”作为成功提示
+#
+# v4.3.4 变更:
+#   - 恢复 balanced 为独立的 trial_minimal_cn_combo payload
+#   - 避免 balanced/special 指向同一份 binarypb，保证三档真正分离
+#
+# v4.3.3 变更:
+#   - boot 阶段 UECap 应用明确传入 boot_manual，避免开机误触发 modem restart
+#   - SIM2 空槽管理不再写 global mobile_data，避免误伤主卡数据开关
+#
+# v4.3.2 变更:
+#   - UECap 切换改为仅重启 cellular modem (cmd phone restart-modem)
+#   - 禁止再用 airplane toggle，避免 Connectivity/系统服务级联崩溃
+#
+# v4.3.1 变更:
+#   - SIM2 空槽自动关闭 radio instance (省 modem 搜网功耗)
+#   - SIM2 插入时自动恢复 radio (统一循环亮屏周期检查)
+#   - NR 息屏降级默认改为开启 (on)
+#   - UECap 切换后触发 modem 重载
+#
+# v4.3.0 变更:
+#   - 合并 4 个独立后台循环为 1 个统一工作循环 (Doze 友好)
+#   - 移除 UECap 自动策略循环，改为纯手动三档切换
+#   - 息屏 dumpsys 调用从 ~10/min 降至 ~0.1/min
+#   - 新增温度突发录制 (thermal burst): 用户打开历史图表时 5s 间隔
+#   - WiFi multicast: 仅在屏幕状态变化时切换，不轮询
+#   - 息屏后 60s 首次检查 (NR 防抖)，之后 600s 长休眠
 ##############################################################
 MODDIR="${0%/*}"
 PORT=6210
@@ -66,12 +93,13 @@ restore_ntp_server() {
 apply_uecap_profile() {
     if [ -f "$MODDIR/uecap_profile.sh" ]; then
         . "$MODDIR/uecap_profile.sh"
-        [ -f "$UECAP_POLICY_FILE" ] || uecap_set_policy auto
+        uecap_set_policy manual
         [ -f "$UECAP_MANUAL_MODE_FILE" ] || uecap_set_manual_mode special
         [ -f "$UECAP_MODE_FILE" ] || uecap_set_mode special
-        _mode=$(uecap_current_mode)
-        if uecap_apply_mode "$_mode" 2>/dev/null; then
-            log -t pixel9pro_ctrl "UECap profile applied: $_mode"
+        _mode=$(uecap_current_manual_mode)
+        if uecap_apply_mode "$_mode" "boot_manual" 2>/dev/null; then
+            uecap_set_reason boot_manual
+            log -t pixel9pro_ctrl "UECap profile applied: $_mode (manual)"
         else
             log -t pixel9pro_ctrl "WARNING: failed to apply UECap profile: $_mode"
         fi
@@ -94,15 +122,31 @@ apply_keep5g_standby_settings() {
     settings put global wifi_scan_always_enabled 0 2>/dev/null
     settings put global ble_scan_always_enabled 0 2>/dev/null
 
-    # 2026-04-19 调整：
-    # Google 官方对 Pixel 的说明是 Adaptive Connectivity 会只在应用确实需要时打开 5G，
-    # 平时可自动退回更省电的状态；Apple 的 5G Auto 也是同一思路。
-    # 因此这里不再强制关闭，而是恢复系统自带的数据需求感知策略。
-    settings put secure adaptive_connectivity_enabled 1 2>/dev/null
-    settings put secure adaptive_connectivity_wifi_enabled 1 2>/dev/null
+    # adaptive_connectivity / network_recommendations 系统默认已是开启，无需模块管理。
+}
 
-    # 为了让上述策略正常工作，Network recommendations / Wi‑Fi scoring 也恢复为开启。
-    settings put global network_recommendations_enabled 1 2>/dev/null
+manage_sim2_radio() {
+    _sim2_state=$(getprop gsm.sim.state 2>/dev/null | sed 's/.*,//')
+    case "$_sim2_state" in
+        ABSENT|NOT_READY|PIN_REQUIRED|PUK_REQUIRED|PERM_DISABLED)
+            _prev_sim2=$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)
+            if [ "$_prev_sim2" != "disabled" ]; then
+                cmd phone disable-physical-subscription 2 2>/dev/null || \
+                    svc radio setModemPower 1 false 2>/dev/null
+                echo "disabled" > "$MODDIR/.sim2_radio_off"
+                log -t pixel9pro_ctrl "SIM2=$_sim2_state: radio 1 powered down to save modem standby"
+            fi
+            ;;
+        LOADED|READY)
+            _prev_sim2=$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)
+            if [ "$_prev_sim2" = "disabled" ]; then
+                cmd phone enable-physical-subscription 2 2>/dev/null || \
+                    svc radio setModemPower 1 true 2>/dev/null
+                echo "enabled" > "$MODDIR/.sim2_radio_off"
+                log -t pixel9pro_ctrl "SIM2=$_sim2_state: radio 1 re-enabled"
+            fi
+            ;;
+    esac
 }
 
 # ──────────────────────────────────────────────────────────
@@ -133,18 +177,21 @@ export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
 # ──────────────────────────────────────────────────────────
 # 2. 系统设置优化 (保 5G 分支)
 # ──────────────────────────────────────────────────────────
-log -t pixel9pro_ctrl "v4.2.5[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.3.11[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
-# === UECap 档位 ===
-# special: 保留完整 n79 / n41+n79+n28 等更激进的 NR 组合，作为默认能力基线
-# balanced: 保留给手动的折中实验档，不作为自动默认
-# universal: 最保守的通用能力表，保留给深省电 / 排障用途
+# === UECap 档位 (纯手动三档) ===
+# special: global special，stock +52 组增强组合
+# balanced: trial_minimal_cn_combo，stock +25 组中国 n28/n41/n79 组合
+# universal: stock 等价副本
 apply_uecap_profile
 
 # === Modem / 待机优化 (参考 Mori 帖子 + RMBD 模块) ===
 # 开机时先应用 keep-5G 分支设置，再由后续延迟复写兜住开机后被系统回写的项目。
 apply_keep5g_standby_settings
 restore_ntp_server
+
+# === SIM2 空槽省电: 关闭空卡槽的 radio instance ===
+manage_sim2_radio
 
 # 开机时先全局关闭 WiFi multicast (RMBD 基础策略)
 # 后续由 screen-aware 循环在亮屏时恢复
@@ -173,13 +220,16 @@ CURRENT_SIZE=$(cat /sys/block/zram0/disksize 2>/dev/null)
 
 if [ "$CURRENT_ALGO" != "$TARGET_ALGO" ] || [ "$CURRENT_SIZE" != "$TARGET_SIZE" ]; then
     log -t pixel9pro_ctrl "ZRAM reconfigure: ${CURRENT_ALGO}/${CURRENT_SIZE} -> ${TARGET_ALGO}/${TARGET_SIZE}"
-    swapoff /dev/block/zram0 2>/dev/null
-    echo 1 > /sys/block/zram0/reset 2>/dev/null
-    echo "$TARGET_ALGO" > /sys/block/zram0/comp_algorithm 2>/dev/null
-    echo "$TARGET_SIZE" > /sys/block/zram0/disksize 2>/dev/null
-    mkswap /dev/block/zram0 >/dev/null 2>&1
-    swapon /dev/block/zram0 2>/dev/null
-    log -t pixel9pro_ctrl "ZRAM: $TARGET_ALGO $(($TARGET_SIZE / 1048576))MB ready"
+    if swapoff /dev/block/zram0 2>/dev/null; then
+        echo 1 > /sys/block/zram0/reset 2>/dev/null
+        echo "$TARGET_ALGO" > /sys/block/zram0/comp_algorithm 2>/dev/null
+        echo "$TARGET_SIZE" > /sys/block/zram0/disksize 2>/dev/null
+        mkswap /dev/block/zram0 >/dev/null 2>&1
+        swapon /dev/block/zram0 2>/dev/null
+        log -t pixel9pro_ctrl "ZRAM: $TARGET_ALGO $(($TARGET_SIZE / 1048576))MB ready"
+    else
+        log -t pixel9pro_ctrl "ZRAM: swapoff failed (heavy usage?), keeping current config"
+    fi
 else
     log -t pixel9pro_ctrl "ZRAM: already $TARGET_ALGO $(($TARGET_SIZE / 1048576))MB, skip"
 fi
@@ -200,76 +250,44 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.2.5[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.3.11[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
-# Android 17 / Pixel 组件在用户解锁后仍可能回写部分 secure/global key。
-# 对保 5G 分支无直接负面影响的项做一次延迟复写，避免 adaptive connectivity /
-# network recommendations 这类设置在 late_start 之后被拉回默认值。
+# 延迟复写：NTP 服务器和扫描类设置可能在用户解锁后被系统回写。
 (
     sleep 120
     apply_keep5g_standby_settings
     restore_ntp_server
-    log -t pixel9pro_ctrl "Keep-5G standby settings re-applied after late boot"
+    manage_sim2_radio
+    log -t pixel9pro_ctrl "Standby settings re-applied after late boot"
 ) &
 
 # ──────────────────────────────────────────────────────────
 # 3. 应用 CPU 调度方案 (cpuset + sched_pixel 参数)
 # ──────────────────────────────────────────────────────────
-PROFILE=$(cat "$MODDIR/.current_profile" 2>/dev/null || echo 'light')
+PROFILE=$(cat "$MODDIR/.current_profile" 2>/dev/null || echo 'balanced')
 sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" "$MODDIR" 2>/dev/null
 log -t pixel9pro_ctrl "CPU profile: $PROFILE"
 
 # ──────────────────────────────────────────────────────────
-# 4. WiFi multicast 息屏自动关闭 (参考 RMBD_screen_aware)
-#    息屏时关闭 multicast 减少 WiFi radio 唤醒
-#    息屏 sleep 15s, 亮屏 sleep 5s — 减少无意义唤醒
-# ──────────────────────────────────────────────────────────
-(
-    WLAN_IF="wlan0"
-    LAST_STATE=""
-    while true; do
-        SCREEN=$(dumpsys display 2>/dev/null | grep "mScreenState=" | head -1 | sed 's/.*mScreenState=//' | tr -d ' ')
-        [ -z "$SCREEN" ] && SCREEN=$(dumpsys power 2>/dev/null | grep "mWakefulness=" | head -1 | sed 's/.*mWakefulness=//' | tr -d ' ')
-
-        case "$SCREEN" in
-            OFF|Dozing|Asleep)
-                if [ "$LAST_STATE" != "off" ]; then
-                    ip link set "$WLAN_IF" multicast off 2>/dev/null
-                    dumpsys wifi disable-multicast 2>/dev/null
-                    LAST_STATE="off"
-                fi
-                sleep 15
-                ;;
-            *)
-                if [ "$LAST_STATE" != "on" ]; then
-                    ip link set "$WLAN_IF" multicast on 2>/dev/null
-                    LAST_STATE="on"
-                fi
-                sleep 5
-                ;;
-        esac
-    done
-) &
-log -t pixel9pro_ctrl "WiFi multicast screen-aware started"
-
-# ──────────────────────────────────────────────────────────
-# 4.15 UECap 自动策略
-#      默认保留 full special 能力，不再删除 3CC 作为自动默认
-#      目标：把动态功耗优化更多交给 Adaptive Connectivity / NR 屏熄降级 / 应用侧约束
-# ──────────────────────────────────────────────────────────
-(
-    sh "$MODDIR/scripts/uecap_policy.sh" "$MODDIR"
-) &
-log -t pixel9pro_ctrl "UECap auto-policy started"
-
-# ──────────────────────────────────────────────────────────
-# 4.2 NR 息屏降级 (息屏 → LTE, 亮屏 → 恢复 5G/NR)
-#     防抖: 息屏满 60s 后切 LTE; 恢复 NR 后 120s 冷却期不切
-#     默认关闭，需通过 WebUI 手动开启
+# 4. 统一后台工作循环 (Doze 友好)
+#    合并原 4 个独立循环为 1 个，每周期只调用 1 次 dumpsys display
+#    亮屏 15s / 息屏首次 60s (NR防抖) / 息屏后续 600s / 突发 5s
+#    若已降到 LTE, 改为较短复查周期，避免亮屏后长期停留 LTE
+#    WiFi multicast: 仅在屏幕状态变化时切换，不轮询
+#    NR 降级: 集成防抖，仅在开启时生效
+#    温度历史: 每周期记录，息屏 600s 一次 (突发时 5s)
+#    UECap 自动策略: 已移除 (v4.3.0 改为纯手动三档)
 # ──────────────────────────────────────────────────────────
 NR_SWITCH_FILE="$MODDIR/.nr_screen_switch"
 NR_MODE_FILE="$MODDIR/.nr_saved_mode"
-[ -f "$NR_SWITCH_FILE" ] || echo "off" > "$NR_SWITCH_FILE"
+THERMAL_HISTORY="$MODDIR/.thermal_history"
+THERMAL_HISTORY_MAX=8640
+THERMAL_BURST_FILE="$MODDIR/.thermal_burst_until"
+POWER_HISTORY="$MODDIR/.power_history"
+POWER_HISTORY_MAX=20160
+POWER_SESSION_FILE="$MODDIR/.power_session"
+
+[ -f "$NR_SWITCH_FILE" ] || echo "on" > "$NR_SWITCH_FILE"
 
 is_nr_mode_value() {
     _val="$1"
@@ -281,12 +299,119 @@ is_nr_mode_value() {
 }
 
 (
+    . "$MODDIR/webroot/cgi-bin/_thermal_cache.sh"
+
+    _cleanup_nr() {
+        if [ "$_nr_state" = "lte" ] && [ -n "$_nr_key" ]; then
+            settings put global "$_nr_key" "$(cat "$NR_MODE_FILE" 2>/dev/null || echo 33)" 2>/dev/null
+            log -t pixel9pro_ctrl "NR switch: worker exit, restored NR"
+        fi
+    }
+    trap '_cleanup_nr' EXIT TERM HUP
+
+    _write_power_session() {
+        _ps_start="$1"
+        _ps_level="$2"
+        _ps_charge="$3"
+        _ps_reason="$4"
+        {
+            printf 'start_ts=%s\n' "$_ps_start"
+            printf 'start_level=%s\n' "$_ps_level"
+            printf 'start_charge_uah=%s\n' "${_ps_charge:-0}"
+            printf 'reset_reason=%s\n' "$_ps_reason"
+        } > "${POWER_SESSION_FILE}.tmp"
+        mv "${POWER_SESSION_FILE}.tmp" "$POWER_SESSION_FILE"
+    }
+
+    _trim_power_history_if_needed() {
+        _power_hist_count=$((_power_hist_count + 1))
+        if [ "$_power_hist_count" -ge 240 ]; then
+            _lines=$(wc -l < "$POWER_HISTORY" 2>/dev/null)
+            if [ "${_lines:-0}" -gt "$POWER_HISTORY_MAX" ]; then
+                _trim=$((_lines - POWER_HISTORY_MAX))
+                sed -i "1,${_trim}d" "$POWER_HISTORY" 2>/dev/null
+            fi
+            _power_hist_count=0
+        fi
+    }
+
+    _track_power_window() {
+        _p_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null | tr -d '\r')
+        _p_status=$(printf '%s' "$_p_status" | sed 's/[[:space:]]*$//')
+        _p_level=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null | tr -d ' \n\r')
+        _p_charge=$(cat /sys/class/power_supply/battery/charge_counter 2>/dev/null | tr -d ' \n\r')
+
+        case "$_p_level" in
+            ''|*[!0-9]*) return ;;
+        esac
+        case "$_p_charge" in
+            ''|*[!0-9-]*) _p_charge=0 ;;
+        esac
+
+        _p_is_charging=0
+        case "$_p_status" in
+            Charging|Full) _p_is_charging=1 ;;
+        esac
+
+        if [ "$_p_is_charging" -eq 1 ]; then
+            if [ "$_power_prev_is_charging" -ne 1 ]; then
+                _power_charge_since=$_now
+                _power_charge_start_level=$_p_level
+                _power_charge_seen_full=0
+                _power_reset_armed=0
+            elif [ "$_power_charge_since" -eq 0 ]; then
+                _power_charge_since=$_now
+            fi
+
+            [ "$_p_status" = "Full" ] && _power_charge_seen_full=1
+
+            if [ "$_power_charge_since" -gt 0 ] && [ $((_now - _power_charge_since)) -ge 600 ]; then
+                if [ "$_p_status" = "Full" ] || [ "$_p_level" -gt "$_power_charge_start_level" ]; then
+                    _power_reset_armed=1
+                fi
+            fi
+        else
+            if [ ! -s "$POWER_SESSION_FILE" ]; then
+                _write_power_session "$_now" "$_p_level" "$_p_charge" "boot_init"
+            elif [ "$_power_prev_is_charging" -eq 1 ] && [ "$_power_reset_armed" -eq 1 ]; then
+                _reason="charged_10m"
+                [ "$_power_charge_seen_full" -eq 1 ] && _reason="full_replug"
+                _write_power_session "$_now" "$_p_level" "$_p_charge" "$_reason"
+                log -t pixel9pro_ctrl "Power session reset: ${_reason}, level=${_p_level}"
+            fi
+            _power_charge_since=0
+            _power_charge_start_level=$_p_level
+            _power_charge_seen_full=0
+            _power_reset_armed=0
+        fi
+
+        _power_interval=$_POWER_SAMPLE_INTERVAL_OFF
+        [ "$_screen" = "on" ] && _power_interval=$_POWER_SAMPLE_INTERVAL_ON
+        _should_sample=0
+        if [ "$_power_last_sample" -eq 0 ] || [ $((_now - _power_last_sample)) -ge "$_power_interval" ]; then
+            _should_sample=1
+        fi
+        [ "$_p_status" != "$_power_last_status" ] && _should_sample=1
+        [ "$_p_level" != "$_power_last_level" ] && _should_sample=1
+
+        if [ "$_should_sample" -eq 1 ]; then
+            printf '%s,%s,%s,%s\n' "$_now" "$_p_level" "$_p_charge" "$_p_status" >> "$POWER_HISTORY"
+            _trim_power_history_if_needed
+            _power_last_sample=$_now
+        fi
+
+        _power_last_status="$_p_status"
+        _power_last_level="$_p_level"
+        _power_last_charge="$_p_charge"
+        _power_prev_is_charging=$_p_is_charging
+    }
+
+    # NR key detection
     _nr_key="preferred_network_mode1"
     _v=$(settings get global preferred_network_mode1 2>/dev/null | tr -d ' \n\r')
     if [ -z "$_v" ] || [ "$_v" = "null" ]; then
         _nr_key="preferred_network_mode"
     fi
-
     _cur=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
     if is_nr_mode_value "$_cur"; then
         echo "$_cur" > "$NR_MODE_FILE"
@@ -294,114 +419,173 @@ is_nr_mode_value() {
         echo "33" > "$NR_MODE_FILE"
     fi
 
-    _state="5g"
-    _off_since=0
+    _mc_state=""
+    _nr_state="5g"
+    _nr_off_since=0
     _nr_restored=0
-    _DELAY=60
-    _COOLDOWN=600
-    _LTE=9
+    _prev_screen=""
+    _just_off=0
+    _hist_count=0
+    _sim2_check_count=0
+    _NR_DELAY=60
+    _NR_COOLDOWN=600
+    _NR_LTE=9
+    _NR_LTE_POLL=60
+    _THERMAL_OFF_INTERVAL=600
+    _last_off_thermal=0
+    _POWER_SAMPLE_INTERVAL_ON=60
+    _POWER_SAMPLE_INTERVAL_OFF=600
+    _power_last_sample=0
+    _power_last_status=""
+    _power_last_level=-1
+    _power_last_charge=0
+    _power_prev_is_charging=0
+    _power_charge_since=0
+    _power_charge_start_level=0
+    _power_charge_seen_full=0
+    _power_reset_armed=0
+    _power_hist_count=0
 
     while true; do
-        _enabled=$(cat "$NR_SWITCH_FILE" 2>/dev/null)
         _now=$(date +%s 2>/dev/null || echo 0)
 
-        if [ "$_enabled" != "on" ]; then
-            if [ "$_state" = "lte" ]; then
+        # --- Single screen state check per cycle ---
+        _scr=$(dumpsys display 2>/dev/null | grep "mScreenState=" | head -1 | sed 's/.*mScreenState=//' | tr -d ' ')
+        [ -z "$_scr" ] && _scr=$(dumpsys power 2>/dev/null | grep "mWakefulness=" | head -1 | sed 's/.*mWakefulness=//' | tr -d ' ')
+        case "$_scr" in
+            OFF|Dozing|Asleep) _screen="off" ;;
+            *) _screen="on" ;;
+        esac
+
+        # --- WiFi multicast: state-transition only ---
+        if [ "$_screen" != "$_mc_state" ]; then
+            if [ "$_screen" = "off" ]; then
+                ip link set wlan0 multicast off 2>/dev/null
+                dumpsys wifi disable-multicast 2>/dev/null
+            else
+                ip link set wlan0 multicast on 2>/dev/null
+            fi
+            _mc_state="$_screen"
+        fi
+
+        # --- Screen transition tracking ---
+        if [ "$_screen" = "off" ] && [ "$_prev_screen" = "on" ]; then
+            _just_off=1
+        elif [ "$_screen" = "on" ] && [ "$_prev_screen" = "off" ]; then
+            _just_off=0
+        fi
+        _prev_screen="$_screen"
+
+        # --- SIM2 radio management (check every ~10 on-screen cycles) ---
+        if [ "$_screen" = "on" ]; then
+            _sim2_check_count=$((_sim2_check_count + 1))
+            if [ "$_sim2_check_count" -ge 10 ]; then
+                manage_sim2_radio
+                _sim2_check_count=0
+            fi
+        fi
+
+        # --- NR screen-off switch ---
+        _nr_enabled=$(cat "$NR_SWITCH_FILE" 2>/dev/null)
+        if [ "$_nr_enabled" != "on" ]; then
+            if [ "$_nr_state" = "lte" ]; then
                 settings put global "$_nr_key" "$(cat "$NR_MODE_FILE" 2>/dev/null || echo 33)" 2>/dev/null
-                _state="5g"
+                _nr_state="5g"
                 _nr_restored=$_now
                 log -t pixel9pro_ctrl "NR switch: disabled, restored NR"
             fi
-            _off_since=0
-            sleep 15
-            continue
-        fi
-
-        _scr=$(dumpsys display 2>/dev/null | grep "mScreenState=" | head -1 | sed 's/.*mScreenState=//' | tr -d ' ')
-        [ -z "$_scr" ] && _scr=$(dumpsys power 2>/dev/null | grep "mWakefulness=" | head -1 | sed 's/.*mWakefulness=//' | tr -d ' ')
-
-        case "$_scr" in
-            OFF|Dozing|Asleep)
-                if [ "$_state" = "5g" ]; then
-                    [ "$_off_since" -eq 0 ] && _off_since=$_now
-                    _elapsed=$((_now - _off_since))
-                    _since_nr=$((_now - _nr_restored))
-                    if [ "$_elapsed" -ge "$_DELAY" ] && [ "$_since_nr" -ge "$_COOLDOWN" ]; then
-                        _tether=0
-                        for _tif in swlan0 wlan1 wlan2 ap0 rndis0 ncm0; do
-                            [ -d "/sys/class/net/$_tif" ] && _tether=1 && break
-                        done
-                        if [ "$_tether" -eq 0 ]; then
-                            _cur=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
-                            if is_nr_mode_value "$_cur"; then
-                                echo "$_cur" > "$NR_MODE_FILE"
-                            fi
-                            settings put global "$_nr_key" "$_LTE" 2>/dev/null
-                            _state="lte"
-                            log -t pixel9pro_ctrl "NR switch: off ${_elapsed}s, switched to LTE"
+            _nr_off_since=0
+        elif [ "$_screen" = "off" ]; then
+            if [ "$_nr_state" = "5g" ]; then
+                [ "$_nr_off_since" -eq 0 ] && _nr_off_since=$_now
+                _elapsed=$((_now - _nr_off_since))
+                _since_nr=$((_now - _nr_restored))
+                if [ "$_elapsed" -ge "$_NR_DELAY" ] && [ "$_since_nr" -ge "$_NR_COOLDOWN" ]; then
+                    _tether=0
+                    for _tif in swlan0 wlan1 wlan2 ap0 rndis0 ncm0; do
+                        [ -d "/sys/class/net/$_tif" ] && _tether=1 && break
+                    done
+                    if [ "$_tether" -eq 0 ]; then
+                        _cur=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
+                        if is_nr_mode_value "$_cur"; then
+                            echo "$_cur" > "$NR_MODE_FILE"
                         fi
+                        settings put global "$_nr_key" "$_NR_LTE" 2>/dev/null
+                        _nr_state="lte"
+                        log -t pixel9pro_ctrl "NR switch: off ${_elapsed}s, switched to LTE"
                     fi
-                fi
-                sleep 15
-                ;;
-            *)
-                _off_since=0
-                if [ "$_state" = "lte" ]; then
-                    settings put global "$_nr_key" "$(cat "$NR_MODE_FILE" 2>/dev/null || echo 33)" 2>/dev/null
-                    _state="5g"
-                    _nr_restored=$_now
-                    log -t pixel9pro_ctrl "NR switch: screen on, restored NR"
-                fi
-                sleep 5
-                ;;
-        esac
-    done
-) &
-log -t pixel9pro_ctrl "NR screen-aware switch initialized (default: off)"
-
-# ──────────────────────────────────────────────────────────
-# 4.1 热区缓存后台任务 + 温度历史持久化 (屏幕感知)
-#     busybox httpd 单线程，避免每个 CGI 都同步执行 dumpsys
-#     亮屏 5s / 息屏 60s 采集温度，同时追加到 .thermal_history (CSV)
-#     历史文件格式: epoch_sec,temp_millideg (VIRTUAL-SKIN)
-#     保留最近 8640 条 ≈ 12 小时
-# ──────────────────────────────────────────────────────────
-THERMAL_HISTORY="$MODDIR/.thermal_history"
-THERMAL_HISTORY_MAX=8640
-(
-    . "$MODDIR/webroot/cgi-bin/_thermal_cache.sh"
-    _hist_count=0
-    while true; do
-        _json=$(build_thermal_json 2>/dev/null)
-        if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
-            printf '%s' "$_json" > "${THERMAL_CACHE}.tmp"
-            mv "${THERMAL_CACHE}.tmp" "$THERMAL_CACHE"
-
-            _vs_temp=$(printf '%s' "$_json" | sed 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/')
-            if [ -n "$_vs_temp" ] && [ "$_vs_temp" != "$_json" ]; then
-                printf '%s,%s\n' "$(date +%s)" "$_vs_temp" >> "$THERMAL_HISTORY"
-                _hist_count=$((_hist_count + 1))
-                if [ "$_hist_count" -ge 360 ]; then
-                    _lines=$(wc -l < "$THERMAL_HISTORY" 2>/dev/null)
-                    if [ "${_lines:-0}" -gt "$THERMAL_HISTORY_MAX" ]; then
-                        _trim=$((_lines - THERMAL_HISTORY_MAX))
-                        sed -i "1,${_trim}d" "$THERMAL_HISTORY" 2>/dev/null
-                    fi
-                    _hist_count=0
                 fi
             fi
         else
-            rm -f "${THERMAL_CACHE}.tmp"
+            _nr_off_since=0
+            if [ "$_nr_state" = "lte" ]; then
+                settings put global "$_nr_key" "$(cat "$NR_MODE_FILE" 2>/dev/null || echo 33)" 2>/dev/null
+                _nr_state="5g"
+                _nr_restored=$_now
+                log -t pixel9pro_ctrl "NR switch: screen on, restored NR"
+            fi
         fi
-        _scr=$(dumpsys display 2>/dev/null | grep "mScreenState=" | head -1 | sed 's/.*mScreenState=//' | tr -d ' ')
-        [ -z "$_scr" ] && _scr=$(dumpsys power 2>/dev/null | grep "mWakefulness=" | head -1 | sed 's/.*mWakefulness=//' | tr -d ' ')
-        case "$_scr" in
-            OFF|Dozing|Asleep) sleep 60 ;;
-            *) sleep 5 ;;
-        esac
+
+        # --- Thermal cache + history ---
+        _burst_until=$(cat "$THERMAL_BURST_FILE" 2>/dev/null | tr -d ' \n\r')
+        _burst_active=0
+        if [ -n "$_burst_until" ] && [ "$_burst_until" -gt "$_now" ] 2>/dev/null; then
+            _burst_active=1
+        fi
+
+        _do_thermal=0
+        if [ "$_screen" = "on" ] || [ "$_burst_active" -eq 1 ]; then
+            _do_thermal=1
+        elif [ "$_last_off_thermal" -eq 0 ] || [ $((_now - _last_off_thermal)) -ge "$_THERMAL_OFF_INTERVAL" ]; then
+            _do_thermal=1
+        fi
+
+        if [ "$_do_thermal" -eq 1 ]; then
+            _json=$(build_thermal_json 2>/dev/null)
+            if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
+                printf '%s' "$_json" > "${THERMAL_CACHE}.tmp"
+                mv "${THERMAL_CACHE}.tmp" "$THERMAL_CACHE"
+
+                _vs_temp=$(printf '%s' "$_json" | sed 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/')
+                if [ -n "$_vs_temp" ] && [ "$_vs_temp" != "$_json" ]; then
+                    printf '%s,%s\n' "$_now" "$_vs_temp" >> "$THERMAL_HISTORY"
+                    _hist_count=$((_hist_count + 1))
+                    if [ "$_hist_count" -ge 360 ]; then
+                        _lines=$(wc -l < "$THERMAL_HISTORY" 2>/dev/null)
+                        if [ "${_lines:-0}" -gt "$THERMAL_HISTORY_MAX" ]; then
+                            _trim=$((_lines - THERMAL_HISTORY_MAX))
+                            sed -i "1,${_trim}d" "$THERMAL_HISTORY" 2>/dev/null
+                        fi
+                        _hist_count=0
+                    fi
+                fi
+            else
+                rm -f "${THERMAL_CACHE}.tmp"
+            fi
+
+            if [ "$_screen" = "off" ]; then
+                _last_off_thermal=$_now
+            fi
+        fi
+
+        _track_power_window
+
+        # --- Adaptive sleep ---
+        if [ "$_screen" = "on" ]; then
+            sleep 15
+        elif [ "$_just_off" -eq 1 ]; then
+            _just_off=0
+            sleep 60
+        elif [ "$_burst_active" -eq 1 ]; then
+            sleep 5
+        elif [ "$_nr_state" = "lte" ]; then
+            sleep "$_NR_LTE_POLL"
+        else
+            sleep 600
+        fi
     done
 ) &
-log -t pixel9pro_ctrl "Thermal cache + history task started (screen-aware)"
+log -t pixel9pro_ctrl "Unified background worker started (Doze-friendly)"
 
 # ──────────────────────────────────────────────────────────
 # 5. 启动 HTTP 控制台

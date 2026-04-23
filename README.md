@@ -1,22 +1,25 @@
-# Pixel 9 Pro Control Module v4.2.6
+# Pixel 9 Pro Control Module v4.3.11
 
-> APatch / KernelSU 模块。目标设备为 Pixel 9 Pro / Pro XL (Tensor G4)。包含温控偏移、CPU 调度模式、ZRAM 参数、待机设置和本地 WebUI。
+> APatch / KernelSU 模块。为 Pixel 9 Pro / Pro XL (Tensor G4) 设计的温控阈值、CPU 调度、ZRAM、待机轻度优化和 UE 能力配置控制模块。
 
 ## 当前版本
 
-- Release: `v4.2.6`
-- Asset: `pixel9pro_control_v4.2.6.zip`
+- Release: `v4.3.11`
+- versionCode: `46`
+- Asset: `pixel9pro_control_v4.3.11.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
+
 
 ## 支持设备
 
 | 设备 | 代号 | 状态 |
 |------|------|------|
 | Pixel 9 Pro | caiman | APatch 实机验证 |
-| Pixel 9 Pro XL | komodo | 机型分支已适配；未完成本项目实机复核 |
+| Pixel 9 Pro XL | komodo | 机型分支已适配；未实际测试 |
 
 安装时自动检测机型，刷入对应的温控配置。
+基带内容配置仅限Pixel 9 Pro
 
 ## 功能
 
@@ -24,22 +27,23 @@
 
 | 模式 | top-app | 小核策略 | 小核 resp | 中核 resp | 大核 resp |
 |------|---------|----------|-----------|-----------|-----------|
-| 游戏 | cpu0-7 | 不锁最低频 | 8ms | 8ms | 8ms |
+| 游戏 | cpu0-7 | 不锁最低频 | 8ms | 8ms | 12ms |
 | 平衡 | cpu4-7 | 最低频 820MHz | 200ms | 12ms | 8ms |
 | 轻度 | cpu4-7 | 最低频 820MHz | 200ms | 20ms | 16ms |
 | 省电 | cpu4-7 | 最低频 820MHz | 500ms | 40ms | 30ms |
 | 默认 | cpu0-7 | 系统默认 | 16ms | 64ms | 200ms |
 
-调度通过 `cpuset` 和 `sched_pixel response_time_ms` 控制；不直接写 `scaling_max_freq`。
+- 调度通过 `cpuset` 和 `sched_pixel response_time_ms` 控制；不直接写 `scaling_max_freq`。
+- 游戏模式未测试
 
 ### 温控优化 (4 档可调)
 
 | 档位 | Offset | VIRTUAL-SKIN 首档 | 说明 |
 |------|--------|-------------------|------|
-| 默认节流 | +0°C | 39°C | 原厂阈值 |
-| 轻度节流 | +2°C | 41°C | 全档整体 +2°C |
-| 常规节流 | +4°C | 43°C | 安装默认值 |
-| 激进节流 | +6°C | 45°C | 全档整体 +6°C |
+| 出厂阈值 | +0°C | 39°C | 原厂阈值 |
+| 轻度放宽 | +2°C | 41°C | 全档整体 +2°C |
+| 日常推荐 | +4°C | 43°C | 安装默认值 |
+| 性能优先 | +6°C | 45°C | 全档整体 +6°C |
 
 偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器：
 
@@ -63,21 +67,22 @@
   - `min_free_kbytes=65536`
   - `vfs_cache_pressure=60`
 
-### 待机策略
+### 待机与 modem 策略
 
-- `special / 5G / CA / IMS` 能力保留，不再走“多关开关 = 更省电”的旧思路
-- 核心项：
-  - `adaptive_connectivity_enabled=1`
-  - `adaptive_connectivity_wifi_enabled=1`
-  - `network_recommendations_enabled=1`
-- 次级收敛项：
+- 保留 `5G / 5GA / CA / IMS` 能力，不再走“多关开关 = 更省电”的旧思路
+- 模块显式管理的收敛项：
   - `mobile_data_always_on=0`
   - `wifi_scan_always_enabled=0`
   - `ble_scan_always_enabled=0`
   - `nearby_sharing_enabled=0`
   - `nearby_sharing_slice_enabled=0`
+- 不再强制托管的系统项：
+  - `adaptive_connectivity_enabled`
+  - `adaptive_connectivity_wifi_enabled`
+  - `network_recommendations_enabled`
+  - `wfc_ims_enabled`
 - Wi-Fi multicast：亮屏开启，息屏关闭
-- `wfc_ims_enabled`：不托管
+- SIM2 空槽：副卡槽为空时关闭 `radio instance 1`，插卡后自动恢复
 
 当前 WebUI 中，“优化”页更偏向审计这些状态是否和当前策略一致，而不再把关闭更多系统开关当作主目标。
 
@@ -87,30 +92,69 @@
 - 亮屏时恢复保存的 NR 模式
 - 恢复后冷却时间：`600` 秒
 - 热点开启时跳过切换
-- 默认状态：关闭
+- 默认状态：开启
 
-### UECap 自动策略 (v4.2.5+)
+### Doze 唤醒 (v4.3.0+)
 
-- `special`：完整国际底座
-  - 恢复 `global special` 为基底
-  - 保留完整国际增量
-  - 同时保留中国高价值组合，包括 `n79+n41+n28`
-- `balanced`：中国精修实验档
-  - 基于你给的中国组合清单与已知问题组合做精修
-  - 保留 `3CC`
-  - 仅用于人工实验，不作为自动默认
-- `universal`：最保守通用表
-  - 作为深省电 / 排障备用，不作为自动默认
+v4.3.0 将原 4 个独立后台循环合并为 1 个统一工作循环，大幅减少息屏 IPC 调用：
 
-自动策略：
+| 状态 | sleep 间隔 | dumpsys 调用频率 |
+|------|-----------|-----------------|
+| 亮屏 | 15s | ~4次/min |
+| 息屏首次 | 60s | ~1次/min (NR 防抖) |
+| 息屏后续 | 600s | ~0.1次/min |
+| 温度突发 | 5s | ~12次/min (用户触发, 5 分钟) |
 
-- 默认常驻 `special`（国际底座）
-- 节电更多依赖：
-  - `Adaptive Connectivity`
-  - `network_recommendations`
-  - `NR 屏熄降级`
+- WiFi multicast：仅在屏幕状态变化时切换，不再轮询
+- 息屏 dumpsys 调用从 v4.2.x 的 ~10次/min 降至 ~0.1次/min
 
-这套策略的目标不是先删除 `3CC` 再谈节电，而是在保留完整能力底座的前提下，把中国向精修作为可选实验版本。
+### 独立基带模块协同
+
+- `pixel9pro_control` 负责：
+  - UECap binarypb 三档切换
+  - bind mount 到 `/vendor/firmware/uecapconfig/`
+  - 切换后触发 cellular modem 重读能力表
+- `pixel9pro_baseband_trial` 独立模块负责：
+  - `CarrierSettings`
+  - China `MCFG`
+  - 5G / IMS 相关属性
+- 当前仓库也同时保存它的源码，建议路径：`modules/pixel9pro_baseband_trial/`
+- 发布时仍然分成两个 release asset：`pixel9pro_control_v4.3.11.zip` 和 `pixel9pro_baseband_trial_v1.0.1.zip`
+- 控制模块的 WebUI 会检测基带模块是否已安装
+
+### UE 能力配置 / UECap 切换 (v4.3.0+) 
+
+v4.3.0 将 UECap 改为**纯手动三档切换**，移除自动策略循环。WebUI 中这一项显示为“UE 能力配置”。
+
+先区分两个“默认”：
+
+- **系统原生 / stock**：控制模块没有接管时，设备直接使用原厂 `PLATFORM_9055801516233416490.binarypb`
+- **控制模块默认**：控制模块接管后，默认受管档位是 `special`
+- 如果只安装 `pixel9pro_baseband_trial`，UECap 仍保持 **系统原生 / stock**，因为基带模块不管理 binarypb
+
+当前仓库实际 payload 审计结果（2026-04-24 复核）：
+
+| 配置 | 当前 payload | SHA-256 前 8 位 | comboGroups | 相对 stock | 说明 |
+|------|--------------|-----------------|-------------|------------|------|
+| 系统默认 / `universal` | stock 等价副本 | `0E37F39C` | `7213` | `+0 / -0 / ~0` | 当前 `universal` 与 stock hash 完全一致，等价于回到原厂能力表 |
+| `balanced` (国内优选) | `trial_minimal_cn_combo` | `2870BA9C` | `7238` | `+25 / -0 / ~0` | 只新增中国相关 `n28/n41/n79` 组合，不删除、不改写原厂顶层字段 |
+| `special` (全场景增强) | `global special` | `69DF3BF6` | `7266` | `+52 / -0 / ~0` | 在 stock 基线上增加更完整的 `n79/n41/n28` 与更多 `n78/ENDC` 组合 |
+
+组合层面的直观理解：
+
+- `stock / universal`：原厂最小基线
+- `balanced`：在 stock 上只补 25 组中国常用 NR 组合
+- `special`：在 stock 上补 52 组更激进的国际+国内组合，是当前控制模块默认档
+
+需要特别澄清：
+
+- 当前控制模块中的 `universal` payload hash 与出厂默认 stock 一致
+
+- WebUI 优化页提供三选一按钮组，切换后立即生效 (bind mount)
+- 切换后仅执行 `cmd phone restart-modem` 重启蜂窝 modem，不触发 `airplane mode`
+- `balanced` 对应经审计的 `trial_minimal_cn_combo` payload，与 `special` 保持独立 binarypb
+- 切换后 WebUI 会自动校验当前配置和目标摘要，确认一致后才提示成功
+- 节电更多依赖 `Adaptive Connectivity` / `network_recommendations` / `NR 息屏降级`
 
 ### NTP 服务器选择 (v4.0.5+)
 
@@ -128,10 +172,15 @@
 端口 6210，`http://127.0.0.1:6210` 访问（仅绑定 127.0.0.1 回环）。
 
 - 主题模式：`system / light / dark`
-- 热区数据后台缓存：亮屏 `5s`，息屏 `60s`
+- 热区数据后台缓存：亮屏 `15s`，息屏 `600s`（温度突发时 `5s`）
 - fetch 超时：`8s`
-- 下拉刷新
-- 左右滑动切换页面
+- 前端轮询：
+  - 页面可见时仅轮询当前 tab 相关数据
+  - 切到后台页或锁屏后前端轮询暂停
+  - 用户闲置 `45s` 或弹窗打开时自动降频
+- 温度历史打开时触发 5 分钟突发录制 (5s 间隔)
+- 温度历史窗口：`10分钟 / 30分钟 / 2.5h / 12h`；其中前两个显示曲线 + 统计
+- 功耗详情默认按“当前放电会话”展示，额外区分“今日累计 / Android batterystats 窗口”
 
 
 ### WebUI 安全
@@ -156,19 +205,18 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 ## 安装
 
-1. 从 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 下载发行包 `pixel9pro_control_v4.2.5.zip`
-2. **不要**使用 GitHub 自动生成的 `Source code (zip)`，也不要自己把上层目录再压一层；安装器要求 ZIP 根目录直接包含 `module.prop`
-3. 如果使用 **KernelSU** 且需要 `system/vendor` 覆盖（本模块的温控 JSON 属于此类），先安装 metamodule，例如 `meta-overlayfs` 或 `Hybrid Mount`，然后重启一次
-4. APatch / KernelSU → 模块 → 从存储安装
-5. 安装器自动检测机型 (Pro / Pro XL) 并刷入对应温控配置
-6. **整机重启**
-7. 打开 `http://127.0.0.1:6210` 验证 WebUI
+1. 从 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 下载发行包 `pixel9pro_control_v4.3.11.zip`
+2. 如果使用 **KernelSU** 且需要 `system/vendor` 覆盖（本模块的温控 JSON 属于此类），先安装 metamodule，例如 `meta-overlayfs` 或 `Hybrid Mount`，然后重启一次
+3. APatch / KernelSU → 模块 → 从存储安装
+4. 安装器自动检测机型 (Pro / Pro XL) 并刷入对应温控配置
+5. **整机重启**
+6. 打开 `http://127.0.0.1:6210` 验证 WebUI
 
 ## 兼容性
 
 - 设备：
-  - `Pixel 9 Pro (caiman)`
-  - `Pixel 9 Pro XL (komodo)`
+  - `Pixel 9 Pro (caiman)` 
+  - `Pixel 9 Pro XL (komodo)` （基带配置仅兼容Pixel 9 Pro）
 - 系统：`Android 17 Beta 3 (SDK 37)` 为当前开发与验证基线
 - Root：
   - `APatch 0.10+`：已完成本项目实机验证
@@ -176,20 +224,6 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 
 ## 已知问题与故障排除
 
-### 安装器报 `Error: specified file not found in archive`
-
-该错误通常表示安装器在 ZIP 根目录找不到需要提取的入口文件。
-
-常见原因：
-- 选错了文件：用了 GitHub 的 `Source code (zip)`，它会多包一层顶级目录
-- 自己手动压缩时把 `pixel9pro_control_v2/` 整个目录包进去了，导致 `module.prop`/`customize.sh` 不在 ZIP 根目录
-- 某些 KSU/APatch 分支管理器仍会优先找 `META-INF/com/google/android/update-binary`
-
-`v4.2.5` 发行包同时提供：
-- 原生 root-module 布局（ZIP 根目录直接放 `module.prop` / `customize.sh` / `service.sh`）
-- Magisk 兼容 `META-INF` 入口
-
-如果你仍看到这个错误，先确认安装的确实是发布页资产 `pixel9pro_control_v4.2.5.zip`，而不是源码压缩包。
 
 ### 卡二屏（卡在开机动画）
 
@@ -197,8 +231,6 @@ Pixel 内核的 `sched_pixel` governor 通过 `freq_qos` 框架管理 CPU 频率
 |------|------|------|
 | `thermal_info_config.json` 格式错误 | JSON 语法不合法，Thermal HAL 拒绝加载 | 安全模式删除 `/data/adb/modules/pixel9pro_control/` |
 | `service.sh` 阻塞启动 | 脚本中的死循环阻塞 late_start | 同上 |
-| 连续安装模块 | 短时间内多次 `apd module install`，OverlayFS 竞态 | 每次安装等 ≥30s 再操作 |
-| 禁用温控模块后重启 | Android 17 Beta 的 thermal HAL 对 overlay mount 卸载敏感 | 不要先禁用再装新版，直接覆盖安装 |
 
 **紧急恢复**：长按电源键强制关机 → 开机进入第二屏时电源+音量下进安全模式 → 重启
 
@@ -213,6 +245,8 @@ Chrome 对本地 `http://` 资源缓存较强。验证方法：顶栏 kicker 显
 - **Sun_Dream（酷安）** — cpuset 路由 + sched_pixel 调度思路
 - **[RMBD (Reduce Modem Battery Drain)](https://github.com/Yuta-Ming/Reduce_Modem_Battery-Drain)** — 待机功耗优化参考
 - **[WZL203/Pixel-8-pro-thermal-SOC-Charging-control](https://github.com/WZL203/Pixel-8-pro-thermal-SOC-Charging-control)** — Pixel thermal_info_config.json 温控配置参考
+- pixel9pro_baseband_trial 模块设计与功能均来源于酷安社区，特别鸣谢[Sun_Dream](https://www.coolapk.com/u/1281808) , [DYSSBRT](https://www.coolapk.com/u/22128139)
+
 
 ## 免责声明
 

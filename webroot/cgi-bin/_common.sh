@@ -45,7 +45,7 @@ require_loopback() {
 require_json_post() {
     [ "$REQUEST_METHOD" = "POST" ] || json_error '405 Method Not Allowed' 'POST only'
     case "${CONTENT_TYPE:-}" in
-        application/json*|'') ;;
+        application/json*) ;;
         *) json_error '415 Unsupported Media Type' 'application/json only' ;;
     esac
 }

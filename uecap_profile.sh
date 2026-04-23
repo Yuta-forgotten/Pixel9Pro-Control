@@ -89,20 +89,43 @@ uecap_resolve_source() {
     esac
 }
 
+uecap_reload_modem() {
+    _reason="${1:-manual}"
+    case "$_reason" in
+        boot|boot_manual)
+            uecap_log_line "skip modem reload (reason=$_reason, boot reads fresh)"
+            return 0 ;;
+    esac
+    # restart-modem only cycles cellular radio, does NOT touch WiFi/BT
+    # Much safer than airplane toggle which crashed the network stack (B29)
+    nohup sh -c '
+        cmd phone restart-modem 2>/dev/null
+    ' >/dev/null 2>&1 &
+    uecap_log_line "modem restart dispatched (reason=$_reason)"
+}
+
 uecap_detect_active_mode() {
     _target_hash=$(uecap_hash "$UECAP_TARGET")
+    [ -z "$_target_hash" ] && { echo "custom"; return; }
+
+    # Prefer the recorded mode if its hash matches — avoids ambiguity
+    # when multiple tiers share the same binarypb
+    _req=$(uecap_current_mode)
+    _req_src=$(uecap_resolve_source "$_req")
+    _req_hash=$(uecap_hash "$_req_src")
+    if [ "$_target_hash" = "$_req_hash" ]; then
+        echo "$_req"
+        return
+    fi
+
     _special_hash=$(uecap_hash "$UECAP_SPECIAL")
     _balanced_hash=$(uecap_hash "$UECAP_BALANCED")
     _universal_hash=$(uecap_hash "$UECAP_UNIVERSAL")
 
-    if [ -n "$_target_hash" ] && [ "$_target_hash" = "$_special_hash" ]; then
-        echo "special"
-    elif [ -n "$_target_hash" ] && [ "$_target_hash" = "$_balanced_hash" ]; then
-        echo "balanced"
-    elif [ -n "$_target_hash" ] && [ "$_target_hash" = "$_universal_hash" ]; then
-        echo "universal"
-    else
-        echo "custom"
+    if [ "$_target_hash" = "$_special_hash" ]; then echo "special"
+    elif [ "$_target_hash" = "$_balanced_hash" ]; then echo "balanced"
+    elif [ "$_target_hash" = "$_universal_hash" ]; then echo "universal"
+    else echo "custom"
     fi
 }
 
@@ -127,16 +150,16 @@ uecap_apply_mode() {
         umount "$UECAP_TARGET" 2>/dev/null
     fi
 
-    if mount --bind "$_source" "$UECAP_TARGET" >/dev/null 2>&1; then
-        uecap_set_mode "$_mode"
-        uecap_set_switch_time "$(date +%s 2>/dev/null || echo 0)"
-        uecap_log_line "bind ok mode=$_mode hash=$(uecap_hash "$_source")"
-        return 0
-    fi
+    mount --bind "$_source" "$UECAP_TARGET" >/dev/null 2>&1 || {
+        uecap_log_line "bind failed mode=$_mode"
+        return 1
+    }
 
-    _rc=$?
-    uecap_log_line "bind failed mode=$_mode rc=$_rc"
-    return "$_rc"
+    uecap_set_mode "$_mode"
+    uecap_set_switch_time "$(date +%s 2>/dev/null || echo 0)"
+    uecap_log_line "bind ok mode=$_mode hash=$(uecap_hash "$_source")"
+    uecap_reload_modem "${2:-manual}"
+    return 0
 }
 
 uecap_print_status_json() {
@@ -158,7 +181,10 @@ uecap_print_status_json() {
 
 case "$1" in
     apply)
-        uecap_apply_mode "${2:-$(uecap_current_mode)}"
+        _mode=$(uecap_mode_label "${2:-$(uecap_current_mode)}")
+        [ "$_mode" = "unknown" ] && exit 1
+        uecap_set_manual_mode "$_mode"
+        uecap_apply_mode "$_mode"
         ;;
     status)
         uecap_print_status_json

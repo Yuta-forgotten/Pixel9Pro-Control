@@ -27,6 +27,7 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         "$enabled" "${current:-unknown}" "$saved_nr"
 
 elif [ "$REQUEST_METHOD" = "POST" ]; then
+    require_json_post
     require_token
     json_headers
     if [ -n "$CONTENT_LENGTH" ] && [ "$CONTENT_LENGTH" -gt 0 ] 2>/dev/null && [ "$CONTENT_LENGTH" -le 256 ]; then

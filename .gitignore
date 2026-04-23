@@ -5,6 +5,12 @@ dist/
 # Local project metadata / release drafts
 .ai_changelog.yaml
 RELEASE_v*.md
+readme.txt
+release_review/
+
+# Release assets are uploaded to GitHub Releases, not committed to source
+modules/*/dist/
+release-assets/
 
 # Nested repo copy (accidental, should not exist)
 Pixel9Pro-Control/

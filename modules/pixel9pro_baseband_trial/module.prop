@@ -1,0 +1,6 @@
+id=pixel9pro_baseband_trial
+name=Pixel 9 Pro Baseband Trial
+version=v1.0.1
+versionCode=101
+author=Yuta
+description=5G/IMS props + CarrierSettings/APN + China MCFG overlay. UECap 由 pixel9pro_control 管理。
