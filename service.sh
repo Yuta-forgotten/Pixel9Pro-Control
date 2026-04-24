@@ -1,8 +1,14 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.3.11 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.3.12 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → 统一后台 → WebUI
+#
+# v4.3.12 变更:
+#   - SIM2 空槽省电改用 cmd phone radio power -s 1 off (B36 旧 API 无效)
+#   - 同时关闭空槽 IMS (cmd phone ims disable -s 1) 消除 IMS 注册唤醒
+#   - NR 降级修复 DSDS preferred_network_mode 逗号格式解析 (B37)
+#   - 降级/恢复只改 slot 0，保留 slot 1 原值不丢失
 #
 # v4.3.11 变更:
 #   - 修正 UECap 参数说明：universal=stock 等价副本，balanced=trial_minimal_cn_combo
@@ -94,8 +100,8 @@ apply_uecap_profile() {
     if [ -f "$MODDIR/uecap_profile.sh" ]; then
         . "$MODDIR/uecap_profile.sh"
         uecap_set_policy manual
-        [ -f "$UECAP_MANUAL_MODE_FILE" ] || uecap_set_manual_mode special
-        [ -f "$UECAP_MODE_FILE" ] || uecap_set_mode special
+        [ -f "$UECAP_MANUAL_MODE_FILE" ] || uecap_set_manual_mode balanced
+        [ -f "$UECAP_MODE_FILE" ] || uecap_set_mode balanced
         _mode=$(uecap_current_manual_mode)
         if uecap_apply_mode "$_mode" "boot_manual" 2>/dev/null; then
             uecap_set_reason boot_manual
@@ -131,19 +137,19 @@ manage_sim2_radio() {
         ABSENT|NOT_READY|PIN_REQUIRED|PUK_REQUIRED|PERM_DISABLED)
             _prev_sim2=$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)
             if [ "$_prev_sim2" != "disabled" ]; then
-                cmd phone disable-physical-subscription 2 2>/dev/null || \
-                    svc radio setModemPower 1 false 2>/dev/null
+                cmd phone radio power -s 1 off 2>/dev/null
+                cmd phone ims disable -s 1 2>/dev/null
                 echo "disabled" > "$MODDIR/.sim2_radio_off"
-                log -t pixel9pro_ctrl "SIM2=$_sim2_state: radio 1 powered down to save modem standby"
+                log -t pixel9pro_ctrl "SIM2=$_sim2_state: slot 1 radio+ims powered down"
             fi
             ;;
         LOADED|READY)
             _prev_sim2=$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)
             if [ "$_prev_sim2" = "disabled" ]; then
-                cmd phone enable-physical-subscription 2 2>/dev/null || \
-                    svc radio setModemPower 1 true 2>/dev/null
+                cmd phone radio power -s 1 on 2>/dev/null
+                cmd phone ims enable -s 1 2>/dev/null
                 echo "enabled" > "$MODDIR/.sim2_radio_off"
-                log -t pixel9pro_ctrl "SIM2=$_sim2_state: radio 1 re-enabled"
+                log -t pixel9pro_ctrl "SIM2=$_sim2_state: slot 1 radio+ims re-enabled"
             fi
             ;;
     esac
@@ -177,7 +183,7 @@ export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
 # ──────────────────────────────────────────────────────────
 # 2. 系统设置优化 (保 5G 分支)
 # ──────────────────────────────────────────────────────────
-log -t pixel9pro_ctrl "v4.3.11[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.3.12[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -247,10 +253,11 @@ case "$SWAP_MODE" in
         echo 100 > /proc/sys/vm/swappiness 2>/dev/null
         echo 65536 > /proc/sys/vm/min_free_kbytes 2>/dev/null
         echo 60 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
+        [ -s "$MODDIR/.swap_mode" ] || echo "optimized" > "$MODDIR/.swap_mode"
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.3.11[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.3.12[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # 延迟复写：NTP 服务器和扫描类设置可能在用户解锁后被系统回写。
 (
@@ -287,10 +294,24 @@ POWER_HISTORY="$MODDIR/.power_history"
 POWER_HISTORY_MAX=20160
 POWER_SESSION_FILE="$MODDIR/.power_session"
 
-[ -f "$NR_SWITCH_FILE" ] || echo "on" > "$NR_SWITCH_FILE"
+[ -f "$NR_SWITCH_FILE" ] || echo "off" > "$NR_SWITCH_FILE"
+
+_nr_slot0_val() {
+    case "$1" in
+        *,*) printf '%s' "${1%%,*}" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+_nr_replace_slot0() {
+    case "$1" in
+        *,*) printf '%s,%s' "$2" "${1#*,}" ;;
+        *) printf '%s' "$2" ;;
+    esac
+}
 
 is_nr_mode_value() {
-    _val="$1"
+    _val=$(_nr_slot0_val "$1")
     case "$_val" in
         ''|null) return 1 ;;
         *[!0-9-]*) return 1 ;;
@@ -510,9 +531,10 @@ is_nr_mode_value() {
                         if is_nr_mode_value "$_cur"; then
                             echo "$_cur" > "$NR_MODE_FILE"
                         fi
-                        settings put global "$_nr_key" "$_NR_LTE" 2>/dev/null
+                        _lte_val=$(_nr_replace_slot0 "$_cur" "$_NR_LTE")
+                        settings put global "$_nr_key" "$_lte_val" 2>/dev/null
                         _nr_state="lte"
-                        log -t pixel9pro_ctrl "NR switch: off ${_elapsed}s, switched to LTE"
+                        log -t pixel9pro_ctrl "NR switch: off ${_elapsed}s, switched to LTE ($_lte_val)"
                     fi
                 fi
             fi
