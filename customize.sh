@@ -139,13 +139,13 @@ if [ "$_is_upgrade" -eq 0 ]; then
 
     # --- CPU 调度 ---
     ui_print "  ② CPU 调度:"
-    _CPU_VALS="battery light balanced stock game"
+    _CPU_VALS="battery light balanced default responsive"
     _CPU_LABEL_battery="省电"
-    _CPU_LABEL_light="轻量"
-    _CPU_LABEL_balanced="均衡 (推荐)"
-    _CPU_LABEL_stock="默认"
-    _CPU_LABEL_game="游戏"
-    _cpu_idx=2
+    _CPU_LABEL_light="长亮屏"
+    _CPU_LABEL_balanced="均衡手动"
+    _CPU_LABEL_default="默认 (自动基线)"
+    _CPU_LABEL_responsive="响应优先"
+    _cpu_idx=3
     _cpu_total=5
     while true; do
         _i=0; _cpu_cur=""
@@ -246,10 +246,10 @@ if [ "$_is_upgrade" -eq 0 ]; then
 else
     # 升级模式: 确保必要的默认值存在
     [ -f "$OFFSET_FILE" ] || echo '4' > "$OFFSET_FILE"
-    [ -f "$PROFILE_FILE" ] || echo 'balanced' > "$PROFILE_FILE"
-    [ -f "$PROFILE_MANUAL_FILE" ] || cp "$PROFILE_FILE" "$PROFILE_MANUAL_FILE" 2>/dev/null || echo 'balanced' > "$PROFILE_MANUAL_FILE"
-    [ -f "$PROFILE_POLICY_FILE" ] || echo 'manual' > "$PROFILE_POLICY_FILE"
-    [ -f "$MODPATH/.profile_auto_reason" ] || echo 'manual_boot' > "$MODPATH/.profile_auto_reason"
+    [ -f "$PROFILE_FILE" ] || echo 'default' > "$PROFILE_FILE"
+    [ -f "$PROFILE_MANUAL_FILE" ] || cp "$PROFILE_FILE" "$PROFILE_MANUAL_FILE" 2>/dev/null || echo 'default' > "$PROFILE_MANUAL_FILE"
+    [ -f "$PROFILE_POLICY_FILE" ] || echo 'auto' > "$PROFILE_POLICY_FILE"
+    [ -f "$MODPATH/.profile_auto_reason" ] || echo 'auto_enabled' > "$MODPATH/.profile_auto_reason"
     [ -f "$MODPATH/.uecap_manual_mode" ] || echo 'balanced' > "$MODPATH/.uecap_manual_mode"
     [ -f "$MODPATH/.uecap_mode" ] || echo 'balanced' > "$MODPATH/.uecap_mode"
     [ -f "$MODPATH/.uecap_policy" ] || echo 'manual' > "$MODPATH/.uecap_policy"

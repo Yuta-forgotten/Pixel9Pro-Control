@@ -14,7 +14,7 @@ PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
 read_valid_profile() {
     _prof=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
     case "$_prof" in
-        game|balanced|light|battery|stock) printf '%s' "$_prof" ;;
+        responsive|balanced|light|battery|default) printf '%s' "$_prof" ;;
         *) printf '%s' "$2" ;;
     esac
 }
@@ -28,7 +28,7 @@ read_valid_policy() {
 }
 
 emit_profile_state() {
-    _active=$(read_valid_profile "$PROFILE_FILE" 'balanced')
+    _active=$(read_valid_profile "$PROFILE_FILE" 'default')
     _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" "$_active")
     _policy=$(read_valid_policy)
     _reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null | tr -d '\r')
@@ -55,7 +55,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     newpolicy=$(printf '%s' "$body" | sed -n 's/.*"policy"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
 
     case "$newprof" in
-        ''|game|balanced|light|battery|stock) ;;
+        ''|responsive|balanced|light|battery|default) ;;
         *) json_error '400 Bad Request' 'invalid profile' ;;
     esac
     case "$newpolicy" in
@@ -72,7 +72,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                     _temp_raw=${_result#BLOCKED:}
                     _temp_c=$(awk "BEGIN{printf \"%.1f\", ${_temp_raw:-0}/1000}")
                     json_headers
-                    printf '{"ok":false,"error":"温度过高 (%s°C)，游戏模式需冷却到 41°C 以下"}\n' "$_temp_c"
+                    printf '{"ok":false,"error":"温度过高 (%s°C)，请先降温后再切到响应优先"}\n' "$_temp_c"
                     ;;
                 *)
                     json_error '500 Internal Server Error' 'profile script failed'
@@ -93,10 +93,10 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     case "$newpolicy" in
         auto)
-            _active=$(read_valid_profile "$PROFILE_FILE" 'balanced')
+            _active=$(read_valid_profile "$PROFILE_FILE" 'default')
             case "$_active" in
-                balanced|light|battery) _target="$_active" ;;
-                *) _target="balanced" ;;
+                default|balanced|light|battery) _target="$_active" ;;
+                *) _target="default" ;;
             esac
             _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_target" "$MODDIR" 2>/dev/null)
             [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
@@ -105,7 +105,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             printf 'auto_enabled' > "$PROFILE_AUTO_REASON_FILE"
             ;;
         manual)
-            _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'balanced')
+            _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'default')
             _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_manual" "$MODDIR" 2>/dev/null)
             [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
             printf '%s' "$_manual" > "$PROFILE_FILE"

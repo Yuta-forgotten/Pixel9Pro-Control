@@ -1,14 +1,13 @@
 #!/system/bin/sh
 # ============================================================
-# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v4.3.14
-# 用法: sh cpu_profile.sh [game|balanced|light|battery|stock|status]
+# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v4.3.15
+# 用法: sh cpu_profile.sh [responsive|balanced|light|battery|default|status]
 #
 # 核心原理:
 #   - 不再写 scaling_max_freq / scaling_min_freq (会被 thermal HAL 覆盖)
 #   - 通过 sched_pixel 参数控制频率行为, cpuset 路由 top-app/background
 #   - foreground cpuset 由 system_server 框架层管理, 固定为 0-6, 不可覆盖
-#   - v4.3.14 起，light/battery 不再把 top-app 固定推到 4-7，也不再把小核锁死在 820MHz
-#     目标是让小核承担 steady-state 前台杂务，中核按需补位，大核尽量慢介入
+#   - 当前目标不是“造一个极限性能模式”，而是把不同前台场景拉开成更清晰的可感知方案
 #
 # Tensor G4 拓扑：
 #   cpu0-3  Cortex-A520 (小核)  820-1950 MHz
@@ -20,9 +19,8 @@
 #   down_rate_limit_us: 由内核根据 response_time_ms 自动计算, 不可独立写入
 # ============================================================
 
-PROFILE="${1:-balanced}"
+PROFILE="${1:-default}"
 MODDIR="${2:-${0%/scripts/*}}"
-GAME_TEMP_LIMIT=41000
 
 CPU0="/sys/devices/system/cpu/cpu0/cpufreq"
 CPU4="/sys/devices/system/cpu/cpu4/cpufreq"
@@ -38,35 +36,18 @@ apply_sched_pixel() {
     write_if_exists "$CPU7/sched_pixel/response_time_ms"   "$3"
 }
 
-get_skin_temp() {
-    _cache="$MODDIR/.thermal_cache.json"
-    if [ -s "$_cache" ]; then
-        sed 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/' "$_cache" 2>/dev/null
-    else
-        dumpsys thermalservice 2>/dev/null | grep 'mName=VIRTUAL-SKIN,' | head -1 | sed 's/.*mValue=\([0-9.]*\).*/\1/' | awk '{printf "%d", $1*1000}'
-    fi
-}
-
 case "$PROFILE" in
 
-    game)
-        # ── 游戏模式 ─────────────────────────────────────────
-        # 温度门控: VIRTUAL-SKIN ≥ 41°C 时拒绝切换, 返回错误
-        _skin=$(get_skin_temp)
-        if [ -n "$_skin" ] && [ "$_skin" -ge "$GAME_TEMP_LIMIT" ] 2>/dev/null; then
-            _t_c=$(awk "BEGIN{printf \"%.1f\", $_skin/1000}")
-            log -t pixel9pro_ctrl "CPU: GAME blocked — VIRTUAL-SKIN ${_t_c}°C >= $(awk "BEGIN{printf \"%.0f\", $GAME_TEMP_LIMIT/1000}")°C"
-            echo "BLOCKED:${_skin}"
-            exit 1
-        fi
-        # top-app → 全核 0-7
-        # 小核 8ms 全力, 中核 8ms, 大核 12ms (给 PID 控制器回旋余���, 避免 uclamp 激进降频)
-        apply_sched_pixel 8 8 12
+    responsive)
+        # ── 响应优先 ─────────────────────────────────────────
+        # 作为最明显的手动高响应档，保留 top-app 全核并让中核/大核更早介入。
+        # 不追求“游戏模式”式的极端峰值，只强调日常前台交互的明确提速感。
+        apply_sched_pixel 12 24 80
         cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: GAME [top-app→0-7, response 8/8/12ms, temp_gate=${_skin:-?}]"
+        log -t pixel9pro_ctrl "CPU: RESPONSIVE [top-app→0-7, response 12/24/80ms]"
         ;;
 
     balanced)
@@ -82,10 +63,9 @@ case "$PROFILE" in
         ;;
 
     light)
-        # ── 轻度模式 ─────────────────────────────────────────
+        # ── 长亮屏 ─────────────────────────────────────────
         # 面向阅读/社交/短视频这类长时间亮屏 steady-state 负载。
-        # 让 top-app 停留在 0-6，直接避免 X4 常态介入；
-        # 小核允许低频浮动，不再锁死 820MHz，减少“小核满载 + 中核补偿”的反效果。
+        # 让 top-app 停留在 0-6，直接避免 X4 常态介入。
         apply_sched_pixel 24 64 200
         cpuset_write "top-app"           "0-6"
         cpuset_write "foreground"        "0-6"
@@ -96,7 +76,7 @@ case "$PROFILE" in
 
     battery)
         # ── 省电模式 ─────────────────────────────────────────
-        # 在 light 基础上进一步放慢小/中核升频，并继续禁用 X4。
+        # 在 long-screen 基础上继续放慢小/中核升频，并继续禁用 X4。
         # 用于明确把长时间前台温度压下去，而不是追求交互峰值。
         apply_sched_pixel 32 96 200
         cpuset_write "top-app"           "0-6"
@@ -106,14 +86,14 @@ case "$PROFILE" in
         log -t pixel9pro_ctrl "CPU: BATTERY [top-app→0-6, response 32/96/200ms]"
         ;;
 
-    stock)
-        # ── Google 原版 ──────────────────────────────────────
+    default)
+        # ── 默认模式 / 自动默认底座 ─────────────────────────
         apply_sched_pixel 16 64 200
         cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: STOCK"
+        log -t pixel9pro_ctrl "CPU: DEFAULT"
         ;;
 
     status)
@@ -147,7 +127,7 @@ case "$PROFILE" in
         ;;
 
     *)
-        echo "Usage: $0 [game|balanced|light|battery|stock|status]"
+        echo "Usage: $0 [responsive|balanced|light|battery|default|status]"
         exit 1
         ;;
 esac
