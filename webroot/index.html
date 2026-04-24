@@ -10,7 +10,7 @@
 <meta http-equiv="Expires" content="0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' http://127.0.0.1:6210; connect-src 'self' http://127.0.0.1:6210; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' http://127.0.0.1:6210">
 <title>温控调度控制台</title>
-<link rel="stylesheet" href="/app.css?v=4.3.13">
+<link rel="stylesheet" href="/app.css?v=4.3.15">
 </head>
 <body>
 <div class="app-shell">
@@ -138,6 +138,11 @@
           <div class="kicker">当前策略</div>
           <div class="summary-title" id="perf-current-name">读取中…</div>
           <div class="summary-desc" id="perf-current-desc">正在读取当前性能模式。</div>
+          <div class="header-actions" style="margin-top:12px;justify-content:flex-start">
+            <button class="tiny-btn" id="profile-policy-manual-btn" type="button">手动</button>
+            <button class="tiny-btn" id="profile-policy-auto-btn" type="button">自动</button>
+          </div>
+          <div class="section-sub" id="perf-policy-desc" style="margin-top:10px">读取当前调度策略…</div>
         </article>
 
         <div class="section-block">
@@ -170,7 +175,7 @@
 
         <article class="note-card">
           <div class="note-title">说明</div>
-          <div class="note-body">模块不直接对抗 Thermal HAL，而是通过 cpuset 与 sched_pixel 响应时间控制调度行为。切换后会立即刷新当前 CPU 状态。</div>
+          <div class="note-body">模块不直接对抗 Thermal HAL，而是通过 cpuset 与 sched_pixel 响应时间控制调度行为。自动模式只在亮屏前台缓慢切换：feed 类应用先 balanced，再进 light，持续热平台才压到 battery。</div>
         </article>
       </div>
     </section>
@@ -432,6 +437,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=4.3.13"></script>
+<script src="/app.js?v=4.3.15"></script>
 </body>
 </html>
