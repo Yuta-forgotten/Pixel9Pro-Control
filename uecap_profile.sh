@@ -31,7 +31,7 @@ uecap_current_mode() {
     _mode=$(cat "$UECAP_MODE_FILE" 2>/dev/null | tr -d ' \n\r')
     case "$_mode" in
         special|balanced|universal) echo "$_mode" ;;
-        *) echo "special" ;;
+        *) echo "balanced" ;;
     esac
 }
 
@@ -39,7 +39,7 @@ uecap_current_manual_mode() {
     _mode=$(cat "$UECAP_MANUAL_MODE_FILE" 2>/dev/null | tr -d ' \n\r')
     case "$_mode" in
         special|balanced|universal) echo "$_mode" ;;
-        *) echo "special" ;;
+        *) echo "balanced" ;;
     esac
 }
 
@@ -47,7 +47,7 @@ uecap_current_policy() {
     _policy=$(cat "$UECAP_POLICY_FILE" 2>/dev/null | tr -d ' \n\r')
     case "$_policy" in
         auto|manual) echo "$_policy" ;;
-        *) echo "auto" ;;
+        *) echo "manual" ;;
     esac
 }
 

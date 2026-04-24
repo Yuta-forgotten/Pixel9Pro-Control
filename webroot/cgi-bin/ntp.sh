@@ -21,6 +21,7 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
 
 elif [ "$REQUEST_METHOD" = "POST" ]; then
     require_token
+    acquire_lock "ntp"
     json_headers
     body=""
     if [ -n "$CONTENT_LENGTH" ] && [ "$CONTENT_LENGTH" -gt 0 ] 2>/dev/null && [ "$CONTENT_LENGTH" -le 512 ]; then

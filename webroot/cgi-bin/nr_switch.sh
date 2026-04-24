@@ -13,7 +13,7 @@ NR_MODE_FILE="$MODDIR/.nr_saved_mode"
 
 if [ "$REQUEST_METHOD" = "GET" ]; then
     json_headers
-    enabled=$(cat "$STATE_FILE" 2>/dev/null || echo "off")
+    enabled=$(cat "$STATE_FILE" 2>/dev/null || echo "on")
     saved_nr=$(cat "$NR_MODE_FILE" 2>/dev/null || echo "33")
 
     nr_key="preferred_network_mode1"
@@ -29,11 +29,12 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
 elif [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
     require_token
+    acquire_lock "nr_switch"
     json_headers
     if [ -n "$CONTENT_LENGTH" ] && [ "$CONTENT_LENGTH" -gt 0 ] 2>/dev/null && [ "$CONTENT_LENGTH" -le 256 ]; then
         body=$(dd bs=1 count="$CONTENT_LENGTH" 2>/dev/null)
     fi
-    current=$(cat "$STATE_FILE" 2>/dev/null || echo "off")
+    current=$(cat "$STATE_FILE" 2>/dev/null || echo "on")
     if [ "$current" = "on" ]; then
         echo "off" > "$STATE_FILE"
         new="off"
