@@ -1,8 +1,17 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.3.13 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.3.15 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → 统一后台 → WebUI
+#
+# v4.3.15 变更:
+#   - 新增慢切换自动调度策略: feed 类前台长亮屏时 balanced→light，持续热平台时 light→battery
+#   - 自动策略只在亮屏前台生效，息屏或退出 feed 后回到 balanced，避免高频来回切换
+#   - 新增 .profile_policy / .profile_manual / .profile_auto_reason 状态文件
+#
+# v4.3.14 变更:
+#   - CPU 轻载策略重构: light/battery 不再把 top-app 固定推到 4-7，也不再锁死小核 820MHz
+#   - 平衡/轻度/省电三档改为更接近 Pixel 官方前台层级分工的 steady-state 方案
 #
 # v4.3.13 变更:
 #   - 显式开启 Adaptive Connectivity (Google 官方 5G 节电机制)
@@ -74,6 +83,10 @@ PORT=6210
 TOKEN_FILE="$MODDIR/.webui_token"
 THERMAL_CACHE="$MODDIR/.thermal_cache.json"
 LOCKDIR_BASE="$MODDIR/.locks"
+PROFILE_FILE="$MODDIR/.current_profile"
+PROFILE_POLICY_FILE="$MODDIR/.profile_policy"
+PROFILE_MANUAL_FILE="$MODDIR/.profile_manual"
+PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
 
 detect_root_impl() {
     if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
@@ -167,6 +180,125 @@ manage_sim2_radio() {
     esac
 }
 
+valid_profile() {
+    case "$1" in
+        game|balanced|light|battery|stock) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+valid_profile_policy() {
+    case "$1" in
+        manual|auto) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+read_valid_profile() {
+    _profile_path="$1"
+    _profile_default="$2"
+    _profile_value=$(cat "$_profile_path" 2>/dev/null | tr -d ' \n\r\t')
+    if valid_profile "$_profile_value"; then
+        printf '%s' "$_profile_value"
+    else
+        printf '%s' "$_profile_default"
+    fi
+}
+
+read_valid_profile_policy() {
+    _policy_value=$(cat "$PROFILE_POLICY_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    if valid_profile_policy "$_policy_value"; then
+        printf '%s' "$_policy_value"
+    else
+        printf 'manual'
+    fi
+}
+
+profile_lock_acquire() {
+    _plock="$LOCKDIR_BASE/profile.lock"
+    mkdir -p "$LOCKDIR_BASE" 2>/dev/null
+    if mkdir "$_plock" 2>/dev/null; then
+        echo "$$" > "$_plock/pid" 2>/dev/null
+        return 0
+    fi
+    _lock_pid=$(cat "$_plock/pid" 2>/dev/null)
+    if [ -z "$_lock_pid" ] || ! kill -0 "$_lock_pid" 2>/dev/null; then
+        rm -f "$_plock/pid" 2>/dev/null
+        rmdir "$_plock" 2>/dev/null
+        if mkdir "$_plock" 2>/dev/null; then
+            echo "$$" > "$_plock/pid" 2>/dev/null
+            return 0
+        fi
+    fi
+    return 1
+}
+
+profile_lock_release() {
+    _plock="$LOCKDIR_BASE/profile.lock"
+    rm -f "$_plock/pid" 2>/dev/null
+    rmdir "$_plock" 2>/dev/null
+}
+
+apply_profile_state() {
+    _target="$1"
+    _reason="$2"
+
+    valid_profile "$_target" || return 1
+
+    if ! profile_lock_acquire; then
+        log -t pixel9pro_ctrl "CPU profile busy, skip auto switch -> $_target ($_reason)"
+        return 1
+    fi
+
+    _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_target" "$MODDIR" 2>/dev/null)
+    _rc=$?
+
+    if [ "$_rc" -eq 0 ]; then
+        printf '%s' "$_target" > "$PROFILE_FILE"
+        printf '%s' "$_reason" > "$PROFILE_AUTO_REASON_FILE"
+        log -t pixel9pro_ctrl "CPU profile applied: $_target ($_reason)"
+        profile_lock_release
+        return 0
+    fi
+
+    log -t pixel9pro_ctrl "WARNING: failed to apply CPU profile $_target ($_reason): ${_result:-unknown}"
+    profile_lock_release
+    return 1
+}
+
+foreground_package_name() {
+    _pkg=$(dumpsys activity top 2>/dev/null | grep '^  ACTIVITY ' | head -1 | sed 's/.*ACTIVITY \([^/ ][^/ ]*\)\/.*/\1/')
+    if [ -z "$_pkg" ]; then
+        _pkg=$(dumpsys window 2>/dev/null | grep 'mCurrentFocus' | head -1 | sed 's/.* \([^/ ][^/ ]*\)\/.*/\1/')
+    fi
+    printf '%s' "$_pkg" | tr -d ' \r\n'
+}
+
+is_steady_screen_package() {
+    case "$1" in
+        ''|com.google.android.apps.nexuslauncher|com.android.launcher3|com.android.systemui)
+            return 1
+            ;;
+        com.ss.android.ugc.aweme|\
+        com.zhiliaoapp.musically|\
+        com.tencent.mm|\
+        com.tencent.mobileqq|\
+        com.instagram.android|\
+        org.telegram.messenger|\
+        com.radolyn.ayugram|\
+        tv.danmaku.bili|\
+        com.xingin.xhs|\
+        com.sina.weibo|\
+        com.ss.android.article.news|\
+        com.zhihu.android)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # ──────────────────────────────────────────────────────────
 # 1. 等待系统完全启动
 # ──────────────────────────────────────────────────────────
@@ -195,7 +327,7 @@ export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
 # ──────────────────────────────────────────────────────────
 # 2. 系统设置优化 (保 5G 分支)
 # ──────────────────────────────────────────────────────────
-log -t pixel9pro_ctrl "v4.3.12[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.3.15[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -269,7 +401,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.3.12[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.3.15[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # 延迟复写：NTP 服务器和扫描类设置可能在用户解锁后被系统回写。
 (
@@ -283,7 +415,10 @@ log -t pixel9pro_ctrl "v4.3.12[$ROOT_IMPL]: keep-5G standby settings applied (ra
 # ──────────────────────────────────────────────────────────
 # 3. 应用 CPU 调度方案 (cpuset + sched_pixel 参数)
 # ──────────────────────────────────────────────────────────
-PROFILE=$(cat "$MODDIR/.current_profile" 2>/dev/null || echo 'balanced')
+PROFILE=$(read_valid_profile "$PROFILE_FILE" 'balanced')
+[ -f "$PROFILE_MANUAL_FILE" ] || printf '%s' "$PROFILE" > "$PROFILE_MANUAL_FILE"
+[ -f "$PROFILE_POLICY_FILE" ] || printf 'manual' > "$PROFILE_POLICY_FILE"
+[ -f "$PROFILE_AUTO_REASON_FILE" ] || printf 'manual_boot' > "$PROFILE_AUTO_REASON_FILE"
 sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" "$MODDIR" 2>/dev/null
 log -t pixel9pro_ctrl "CPU profile: $PROFILE"
 
@@ -478,6 +613,18 @@ is_nr_mode_value() {
     _power_charge_seen_full=0
     _power_reset_armed=0
     _power_hist_count=0
+    _AUTO_STEADY_DELAY=45
+    _AUTO_EXIT_DELAY=30
+    _AUTO_BATTERY_TEMP=40800
+    _AUTO_BATTERY_HOLD=90
+    _AUTO_LIGHT_COOL_TEMP=40400
+    _AUTO_LIGHT_COOL_HOLD=60
+    _auto_steady_since=0
+    _auto_nonsteady_since=0
+    _auto_hot_since=0
+    _auto_cool_since=0
+    _auto_pkg=""
+    _active_profile=$(read_valid_profile "$PROFILE_FILE" 'balanced')
 
     while true; do
         _now=$(date +%s 2>/dev/null || echo 0)
@@ -603,6 +750,94 @@ is_nr_mode_value() {
         fi
 
         _track_power_window
+
+        # --- Slow auto profile policy ---
+        _profile_policy=$(read_valid_profile_policy)
+        _manual_profile=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'balanced')
+        _target_profile=""
+        _target_reason=""
+
+        if [ "$_profile_policy" = "manual" ]; then
+            _auto_steady_since=0
+            _auto_nonsteady_since=0
+            _auto_hot_since=0
+            _auto_cool_since=0
+            _auto_pkg=""
+            if [ "$_active_profile" != "$_manual_profile" ]; then
+                if apply_profile_state "$_manual_profile" "manual_policy"; then
+                    _active_profile="$_manual_profile"
+                fi
+            fi
+        elif [ "$_screen" != "on" ]; then
+            _auto_steady_since=0
+            _auto_nonsteady_since=0
+            _auto_hot_since=0
+            _auto_cool_since=0
+            _auto_pkg=""
+            if [ "$_active_profile" != "balanced" ]; then
+                if apply_profile_state "balanced" "screen_off_reset"; then
+                    _active_profile="balanced"
+                fi
+            else
+                printf '%s' 'screen_off_reset' > "$PROFILE_AUTO_REASON_FILE"
+            fi
+        else
+            _fg_pkg=$(foreground_package_name)
+            if is_steady_screen_package "$_fg_pkg"; then
+                if [ "$_fg_pkg" != "$_auto_pkg" ]; then
+                    _auto_pkg="$_fg_pkg"
+                    _auto_steady_since=$_now
+                    _auto_hot_since=0
+                    _auto_cool_since=0
+                fi
+                _auto_nonsteady_since=0
+
+                if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$_AUTO_BATTERY_TEMP" ] 2>/dev/null; then
+                    [ "$_auto_hot_since" -eq 0 ] && _auto_hot_since=$_now
+                    _auto_cool_since=0
+                elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$_AUTO_LIGHT_COOL_TEMP" ] 2>/dev/null; then
+                    [ "$_auto_cool_since" -eq 0 ] && _auto_cool_since=$_now
+                    _auto_hot_since=0
+                else
+                    _auto_hot_since=0
+                    _auto_cool_since=0
+                fi
+
+                if [ "$_active_profile" = "battery" ] && [ "$_auto_cool_since" -gt 0 ] && [ $((_now - _auto_cool_since)) -ge "$_AUTO_LIGHT_COOL_HOLD" ]; then
+                    _target_profile="light"
+                    _target_reason="hot_cooldown"
+                elif [ "$_auto_hot_since" -gt 0 ] && [ $((_now - _auto_hot_since)) -ge "$_AUTO_BATTERY_HOLD" ]; then
+                    _target_profile="battery"
+                    _target_reason="steady_hot_guard"
+                elif [ "$_auto_steady_since" -gt 0 ] && [ $((_now - _auto_steady_since)) -ge "$_AUTO_STEADY_DELAY" ]; then
+                    _target_profile="light"
+                    _target_reason="steady_screen_hold"
+                else
+                    _target_profile="balanced"
+                    _target_reason="steady_screen_warmup"
+                fi
+            else
+                _auto_hot_since=0
+                _auto_cool_since=0
+                _auto_steady_since=0
+                _auto_pkg=""
+                [ "$_auto_nonsteady_since" -eq 0 ] && _auto_nonsteady_since=$_now
+                if [ $((_now - _auto_nonsteady_since)) -ge "$_AUTO_EXIT_DELAY" ]; then
+                    _target_profile="balanced"
+                    _target_reason="nonsteady_reset"
+                fi
+            fi
+
+            if [ -n "$_target_profile" ]; then
+                if [ "$_active_profile" != "$_target_profile" ]; then
+                    if apply_profile_state "$_target_profile" "$_target_reason"; then
+                        _active_profile="$_target_profile"
+                    fi
+                else
+                    printf '%s' "$_target_reason" > "$PROFILE_AUTO_REASON_FILE"
+                fi
+            fi
+        fi
 
         # --- Adaptive sleep ---
         if [ "$_screen" = "on" ]; then

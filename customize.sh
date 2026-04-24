@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# customize.sh v4.3.12 — 安装时配置 (APatch / KernelSU / Magisk)
+# customize.sh v4.3.15 — 安装时配置 (APatch / KernelSU / Magisk)
 # 检测机型 → 迁移旧设置 → 音量键选择功能 → 温控配置
 ##############################################################
 
@@ -10,6 +10,8 @@ STOCK_ACTIVE="$MODPATH/system/vendor/etc/thermal_stock.json"
 OUT_JSON="$MODPATH/system/vendor/etc/thermal_info_config.json"
 OFFSET_FILE="$MODPATH/.thermal_offset"
 PROFILE_FILE="$MODPATH/.current_profile"
+PROFILE_POLICY_FILE="$MODPATH/.profile_policy"
+PROFILE_MANUAL_FILE="$MODPATH/.profile_manual"
 DEVICE_FILE="$MODPATH/.device_variant"
 
 OLDDIR="/data/adb/modules/pixel9pro_control"
@@ -47,7 +49,7 @@ ROOT_IMPL=$(detect_root_impl)
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Pixel 9 Pro 温控调度控制台"
-ui_print "  v4.3.12"
+ui_print "  v4.3.15"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Root: $ROOT_IMPL"
 
@@ -86,7 +88,7 @@ _is_upgrade=0
 if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     _is_upgrade=1
     ui_print "  检测到已有配置, 正在迁移..."
-    for _sf in .thermal_offset .current_profile .nr_screen_switch \
+    for _sf in .thermal_offset .current_profile .profile_policy .profile_manual .profile_auto_reason .nr_screen_switch \
                .swap_mode .ntp_server .uecap_mode .uecap_manual_mode \
                .uecap_policy .uecap_reason .sim2_radio_off \
                .nr_saved_mode .webui_token; do
@@ -137,12 +139,12 @@ if [ "$_is_upgrade" -eq 0 ]; then
 
     # --- CPU 调度 ---
     ui_print "  ② CPU 调度:"
-    _CPU_VALS="powersave light balanced performance gaming"
-    _CPU_LABEL_powersave="省电"
+    _CPU_VALS="battery light balanced stock game"
+    _CPU_LABEL_battery="省电"
     _CPU_LABEL_light="轻量"
     _CPU_LABEL_balanced="均衡 (推荐)"
-    _CPU_LABEL_performance="性能"
-    _CPU_LABEL_gaming="游戏"
+    _CPU_LABEL_stock="默认"
+    _CPU_LABEL_game="游戏"
     _cpu_idx=2
     _cpu_total=5
     while true; do
@@ -160,6 +162,9 @@ if [ "$_is_upgrade" -eq 0 ]; then
         fi
     done
     echo "$_cpu_cur" > "$PROFILE_FILE"
+    echo "$_cpu_cur" > "$PROFILE_MANUAL_FILE"
+    echo "manual" > "$PROFILE_POLICY_FILE"
+    echo "manual_install" > "$MODPATH/.profile_auto_reason"
     ui_print "    ✓ $_cpu_label"
     ui_print ""
 
@@ -242,6 +247,9 @@ else
     # 升级模式: 确保必要的默认值存在
     [ -f "$OFFSET_FILE" ] || echo '4' > "$OFFSET_FILE"
     [ -f "$PROFILE_FILE" ] || echo 'balanced' > "$PROFILE_FILE"
+    [ -f "$PROFILE_MANUAL_FILE" ] || cp "$PROFILE_FILE" "$PROFILE_MANUAL_FILE" 2>/dev/null || echo 'balanced' > "$PROFILE_MANUAL_FILE"
+    [ -f "$PROFILE_POLICY_FILE" ] || echo 'manual' > "$PROFILE_POLICY_FILE"
+    [ -f "$MODPATH/.profile_auto_reason" ] || echo 'manual_boot' > "$MODPATH/.profile_auto_reason"
     [ -f "$MODPATH/.uecap_manual_mode" ] || echo 'balanced' > "$MODPATH/.uecap_manual_mode"
     [ -f "$MODPATH/.uecap_mode" ] || echo 'balanced' > "$MODPATH/.uecap_mode"
     [ -f "$MODPATH/.uecap_policy" ] || echo 'manual' > "$MODPATH/.uecap_policy"

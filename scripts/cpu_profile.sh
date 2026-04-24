@@ -1,13 +1,14 @@
 #!/system/bin/sh
 # ============================================================
-# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v3.2.2
+# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v4.3.14
 # 用法: sh cpu_profile.sh [game|balanced|light|battery|stock|status]
 #
-# 核心原理 (基于内核源码分析 + Sun_Dream 的方法):
+# 核心原理:
 #   - 不再写 scaling_max_freq / scaling_min_freq (会被 thermal HAL 覆盖)
 #   - 通过 sched_pixel 参数控制频率行为, cpuset 路由 top-app/background
-#   - 小核"锁最低频"通过 response_time=200ms+ 实现
 #   - foreground cpuset 由 system_server 框架层管理, 固定为 0-6, 不可覆盖
+#   - v4.3.14 起，light/battery 不再把 top-app 固定推到 4-7，也不再把小核锁死在 820MHz
+#     目标是让小核承担 steady-state 前台杂务，中核按需补位，大核尽量慢介入
 #
 # Tensor G4 拓扑：
 #   cpu0-3  Cortex-A520 (小核)  820-1950 MHz
@@ -69,42 +70,40 @@ case "$PROFILE" in
         ;;
 
     balanced)
-        # ── 平衡模式 (Sun_Dream 思路) ────────────────────────
-        # top-app(正在操作的App) → 中+大核 4-7
-        # 小核 response_time=200ms → 锁死最低频 820MHz (即使foreground含小核也不会被调度)
-        # 中核 12ms → 日常流畅, 大核 8ms → 重载响应
-        apply_sched_pixel 200 12 8
-        cpuset_write "top-app"           "4-7"
+        # ── 平衡模式 ─────────────────────────────────────────
+        # 保留 top-app 全核可调度，避免 steady-state 负载全挤到中核。
+        # 相比 stock，适度加快中核响应，但明显放慢大核，优先让小/中核消化日常前台。
+        apply_sched_pixel 16 40 160
+        cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: BALANCED [top-app→4-7, 小核response 200ms锁最低频]"
+        log -t pixel9pro_ctrl "CPU: BALANCED [top-app→0-7, response 16/40/160ms]"
         ;;
 
     light)
         # ── 轻度模式 ─────────────────────────────────────────
-        # cpuset 同平衡模式, 但中大核升频更保守
-        # 小核 200ms 锁最低频, 中核 20ms, 大核 16ms
-        # 适合长时间亮屏轻度使用 (阅读/社交/视频)
-        apply_sched_pixel 200 20 16
-        cpuset_write "top-app"           "4-7"
+        # 面向阅读/社交/短视频这类长时间亮屏 steady-state 负载。
+        # 让 top-app 停留在 0-6，直接避免 X4 常态介入；
+        # 小核允许低频浮动，不再锁死 820MHz，减少“小核满载 + 中核补偿”的反效果。
+        apply_sched_pixel 24 64 200
+        cpuset_write "top-app"           "0-6"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: LIGHT [top-app→4-7, 小核response 200ms锁最低频, 中核20ms, 大核16ms]"
+        log -t pixel9pro_ctrl "CPU: LIGHT [top-app→0-6, response 24/64/200ms]"
         ;;
 
     battery)
         # ── 省电模式 ─────────────────────────────────────────
-        # 小核: response_time=500ms, 完全锁最低频 820MHz
-        # 中核: response_time=40ms, 保守升频
-        # 大核: response_time=30ms, 保守升频
-        apply_sched_pixel 500 40 30
-        cpuset_write "top-app"           "4-7"
+        # 在 light 基础上进一步放慢小/中核升频，并继续禁用 X4。
+        # 用于明确把长时间前台温度压下去，而不是追求交互峰值。
+        apply_sched_pixel 32 96 200
+        cpuset_write "top-app"           "0-6"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: BATTERY [top-app→4-7, 小核500ms锁最低频]"
+        log -t pixel9pro_ctrl "CPU: BATTERY [top-app→0-6, response 32/96/200ms]"
         ;;
 
     stock)

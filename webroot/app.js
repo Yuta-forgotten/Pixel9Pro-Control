@@ -59,30 +59,30 @@ const PROFILES = {
   },
   balanced: {
     name: '平衡模式',
-    summary: '前台优先中大核，小核尽量维持低频，兼顾流畅度和温度表现。',
-    desc: '前台: cpu4-7 · 后台: cpu0-3 · 中核 12ms · 大核 8ms',
+    summary: '保留 top-app 全核可调度，但显著放慢大核介入，兼顾流畅和持续温度。',
+    desc: '前台: cpu0-7 · 小核 16ms · 中核 40ms · 大核 160ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     modeClass: 'mode-balanced',
-    detail: '<b>平衡模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核 200ms / 中核 12ms / 大核 8ms<br><br>通过拖慢小核升频时间把它稳定压在 820MHz，前台主要依赖中大核处理交互，日常体验与发热控制较均衡。'
+    detail: '<b>平衡模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 16ms / 中核 40ms / 大核 160ms<br><br>不再把前台强行推到 cpu4-7，而是让小核继续承担 steady-state 杂务，中核负责主要交互，大核只在持续重载时慢介入。更接近 Pixel 官方的层级分工，也更适合日常主力使用。'
   },
   light: {
     name: '轻度模式',
-    summary: '核心分配与平衡相同，但中大核升频更慢，适合长时间轻负载。',
-    desc: '前台: cpu4-7 · 后台: cpu0-3 · 中核 20ms · 大核 16ms',
+    summary: '前台限制在 0-6，直接避免 X4 常态介入，适合社交和短视频长亮屏。',
+    desc: '前台: cpu0-6 · 小核 24ms · 中核 64ms · 大核 200ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.8 1.42-1.42zM1 13h3v-2H1v2zm10-9h2V1h-2v3zm7.45 1.46l1.79-1.8-1.41-1.41-1.8 1.79 1.42 1.42zM17.24 19.16l1.8 1.79 1.41-1.41-1.79-1.8-1.42 1.42zM20 11v2h3v-2h-3zM11 20h2v3h-2v-3zm-7.45-2.54l-1.79 1.8 1.41 1.41 1.8-1.79-1.42-1.42zM12 6a6 6 0 100 12 6 6 0 000-12z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.8 1.42-1.42zM1 13h3v-2H1v2zm10-9h2V1h-2v3zm7.45 1.46l1.79-1.8-1.41-1.41-1.8 1.79 1.42 1.42zM17.24 19.16l1.8 1.79 1.41-1.41-1.79-1.8-1.42 1.42zM20 11v2h3v-2h-3zM11 20h2v3h-2v-3zm-7.45-2.54l-1.79 1.8 1.41 1.41 1.8-1.79-1.42-1.42zM12 6a6 6 0 100 12 6 6 0 000-12z"/></svg>',
     modeClass: 'mode-light',
-    detail: '<b>轻度模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核 200ms / 中核 20ms / 大核 16ms<br><br>和“平衡模式”一样保留核心分配，但中大核升频更保守，更适合阅读、社交和轻度视频场景。'
+    detail: '<b>轻度模式</b><br><br><b>cpuset</b>: top-app → cpu0-6，background → cpu0-3<br><b>response_time</b>: 小核 24ms / 中核 64ms / 大核 200ms<br><br>这是面向阅读、社交、短视频 steady-state 负载的新低温方案：不再把小核锁死在 820MHz，也不再让前台默认挤到中大核，而是让小核低频浮动承接持续杂务，中核按需补位，X4 基本不参与。'
   },
   battery: {
     name: '省电模式',
-    summary: '更保守的升频策略，适合低发热和续航优先场景。',
-    desc: '前台: cpu4-7 · 中核 40ms · 大核 30ms',
+    summary: '在轻度模式基础上继续放慢小中核升频，优先把前台温度压下来。',
+    desc: '前台: cpu0-6 · 小核 32ms · 中核 96ms · 大核 200ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     modeClass: 'mode-battery',
-    detail: '<b>省电模式</b><br><br><b>cpuset</b>: top-app → cpu4-7，background → cpu0-3<br><b>response_time</b>: 小核 500ms / 中核 40ms / 大核 30ms<br><br>整体调度最保守，小核几乎维持最低频，中大核升频更慢，适合低发热和续航优先场景。'
+    detail: '<b>省电模式</b><br><br><b>cpuset</b>: top-app → cpu0-6，background → cpu0-3<br><b>response_time</b>: 小核 32ms / 中核 96ms / 大核 200ms<br><br>相比轻度模式进一步放慢小核和中核的升频，继续把 X4 排除在前台之外。适合明确以低发热和续航优先的长时间前台场景。'
   },
   stock: {
     name: '默认模式',
@@ -174,11 +174,15 @@ const refs = {};
 const state = {
   currentTab: 'home',
   currentProfile: 'unknown',
+  manualProfile: 'balanced',
+  profilePolicy: 'manual',
+  autoReason: '',
   currentOffset: 4,
   swapMode: 'unknown',
   themeMode: 'system',
   webuiToken: '',
   cpuBusy: false,
+  profilePolicyBusy: false,
   thermalBusy: false,
   swapBusy: false,
   swapLoading: false,
@@ -239,6 +243,9 @@ function initRefs() {
   refs.logInner = $('log-inner');
   refs.perfCurrentName = $('perf-current-name');
   refs.perfCurrentDesc = $('perf-current-desc');
+  refs.perfPolicyDesc = $('perf-policy-desc');
+  refs.profilePolicyManualBtn = $('profile-policy-manual-btn');
+  refs.profilePolicyAutoBtn = $('profile-policy-auto-btn');
   refs.cpuRows = $('cpu-rows');
   refs.profileList = $('profile-list');
   refs.refreshBtn = $('refresh-cpu-btn');
@@ -681,12 +688,45 @@ function positionMarkers() {
 
 function syncProfileUi() {
   const profile = PROFILES[state.currentProfile] || PROFILES.unknown;
-  refs.topbarProfileChip.textContent = profile.name;
-  refs.perfCurrentName.textContent = profile.name;
-  refs.perfCurrentDesc.textContent = profile.desc;
+  const isAuto = state.profilePolicy === 'auto';
+  refs.topbarProfileChip.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
+  refs.perfCurrentName.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
+  refs.perfCurrentDesc.textContent = isAuto ? `${profile.desc} · ${describeAutoReason(state.autoReason)}` : profile.desc;
+  refs.perfPolicyDesc.textContent = isAuto
+    ? `自动模式已启用：当前按“${describeAutoReason(state.autoReason)}”运行，手动点卡片会退出自动。`
+    : `手动模式：当前固定为“${profile.name}”。切到自动后，长亮屏 steady-state 前台会按 balanced → light → battery 慢切换。`;
+  refs.profilePolicyManualBtn.className = `tiny-btn${!isAuto ? ' primary' : ''}`;
+  refs.profilePolicyAutoBtn.className = `tiny-btn${isAuto ? ' primary' : ''}`;
+  refs.profilePolicyManualBtn.disabled = state.profilePolicyBusy;
+  refs.profilePolicyAutoBtn.disabled = state.profilePolicyBusy;
   refs.hero.className = `hero-card ${profile.modeClass}`;
   refs.heroIcon.innerHTML = profile.hero;
-  refs.heroMode.textContent = profile.name;
+  refs.heroMode.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
+  document.querySelectorAll('.profile-option').forEach((card) => card.classList.toggle('selected', card.dataset.profile === state.currentProfile));
+}
+
+function describeAutoReason(reason) {
+  switch (reason) {
+    case 'steady_screen_warmup': return '长亮屏预热阶段，保持平衡';
+    case 'steady_screen_hold': return '长亮屏 steady-state，已切轻度';
+    case 'steady_hot_guard': return '持续热平台，已压到省电';
+    case 'hot_cooldown': return '热平台已回落，恢复轻度';
+    case 'nonsteady_reset': return '已退出长亮屏场景，恢复平衡';
+    case 'screen_off_reset': return '已息屏，恢复平衡';
+    case 'auto_enabled': return '已启用自动调度';
+    case 'manual_policy': return '切回手动';
+    case 'manual_selected': return '手动指定模式';
+    default: return '自动调度运行中';
+  }
+}
+
+function applyProfileState(data) {
+  state.currentProfile = PROFILES[data.profile] ? data.profile : 'unknown';
+  state.manualProfile = PROFILES[data.manual_profile] ? data.manual_profile : state.currentProfile;
+  state.profilePolicy = data.policy === 'auto' ? 'auto' : 'manual';
+  state.autoReason = typeof data.auto_reason === 'string' ? data.auto_reason : '';
+  syncProfileUi();
+  syncHeroDesc();
 }
 
 function syncHeroDesc() {
@@ -932,13 +972,15 @@ async function loadInfo() {
 async function loadSavedProfile() {
   try {
     const data = await apiFetch(API.profile);
-    state.currentProfile = PROFILES[data.profile] ? data.profile : 'unknown';
+    applyProfileState(data);
   } catch (_) {
     state.currentProfile = 'unknown';
+    state.manualProfile = 'balanced';
+    state.profilePolicy = 'manual';
+    state.autoReason = '';
+    syncProfileUi();
+    syncHeroDesc();
   }
-  syncProfileUi();
-  syncHeroDesc();
-  document.querySelectorAll('.profile-option').forEach((card) => card.classList.toggle('selected', card.dataset.profile === state.currentProfile));
 }
 
 async function loadThermalPreset() {
@@ -972,6 +1014,10 @@ async function refreshCpu() {
       home.freq.textContent = !cluster.cur || Number.isNaN(cluster.cur) ? '—' : `${(cluster.cur / 1000).toFixed(0)} MHz`;
       home.fill.style.transform = `scaleX(${!cluster.cur ? 0 : Math.min(cluster.cur / maxHz, 1).toFixed(3)})`;
     });
+    try {
+      const profileData = await apiFetch(API.profile, { timeoutMs: 4000 });
+      applyProfileState(profileData);
+    } catch (_) {}
   } catch (err) {
     state.cpuRows = null;
     state.homeCpuRows = null;
@@ -1817,6 +1863,7 @@ async function openEnergyDetail() {
 
 async function applyProfile(profile) {
   if (profile === state.currentProfile || state.cpuBusy) return;
+  const prevPolicy = state.profilePolicy;
   const card = refs.profileList.querySelector(`[data-profile="${profile}"]`);
   if (!card) return;
   card.classList.add('loading');
@@ -1825,12 +1872,10 @@ async function applyProfile(profile) {
   try {
     const data = await apiFetch(API.profile, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile }), timeoutMs: 8000 });
     if (data.ok) {
-      state.currentProfile = profile;
-      syncProfileUi();
-      syncHeroDesc();
-      document.querySelectorAll('.profile-option').forEach((el) => el.classList.toggle('selected', el.dataset.profile === profile));
-      showToast(`切换至：${PROFILES[profile].name}`);
-      appendLog(`${PROFILES[profile].name} 已应用`, 'ok');
+      applyProfileState(data);
+      const forcedManual = prevPolicy === 'auto' && data.policy === 'manual';
+      showToast(forcedManual ? `已切回手动：${PROFILES[profile].name}` : `切换至：${PROFILES[profile].name}`);
+      appendLog(forcedManual ? `自动已退出，手动切到 ${PROFILES[profile].name}` : `${PROFILES[profile].name} 已应用`, 'ok');
       refreshCpu();
     } else {
       showToast(`切换失败：${data.error || '未知'}`);
@@ -1841,6 +1886,39 @@ async function applyProfile(profile) {
     appendLog(String(err), 'err');
   } finally {
     card.classList.remove('loading');
+  }
+}
+
+async function setProfilePolicy(policy) {
+  if (state.profilePolicy === policy || state.profilePolicyBusy) return;
+  state.profilePolicyBusy = true;
+  syncProfileUi();
+  appendLog(policy === 'auto' ? '启用自动调度…' : '切回手动调度…', 'dim');
+  refs.logCard.classList.add('open');
+  try {
+    const data = await apiFetch(API.profile, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ policy }),
+      timeoutMs: 8000
+    });
+    if (data.ok) {
+      applyProfileState(data);
+      showToast(policy === 'auto' ? '已启用自动调度' : `已切回手动：${PROFILES[state.currentProfile].name}`);
+      appendLog(policy === 'auto'
+        ? `自动调度已启用：${describeAutoReason(state.autoReason)}`
+        : `已切回手动：${PROFILES[state.currentProfile].name}`, 'ok');
+      refreshCpu();
+    } else {
+      showToast(`切换失败：${data.error || '未知'}`);
+      appendLog(data.error || '切换失败', 'err');
+    }
+  } catch (err) {
+    showToast('请求失败，检查服务是否运行');
+    appendLog(String(err), 'err');
+  } finally {
+    state.profilePolicyBusy = false;
+    syncProfileUi();
   }
 }
 
@@ -2024,9 +2102,9 @@ function bindStaticEvents() {
   $('open-cpu-detail-btn').addEventListener('click', () => {
     const cpuSet = {
       game: 'top-app: cpu0-7 全核\nforeground: cpu0-6\nbackground: cpu0-3',
-      balanced: 'top-app: cpu4-7\nforeground: cpu0-6\nbackground: cpu0-3',
-      light: 'top-app: cpu4-7\nforeground: cpu0-6\nbackground: cpu0-3',
-      battery: 'top-app: cpu4-7\nforeground: cpu0-6\nbackground: cpu0-3',
+      balanced: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3',
+      light: 'top-app: cpu0-6\nforeground: cpu0-6\nbackground: cpu0-3',
+      battery: 'top-app: cpu0-6\nforeground: cpu0-6\nbackground: cpu0-3',
       stock: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3'
     };
     let html = `<b>当前模式</b><br>${(PROFILES[state.currentProfile] || PROFILES.unknown).name}<br><br>`;
@@ -2048,6 +2126,8 @@ function bindStaticEvents() {
     const detailBtn = evt.target.closest('[data-action="profile-detail"]');
     if (detailBtn) openDetail(PROFILES[detailBtn.dataset.profile].name, PROFILES[detailBtn.dataset.profile].detail);
   });
+  refs.profilePolicyManualBtn.addEventListener('click', () => setProfilePolicy('manual'));
+  refs.profilePolicyAutoBtn.addEventListener('click', () => setProfilePolicy('auto'));
   refs.thermalList.addEventListener('click', (evt) => {
     const detailBtn = evt.target.closest('[data-action="thermal-detail"]');
     if (detailBtn) {
