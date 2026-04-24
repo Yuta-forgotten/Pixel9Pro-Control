@@ -48,50 +48,50 @@ const THEME_ICONS = {
 };
 
 const PROFILES = {
-  game: {
-    name: '游戏模式',
-    summary: 'top-app 全核 0-7，大核 12ms，兼顾爆发性能和高温稳定性。≥41°C 禁止开启。',
-    desc: '前台: cpu0-7 · 响应 8/8/12ms · ≥41°C 禁止切换',
+  responsive: {
+    name: '响应优先',
+    summary: '最明显的手动高响应档，保留全核并让中核/大核更早介入。',
+    desc: '前台: cpu0-7 · 小核 12ms · 中核 24ms · 大核 80ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     modeClass: 'mode-game',
-    detail: '<b>游戏模式</b><br><br><b>cpuset</b>: top-app → cpu0-7 全核<br><b>response_time</b>: 小核 8ms / 中核 8ms / 大核 12ms<br><br>大核 response_time 设为 12ms 而不是 8ms，是为了给 Thermal HAL 的 PID 功率控制器留出调节空间，避免高温时大核被过于激进地压到低频。<br><br><b>高温保护</b>: VIRTUAL-SKIN ≥ 41°C 时禁止切换到游戏模式。高温下强行全核冲频会让 SoC 温度迅速抬升，反而更容易触发系统的强力降温。'
+    detail: '<b>响应优先</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 12ms / 中核 24ms / 大核 80ms<br><br>这是现在最明显的手动高响应档。它不是“极限性能模式”，而是保留全核调度并让中核、大核更早补位，用更直接的交互提速感和自动/默认模式拉开差异。'
   },
   balanced: {
-    name: '平衡模式',
-    summary: '保留 top-app 全核可调度，但显著放慢大核介入，兼顾流畅和持续温度。',
+    name: '均衡手动',
+    summary: '保留全核可调度，但明显放慢 X4，适合作为稳定的手动主力档。',
     desc: '前台: cpu0-7 · 小核 16ms · 中核 40ms · 大核 160ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     modeClass: 'mode-balanced',
-    detail: '<b>平衡模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 16ms / 中核 40ms / 大核 160ms<br><br>不再把前台强行推到 cpu4-7，而是让小核继续承担 steady-state 杂务，中核负责主要交互，大核只在持续重载时慢介入。更接近 Pixel 官方的层级分工，也更适合日常主力使用。'
+    detail: '<b>均衡手动</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 16ms / 中核 40ms / 大核 160ms<br><br>这是推荐的手动主力档：保留全核弹性，但显著放慢 X4 常态介入，让系统更稳、更均衡。适合不想交给自动控制、又不追求最高响应的人。'
   },
   light: {
-    name: '轻度模式',
+    name: '长亮屏',
     summary: '前台限制在 0-6，直接避免 X4 常态介入，适合社交和短视频长亮屏。',
     desc: '前台: cpu0-6 · 小核 24ms · 中核 64ms · 大核 200ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.8 1.42-1.42zM1 13h3v-2H1v2zm10-9h2V1h-2v3zm7.45 1.46l1.79-1.8-1.41-1.41-1.8 1.79 1.42 1.42zM17.24 19.16l1.8 1.79 1.41-1.41-1.79-1.8-1.42 1.42zM20 11v2h3v-2h-3zM11 20h2v3h-2v-3zm-7.45-2.54l-1.79 1.8 1.41 1.41 1.8-1.79-1.42-1.42zM12 6a6 6 0 100 12 6 6 0 000-12z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.8 1.42-1.42zM1 13h3v-2H1v2zm10-9h2V1h-2v3zm7.45 1.46l1.79-1.8-1.41-1.41-1.8 1.79 1.42 1.42zM17.24 19.16l1.8 1.79 1.41-1.41-1.79-1.8-1.42 1.42zM20 11v2h3v-2h-3zM11 20h2v3h-2v-3zm-7.45-2.54l-1.79 1.8 1.41 1.41 1.8-1.79-1.42-1.42zM12 6a6 6 0 100 12 6 6 0 000-12z"/></svg>',
     modeClass: 'mode-light',
-    detail: '<b>轻度模式</b><br><br><b>cpuset</b>: top-app → cpu0-6，background → cpu0-3<br><b>response_time</b>: 小核 24ms / 中核 64ms / 大核 200ms<br><br>这是面向阅读、社交、短视频 steady-state 负载的新低温方案：不再把小核锁死在 820MHz，也不再让前台默认挤到中大核，而是让小核低频浮动承接持续杂务，中核按需补位，X4 基本不参与。'
+    detail: '<b>长亮屏</b><br><br><b>cpuset</b>: top-app → cpu0-6，background → cpu0-3<br><b>response_time</b>: 小核 24ms / 中核 64ms / 大核 200ms<br><br>这是面向阅读、社交、短视频 steady-state 负载的低温方案：不再把小核锁死在 820MHz，也不再让前台默认挤到中大核，而是让小核低频浮动承接持续杂务，中核按需补位，X4 基本不参与。'
   },
   battery: {
     name: '省电模式',
-    summary: '在轻度模式基础上继续放慢小中核升频，优先把前台温度压下来。',
+    summary: '在长亮屏基础上继续放慢小中核升频，优先把前台温度压下来。',
     desc: '前台: cpu0-6 · 小核 32ms · 中核 96ms · 大核 200ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     modeClass: 'mode-battery',
-    detail: '<b>省电模式</b><br><br><b>cpuset</b>: top-app → cpu0-6，background → cpu0-3<br><b>response_time</b>: 小核 32ms / 中核 96ms / 大核 200ms<br><br>相比轻度模式进一步放慢小核和中核的升频，继续把 X4 排除在前台之外。适合明确以低发热和续航优先的长时间前台场景。'
+    detail: '<b>省电模式</b><br><br><b>cpuset</b>: top-app → cpu0-6，background → cpu0-3<br><b>response_time</b>: 小核 32ms / 中核 96ms / 大核 200ms<br><br>相比长亮屏模式进一步放慢小核和中核的升频，继续把 X4 排除在前台之外。适合明确以低发热和续航优先的长时间前台场景。'
   },
-  stock: {
+  default: {
     name: '默认模式',
-    summary: '恢复系统默认 cpuset 与 sched_pixel 响应参数。',
-    desc: '恢复系统默认 cpuset 与调度参数',
+    summary: '恢复系统默认 cpuset 与 sched_pixel 响应参数，也是自动模式的默认底座。',
+    desc: '前台: cpu0-7 · 小核 16ms · 中核 64ms · 大核 200ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     modeClass: 'mode-stock',
-    detail: '<b>默认模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，foreground → cpu0-6<br><b>response_time</b>: 小核 16ms / 中核 64ms / 大核 200ms<br><br>恢复 Pixel 系统默认 sched_pixel 参数，让 Android 调度器按照出厂策略自主管理。'
+    detail: '<b>默认模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，foreground → cpu0-6<br><b>response_time</b>: 小核 16ms / 中核 64ms / 大核 200ms<br><br>这是 Pixel 系统默认 sched_pixel 参数，也是自动模式启动时的底座。它不是主动性能优化档，而是“最标准、最容易判断自动收口效果”的对照组。'
   },
   unknown: {
     name: '未选择',
@@ -755,7 +755,7 @@ function syncThermalUi() {
 
 function renderProfileCards() {
   refs.profileList.innerHTML = '';
-  ['game', 'balanced', 'light', 'battery', 'stock'].forEach((key) => {
+  ['responsive', 'balanced', 'light', 'battery', 'default'].forEach((key) => {
     const p = PROFILES[key];
     const card = document.createElement('article');
     card.className = 'profile-card profile-option';
@@ -2101,11 +2101,11 @@ function bindStaticEvents() {
   $('reboot-cancel-btn').addEventListener('click', cancelThermalChange);
   $('open-cpu-detail-btn').addEventListener('click', () => {
     const cpuSet = {
-      game: 'top-app: cpu0-7 全核\nforeground: cpu0-6\nbackground: cpu0-3',
+      responsive: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3',
       balanced: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3',
       light: 'top-app: cpu0-6\nforeground: cpu0-6\nbackground: cpu0-3',
       battery: 'top-app: cpu0-6\nforeground: cpu0-6\nbackground: cpu0-3',
-      stock: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3'
+      default: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3'
     };
     let html = `<b>当前模式</b><br>${(PROFILES[state.currentProfile] || PROFILES.unknown).name}<br><br>`;
     html += `<b>cpuset 分配</b><br>${(cpuSet[state.currentProfile] || '未设置').replace(/\n/g, '<br>')}`;

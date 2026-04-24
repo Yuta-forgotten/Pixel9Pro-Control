@@ -27,28 +27,27 @@
 
 | 模式 | top-app | 小核策略 | 小核 resp | 中核 resp | 大核 resp |
 |------|---------|----------|-----------|-----------|-----------|
-| 游戏 | cpu0-7 | 不锁最低频 | 8ms | 8ms | 12ms |
-| 平衡 | cpu0-7 | 允许低频浮动 | 16ms | 40ms | 160ms |
-| 轻度 | cpu0-6 | 长亮屏低温优先 | 24ms | 64ms | 200ms |
-| 省电 | cpu0-6 | 更保守低频浮动 | 32ms | 96ms | 200ms |
-| 默认 | cpu0-7 | 系统默认 | 16ms | 64ms | 200ms |
+| 响应优先 | cpu0-7 | 明显加快交互响应 | 12ms | 24ms | 80ms |
+| 均衡手动 | cpu0-7 | 保留全核弹性，放慢 X4 常态介入 | 16ms | 40ms | 160ms |
+| 长亮屏 | cpu0-6 | 长亮屏 steady-state 低温优先 | 24ms | 64ms | 200ms |
+| 省电 | cpu0-6 | 进一步放慢小中核升频 | 32ms | 96ms | 200ms |
+| 默认 | cpu0-7 | 系统默认 / 自动基线 | 16ms | 64ms | 200ms |
 
 - 调度通过 `cpuset` 和 `sched_pixel response_time_ms` 控制；不直接写 `scaling_max_freq`
 - `light` / `battery` 不再沿用旧版 `top-app → 4-7 + 小核锁 820MHz` 路线，改为让小核承担 steady-state 前台杂务，并让 X4 慢介入或不介入
-- 游戏模式未测试
 
-### 前台自动调度 (实验)
+### 前台自动调度
 
 - 模式：`manual` / `auto`
 - `manual`：固定使用当前选中的 profile
-- `auto`：只在亮屏前台做**慢切换收口**
-  - steady-screen 候选前台先保持 `balanced`
+- `auto`：以 `default` 作为自动模式的默认底座，只在亮屏前台做**慢切换收口**
+  - steady-screen 候选前台先保持 `default`
   - 同一长亮屏场景持续约 `45s` 后切到 `light`
   - `VIRTUAL-SKIN >= 40.8°C` 持续约 `90s` 后压到 `battery`
   - `battery` 状态下温度回落到 `40.4°C` 以下持续约 `60s` 后恢复 `light`
   - 息屏或退出 steady-screen 超过约 `30s` 后回到 `balanced`
 
-- 自动模式只在 `balanced / light / battery` 三档之间收口，不会自动进入 `game / stock`
+- 自动模式不会自动进入 `responsive`
 - steady-screen 候选只做低频、保守的用户空间近似识别，不把包名白名单当成通用负载分类器
 
 ### 温控优化 (4 档可调)

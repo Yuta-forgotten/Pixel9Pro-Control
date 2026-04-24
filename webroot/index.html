@@ -145,6 +145,11 @@
           <div class="section-sub" id="perf-policy-desc" style="margin-top:10px">读取当前调度策略…</div>
         </article>
 
+        <article class="note-card">
+          <div class="note-title">模式说明</div>
+          <div class="note-body">现在的性能页只保留最有区分度的 5 个方案：响应优先、均衡手动、长亮屏、省电、默认（自动基线）。自动模式和默认模式共用同一套原厂基线参数，重点是让自动收口逻辑最明显；不再保留名义上更强、但实际无法稳定兑现的“游戏模式”。</div>
+        </article>
+
         <div class="section-block">
           <div class="section-head">
             <div class="section-copy">
@@ -175,7 +180,7 @@
 
         <article class="note-card">
           <div class="note-title">说明</div>
-          <div class="note-body">模块不直接对抗 Thermal HAL，而是通过 cpuset 与 sched_pixel 响应时间控制调度行为。自动模式只在亮屏前台缓慢切换：feed 类应用先 balanced，再进 light，持续热平台才压到 battery。</div>
+          <div class="note-body">模块不直接对抗 Thermal HAL，而是通过 cpuset 与 sched_pixel 响应时间控制调度行为。自动模式只在亮屏前台缓慢切换：steady-screen 候选前台先保持默认，再进长亮屏，持续热平台才压到省电。</div>
         </article>
       </div>
     </section>

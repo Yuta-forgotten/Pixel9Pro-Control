@@ -182,7 +182,7 @@ manage_sim2_radio() {
 
 valid_profile() {
     case "$1" in
-        game|balanced|light|battery|stock) return 0 ;;
+        responsive|balanced|light|battery|default) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -415,10 +415,10 @@ log -t pixel9pro_ctrl "v4.3.15[$ROOT_IMPL]: keep-5G standby settings applied (ra
 # ──────────────────────────────────────────────────────────
 # 3. 应用 CPU 调度方案 (cpuset + sched_pixel 参数)
 # ──────────────────────────────────────────────────────────
-PROFILE=$(read_valid_profile "$PROFILE_FILE" 'balanced')
+PROFILE=$(read_valid_profile "$PROFILE_FILE" 'default')
 [ -f "$PROFILE_MANUAL_FILE" ] || printf '%s' "$PROFILE" > "$PROFILE_MANUAL_FILE"
-[ -f "$PROFILE_POLICY_FILE" ] || printf 'manual' > "$PROFILE_POLICY_FILE"
-[ -f "$PROFILE_AUTO_REASON_FILE" ] || printf 'manual_boot' > "$PROFILE_AUTO_REASON_FILE"
+[ -f "$PROFILE_POLICY_FILE" ] || printf 'auto' > "$PROFILE_POLICY_FILE"
+[ -f "$PROFILE_AUTO_REASON_FILE" ] || printf 'auto_enabled' > "$PROFILE_AUTO_REASON_FILE"
 sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" "$MODDIR" 2>/dev/null
 log -t pixel9pro_ctrl "CPU profile: $PROFILE"
 
@@ -624,7 +624,7 @@ is_nr_mode_value() {
     _auto_hot_since=0
     _auto_cool_since=0
     _auto_pkg=""
-    _active_profile=$(read_valid_profile "$PROFILE_FILE" 'balanced')
+    _active_profile=$(read_valid_profile "$PROFILE_FILE" 'default')
 
     while true; do
         _now=$(date +%s 2>/dev/null || echo 0)
