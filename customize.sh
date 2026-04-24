@@ -166,9 +166,9 @@ if [ "$_is_upgrade" -eq 0 ]; then
     # --- UECap 网络能力 ---
     ui_print "  ③ 网络能力配置:"
     _UE_VALS="balanced special universal"
-    _UE_LABEL_balanced="国内优先 (推荐)"
-    _UE_LABEL_special="全球增强"
-    _UE_LABEL_universal="原始能力表"
+    _UE_LABEL_balanced="国内频段 (推荐)"
+    _UE_LABEL_special="全面增强"
+    _UE_LABEL_universal="Google 默认"
     _ue_idx=0
     _ue_total=3
     while true; do
