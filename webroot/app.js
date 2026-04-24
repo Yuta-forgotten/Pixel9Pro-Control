@@ -136,12 +136,12 @@ const SWAP_DETAIL = '<b>ZRAM 算法: lz77eh (Emerald Hill 硬件加速)</b><br>T
 const NR_SWITCH_DETAIL = '<b>NR 息屏降级 (Screen-Off LTE Switch)</b><br><br>开启后，息屏超过 <b>60 秒</b> 时网络模式从 5G NR 切换到 LTE，降低调制解调器射频功耗。亮屏时立即恢复 5G/NR 模式，<b>5GA / 5G CA 能力完全保留</b>。<br><br><b>防抖机制</b><br>- 息屏后等待 60 秒再切换，快速亮屏不会触发<br>- 恢复 NR 后冷却 10 分钟，避免频繁亮灭导致来回切换<br><br><b>原理</b><br>NR_SA Band 41 (100MHz) 射频功耗远高于 LTE 20MHz。息屏时降级为 LTE 可使调制解调器进入更深低功耗态，预期节省 30-50% 蜂窝待机功耗。<br><br><b>注意</b><br>- 切换期间可能有 1-2 秒网络短暂中断<br>- 开启热点时自动跳过降级，保障共享连接<br>- 息屏下载或后台大流量时可关闭此功能<br>- 功能状态即时生效，无需重启';
 
 const UECAP_MODES = [
-  { id: 'special', name: '全场景增强', desc: '受管默认 · stock +52 组增强组合' },
-  { id: 'balanced', name: '国内优选', desc: 'trial_minimal_cn_combo · stock +25 组中国组合' },
-  { id: 'universal', name: '省电保守', desc: 'stock 等价副本 · 回到原厂能力表' },
+  { id: 'balanced', name: '国内频段', desc: '原厂 +25 组中国 NR 组合 · 推荐' },
+  { id: 'special', name: '全面增强', desc: '原厂 +52 组全球 NR 组合' },
+  { id: 'universal', name: 'Google 默认', desc: '原厂能力表 · 不做任何修改' },
 ];
 
-const UECAP_DETAIL = '<b>UE 能力配置说明</b><br><br><b>先区分两个“默认”</b><br>- <b>系统原生 / stock</b>：手机出厂自带的 UECap binarypb<br>- <b>模块默认</b>：控制模块接管后默认使用 <b>special</b><br><br><b>系统原生 / stock</b><br>当前 stock hash 为 <code>0E37F39C...</code>，comboGroups=<b>7213</b>。当前仓库里的 <b>省电保守 (universal)</b> 与 stock hash 完全一致，属于原厂等价副本。只安装 <b>pixel9pro_baseband_trial</b> 时，UECap 也会停留在这一档。<br><br><b>全场景增强 (special)</b><br>对应 <b>global special</b>，当前 hash <code>69DF3BF6...</code>，相对 stock 新增 <b>52</b> 组组合（7213→7266），包含 n79 单载、n41+n79、n79+n28、n41+n79+n28，以及更多 n78 / EN-DC 组合。适合高速移动、弱覆盖和频繁切换。<br><br><b>国内优选 (balanced)</b><br>当前实际对应 <b>trial_minimal_cn_combo</b>，hash <code>2870BA9C...</code>，相对 stock 只新增 <b>25</b> 组中国相关 NR 组合（7213→7238），不删除、不改写原厂字段；主要补入 n28 / n41 / n79 相关组合。适合国内长期日常测试。<br><br><b>省电保守 (universal)</b><br>当前与 stock 完全等价（added/removed/modified = 0），作用就是回到原厂能力表，而不是再套一层新的保守表。<br><br><b>切换方式</b><br>切换时只重启蜂窝 modem，不影响 Wi-Fi / 蓝牙。WebUI 会在切换后自动校验当前配置和目标摘要，确认一致后才提示成功。';
+const UECAP_DETAIL = '<b>UE 网络能力配置</b><br><br>UECap 告诉基站”手机支持哪些载波组合”，基站据此分配频段。<b>不直接影响功耗</b>——功耗取决于信号强度和 modem 活跃时间。<br><br><b>国内频段</b>（推荐）<br>原厂 +25 组中国 NR 组合（n28 / n41 / n79），只增不删。<br><br><b>全面增强</b><br>原厂 +52 组全球 NR 组合，含国际 n78 / EN-DC。国内多出的组合基本用不到。<br><br><b>Google 默认</b><br>原厂能力表，不做任何修改。<br><br>切换只重启蜂窝 modem，不影响 Wi-Fi / 蓝牙。';
 const BASEBAND_DETAIL = '<b>基带配置模块 (pixel9pro_baseband_trial)</b><br><br><b>提供内容</b><br>- 5G / IMS 属性：VoLTE、Wi-Fi Calling 开关<br>- CarrierSettings：运营商配置覆盖<br>- China MCFG：移动 / 联通 / 电信相关 modem 配置<br><br><b>不包含</b><br>- UECap binarypb 管理（由 pixel9pro_control 负责）<br>- 温控、CPU 调度、ZRAM 和 WebUI';
 const UECAP_VERIFY_INTERVAL_MS = 1500;
 const UECAP_VERIFY_TIMEOUT_MS = 15000;
@@ -1083,9 +1083,9 @@ function renderNrSwitchRows(data) {
 }
 
 function uecapLabel(mode) {
-  if (mode === 'special') return '全场景增强';
-  if (mode === 'balanced') return '国内优选';
-  if (mode === 'universal') return '省电保守';
+  if (mode === 'balanced') return '国内频段';
+  if (mode === 'special') return '全面增强';
+  if (mode === 'universal') return 'Google 默认';
   if (mode === 'custom') return '系统原生 / 第三方';
   return '未知';
 }
@@ -2008,7 +2008,7 @@ function bindStaticEvents() {
   $('swap-detail-btn').addEventListener('click', () => openDetail('内存优化详情', SWAP_DETAIL));
   $('nr-switch-toggle-btn').addEventListener('click', toggleNrSwitch);
   $('nr-switch-detail-btn').addEventListener('click', () => openDetail('NR 息屏降级详情', NR_SWITCH_DETAIL));
-  $('uecap-detail-btn').addEventListener('click', () => openDetail('UE 能力配置说明', UECAP_DETAIL));
+  $('uecap-detail-btn').addEventListener('click', () => openDetail('UE 网络能力配置', UECAP_DETAIL));
   $('baseband-detail-btn').addEventListener('click', () => openDetail('基带模块说明', BASEBAND_DETAIL));
   $('baseband-refresh-btn').addEventListener('click', refreshBaseband);
   $('ntp-sync-btn').addEventListener('click', syncNtp);

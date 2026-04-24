@@ -1,8 +1,14 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.3.12 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.3.13 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → 统一后台 → WebUI
+#
+# v4.3.13 变更:
+#   - 显式开启 Adaptive Connectivity (Google 官方 5G 节电机制)
+#   - 显式确保 network_recommendations 不被其他模块关闭
+#   - UECap 三档重命名: 国内频段/全面增强/Google 默认
+#   - WebUI UE 能力说明精简
 #
 # v4.3.12 变更:
 #   - SIM2 空槽省电改用 cmd phone radio power -s 1 off (B36 旧 API 无效)
@@ -128,7 +134,13 @@ apply_keep5g_standby_settings() {
     settings put global wifi_scan_always_enabled 0 2>/dev/null
     settings put global ble_scan_always_enabled 0 2>/dev/null
 
-    # adaptive_connectivity / network_recommendations 系统默认已是开启，无需模块管理。
+    # adaptive_connectivity: Google 官方背书的 5G 节电机制。
+    # 开启后，系统在 app 不需要高速时自动从 NR 回退到 LTE，降低 modem 空闲功耗。
+    # 来源: https://support.google.com/pixelphone/answer/2819583
+    settings put global adaptive_connectivity_enabled 1 2>/dev/null
+
+    # network_recommendations: 系统默认已是开启，显式确保不被其他模块关闭。
+    settings put global network_recommendations_enabled 1 2>/dev/null
 }
 
 manage_sim2_radio() {
