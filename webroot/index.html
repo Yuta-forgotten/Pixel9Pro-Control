@@ -10,7 +10,7 @@
 <meta http-equiv="Expires" content="0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' http://127.0.0.1:6210; connect-src 'self' http://127.0.0.1:6210; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' http://127.0.0.1:6210">
 <title>温控调度控制台</title>
-<link rel="stylesheet" href="/app.css?v=4.3.15">
+<link rel="stylesheet" href="/app.css?v=4.3.17">
 </head>
 <body>
 <div class="app-shell">
@@ -303,7 +303,7 @@
             <div class="panel-copy">
               <div class="kicker">蜂窝省电</div>
               <div class="panel-title">NR 息屏降级</div>
-              <div class="panel-desc" id="nr-switch-desc">息屏超过 60 秒后切换到 LTE，亮屏立即恢复。热点开启时不降级。</div>
+              <div class="panel-desc" id="nr-switch-desc">息屏超过 5 分钟后切换到 LTE，亮屏自动恢复 NR（最多滞后 5 分钟）。热点开启时不降级。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn" id="nr-switch-detail-btn" type="button">详情</button>
@@ -311,6 +311,51 @@
             </div>
           </div>
           <div class="data-list" id="nr-switch-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">副卡槽策略</div>
+              <div class="panel-title">SIM2 自动管理</div>
+              <div class="panel-desc" id="sim2-auto-desc">默认关闭，避免 radio / IMS 重注册在夜间打扰待机。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn primary" id="sim2-auto-toggle-btn" type="button"><span id="sim2-auto-toggle-label">读取中…</span></button>
+            </div>
+          </div>
+          <div class="data-list" id="sim2-auto-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">过夜排障</div>
+              <div class="panel-title">待机隔离模式</div>
+              <div class="panel-desc" id="idle-isolate-desc">默认关闭；开启后，息屏阶段暂停 NR 降级、SIM2 管理、功耗采样、thermal burst 和自动调度，只用于隔离 control 模块干扰。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn primary" id="idle-isolate-toggle-btn" type="button"><span id="idle-isolate-toggle-label">读取中…</span></button>
+            </div>
+          </div>
+          <div class="data-list" id="idle-isolate-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">待机诊断</div>
+              <div class="panel-title">后台 worker 摘要</div>
+              <div class="panel-desc">读取 `.standby_diag_state` 的低噪声摘要，不依赖大段 logcat。</div>
+            </div>
+          </div>
+          <div class="data-list" id="standby-diag-rows" style="margin-top:14px">
             <div class="skel" style="height:48px"></div>
           </div>
         </article>
@@ -353,7 +398,7 @@
 
         <article class="note-card">
           <div class="note-title">说明</div>
-          <div class="note-body">待机扫描优化（WiFi / BLE / Nearby）和 multicast 屏幕感知由模块开机自动配置，无需手动管理。此页保留可手动切换的功能：UE 网络能力、NR 息屏降级、ZRAM / VM 参数和 NTP。</div>
+          <div class="note-body">待机扫描优化（WiFi / BLE / Nearby）和 multicast 屏幕感知仍由模块自动配置。此页新增两个显式待机开关：`SIM2 自动管理` 只在确有空槽节电需求时开启；`待机隔离模式` 只用于过夜 A/B 排障，不建议长期保持。</div>
         </article>
       </div>
     </section>
@@ -442,6 +487,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=4.3.15"></script>
+<script src="/app.js?v=4.3.17"></script>
 </body>
 </html>

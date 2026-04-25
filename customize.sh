@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# customize.sh v4.3.15 — 安装时配置 (APatch / KernelSU / Magisk)
+# customize.sh v4.3.18 — 安装时配置 (APatch / KernelSU / Magisk)
 # 检测机型 → 迁移旧设置 → 音量键选择功能 → 温控配置
 ##############################################################
 
@@ -49,7 +49,7 @@ ROOT_IMPL=$(detect_root_impl)
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Pixel 9 Pro 温控调度控制台"
-ui_print "  v4.3.15"
+    ui_print "  v4.3.18"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Root: $ROOT_IMPL"
 
@@ -89,6 +89,7 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     _is_upgrade=1
     ui_print "  检测到已有配置, 正在迁移..."
     for _sf in .thermal_offset .current_profile .profile_policy .profile_manual .profile_auto_reason .nr_screen_switch \
+               .sim2_auto_manage .idle_isolate_mode \
                .swap_mode .ntp_server .uecap_mode .uecap_manual_mode \
                .uecap_policy .uecap_reason .sim2_radio_off \
                .nr_saved_mode .webui_token; do
@@ -248,12 +249,14 @@ else
     [ -f "$OFFSET_FILE" ] || echo '4' > "$OFFSET_FILE"
     [ -f "$PROFILE_FILE" ] || echo 'default' > "$PROFILE_FILE"
     [ -f "$PROFILE_MANUAL_FILE" ] || cp "$PROFILE_FILE" "$PROFILE_MANUAL_FILE" 2>/dev/null || echo 'default' > "$PROFILE_MANUAL_FILE"
-    [ -f "$PROFILE_POLICY_FILE" ] || echo 'auto' > "$PROFILE_POLICY_FILE"
-    [ -f "$MODPATH/.profile_auto_reason" ] || echo 'auto_enabled' > "$MODPATH/.profile_auto_reason"
+    [ -f "$PROFILE_POLICY_FILE" ] || echo 'manual' > "$PROFILE_POLICY_FILE"
+    [ -f "$MODPATH/.profile_auto_reason" ] || echo 'manual_policy' > "$MODPATH/.profile_auto_reason"
     [ -f "$MODPATH/.uecap_manual_mode" ] || echo 'balanced' > "$MODPATH/.uecap_manual_mode"
     [ -f "$MODPATH/.uecap_mode" ] || echo 'balanced' > "$MODPATH/.uecap_mode"
     [ -f "$MODPATH/.uecap_policy" ] || echo 'manual' > "$MODPATH/.uecap_policy"
     [ -f "$MODPATH/.nr_screen_switch" ] || echo 'off' > "$MODPATH/.nr_screen_switch"
+    [ -f "$MODPATH/.sim2_auto_manage" ] || echo 'on'  > "$MODPATH/.sim2_auto_manage"
+    [ -f "$MODPATH/.idle_isolate_mode" ] || echo 'off' > "$MODPATH/.idle_isolate_mode"
     [ -f "$MODPATH/.swap_mode" ] || echo 'optimized' > "$MODPATH/.swap_mode"
     [ -f "$MODPATH/.ntp_server" ] || echo 'ntp.aliyun.com' > "$MODPATH/.ntp_server"
 fi

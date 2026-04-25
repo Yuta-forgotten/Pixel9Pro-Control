@@ -19,6 +19,7 @@ const API = {
   ntp: '/cgi-bin/ntp.sh',
   energy: '/cgi-bin/energy.sh',
   checkBaseband: '/cgi-bin/check_baseband.sh',
+  standbyGuard: '/cgi-bin/standby_guard.sh',
 };
 
 const STORAGE_THEME_KEY = 'pixel9pro_theme_mode';
@@ -188,6 +189,10 @@ const state = {
   swapLoading: false,
   nrSwitch: 'off',
   nrBusy: false,
+  sim2AutoManage: 'off',
+  idleIsolateMode: 'off',
+  standbyGuardBusy: false,
+  standbyDiag: null,
   uecapMode: 'unknown',
   uecapActiveMode: 'unknown',
   uecapBusy: false,
@@ -270,6 +275,15 @@ function initRefs() {
   refs.swapToggleLabel = $('swap-toggle-label');
   refs.swapRows = $('swap-rows');
   refs.nrSwitchDesc = $('nr-switch-desc');
+  refs.sim2AutoDesc = $('sim2-auto-desc');
+  refs.sim2AutoToggleBtn = $('sim2-auto-toggle-btn');
+  refs.sim2AutoToggleLabel = $('sim2-auto-toggle-label');
+  refs.sim2AutoRows = $('sim2-auto-rows');
+  refs.idleIsolateDesc = $('idle-isolate-desc');
+  refs.idleIsolateToggleBtn = $('idle-isolate-toggle-btn');
+  refs.idleIsolateToggleLabel = $('idle-isolate-toggle-label');
+  refs.idleIsolateRows = $('idle-isolate-rows');
+  refs.standbyDiagRows = $('standby-diag-rows');
   refs.nrSwitchToggleLabel = $('nr-switch-toggle-label');
   refs.nrSwitchRows = $('nr-switch-rows');
   refs.uecapDesc = $('uecap-desc');
@@ -518,7 +532,7 @@ async function runPollCycle() {
   if (shouldPollOptim() && (now - state.poller.lastRun.slow) >= getPollInterval('slow')) {
     jobs.push({
       key: 'slow',
-      run: () => Promise.allSettled([refreshUecap(), refreshBaseband(), loadInfo()])
+      run: () => Promise.allSettled([refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp(), refreshStandbyGuard(), loadInfo()])
     });
   }
 
@@ -1124,8 +1138,95 @@ function renderNrSwitchRows(data) {
   rows.forEach((row) => refs.nrSwitchRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
   refs.nrSwitchToggleLabel.textContent = isOn ? '关闭' : '开启';
   refs.nrSwitchDesc.textContent = isOn
-    ? '已开启：灭屏 60 秒后切到 LTE，亮屏自动恢复 NR'
-    : '灭屏超过 60 秒后切到 LTE，亮屏自动恢复；热点开启时不降级。';
+    ? '已开启：灭屏 5 分钟后切到 LTE，亮屏自动恢复 NR（最多滞后 5 分钟）'
+    : '灭屏超过 5 分钟后切到 LTE，亮屏自动恢复；热点开启时不降级。';
+}
+
+function syncStandbyGuardButtons() {
+  refs.sim2AutoToggleBtn.disabled = state.standbyGuardBusy;
+  refs.idleIsolateToggleBtn.disabled = state.standbyGuardBusy;
+}
+
+function standbyWorkerModeLabel(mode) {
+  if (mode === 'screen_on') return '亮屏全量';
+  if (mode === 'thermal_burst') return '温度突发';
+  if (mode === 'deep_standby') return '深待机';
+  if (mode === 'idle_isolate') return '待机隔离';
+  return '未知';
+}
+
+function standbyWorkerModeClass(mode) {
+  if (mode === 'screen_on' || mode === 'deep_standby') return 'good';
+  if (mode === 'thermal_burst' || mode === 'idle_isolate') return 'warn';
+  return 'off';
+}
+
+function formatStandbyTimestamp(value) {
+  const ts = Number(value);
+  if (!Number.isFinite(ts) || ts <= 0) return '—';
+  return new Date(ts * 1000).toLocaleString();
+}
+
+function renderStandbyGuard(data) {
+  state.sim2AutoManage = data.sim2_auto_manage === 'on' ? 'on' : 'off';
+  state.idleIsolateMode = data.idle_isolate_mode === 'on' ? 'on' : 'off';
+  state.standbyDiag = {
+    updatedAt: data.diag_updated_at || '',
+    screen: data.diag_screen || 'unknown',
+    workerMode: data.diag_worker_mode || 'unknown',
+    nextSleepSecs: data.diag_next_sleep_secs || '',
+    burstActive: data.diag_burst_active || '0',
+    nrSwitch: data.diag_nr_switch || 'off',
+    nrState: data.diag_nr_state || 'unknown',
+    profilePolicy: data.diag_profile_policy || 'unknown',
+    activeProfile: data.diag_active_profile || 'unknown',
+    cycleCount: data.diag_cycle_count || '0',
+  };
+
+  const sim2On = state.sim2AutoManage === 'on';
+  refs.sim2AutoToggleLabel.textContent = sim2On ? '关闭' : '开启';
+  refs.sim2AutoDesc.textContent = sim2On
+    ? '已开启：仅在副卡槽确实为空、且你接受自动 radio / IMS 写入时才建议保留。'
+    : '默认关闭：完全不触发 SIM2 radio / IMS 自动写入，待机排障更稳。';
+  refs.sim2AutoRows.innerHTML = '';
+  [
+    { label: '功能状态', value: sim2On ? '已开启' : '已关闭', cls: sim2On ? 'good' : 'off' },
+    { label: '当前策略', value: sim2On ? '仅在空槽时操作 slot 1 radio / ims' : '完全跳过 SIM2 radio / ims 写入', cls: sim2On ? 'warn' : 'good' },
+    { label: '推荐用途', value: sim2On ? '确有副卡槽空置节电需求' : '默认保守基线 / 过夜排障优先', cls: 'off' },
+  ].forEach((row) => refs.sim2AutoRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
+
+  const isolateOn = state.idleIsolateMode === 'on';
+  refs.idleIsolateToggleLabel.textContent = isolateOn ? '关闭' : '开启';
+  refs.idleIsolateDesc.textContent = isolateOn
+    ? '已开启：息屏阶段暂停 NR 降级、SIM2 管理、功耗采样、thermal burst 和自动调度，只保留最小 worker 路径。'
+    : '默认关闭：沿用常规待机 worker。过夜诊断怀疑 control 模块挡 suspend 时，再临时开启。';
+  refs.idleIsolateRows.innerHTML = '';
+  [
+    { label: '功能状态', value: isolateOn ? '已开启' : '已关闭', cls: isolateOn ? 'warn' : 'off' },
+    { label: '息屏阶段', value: isolateOn ? '暂停 NR / SIM2 / thermal burst / power / auto profile 待机干预' : '常规待机路径生效', cls: isolateOn ? 'warn' : 'good' },
+    { label: '使用建议', value: isolateOn ? '仅用于一晚隔离测试，验证后记得关闭' : '日常使用保持关闭', cls: 'off' },
+  ].forEach((row) => refs.idleIsolateRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
+
+  refs.standbyDiagRows.innerHTML = '';
+  if (!state.standbyDiag.updatedAt) {
+    refs.standbyDiagRows.appendChild(buildInfoRow('状态文件', '等待后台 worker 首次写入', 'off'));
+  } else {
+    const nrLabel = state.standbyDiag.nrSwitch === 'on'
+      ? (state.standbyDiag.nrState === 'lte' ? 'NR 管理开启 / 当前 LTE' : 'NR 管理开启 / 当前 5G')
+      : 'NR 管理关闭';
+    const profileLabel = `${state.standbyDiag.profilePolicy === 'auto' ? '自动' : '手动'} / ${state.standbyDiag.activeProfile || 'unknown'}`;
+    [
+      { label: '最近更新', value: formatStandbyTimestamp(state.standbyDiag.updatedAt), cls: 'off' },
+      { label: '当前屏幕', value: state.standbyDiag.screen === 'on' ? '亮屏' : state.standbyDiag.screen === 'off' ? '息屏' : '未知', cls: state.standbyDiag.screen === 'on' ? 'warn' : 'good' },
+      { label: 'worker 分支', value: standbyWorkerModeLabel(state.standbyDiag.workerMode), cls: standbyWorkerModeClass(state.standbyDiag.workerMode) },
+      { label: '下次复查', value: state.standbyDiag.nextSleepSecs ? `${state.standbyDiag.nextSleepSecs}s` : '—', cls: 'off' },
+      { label: 'NR 状态', value: nrLabel, cls: state.standbyDiag.nrState === 'lte' ? 'warn' : 'off' },
+      { label: '调度状态', value: profileLabel, cls: 'off' },
+      { label: '循环计数', value: state.standbyDiag.cycleCount || '0', cls: 'off' },
+    ].forEach((row) => refs.standbyDiagRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
+  }
+
+  syncStandbyGuardButtons();
 }
 
 function uecapLabel(mode) {
@@ -1234,6 +1335,61 @@ async function refreshUecap() {
   } catch (err) {
     refs.uecapRows.innerHTML = ''; refs.uecapRows.appendChild(errorBlock('获取失败：' + err.message));
   }
+}
+
+async function refreshStandbyGuard() {
+  try {
+    const data = await apiFetch(API.standbyGuard, { timeoutMs: 6000 });
+    renderStandbyGuard(data);
+  } catch (err) {
+    refs.sim2AutoRows.innerHTML = ''; refs.sim2AutoRows.appendChild(errorBlock('获取失败：' + err.message));
+    refs.idleIsolateRows.innerHTML = ''; refs.idleIsolateRows.appendChild(errorBlock('获取失败：' + err.message));
+    refs.standbyDiagRows.innerHTML = ''; refs.standbyDiagRows.appendChild(errorBlock('获取失败：' + err.message));
+  }
+}
+
+async function setStandbyGuard(update, successText, logText) {
+  if (state.standbyGuardBusy) return;
+  state.standbyGuardBusy = true;
+  syncStandbyGuardButtons();
+  try {
+    const data = await apiFetch(API.standbyGuard, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(update),
+      timeoutMs: 8000
+    });
+    if (data.ok) {
+      renderStandbyGuard(data);
+      showToast(successText);
+      appendLog(logText, 'ok');
+    } else {
+      showToast(`操作失败：${data.error || '未知'}`);
+    }
+  } catch (_) {
+    showToast('请求失败');
+  } finally {
+    state.standbyGuardBusy = false;
+    syncStandbyGuardButtons();
+  }
+}
+
+async function toggleSim2AutoManage() {
+  const next = state.sim2AutoManage === 'on' ? 'off' : 'on';
+  await setStandbyGuard(
+    { sim2_auto_manage: next },
+    next === 'on' ? 'SIM2 自动管理已开启' : 'SIM2 自动管理已关闭',
+    next === 'on' ? 'SIM2 自动管理: 开启' : 'SIM2 自动管理: 关闭'
+  );
+}
+
+async function toggleIdleIsolateMode() {
+  const next = state.idleIsolateMode === 'on' ? 'off' : 'on';
+  await setStandbyGuard(
+    { idle_isolate_mode: next },
+    next === 'on' ? '待机隔离模式已开启' : '待机隔离模式已关闭',
+    next === 'on' ? '待机隔离模式: 开启' : '待机隔离模式: 关闭'
+  );
 }
 
 async function verifyUecapSwitch(mode, expectedHash, initialData) {
@@ -1997,7 +2153,7 @@ async function toggleSwapMode() {
 async function doFullRefresh() {
   showToast('正在刷新…', 1000);
   await Promise.all([refreshCpu(), refreshThermal(), refreshSwap()]);
-  await Promise.allSettled([refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp(), loadInfo()]);
+  await Promise.allSettled([refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp(), refreshStandbyGuard(), loadInfo()]);
   markPollFresh(['cpu', 'thermal', 'optim', 'slow']);
   queueNextPoll(computeNextPollDelay());
   showToast('已刷新');
@@ -2027,6 +2183,7 @@ function refreshCurrentTabData() {
     refreshUecap();
     refreshBaseband();
     refreshNtp();
+    refreshStandbyGuard();
     loadInfo();
     queueNextPoll(computeNextPollDelay(now));
     return;
@@ -2050,6 +2207,7 @@ function refreshCurrentTabData() {
     refreshUecap();
     refreshBaseband();
     refreshNtp();
+    refreshStandbyGuard();
     loadInfo();
     queueNextPoll(computeNextPollDelay(now));
   }
@@ -2085,6 +2243,8 @@ function bindStaticEvents() {
   $('swap-toggle-btn').addEventListener('click', toggleSwapMode);
   $('swap-detail-btn').addEventListener('click', () => openDetail('内存优化详情', SWAP_DETAIL));
   $('nr-switch-toggle-btn').addEventListener('click', toggleNrSwitch);
+  $('sim2-auto-toggle-btn').addEventListener('click', toggleSim2AutoManage);
+  $('idle-isolate-toggle-btn').addEventListener('click', toggleIdleIsolateMode);
   $('nr-switch-detail-btn').addEventListener('click', () => openDetail('NR 息屏降级详情', NR_SWITCH_DETAIL));
   $('uecap-detail-btn').addEventListener('click', () => openDetail('UE 网络能力配置', UECAP_DETAIL));
   $('baseband-detail-btn').addEventListener('click', () => openDetail('基带模块说明', BASEBAND_DETAIL));
@@ -2153,7 +2313,7 @@ function bindStaticEvents() {
 
 async function refreshDeferredInitData() {
   markPollFresh(['optim', 'slow']);
-  await Promise.allSettled([refreshSwap(), refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp()]);
+  await Promise.allSettled([refreshSwap(), refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp(), refreshStandbyGuard()]);
   queueNextPoll(computeNextPollDelay());
 }
 

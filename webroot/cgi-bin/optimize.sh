@@ -30,5 +30,9 @@ esac
 mc="off"
 ip link show wlan0 2>/dev/null | grep -q "MULTICAST" && mc="on"
 
-printf '{"mobile_data_always_on":"%s","wfc_ims_enabled":"%s","wifi_scan_always_enabled":"%s","ble_scan_always_enabled":"%s","adaptive_connectivity":"%s","network_recommendations":"%s","nearby_sharing":"%s","multicast":"%s"}' \
-    "$mda" "$wfc" "$wscan" "$bscan" "$adapt" "$netrec" "$nearby" "$mc"
+# SIM2 自动管理状态 (v4.3.16: 默认关闭)
+sim2_auto=$(cat "$MODDIR/.sim2_auto_manage" 2>/dev/null | tr -d ' \n\r')
+[ -z "$sim2_auto" ] && sim2_auto="off"
+
+printf '{"mobile_data_always_on":"%s","wfc_ims_enabled":"%s","wifi_scan_always_enabled":"%s","ble_scan_always_enabled":"%s","adaptive_connectivity":"%s","network_recommendations":"%s","nearby_sharing":"%s","multicast":"%s","sim2_auto_manage":"%s"}' \
+    "$mda" "$wfc" "$wscan" "$bscan" "$adapt" "$netrec" "$nearby" "$mc" "$sim2_auto"

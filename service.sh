@@ -1,8 +1,21 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.3.15 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.3.17 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → 统一后台 → WebUI
+#
+# v4.3.17 变更:
+#   - 新增待机隔离模式(.idle_isolate_mode)，用于过夜隔离 control 模块对 suspend 的干扰
+#   - 新增 .standby_diag_state 低噪声诊断状态文件，记录 worker 当前分支与下次唤醒时间
+#   - WebUI 优化页新增 SIM2 自动管理 / 待机隔离显式开关
+#   - 待机隔离模式压过 thermal burst / LTE 轮询，确保息屏阶段维持 600s 最小唤醒路径
+#   - 文档与版本基线同步到 v4.3.17
+#
+# v4.3.16 变更:
+#   - 修复 deep sleep 0%: 息屏深度待机保护模式, 跳过 thermal/前台 profile 自动采样
+#   - SIM2/IMS 自动管理默认关闭, 避免 modem 重注册导致 s5100/umts_dm0 持锁
+#   - 120s 延迟复写移除 manage_sim2_radio, 减少 boot 阶段 radio IPC
+#   - 息屏路径不再执行 cmd phone / settings put preferred_network_mode 以外的 radio 命令
 #
 # v4.3.15 变更:
 #   - 新增慢切换自动调度策略: feed 类前台长亮屏时 balanced→light，持续热平台时 light→battery
@@ -87,6 +100,9 @@ PROFILE_FILE="$MODDIR/.current_profile"
 PROFILE_POLICY_FILE="$MODDIR/.profile_policy"
 PROFILE_MANUAL_FILE="$MODDIR/.profile_manual"
 PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
+SIM2_AUTO_FILE="$MODDIR/.sim2_auto_manage"
+IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
+STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
 
 detect_root_impl() {
     if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
@@ -101,6 +117,14 @@ detect_root_impl() {
 }
 
 ROOT_IMPL=$(detect_root_impl)
+
+read_onoff_file() {
+    _flag_value=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
+    case "$_flag_value" in
+        on|off) printf '%s' "$_flag_value" ;;
+        *) printf '%s' "$2" ;;
+    esac
+}
 
 restore_ntp_server() {
     NTP_SAVE="$MODDIR/.ntp_server"
@@ -157,23 +181,35 @@ apply_keep5g_standby_settings() {
 }
 
 manage_sim2_radio() {
+    # 默认 on：空槽 radio 无收益，关掉是正确的省电选择。
+    _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" 'on')
+
+    if [ "$_sim2_auto" != "on" ]; then
+        # 用户显式关闭自动管理：如果模块之前关过 radio，立即恢复，避免 SIM2 无法注册。
+        if [ "$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)" = "disabled" ]; then
+            cmd phone radio power -s 1 on 2>/dev/null
+            cmd phone ims enable -s 1 2>/dev/null
+            printf 'enabled' > "$MODDIR/.sim2_radio_off"
+            log -t pixel9pro_ctrl "SIM2 auto-manage off: slot 1 radio+ims restored"
+        fi
+        return 0
+    fi
+
     _sim2_state=$(getprop gsm.sim.state 2>/dev/null | sed 's/.*,//')
     case "$_sim2_state" in
         ABSENT|NOT_READY|PIN_REQUIRED|PUK_REQUIRED|PERM_DISABLED)
-            _prev_sim2=$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)
-            if [ "$_prev_sim2" != "disabled" ]; then
+            if [ "$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)" != "disabled" ]; then
                 cmd phone radio power -s 1 off 2>/dev/null
                 cmd phone ims disable -s 1 2>/dev/null
-                echo "disabled" > "$MODDIR/.sim2_radio_off"
+                printf 'disabled' > "$MODDIR/.sim2_radio_off"
                 log -t pixel9pro_ctrl "SIM2=$_sim2_state: slot 1 radio+ims powered down"
             fi
             ;;
         LOADED|READY)
-            _prev_sim2=$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)
-            if [ "$_prev_sim2" = "disabled" ]; then
+            if [ "$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)" = "disabled" ]; then
                 cmd phone radio power -s 1 on 2>/dev/null
                 cmd phone ims enable -s 1 2>/dev/null
-                echo "enabled" > "$MODDIR/.sim2_radio_off"
+                printf 'enabled' > "$MODDIR/.sim2_radio_off"
                 log -t pixel9pro_ctrl "SIM2=$_sim2_state: slot 1 radio+ims re-enabled"
             fi
             ;;
@@ -327,7 +363,15 @@ export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
 # ──────────────────────────────────────────────────────────
 # 2. 系统设置优化 (保 5G 分支)
 # ──────────────────────────────────────────────────────────
-log -t pixel9pro_ctrl "v4.3.15[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+# SIM2 自动管理: 默认 on。空槽 radio 全天消耗 800-1000 mAh，无任何收益。
+# 若文件因热更新丢失，但 .sim2_radio_off 记录曾 disabled → 说明用户之前开过，恢复为 on。
+# 若两个文件都不存在（首次运行）→ 默认 on，让功能立即生效。
+if [ ! -f "$SIM2_AUTO_FILE" ]; then
+    printf 'on' > "$SIM2_AUTO_FILE"
+fi
+[ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
+
+log -t pixel9pro_ctrl "v4.3.17[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -401,14 +445,13 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.3.15[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.3.17[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # 延迟复写：NTP 服务器和扫描类设置可能在用户解锁后被系统回写。
 (
     sleep 120
     apply_keep5g_standby_settings
     restore_ntp_server
-    manage_sim2_radio
     log -t pixel9pro_ctrl "Standby settings re-applied after late boot"
 ) &
 
@@ -417,8 +460,8 @@ log -t pixel9pro_ctrl "v4.3.15[$ROOT_IMPL]: keep-5G standby settings applied (ra
 # ──────────────────────────────────────────────────────────
 PROFILE=$(read_valid_profile "$PROFILE_FILE" 'default')
 [ -f "$PROFILE_MANUAL_FILE" ] || printf '%s' "$PROFILE" > "$PROFILE_MANUAL_FILE"
-[ -f "$PROFILE_POLICY_FILE" ] || printf 'auto' > "$PROFILE_POLICY_FILE"
-[ -f "$PROFILE_AUTO_REASON_FILE" ] || printf 'auto_enabled' > "$PROFILE_AUTO_REASON_FILE"
+[ -f "$PROFILE_POLICY_FILE" ] || printf 'manual' > "$PROFILE_POLICY_FILE"
+[ -f "$PROFILE_AUTO_REASON_FILE" ] || printf 'manual_policy' > "$PROFILE_AUTO_REASON_FILE"
 sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" "$MODDIR" 2>/dev/null
 log -t pixel9pro_ctrl "CPU profile: $PROFILE"
 
@@ -476,6 +519,24 @@ is_nr_mode_value() {
         fi
     }
     trap '_cleanup_nr' EXIT TERM HUP
+
+    _write_standby_diag_state() {
+        {
+            printf 'updated_at=%s\n' "$1"
+            printf 'screen=%s\n' "$2"
+            printf 'worker_mode=%s\n' "$3"
+            printf 'next_sleep_secs=%s\n' "$4"
+            printf 'burst_active=%s\n' "$5"
+            printf 'nr_switch=%s\n' "$6"
+            printf 'nr_state=%s\n' "$7"
+            printf 'profile_policy=%s\n' "$8"
+            printf 'active_profile=%s\n' "$9"
+            printf 'idle_isolate=%s\n' "${10}"
+            printf 'sim2_auto_manage=%s\n' "${11}"
+            printf 'cycle_count=%s\n' "${12}"
+        } > "${STANDBY_DIAG_FILE}.tmp"
+        mv "${STANDBY_DIAG_FILE}.tmp" "$STANDBY_DIAG_FILE"
+    }
 
     _write_power_session() {
         _ps_start="$1"
@@ -595,12 +656,17 @@ is_nr_mode_value() {
     _just_off=0
     _hist_count=0
     _sim2_check_count=0
-    _NR_DELAY=60
+    # _NR_DELAY: 屏幕熄灭后多久才切到 LTE-only。
+    # 60s 会让短时间锁屏(口袋亮灭/查看消息)反复触发 modem 重注册,
+    # 每次 attach/detach 持 s5100_wake_lock ~1-2s。300s 防抖,只在真待机时切。
+    _NR_DELAY=300
     _NR_COOLDOWN=600
     _NR_LTE=9
-    _NR_LTE_POLL=60
-    _THERMAL_OFF_INTERVAL=600
-    _last_off_thermal=0
+    # _NR_LTE_POLL: 切换到 LTE 后,worker 多久醒一次检查屏幕状态。
+    # 60s 节奏会让 alarmtimer.4.auto 与 suspend 流程挤兑(实测 71 次 failed_suspend)。
+    # 300s 把 wakeup 密度降到 12 次/h,给 kernel 真正的 deep suspend 窗口。
+    # 代价:屏幕点亮后 NR 恢复最多滞后 5 分钟(用户体感可接受,RIL 数据通道不受影响)。
+    _NR_LTE_POLL=300
     _POWER_SAMPLE_INTERVAL_ON=60
     _POWER_SAMPLE_INTERVAL_OFF=600
     _power_last_sample=0
@@ -625,17 +691,41 @@ is_nr_mode_value() {
     _auto_cool_since=0
     _auto_pkg=""
     _active_profile=$(read_valid_profile "$PROFILE_FILE" 'default')
+    _cycle_count=0
+    _idle_isolate_prev=""
 
     while true; do
         _now=$(date +%s 2>/dev/null || echo 0)
+        _cycle_count=$((_cycle_count + 1))
 
-        # --- Single screen state check per cycle ---
-        _scr=$(dumpsys display 2>/dev/null | grep "mScreenState=" | head -1 | sed 's/.*mScreenState=//' | tr -d ' ')
-        [ -z "$_scr" ] && _scr=$(dumpsys power 2>/dev/null | grep "mWakefulness=" | head -1 | sed 's/.*mWakefulness=//' | tr -d ' ')
-        case "$_scr" in
-            OFF|Dozing|Asleep) _screen="off" ;;
-            *) _screen="on" ;;
+        # --- Single screen state check per cycle (sysfs first, IPC-free) ---
+        # 用 DRM dpms 直接读屏幕状态，避免每周期 dumpsys display 唤起 system_server，
+        # 该 IPC 是 kernel suspend 的主要 userspace-abort 来源之一。
+        _dpms=$(cat /sys/class/drm/card0-DSI-1/dpms 2>/dev/null)
+        case "$_dpms" in
+            On) _screen="on" ;;
+            Off|Standby|Suspend) _screen="off" ;;
+            *)
+                # sysfs 路径异常或早期 boot 阶段：降级到原 IPC 路径
+                _scr=$(dumpsys display 2>/dev/null | grep "mScreenState=" | head -1 | sed 's/.*mScreenState=//' | tr -d ' ')
+                [ -z "$_scr" ] && _scr=$(dumpsys power 2>/dev/null | grep "mWakefulness=" | head -1 | sed 's/.*mWakefulness=//' | tr -d ' ')
+                case "$_scr" in
+                    OFF|Dozing|Asleep) _screen="off" ;;
+                    *) _screen="on" ;;
+                esac
+                ;;
         esac
+        _idle_isolate=$(read_onoff_file "$IDLE_ISOLATE_FILE" 'off')
+        _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" 'on')
+        _screen_off_isolate=0
+        if [ "$_idle_isolate" = "on" ] && [ "$_screen" = "off" ]; then
+            _screen_off_isolate=1
+        fi
+
+        if [ "$_idle_isolate" != "$_idle_isolate_prev" ]; then
+            log -t pixel9pro_ctrl "Idle isolate: $_idle_isolate"
+            _idle_isolate_prev="$_idle_isolate"
+        fi
 
         # --- WiFi multicast: state-transition only ---
         if [ "$_screen" != "$_mc_state" ]; then
@@ -657,7 +747,7 @@ is_nr_mode_value() {
         _prev_screen="$_screen"
 
         # --- SIM2 radio management (check every ~10 on-screen cycles) ---
-        if [ "$_screen" = "on" ]; then
+        if [ "$_screen" = "on" ] && [ "$_idle_isolate" != "on" ]; then
             _sim2_check_count=$((_sim2_check_count + 1))
             if [ "$_sim2_check_count" -ge 10 ]; then
                 manage_sim2_radio
@@ -666,62 +756,68 @@ is_nr_mode_value() {
         fi
 
         # --- NR screen-off switch ---
-        _nr_enabled=$(cat "$NR_SWITCH_FILE" 2>/dev/null)
-        if [ "$_nr_enabled" != "on" ]; then
-            if [ "$_nr_state" = "lte" ]; then
-                settings put global "$_nr_key" "$(cat "$NR_MODE_FILE" 2>/dev/null || echo 33)" 2>/dev/null
-                _nr_state="5g"
-                _nr_restored=$_now
-                log -t pixel9pro_ctrl "NR switch: disabled, restored NR"
-            fi
+        _nr_enabled=$(read_onoff_file "$NR_SWITCH_FILE" 'off')
+        if [ "$_screen_off_isolate" -eq 1 ]; then
             _nr_off_since=0
-        elif [ "$_screen" = "off" ]; then
-            if [ "$_nr_state" = "5g" ]; then
-                [ "$_nr_off_since" -eq 0 ] && _nr_off_since=$_now
-                _elapsed=$((_now - _nr_off_since))
-                _since_nr=$((_now - _nr_restored))
-                if [ "$_elapsed" -ge "$_NR_DELAY" ] && [ "$_since_nr" -ge "$_NR_COOLDOWN" ]; then
-                    _tether=0
-                    for _tif in swlan0 wlan1 wlan2 ap0 rndis0 ncm0; do
-                        [ -d "/sys/class/net/$_tif" ] && _tether=1 && break
-                    done
-                    if [ "$_tether" -eq 0 ]; then
-                        _cur=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
-                        if is_nr_mode_value "$_cur"; then
-                            echo "$_cur" > "$NR_MODE_FILE"
+        else
+            if [ "$_nr_enabled" != "on" ]; then
+                if [ "$_nr_state" = "lte" ]; then
+                    settings put global "$_nr_key" "$(cat "$NR_MODE_FILE" 2>/dev/null || echo 33)" 2>/dev/null
+                    _nr_state="5g"
+                    _nr_restored=$_now
+                    log -t pixel9pro_ctrl "NR switch: disabled, restored NR"
+                fi
+                _nr_off_since=0
+            elif [ "$_screen" = "off" ]; then
+                if [ "$_nr_state" = "5g" ]; then
+                    [ "$_nr_off_since" -eq 0 ] && _nr_off_since=$_now
+                    _elapsed=$((_now - _nr_off_since))
+                    _since_nr=$((_now - _nr_restored))
+                    if [ "$_elapsed" -ge "$_NR_DELAY" ] && [ "$_since_nr" -ge "$_NR_COOLDOWN" ]; then
+                        _tether=0
+                        for _tif in swlan0 wlan1 wlan2 ap0 rndis0 ncm0; do
+                            [ -d "/sys/class/net/$_tif" ] && _tether=1 && break
+                        done
+                        if [ "$_tether" -eq 0 ]; then
+                            _cur=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
+                            if is_nr_mode_value "$_cur"; then
+                                echo "$_cur" > "$NR_MODE_FILE"
+                            fi
+                            _lte_val=$(_nr_replace_slot0 "$_cur" "$_NR_LTE")
+                            settings put global "$_nr_key" "$_lte_val" 2>/dev/null
+                            _nr_state="lte"
+                            log -t pixel9pro_ctrl "NR switch: off ${_elapsed}s, switched to LTE ($_lte_val)"
                         fi
-                        _lte_val=$(_nr_replace_slot0 "$_cur" "$_NR_LTE")
-                        settings put global "$_nr_key" "$_lte_val" 2>/dev/null
-                        _nr_state="lte"
-                        log -t pixel9pro_ctrl "NR switch: off ${_elapsed}s, switched to LTE ($_lte_val)"
                     fi
                 fi
-            fi
-        else
-            _nr_off_since=0
-            if [ "$_nr_state" = "lte" ]; then
-                settings put global "$_nr_key" "$(cat "$NR_MODE_FILE" 2>/dev/null || echo 33)" 2>/dev/null
-                _nr_state="5g"
-                _nr_restored=$_now
-                log -t pixel9pro_ctrl "NR switch: screen on, restored NR"
+            else
+                _nr_off_since=0
+                if [ "$_nr_state" = "lte" ]; then
+                    settings put global "$_nr_key" "$(cat "$NR_MODE_FILE" 2>/dev/null || echo 33)" 2>/dev/null
+                    _nr_state="5g"
+                    _nr_restored=$_now
+                    log -t pixel9pro_ctrl "NR switch: screen on, restored NR"
+                fi
             fi
         fi
 
         # --- Thermal cache + history ---
+        # v4.3.16: 息屏深度待机保护 — 跳过 thermal 与前台自动调度采样,
+        # 保留 power tracking，避免能耗统计与充电会话重置失真.
         _burst_until=$(cat "$THERMAL_BURST_FILE" 2>/dev/null | tr -d ' \n\r')
         _burst_active=0
         if [ -n "$_burst_until" ] && [ "$_burst_until" -gt "$_now" ] 2>/dev/null; then
             _burst_active=1
         fi
+        _burst_effective=$_burst_active
+        [ "$_screen_off_isolate" -eq 1 ] && _burst_effective=0
 
-        _do_thermal=0
-        if [ "$_screen" = "on" ] || [ "$_burst_active" -eq 1 ]; then
-            _do_thermal=1
-        elif [ "$_last_off_thermal" -eq 0 ] || [ $((_now - _last_off_thermal)) -ge "$_THERMAL_OFF_INTERVAL" ]; then
-            _do_thermal=1
-        fi
-
-        if [ "$_do_thermal" -eq 1 ]; then
+        _worker_mode="deep_standby"
+        _vs_temp=""
+        if [ "$_screen" = "on" ] || [ "$_burst_effective" -eq 1 ]; then
+            _worker_mode="screen_on"
+            [ "$_screen" != "on" ] && _worker_mode="thermal_burst"
+            # --- 亮屏 / burst: 执行 thermal 更新 ---
             _json=$(build_thermal_json 2>/dev/null)
             if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
                 printf '%s' "$_json" > "${THERMAL_CACHE}.tmp"
@@ -743,115 +839,127 @@ is_nr_mode_value() {
             else
                 rm -f "${THERMAL_CACHE}.tmp"
             fi
-
-            if [ "$_screen" = "off" ]; then
-                _last_off_thermal=$_now
-            fi
         fi
 
-        _track_power_window
-
-        # --- Slow auto profile policy ---
-        _profile_policy=$(read_valid_profile_policy)
-        _manual_profile=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'balanced')
-        _target_profile=""
-        _target_reason=""
-
-        if [ "$_profile_policy" = "manual" ]; then
+        if [ "$_screen_off_isolate" -eq 1 ]; then
+            _worker_mode="idle_isolate"
             _auto_steady_since=0
             _auto_nonsteady_since=0
             _auto_hot_since=0
             _auto_cool_since=0
             _auto_pkg=""
-            if [ "$_active_profile" != "$_manual_profile" ]; then
-                if apply_profile_state "$_manual_profile" "manual_policy"; then
-                    _active_profile="$_manual_profile"
-                fi
-            fi
-        elif [ "$_screen" != "on" ]; then
-            _auto_steady_since=0
-            _auto_nonsteady_since=0
-            _auto_hot_since=0
-            _auto_cool_since=0
-            _auto_pkg=""
-            if [ "$_active_profile" != "balanced" ]; then
-                if apply_profile_state "balanced" "screen_off_reset"; then
-                    _active_profile="balanced"
-                fi
-            else
-                printf '%s' 'screen_off_reset' > "$PROFILE_AUTO_REASON_FILE"
-            fi
         else
-            _fg_pkg=$(foreground_package_name)
-            if is_steady_screen_package "$_fg_pkg"; then
-                if [ "$_fg_pkg" != "$_auto_pkg" ]; then
-                    _auto_pkg="$_fg_pkg"
-                    _auto_steady_since=$_now
-                    _auto_hot_since=0
-                    _auto_cool_since=0
-                fi
+            _track_power_window
+
+            # --- Slow auto profile policy ---
+            _profile_policy=$(read_valid_profile_policy)
+            _manual_profile=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'balanced')
+            _target_profile=""
+            _target_reason=""
+
+            if [ "$_profile_policy" = "manual" ]; then
+                _auto_steady_since=0
                 _auto_nonsteady_since=0
+                _auto_hot_since=0
+                _auto_cool_since=0
+                _auto_pkg=""
+                if [ "$_screen" = "on" ] && [ "$_active_profile" != "$_manual_profile" ]; then
+                    if apply_profile_state "$_manual_profile" "manual_policy"; then
+                        _active_profile="$_manual_profile"
+                    fi
+                fi
+            elif [ "$_screen" = "on" ]; then
+                _fg_pkg=$(foreground_package_name)
+                if is_steady_screen_package "$_fg_pkg"; then
+                    if [ "$_fg_pkg" != "$_auto_pkg" ]; then
+                        _auto_pkg="$_fg_pkg"
+                        _auto_steady_since=$_now
+                        _auto_hot_since=0
+                        _auto_cool_since=0
+                    fi
+                    _auto_nonsteady_since=0
 
-                if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$_AUTO_BATTERY_TEMP" ] 2>/dev/null; then
-                    [ "$_auto_hot_since" -eq 0 ] && _auto_hot_since=$_now
-                    _auto_cool_since=0
-                elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$_AUTO_LIGHT_COOL_TEMP" ] 2>/dev/null; then
-                    [ "$_auto_cool_since" -eq 0 ] && _auto_cool_since=$_now
-                    _auto_hot_since=0
+                    if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$_AUTO_BATTERY_TEMP" ] 2>/dev/null; then
+                        [ "$_auto_hot_since" -eq 0 ] && _auto_hot_since=$_now
+                        _auto_cool_since=0
+                    elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$_AUTO_LIGHT_COOL_TEMP" ] 2>/dev/null; then
+                        [ "$_auto_cool_since" -eq 0 ] && _auto_cool_since=$_now
+                        _auto_hot_since=0
+                    else
+                        _auto_hot_since=0
+                        _auto_cool_since=0
+                    fi
+
+                    if [ "$_active_profile" = "battery" ] && [ "$_auto_cool_since" -gt 0 ] && [ $((_now - _auto_cool_since)) -ge "$_AUTO_LIGHT_COOL_HOLD" ]; then
+                        _target_profile="light"
+                        _target_reason="hot_cooldown"
+                    elif [ "$_auto_hot_since" -gt 0 ] && [ $((_now - _auto_hot_since)) -ge "$_AUTO_BATTERY_HOLD" ]; then
+                        _target_profile="battery"
+                        _target_reason="steady_hot_guard"
+                    elif [ "$_auto_steady_since" -gt 0 ] && [ $((_now - _auto_steady_since)) -ge "$_AUTO_STEADY_DELAY" ]; then
+                        _target_profile="light"
+                        _target_reason="steady_screen_hold"
+                    else
+                        _target_profile="balanced"
+                        _target_reason="steady_screen_warmup"
+                    fi
                 else
                     _auto_hot_since=0
                     _auto_cool_since=0
+                    _auto_steady_since=0
+                    _auto_pkg=""
+                    [ "$_auto_nonsteady_since" -eq 0 ] && _auto_nonsteady_since=$_now
+                    if [ $((_now - _auto_nonsteady_since)) -ge "$_AUTO_EXIT_DELAY" ]; then
+                        _target_profile="balanced"
+                        _target_reason="nonsteady_reset"
+                    fi
                 fi
 
-                if [ "$_active_profile" = "battery" ] && [ "$_auto_cool_since" -gt 0 ] && [ $((_now - _auto_cool_since)) -ge "$_AUTO_LIGHT_COOL_HOLD" ]; then
-                    _target_profile="light"
-                    _target_reason="hot_cooldown"
-                elif [ "$_auto_hot_since" -gt 0 ] && [ $((_now - _auto_hot_since)) -ge "$_AUTO_BATTERY_HOLD" ]; then
-                    _target_profile="battery"
-                    _target_reason="steady_hot_guard"
-                elif [ "$_auto_steady_since" -gt 0 ] && [ $((_now - _auto_steady_since)) -ge "$_AUTO_STEADY_DELAY" ]; then
-                    _target_profile="light"
-                    _target_reason="steady_screen_hold"
-                else
-                    _target_profile="balanced"
-                    _target_reason="steady_screen_warmup"
+                if [ -n "$_target_profile" ]; then
+                    if [ "$_active_profile" != "$_target_profile" ]; then
+                        if apply_profile_state "$_target_profile" "$_target_reason"; then
+                            _active_profile="$_target_profile"
+                        fi
+                    else
+                        printf '%s' "$_target_reason" > "$PROFILE_AUTO_REASON_FILE"
+                    fi
                 fi
             else
+                # --- 息屏深度待机: 不做前台探测 / 自动调度 ---
+                if [ "$_active_profile" != "balanced" ]; then
+                    if apply_profile_state "balanced" "deep_standby_reset"; then
+                        _active_profile="balanced"
+                    fi
+                elif [ "$_just_off" -eq 1 ]; then
+                    printf '%s' 'deep_standby_reset' > "$PROFILE_AUTO_REASON_FILE"
+                fi
                 _auto_hot_since=0
                 _auto_cool_since=0
                 _auto_steady_since=0
+                _auto_nonsteady_since=0
                 _auto_pkg=""
-                [ "$_auto_nonsteady_since" -eq 0 ] && _auto_nonsteady_since=$_now
-                if [ $((_now - _auto_nonsteady_since)) -ge "$_AUTO_EXIT_DELAY" ]; then
-                    _target_profile="balanced"
-                    _target_reason="nonsteady_reset"
-                fi
-            fi
-
-            if [ -n "$_target_profile" ]; then
-                if [ "$_active_profile" != "$_target_profile" ]; then
-                    if apply_profile_state "$_target_profile" "$_target_reason"; then
-                        _active_profile="$_target_profile"
-                    fi
-                else
-                    printf '%s' "$_target_reason" > "$PROFILE_AUTO_REASON_FILE"
-                fi
             fi
         fi
 
         # --- Adaptive sleep ---
         if [ "$_screen" = "on" ]; then
-            sleep 15
+            _next_sleep_secs=15
+        elif [ "$_screen_off_isolate" -eq 1 ]; then
+            _just_off=0
+            _next_sleep_secs=600
         elif [ "$_just_off" -eq 1 ]; then
             _just_off=0
-            sleep 60
-        elif [ "$_burst_active" -eq 1 ]; then
-            sleep 5
+            _next_sleep_secs=60
+        elif [ "$_burst_effective" -eq 1 ]; then
+            _next_sleep_secs=5
         elif [ "$_nr_state" = "lte" ]; then
-            sleep "$_NR_LTE_POLL"
+            _next_sleep_secs=$_NR_LTE_POLL
         else
-            sleep 600
+            _next_sleep_secs=600
         fi
+        _diag_profile_policy=$(read_valid_profile_policy)
+        _write_standby_diag_state "$_now" "$_screen" "$_worker_mode" "$_next_sleep_secs" "$_burst_effective" "$_nr_enabled" "$_nr_state" "$_diag_profile_policy" "$_active_profile" "$_idle_isolate" "$_sim2_auto" "$_cycle_count"
+        sleep "$_next_sleep_secs"
     done
 ) &
 log -t pixel9pro_ctrl "Unified background worker started (Doze-friendly)"
