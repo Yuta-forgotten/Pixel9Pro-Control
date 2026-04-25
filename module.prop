@@ -1,6 +1,6 @@
 id=pixel9pro_control
 name=Pixel 9 Pro 温控调度控制台
-version=v4.3.18
-versionCode=53
+version=v4.3.20
+versionCode=55
 author=Yuta
-description=温控阈值优化(4档) · CPU调度(5模式) · ZRAM lz77eh硬件加速 · UECap 三档切换+基带重载 · SIM2空槽省电(手动) · NR息屏降级 · 待机隔离诊断 · Kernel suspend 友好 worker · Material 3 WebUI
+description=温控阈值优化(4档) · CPU调度(5模式) · ZRAM lz77eh硬件加速 · UECap 三档切换+基带重载 · SIM2空槽省电(手动) · NR息屏降级 · IRQ亲和性优化 · EAS调度修正 · 待机隔离诊断 · Kernel suspend 友好 worker · Material 3 WebUI

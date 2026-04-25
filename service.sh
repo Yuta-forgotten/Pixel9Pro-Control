@@ -1,8 +1,14 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.3.17 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.3.19 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → 统一后台 → WebUI
+#
+# v4.3.19 变更:
+#   - SIM2 空槽省电彻底重写: 从 cmd phone radio power (临时关 radio, 会被框架恢复)
+#     改为 cmd phone set-sim-count 1 (AOSP 官方 API, 持久化, 直接减少 Active modem count)
+#   - 恢复 DSDS: SIM2 插入时自动 set-sim-count 2
+#   - 移除 boot+120s/300s 重试 hack, 因为 set-sim-count 是持久化的不需要重试
 #
 # v4.3.17 变更:
 #   - 新增待机隔离模式(.idle_isolate_mode)，用于过夜隔离 control 模块对 suspend 的干扰
@@ -155,6 +161,21 @@ apply_uecap_profile() {
     fi
 }
 
+# Wi-Fi PCIe IRQ 亲和性优化 (Sultan dhd_dpc 思路的用户空间版)
+# bcmdhd 驱动在 suspend/resume 时重新注册 IRQ, affinity 被重置为默认值 0x40 (CPU 6)
+# 因此每次亮屏后需要重新设置
+apply_irq_affinity() {
+    for _irq_dir in /proc/irq/*/; do
+        [ -f "${_irq_dir}actions" ] || continue
+        _irq_act=$(cat "${_irq_dir}actions" 2>/dev/null)
+        case "$_irq_act" in
+            *dhdpcie:*)
+                echo 0f > "${_irq_dir}smp_affinity" 2>/dev/null
+                ;;
+        esac
+    done
+}
+
 apply_keep5g_standby_settings() {
     # 保留 5G / 5GA / CA 能力时，仍然建议关闭 mobile_data_always_on。
     # AOSP 定义表明该项仅用于在 Wi-Fi 等高优先级网络存在时，让蜂窝数据链路继续常驻以加快切换。
@@ -181,16 +202,32 @@ apply_keep5g_standby_settings() {
 }
 
 manage_sim2_radio() {
-    # 默认 on：空槽 radio 无收益，关掉是正确的省电选择。
+    # SIM2 空槽省电: 通过 AOSP 官方 API 切换 DSDS ↔ 单 SIM 模式。
+    #
+    # 旧方案 (v4.3.1~v4.3.18): cmd phone radio power -s 1 off
+    #   问题: 只是临时关闭 radio，telephony 框架仍维护 2 个 modem 实例，
+    #   会在 boot/网络变化/IMS 注册等事件后自动恢复 radio，导致空槽 modem 重新搜网。
+    #
+    # 新方案 (v4.3.19): cmd phone set-sim-count 1
+    #   调用 TelephonyManager.switchMultiSimConfig()，AOSP 官方持久化 API。
+    #   效果: Active modem count 从 2 降到 1，persist.radio.multisim.config 从 dsds 变为空，
+    #   第二个 modem 实例被框架彻底释放，不存在"被恢复"的问题。
+    #   恢复: cmd phone set-sim-count 2 即可恢复 DSDS。
+    #
+    # 参考:
+    #   - DroidWin: https://droidwin.com/how-to-disable-dual-sim-dual-standby-on-pixel-devices/
+    #   - XDA: https://xdaforums.com/t/disable-multi-sim-feature-to-reduce-battery-drain.3057352/
+    #   - AOSP: TelephonyShellCommand.handleSetSimCount → TelephonyManager.switchMultiSimConfig
+    #   - 设备验证: persist.vendor.radio.multisim_switch_support=true (Pixel 9 Pro 官方支持)
+
     _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" 'on')
 
     if [ "$_sim2_auto" != "on" ]; then
-        # 用户显式关闭自动管理：如果模块之前关过 radio，立即恢复，避免 SIM2 无法注册。
+        # 用户显式关闭自动管理: 恢复 DSDS 双 modem
         if [ "$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)" = "disabled" ]; then
-            cmd phone radio power -s 1 on 2>/dev/null
-            cmd phone ims enable -s 1 2>/dev/null
+            cmd phone set-sim-count 2 2>/dev/null
             printf 'enabled' > "$MODDIR/.sim2_radio_off"
-            log -t pixel9pro_ctrl "SIM2 auto-manage off: slot 1 radio+ims restored"
+            log -t pixel9pro_ctrl "SIM2 auto-manage off: restored DSDS (set-sim-count 2)"
         fi
         return 0
     fi
@@ -199,18 +236,16 @@ manage_sim2_radio() {
     case "$_sim2_state" in
         ABSENT|NOT_READY|PIN_REQUIRED|PUK_REQUIRED|PERM_DISABLED)
             if [ "$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)" != "disabled" ]; then
-                cmd phone radio power -s 1 off 2>/dev/null
-                cmd phone ims disable -s 1 2>/dev/null
+                cmd phone set-sim-count 1 2>/dev/null
                 printf 'disabled' > "$MODDIR/.sim2_radio_off"
-                log -t pixel9pro_ctrl "SIM2=$_sim2_state: slot 1 radio+ims powered down"
+                log -t pixel9pro_ctrl "SIM2=$_sim2_state: switched to single SIM (set-sim-count 1)"
             fi
             ;;
         LOADED|READY)
             if [ "$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)" = "disabled" ]; then
-                cmd phone radio power -s 1 on 2>/dev/null
-                cmd phone ims enable -s 1 2>/dev/null
+                cmd phone set-sim-count 2 2>/dev/null
                 printf 'enabled' > "$MODDIR/.sim2_radio_off"
-                log -t pixel9pro_ctrl "SIM2=$_sim2_state: slot 1 radio+ims re-enabled"
+                log -t pixel9pro_ctrl "SIM2=$_sim2_state: restored DSDS (set-sim-count 2)"
             fi
             ;;
     esac
@@ -396,6 +431,17 @@ ip link set wlan0 multicast off 2>/dev/null
 echo 3000 > /proc/sys/vm/dirty_writeback_centisecs 2>/dev/null
 echo 50 > /proc/sys/vm/dirty_ratio 2>/dev/null
 echo 20 > /proc/sys/vm/dirty_background_ratio 2>/dev/null
+
+# === EAS 调度修正 (Sultan 内核 + XDA teoweed 思路) ===
+# stock sched_util_clamp_min=1024 向 EAS 发送虚假 100% 利用率信号,
+# 阻止轻负载被正确路由到小核。设为 0 后 EAS 根据实际负载决策。
+# 验证: 不被 Power HAL / Thermal HAL 覆盖, suspend/resume 后保持。
+echo 0 > /proc/sys/kernel/sched_util_clamp_min 2>/dev/null
+log -t pixel9pro_ctrl "EAS: sched_util_clamp_min=0 (fix false 100% util signal)"
+
+# === IRQ 亲和性优化 (boot 时首次设置) ===
+apply_irq_affinity
+log -t pixel9pro_ctrl "IRQ: Wi-Fi PCIe affinity -> CPU 0-3 (small cores)"
 
 # === ZRAM 配置 (Emerald Hill 硬件加速 + 扩容) ===
 # 原厂出厂: persist.vendor.zram_comp_algorithm 默认为 lz4, ZRAM 大小 50% RAM ≈ 8GB.
@@ -653,6 +699,7 @@ is_nr_mode_value() {
     _nr_off_since=0
     _nr_restored=0
     _prev_screen=""
+    _prev_screen_irq=""
     _just_off=0
     _hist_count=0
     _sim2_check_count=0
@@ -746,7 +793,15 @@ is_nr_mode_value() {
         fi
         _prev_screen="$_screen"
 
+        # --- IRQ affinity: re-apply after resume (bcmdhd resets on suspend/resume) ---
+        if [ "$_screen" = "on" ] && [ "$_prev_screen_irq" = "off" ]; then
+            apply_irq_affinity
+        fi
+        _prev_screen_irq="$_screen"
+
         # --- SIM2 radio management (check every ~10 on-screen cycles) ---
+        # 只在亮屏时检查: 息屏期间任何 telephony IPC 都会唤醒 modem 打断 kernel suspend。
+        # boot 阶段的关闭由 boot+20s / boot+120s / boot+300s 三次一次性尝试保证。
         if [ "$_screen" = "on" ] && [ "$_idle_isolate" != "on" ]; then
             _sim2_check_count=$((_sim2_check_count + 1))
             if [ "$_sim2_check_count" -ge 10 ]; then
@@ -954,6 +1009,8 @@ is_nr_mode_value() {
             _next_sleep_secs=5
         elif [ "$_nr_state" = "lte" ]; then
             _next_sleep_secs=$_NR_LTE_POLL
+        elif [ "$_nr_enabled" = "on" ] && [ "$_nr_off_since" -gt 0 ] 2>/dev/null; then
+            _next_sleep_secs=60
         else
             _next_sleep_secs=600
         fi
