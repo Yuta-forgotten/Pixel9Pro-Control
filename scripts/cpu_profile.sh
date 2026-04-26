@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # ============================================================
-# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v4.3.15
+# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v4.3.21
 # 用法: sh cpu_profile.sh [responsive|balanced|light|battery|default|status]
 #
 # 核心原理:

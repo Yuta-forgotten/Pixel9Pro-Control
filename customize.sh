@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# customize.sh v4.3.18 — 安装时配置 (APatch / KernelSU / Magisk)
+# customize.sh v4.3.21 — 安装时配置 (APatch / KernelSU / Magisk)
 # 检测机型 → 迁移旧设置 → 音量键选择功能 → 温控配置
 ##############################################################
 
@@ -49,7 +49,7 @@ ROOT_IMPL=$(detect_root_impl)
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Pixel 9 Pro 温控调度控制台"
-    ui_print "  v4.3.18"
+    ui_print "  v4.3.21"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Root: $ROOT_IMPL"
 
@@ -276,7 +276,7 @@ awk -v off="$offset" '
     cur = n
     tgt = (cur == "VIRTUAL-SKIN" || cur == "VIRTUAL-SKIN-HINT" || cur == "VIRTUAL-SKIN-SOC" || cur == "VIRTUAL-SKIN-CPU-LIGHT-ODPM" || cur == "VIRTUAL-SKIN-CPU-MID" || cur == "VIRTUAL-SKIN-CPU-ODPM" || cur == "VIRTUAL-SKIN-CPU-HIGH" || cur == "VIRTUAL-SKIN-GPU")
 }
-tgt && /"HotThreshold":/ {
+tgt && /"HotThreshold"/ && /\[/ && /\]/ {
     line = $0
     bs = index(line, "[")
     prefix = substr(line, 1, bs - 1)
@@ -284,17 +284,36 @@ tgt && /"HotThreshold":/ {
     be     = index(rest, "]")
     inner  = substr(rest, 1, be - 1)
     suffix = substr(rest, be)
-    n_v = split(inner, vals, ", ")
+    n_v = split(inner, vals, ",")
     result = ""
     for (i = 1; i <= n_v; i++) {
-        v = vals[i]
-        if (v != "\"NAN\"") {
-            v = sprintf("%.1f", v + off + 0)
+        v = vals[i]; gsub(/[ \t]/, "", v)
+        if (v == "\"NAN\"") {
+            result = result (i > 1 ? ", " : "") v
+        } else {
+            result = result (i > 1 ? ", " : "") sprintf("%.1f", v + off + 0)
         }
-        result = result (i > 1 ? ", " : "") v
     }
     print prefix "[" result suffix
     next
+}
+tgt && /"HotThreshold"/ && /\[/ && !/\]/ {
+    in_hot = 1; print; next
+}
+in_hot {
+    if (/\]/) { in_hot = 0; print; next }
+    line = $0; gsub(/[ \t]/, "", line); gsub(/,/, "", line)
+    if (line == "\"NAN\"") { print; next }
+    if (match(line, /^[0-9]/) || match(line, /^-/)) {
+        indent = $0; sub(/[^ \t].*/, "", indent)
+        val = line + 0
+        newval = sprintf("%.1f", val + off)
+        trailing = ""
+        if (sub(/,[ \t]*$/, "", $0) > 0) trailing = ","
+        printf "%s%s%s\n", indent, newval, trailing
+        next
+    }
+    print; next
 }
 { print }
 ' "$STOCK_ACTIVE" > "$OUT_JSON"

@@ -10,7 +10,7 @@
 <meta http-equiv="Expires" content="0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' http://127.0.0.1:6210; connect-src 'self' http://127.0.0.1:6210; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' http://127.0.0.1:6210">
 <title>温控调度控制台</title>
-<link rel="stylesheet" href="/app.css?v=4.3.17">
+<link rel="stylesheet" href="/app.css?v=4.3.21">
 </head>
 <body>
 <div class="app-shell">
@@ -58,40 +58,51 @@
               <div class="section-title">当前状态</div>
             </div>
           </div>
-          <div class="metric-grid">
-            <article class="metric-card">
-              <div class="metric-head">
-                <div class="metric-title">机身温度</div>
-                <div style="display:flex;align-items:center;gap:6px">
-                  <button class="tiny-btn sm" id="home-temp-chart-btn" type="button">历史</button>
-                  <span class="badge default" id="home-mod-badge">+4°C 已启用</span>
-                </div>
+
+          <article class="surface-card">
+            <div class="panel-head">
+              <div class="panel-copy">
+                <div class="panel-title">机身温度</div>
               </div>
-              <div id="home-thermal-skel"><div class="skel" style="height:108px"></div></div>
-              <div id="home-thermal-content" hidden>
+              <div class="header-actions">
+                <button class="tiny-btn sm" id="home-temp-chart-btn" type="button">历史</button>
+                <span class="badge default" id="home-mod-badge">+4°C 已启用</span>
+              </div>
+            </div>
+            <div id="home-thermal-skel"><div class="skel" style="height:80px"></div></div>
+            <div id="home-thermal-content" hidden>
+              <div class="home-temp-hero">
                 <div class="metric-value-row">
                   <div class="metric-value" id="home-temp-num">--</div>
                   <div class="metric-unit">°C</div>
                 </div>
-                <div class="topbar-subtitle" id="home-temp-status">读取中…</div>
-                <div class="sensor-list" id="home-sensor-list"></div>
+                <div class="home-temp-meta">
+                  <div class="home-temp-status" id="home-temp-status">读取中…</div>
+                </div>
               </div>
-            </article>
-
-        <article class="metric-card">
-          <div class="metric-head">
-            <div class="metric-title">内存与系统</div>
-            <div style="display:flex;align-items:center;gap:6px">
-              <button class="tiny-btn sm" id="energy-btn" type="button">功耗</button>
+              <div class="sensor-list" id="home-sensor-list"></div>
             </div>
-          </div>
-          <div class="mini-list">
-            <div class="mini-row"><span>ZRAM 占用</span><strong id="rt-zram-usage">—</strong></div>
-            <div class="mini-row"><span>压缩率 / 实占</span><strong id="rt-ratio">—</strong></div>
-            <div class="mini-row"><span>WebUI 内存</span><strong id="rt-webui-mem">—</strong></div>
-          </div>
-        </article>
-          </div>
+          </article>
+
+          <article class="surface-card">
+            <div class="panel-head">
+              <div class="panel-copy">
+                <div class="panel-title">内存与系统</div>
+              </div>
+              <div class="header-actions">
+                <button class="tiny-btn sm" id="energy-btn" type="button">功耗</button>
+              </div>
+            </div>
+            <div class="mini-list">
+              <div class="mini-row"><span>可用内存</span><strong id="rt-mem-avail">—</strong></div>
+              <div class="mini-row"><span>物理内存</span><strong id="rt-mem-total">—</strong></div>
+              <div class="mini-row"><span>ZRAM 占用</span><strong id="rt-zram-usage">—</strong></div>
+              <div class="mini-row"><span>压缩率 / 实占</span><strong id="rt-ratio">—</strong></div>
+              <div class="mini-row"><span>Swap 可用</span><strong id="rt-swap-free">—</strong></div>
+              <div class="mini-row"><span>运行时间</span><strong id="rt-uptime">—</strong></div>
+              <div class="mini-row"><span>WebUI 内存</span><strong id="rt-webui-mem">—</strong></div>
+            </div>
+          </article>
         </div>
 
         <article class="surface-card">
@@ -115,6 +126,7 @@
           <div class="data-list" style="margin-top:10px">
             <div class="data-row"><span class="data-key">设备</span><span class="data-val" id="info-model">—</span></div>
             <div class="data-row"><span class="data-key">系统</span><span class="data-val" id="info-android">—</span></div>
+            <div class="data-row"><span class="data-key">内核</span><span class="data-val" id="info-kernel">—</span></div>
             <div class="data-row"><span class="data-key">模块</span><span class="data-val" id="info-module">—</span></div>
             <div class="data-row"><span class="data-key">作者</span><span class="data-val">Yuta</span></div>
           </div>
@@ -145,9 +157,14 @@
           <div class="section-sub" id="perf-policy-desc" style="margin-top:10px">读取当前调度策略…</div>
         </article>
 
-        <article class="note-card">
-          <div class="note-title">模式说明</div>
-          <div class="note-body">现在的性能页只保留最有区分度的 5 个方案：响应优先、均衡手动、长亮屏、省电、默认（自动基线）。自动模式和默认模式共用同一套原厂基线参数，重点是让自动收口逻辑最明显；不再保留名义上更强、但实际无法稳定兑现的“游戏模式”。</div>
+        <article class=”surface-card”>
+          <div class=”panel-head”>
+            <div class=”panel-copy”>
+              <div class=”kicker”>调度原理</div>
+              <div class=”panel-title”>模式说明</div>
+              <div class=”panel-desc”>通过 cpuset 核心分配和 sched_pixel 响应时间控制升频行为，不直接写 scaling_max_freq，不对抗 Thermal HAL。自动模式以默认参数为底座，长亮屏前台按 default → light → battery 慢切换。</div>
+            </div>
+          </div>
         </article>
 
         <div class="section-block">
@@ -173,14 +190,19 @@
           <div class="section-copy">
             <div class="kicker">性能模式</div>
             <div class="section-title">调度策略</div>
-            <div class="section-sub">选择当前生效的 CPU 响应与核心分配方式。</div>
+            <div class="section-sub">通过 cpuset 核心分配和 sched_pixel 响应时间控制升频行为，点击卡片切换。</div>
           </div>
           <div class="profile-list" id="profile-list"></div>
         </div>
 
-        <article class="note-card">
-          <div class="note-title">说明</div>
-          <div class="note-body">模块不直接对抗 Thermal HAL，而是通过 cpuset 与 sched_pixel 响应时间控制调度行为。自动模式只在亮屏前台缓慢切换：steady-screen 候选前台先保持默认，再进长亮屏，持续热平台才压到省电。</div>
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">自动模式</div>
+              <div class="panel-title">切换逻辑</div>
+              <div class="panel-desc">steady-screen 候选先保持默认约 45s，再进长亮屏；VIRTUAL-SKIN ≥ 40.8°C 持续约 90s 压到省电；温度回落后恢复长亮屏；息屏后回到 balanced。</div>
+            </div>
+          </div>
         </article>
       </div>
     </section>
@@ -222,9 +244,9 @@
                 <div class="temp-bar-track">
                   <div class="temp-bar-fill" id="temp-fill" style="width:0%"></div>
                   <div class="temp-marker stock" id="mk-stock" style="left:0%"></div>
-                  <div class="temp-mlbl" id="mk-stock-lbl" style="left:0%">39°C</div>
+                  <div class="temp-mlbl" id="mk-stock-lbl" style="left:0%">41°C</div>
                   <div class="temp-marker mod" id="mk-mod" style="left:0%"></div>
-                  <div class="temp-mlbl mod" id="mk-mod-lbl" style="left:0%">43°C 当前</div>
+                  <div class="temp-mlbl mod" id="mk-mod-lbl" style="left:0%"></div>
                 </div>
               </div>
               <div class="sensor-grid" id="sensor-grid"></div>
@@ -303,7 +325,7 @@
             <div class="panel-copy">
               <div class="kicker">蜂窝省电</div>
               <div class="panel-title">NR 息屏降级</div>
-              <div class="panel-desc" id="nr-switch-desc">息屏超过 5 分钟后切换到 LTE，亮屏自动恢复 NR（最多滞后 5 分钟）。热点开启时不降级。</div>
+              <div class="panel-desc" id="nr-switch-desc">息屏 5 分钟后将网络模式从 NR 切到 LTE，降低 modem 射频功耗。亮屏自动恢复，热点开启时跳过。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn" id="nr-switch-detail-btn" type="button">详情</button>
@@ -319,8 +341,8 @@
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">副卡槽策略</div>
-              <div class="panel-title">SIM2 自动管理</div>
-              <div class="panel-desc" id="sim2-auto-desc">默认关闭，避免 radio / IMS 重注册在夜间打扰待机。</div>
+              <div class="panel-title">SIM2 空槽管理</div>
+              <div class="panel-desc" id="sim2-auto-desc">单卡用户建议开启：息屏时减少 modem 实例数，消除空槽搜网开销。双卡用户请保持关闭。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn primary" id="sim2-auto-toggle-btn" type="button"><span id="sim2-auto-toggle-label">读取中…</span></button>
@@ -336,7 +358,7 @@
             <div class="panel-copy">
               <div class="kicker">过夜排障</div>
               <div class="panel-title">待机隔离模式</div>
-              <div class="panel-desc" id="idle-isolate-desc">默认关闭；开启后，息屏阶段暂停 NR 降级、SIM2 管理、功耗采样、thermal burst 和自动调度，只用于隔离 control 模块干扰。</div>
+              <div class="panel-desc" id="idle-isolate-desc">仅用于 A/B 排障。开启后息屏阶段暂停模块所有待机干预（NR / SIM2 / 自动调度 / 功耗采样），验证是否为模块阻碍 deep sleep。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn primary" id="idle-isolate-toggle-btn" type="button"><span id="idle-isolate-toggle-label">读取中…</span></button>
@@ -352,7 +374,7 @@
             <div class="panel-copy">
               <div class="kicker">待机诊断</div>
               <div class="panel-title">后台 worker 摘要</div>
-              <div class="panel-desc">读取 `.standby_diag_state` 的低噪声摘要，不依赖大段 logcat。</div>
+              <div class="panel-desc">后台统一工作循环的实时状态，包括当前分支、下次唤醒时间和 NR / 调度状态。</div>
             </div>
           </div>
           <div class="data-list" id="standby-diag-rows" style="margin-top:14px">
@@ -364,8 +386,8 @@
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">内存优化</div>
-              <div class="panel-title">ZRAM / Swap 参数</div>
-              <div class="panel-desc" id="swap-desc">模块开机自动配置 lz77eh 硬件压缩 + 11392MB + VM 参数优化，不依赖 Scene。</div>
+              <div class="panel-title">ZRAM / VM 参数</div>
+              <div class="panel-desc" id="swap-desc">Tensor G4 Emerald Hill 硬件压缩引擎，ZRAM 11392MB，VM 参数开机自动配置。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn" id="swap-detail-btn" type="button">详情</button>
@@ -398,7 +420,7 @@
 
         <article class="note-card">
           <div class="note-title">说明</div>
-          <div class="note-body">待机扫描优化（WiFi / BLE / Nearby）和 multicast 屏幕感知仍由模块自动配置。此页新增两个显式待机开关：`SIM2 自动管理` 只在确有空槽节电需求时开启；`待机隔离模式` 只用于过夜 A/B 排障，不建议长期保持。</div>
+          <div class="note-body">WiFi / BLE 后台扫描、Nearby Sharing 和 multicast 屏幕感知由模块开机自动配置，无需手动操作。SIM2 空槽管理仅在副卡槽确实为空时建议开启；待机隔离模式仅用于一晚隔离测试，验证后应关闭。</div>
         </article>
       </div>
     </section>
@@ -487,6 +509,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=4.3.17"></script>
+<script src="/app.js?v=4.3.21"></script>
 </body>
 </html>

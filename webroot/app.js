@@ -38,8 +38,8 @@ const CLUSTERS = [
 const HOME_CPU_LABELS = ['小核', '中核', '大核'];
 const TEMP_MIN = 25;
 const TEMP_MAX = 60;
-const THRESH_STOCK = 39;
-const THRESH_MOD = 43;
+const THRESH_STOCK = 37;
+const THRESH_MOD_DEFAULT = 4;
 const PULL_CIRC = 62.83;
 
 const THEME_ICONS = {
@@ -108,25 +108,25 @@ const PROFILES = {
 const THERMAL_PRESETS = {
   0: {
     name: '出厂阈值',
-    summary: '恢复出厂 39°C 介入点。',
-    detail: '<b>出厂阈值</b><br><br><b>VIRTUAL-SKIN 39°C</b> 开始介入。保持 Google 出厂温控口径，保守但更容易在日常高温边缘频繁触发降温。',
+    summary: '恢复 Google 出厂温控，最早 37°C 介入。',
+    detail: '<b>出厂阈值</b><br><br>Google 原厂温控口径。<b>HINT 37°C / VIRTUAL-SKIN 39°C / CPU-HIGH 41°C</b> 依次介入。保守但更容易在日常高温边缘频繁触发降温。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/></svg>'
   },
   2: {
     name: '轻度放宽',
-    summary: 'VIRTUAL-SKIN 41°C 开始介入。',
+    summary: '出厂 +2°C，最早 39°C 介入。',
     detail: '<b>轻度放宽</b><br><br>在出厂基础上整体上移 <b>+2°C</b>。适合减少日常温度波动带来的频繁触发，同时保留较明显的安全余量。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82z"/></svg>'
   },
   4: {
     name: '日常推荐',
-    summary: '模块默认档，VIRTUAL-SKIN 43°C 开始介入。',
-    detail: '<b>日常推荐（模块默认）</b><br><br>在出厂基础上整体上移 <b>+4°C</b>，VIRTUAL-SKIN 43°C 才开始介入。兼顾性能表现、机身温度和日常稳定性，是模块默认档位。',
+    summary: '模块默认档，出厂 +4°C，最早 41°C 介入。',
+    detail: '<b>日常推荐（模块默认）</b><br><br>在出厂基础上整体上移 <b>+4°C</b>，HINT 41°C / VIRTUAL-SKIN 43°C / CPU-HIGH 45°C 依次介入。兼顾性能表现、机身温度和日常稳定性，是模块默认档位。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67z"/></svg>'
   },
   6: {
     name: '性能优先',
-    summary: 'VIRTUAL-SKIN 45°C 开始介入。',
+    summary: '出厂 +6°C，最早 43°C 介入。',
     detail: '<b>性能优先</b><br><br>在出厂基础上整体上移 <b>+6°C</b>，显著延后系统降温介入。适合短时高负载冲刺，但机身体感温度会更快上升。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>'
   }
@@ -185,6 +185,7 @@ const state = {
   cpuBusy: false,
   profilePolicyBusy: false,
   thermalBusy: false,
+  thermalApplyBusy: false,
   swapBusy: false,
   swapLoading: false,
   nrSwitch: 'off',
@@ -241,8 +242,13 @@ function initRefs() {
   refs.rtZramUsage = $('rt-zram-usage');
   refs.rtRatio = $('rt-ratio');
   refs.rtWebuiMem = $('rt-webui-mem');
+  refs.rtMemAvail = $('rt-mem-avail');
+  refs.rtMemTotal = $('rt-mem-total');
+  refs.rtSwapFree = $('rt-swap-free');
+  refs.rtUptime = $('rt-uptime');
   refs.infoModel = $('info-model');
   refs.infoAndroid = $('info-android');
+  refs.infoKernel = $('info-kernel');
   refs.infoModule = $('info-module');
   refs.logCard = $('log-card');
   refs.logInner = $('log-inner');
@@ -679,11 +685,12 @@ function tempHex(t) {
 }
 
 function tempStatus(t) {
+  const modThresh = THRESH_STOCK + (state.currentOffset || THRESH_MOD_DEFAULT);
   if (t < 36) return '凉爽';
-  if (t < 39) return '正常';
-  if (t < 43) return '已高于原厂阈值，当前仍在放宽区间';
-  if (t < 47) return '系统已开始主动降温';
-  if (t < 50) return '温度持续偏高，系统正在加强降温';
+  if (t < THRESH_STOCK) return '正常';
+  if (t < modThresh) return '已高于原厂阈值，当前仍在放宽区间';
+  if (t < modThresh + 4) return '系统已开始主动降温';
+  if (t < 55) return '温度持续偏高，系统正在加强降温';
   return '温度过高，系统已严格限制性能';
 }
 
@@ -692,12 +699,17 @@ function barPct(t) {
 }
 
 function positionMarkers() {
+  const modThresh = THRESH_STOCK + (state.currentOffset || THRESH_MOD_DEFAULT);
   const stockPct = barPct(THRESH_STOCK);
-  const modPct = barPct(THRESH_MOD);
+  const modPct = barPct(modThresh);
   refs.mkStock.style.left = `${stockPct}%`;
   refs.mkStockLbl.style.left = `${stockPct}%`;
+  refs.mkStockLbl.textContent = `${THRESH_STOCK}°C 原厂`;
   refs.mkMod.style.left = `${modPct}%`;
   refs.mkModLbl.style.left = `${modPct}%`;
+  refs.mkModLbl.textContent = state.currentOffset === 0 ? '' : `${modThresh}°C 当前`;
+  refs.mkMod.style.display = state.currentOffset === 0 ? 'none' : '';
+  refs.mkModLbl.style.display = state.currentOffset === 0 ? 'none' : '';
 }
 
 function syncProfileUi() {
@@ -765,6 +777,7 @@ function syncThermalUi() {
   document.querySelectorAll('.thermal-option').forEach((card) => {
     card.classList.toggle('selected', Number(card.dataset.offset) === state.currentOffset);
   });
+  positionMarkers();
 }
 
 function renderProfileCards() {
@@ -960,6 +973,7 @@ async function loadInfo() {
     const deviceModel = data.model || '—';
     refs.infoModel.textContent = deviceModel;
     refs.infoAndroid.textContent = data.version ? `Android ${data.version}` : '—';
+    refs.infoKernel.textContent = data.kernel || '—';
     refs.infoModule.textContent = data.module_version || '—';
     refs.topbarKicker.textContent = data.module_version
       ? `${deviceModel} · UI ${data.module_version}`
@@ -969,6 +983,21 @@ async function loadInfo() {
     refs.rtWebuiMem.textContent = data.httpd_rss_kb
       ? data.httpd_rss_kb < 1024 ? `${data.httpd_rss_kb}KB` : `${(data.httpd_rss_kb / 1024).toFixed(1)}MB`
       : '—';
+    // 内存与系统信息 → loadInfo 写入, refreshSwap 写入 ZRAM 部分
+    const fmtKB = (kb) => {
+      if (!kb || kb <= 0) return '—';
+      return kb >= 1048576 ? `${(kb / 1048576).toFixed(1)}GB` : kb >= 1024 ? `${(kb / 1024).toFixed(0)}MB` : `${kb}KB`;
+    };
+    if (data.mem_total_kb > 0) refs.rtMemTotal.textContent = fmtKB(data.mem_total_kb);
+    if (data.mem_avail_kb > 0) refs.rtMemAvail.textContent = fmtKB(data.mem_avail_kb);
+    if (data.swap_free_kb > 0 || data.swap_total_kb > 0) {
+      refs.rtSwapFree.textContent = `${fmtKB(data.swap_free_kb)} / ${fmtKB(data.swap_total_kb)}`;
+    }
+    if (data.uptime_sec > 0) {
+      const h = Math.floor(data.uptime_sec / 3600);
+      const m = Math.floor((data.uptime_sec % 3600) / 60);
+      refs.rtUptime.textContent = h > 0 ? `${h}小时${m}分` : `${m}分钟`;
+    }
     if (data.webui_token) state.webuiToken = data.webui_token;
     const vc = data.version_code || '';
     if (vc && localStorage.getItem('_modVC') !== vc) {
@@ -1138,8 +1167,8 @@ function renderNrSwitchRows(data) {
   rows.forEach((row) => refs.nrSwitchRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
   refs.nrSwitchToggleLabel.textContent = isOn ? '关闭' : '开启';
   refs.nrSwitchDesc.textContent = isOn
-    ? '已开启：灭屏 5 分钟后切到 LTE，亮屏自动恢复 NR（最多滞后 5 分钟）'
-    : '灭屏超过 5 分钟后切到 LTE，亮屏自动恢复；热点开启时不降级。';
+    ? '已开启：息屏 5 分钟后切到 LTE，亮屏恢复 NR（worker 周期最多滞后 5 分钟）'
+    : '息屏 5 分钟后将网络模式从 NR 切到 LTE，降低 modem 射频功耗。亮屏自动恢复，热点开启时跳过。';
 }
 
 function syncStandbyGuardButtons() {
@@ -1186,25 +1215,25 @@ function renderStandbyGuard(data) {
   const sim2On = state.sim2AutoManage === 'on';
   refs.sim2AutoToggleLabel.textContent = sim2On ? '关闭' : '开启';
   refs.sim2AutoDesc.textContent = sim2On
-    ? '已开启：仅在副卡槽确实为空、且你接受自动 radio / IMS 写入时才建议保留。'
-    : '默认关闭：完全不触发 SIM2 radio / IMS 自动写入，待机排障更稳。';
+    ? '已开启：息屏时将 modem 实例从 2 降到 1，消除空槽搜网开销。亮屏或检测到 SIM2 插入时自动恢复。'
+    : '已关闭：modem 始终保持双实例。如果副卡槽没有插 SIM 卡，建议开启以降低待机功耗。';
   refs.sim2AutoRows.innerHTML = '';
   [
     { label: '功能状态', value: sim2On ? '已开启' : '已关闭', cls: sim2On ? 'good' : 'off' },
-    { label: '当前策略', value: sim2On ? '仅在空槽时操作 slot 1 radio / ims' : '完全跳过 SIM2 radio / ims 写入', cls: sim2On ? 'warn' : 'good' },
-    { label: '推荐用途', value: sim2On ? '确有副卡槽空置节电需求' : '默认保守基线 / 过夜排障优先', cls: 'off' },
+    { label: '实现方式', value: sim2On ? 'set-sim-count 1（减少 Active modem 实例）' : '不操作 modem 实例数', cls: sim2On ? 'good' : 'off' },
+    { label: '适用场景', value: sim2On ? '单卡用户 · 副卡槽为空' : '双卡用户 · 两张 SIM 都在使用', cls: 'off' },
   ].forEach((row) => refs.sim2AutoRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   const isolateOn = state.idleIsolateMode === 'on';
   refs.idleIsolateToggleLabel.textContent = isolateOn ? '关闭' : '开启';
   refs.idleIsolateDesc.textContent = isolateOn
-    ? '已开启：息屏阶段暂停 NR 降级、SIM2 管理、功耗采样、thermal burst 和自动调度，只保留最小 worker 路径。'
-    : '默认关闭：沿用常规待机 worker。过夜诊断怀疑 control 模块挡 suspend 时，再临时开启。';
+    ? '已开启：息屏阶段暂停 NR 降级、SIM2 管理、功耗采样、thermal burst 和自动调度，仅保留最小 worker 路径（600s 间隔）。'
+    : '仅用于 A/B 排障。开启后息屏阶段暂停模块所有待机干预，验证是否为模块阻碍 deep sleep。';
   refs.idleIsolateRows.innerHTML = '';
   [
     { label: '功能状态', value: isolateOn ? '已开启' : '已关闭', cls: isolateOn ? 'warn' : 'off' },
-    { label: '息屏阶段', value: isolateOn ? '暂停 NR / SIM2 / thermal burst / power / auto profile 待机干预' : '常规待机路径生效', cls: isolateOn ? 'warn' : 'good' },
-    { label: '使用建议', value: isolateOn ? '仅用于一晚隔离测试，验证后记得关闭' : '日常使用保持关闭', cls: 'off' },
+    { label: '息屏行为', value: isolateOn ? '仅保留 600s 最小唤醒路径，其余全部暂停' : '常规待机 worker 正常运行', cls: isolateOn ? 'warn' : 'good' },
+    { label: '使用建议', value: isolateOn ? '仅用于一晚隔离测试，验证后请关闭' : '日常使用保持关闭', cls: 'off' },
   ].forEach((row) => refs.idleIsolateRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   refs.standbyDiagRows.innerHTML = '';
@@ -2079,10 +2108,11 @@ async function setProfilePolicy(policy) {
 }
 
 async function applyThermal(offset) {
-  if (offset === state.currentOffset || state.thermalBusy) return;
+  if (offset === state.currentOffset || state.thermalApplyBusy) return;
   const prev = state.currentOffset;
   const card = refs.thermalList.querySelector(`[data-offset="${offset}"]`);
   if (!card) return;
+  state.thermalApplyBusy = true;
   card.classList.add('loading');
   appendLog(`切换温控阈值 ${THERMAL_PRESETS[offset].name}…`, 'dim');
   refs.logCard.classList.add('open');
@@ -2108,6 +2138,7 @@ async function applyThermal(offset) {
     appendLog(String(err), 'err');
   } finally {
     card.classList.remove('loading');
+    state.thermalApplyBusy = false;
   }
 }
 

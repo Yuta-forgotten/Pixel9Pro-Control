@@ -42,6 +42,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     #   VIRTUAL-SKIN / VIRTUAL-SKIN-HINT / VIRTUAL-SKIN-SOC
     #   VIRTUAL-SKIN-CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU
     # HotThreshold 中的 "NAN" 字符串跳过，其余浮点数 +offset
+    # 支持多行 JSON 格式 (HotThreshold 数组跨行)
     # ──────────────────────────────────────────────────────────
     awk -v off="$offset" '
     /"Name":/ {
@@ -51,7 +52,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         cur = n
         tgt = (cur == "VIRTUAL-SKIN" || cur == "VIRTUAL-SKIN-HINT" || cur == "VIRTUAL-SKIN-SOC" || cur == "VIRTUAL-SKIN-CPU-LIGHT-ODPM" || cur == "VIRTUAL-SKIN-CPU-MID" || cur == "VIRTUAL-SKIN-CPU-ODPM" || cur == "VIRTUAL-SKIN-CPU-HIGH" || cur == "VIRTUAL-SKIN-GPU")
     }
-    tgt && /"HotThreshold":/ {
+    tgt && /"HotThreshold"/ && /\[/ && /\]/ {
         line = $0
         bs = index(line, "[")
         prefix = substr(line, 1, bs - 1)
@@ -59,18 +60,36 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         be     = index(rest, "]")
         inner  = substr(rest, 1, be - 1)
         suffix = substr(rest, be)
-
-        n_v = split(inner, vals, ", ")
+        n_v = split(inner, vals, ",")
         result = ""
         for (i = 1; i <= n_v; i++) {
-            v = vals[i]
-            if (v != "\"NAN\"") {
-                v = sprintf("%.1f", v + off + 0)
+            v = vals[i]; gsub(/[ \t]/, "", v)
+            if (v == "\"NAN\"") {
+                result = result (i > 1 ? ", " : "") v
+            } else {
+                result = result (i > 1 ? ", " : "") sprintf("%.1f", v + off + 0)
             }
-            result = result (i > 1 ? ", " : "") v
         }
         print prefix "[" result suffix
         next
+    }
+    tgt && /"HotThreshold"/ && /\[/ && !/\]/ {
+        in_hot = 1; print; next
+    }
+    in_hot {
+        if (/\]/) { in_hot = 0; print; next }
+        line = $0; gsub(/[ \t]/, "", line); gsub(/,/, "", line)
+        if (line == "\"NAN\"") { print; next }
+        if (match(line, /^[0-9]/) || match(line, /^-/)) {
+            indent = $0; sub(/[^ \t].*/, "", indent)
+            val = line + 0
+            newval = sprintf("%.1f", val + off)
+            trailing = ""
+            if (sub(/,[ \t]*$/, "", $0) > 0) trailing = ","
+            printf "%s%s%s\n", indent, newval, trailing
+            next
+        }
+        print; next
     }
     { print }
     ' "$STOCK_JSON" > "${OUT_JSON}.tmp"

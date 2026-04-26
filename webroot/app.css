@@ -438,8 +438,8 @@ button{border:none;background:none;padding:0;color:inherit}
 }
 
 .metric-grid{
-  display:grid;
-  grid-template-columns:1fr 1fr;
+  display:flex;
+  flex-direction:column;
   gap:12px;
 }
 
@@ -449,6 +449,25 @@ button{border:none;background:none;padding:0;color:inherit}
   flex-direction:column;
   gap:12px;
   min-width:0;
+}
+
+.home-temp-hero{
+  display:flex;
+  align-items:flex-end;
+  gap:16px;
+  flex-wrap:wrap;
+}
+
+.home-temp-meta{
+  flex:1;
+  min-width:120px;
+  padding-bottom:8px;
+}
+
+.home-temp-status{
+  font-size:13px;
+  line-height:18px;
+  color:var(--text-2);
 }
 
 .metric-head,
@@ -687,7 +706,7 @@ button{border:none;background:none;padding:0;color:inherit}
 
 .temp-mlbl{
   position:absolute;
-  top:15px;
+  top:-18px;
   font-size:10px;
   line-height:14px;
   transform:translateX(-50%);
@@ -695,7 +714,7 @@ button{border:none;background:none;padding:0;color:inherit}
   color:var(--text-3);
 }
 
-.temp-mlbl.mod{color:var(--primary)}
+.temp-mlbl.mod{color:var(--primary);top:15px}
 
 .sensor-grid{
   display:grid;

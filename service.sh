@@ -1,8 +1,18 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.3.19 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.3.21 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → 统一后台 → WebUI
+#
+# v4.3.21 变更:
+#   - 修复 NR 降级 tethering 误判: wlan1/wlan2 (bcmdhd P2P 虚拟接口) 被误判为热点,
+#     导致 _tether=1 永久阻止降级. 修复: 只检测 swlan0/ap0/softap0/rndis0/ncm0 且 operstate=up
+#   - 回滚 v4.3.20 错误的 IRQ smp_affinity 方案 (stock 内核无 dhd_dpc, suspend 时被驱动重置)
+#
+# v4.3.20 变更:
+#   - 修复 NR 降级 adaptive sleep bug: 等待期间 worker 从 600s 跳到 60s 间隔
+#   - 新增 sched_util_clamp_min=0 (stock=1024 向 EAS 发送虚假 100% 利用率信号)
+#   - 新增 apply_irq_affinity (后在 v4.3.21 回滚, 方案错误)
 #
 # v4.3.19 变更:
 #   - SIM2 空槽省电彻底重写: 从 cmd phone radio power (临时关 radio, 会被框架恢复)
@@ -391,7 +401,7 @@ if [ ! -f "$SIM2_AUTO_FILE" ]; then
 fi
 [ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
 
-log -t pixel9pro_ctrl "v4.3.17[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.3.21[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -472,7 +482,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.3.17[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.3.21[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # 延迟复写：NTP 服务器和扫描类设置可能在用户解锁后被系统回写。
 (
