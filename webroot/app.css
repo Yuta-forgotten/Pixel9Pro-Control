@@ -768,8 +768,21 @@ button{border:none;background:none;padding:0;color:inherit}
 .note-card{
   padding:16px 18px;
   border-radius:var(--radius-lg);
-  background:var(--secondary-container);
+  background:var(--surface-2);
   border:1px solid var(--line);
+  border-left:3px solid var(--primary);
+}
+.note-card .note-title{
+  font-size:13px;
+  font-weight:600;
+  color:var(--primary);
+  letter-spacing:.02em;
+  margin-bottom:6px;
+}
+.note-card .note-body{
+  font-size:13px;
+  line-height:20px;
+  color:var(--text-2);
 }
 
 .log-card{overflow:hidden}
