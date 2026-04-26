@@ -161,21 +161,6 @@ apply_uecap_profile() {
     fi
 }
 
-# Wi-Fi PCIe IRQ 亲和性优化 (Sultan dhd_dpc 思路的用户空间版)
-# bcmdhd 驱动在 suspend/resume 时重新注册 IRQ, affinity 被重置为默认值 0x40 (CPU 6)
-# 因此每次亮屏后需要重新设置
-apply_irq_affinity() {
-    for _irq_dir in /proc/irq/*/; do
-        [ -f "${_irq_dir}actions" ] || continue
-        _irq_act=$(cat "${_irq_dir}actions" 2>/dev/null)
-        case "$_irq_act" in
-            *dhdpcie:*)
-                echo 0f > "${_irq_dir}smp_affinity" 2>/dev/null
-                ;;
-        esac
-    done
-}
-
 apply_keep5g_standby_settings() {
     # 保留 5G / 5GA / CA 能力时，仍然建议关闭 mobile_data_always_on。
     # AOSP 定义表明该项仅用于在 Wi-Fi 等高优先级网络存在时，让蜂窝数据链路继续常驻以加快切换。
@@ -439,10 +424,6 @@ echo 20 > /proc/sys/vm/dirty_background_ratio 2>/dev/null
 echo 0 > /proc/sys/kernel/sched_util_clamp_min 2>/dev/null
 log -t pixel9pro_ctrl "EAS: sched_util_clamp_min=0 (fix false 100% util signal)"
 
-# === IRQ 亲和性优化 (boot 时首次设置) ===
-apply_irq_affinity
-log -t pixel9pro_ctrl "IRQ: Wi-Fi PCIe affinity -> CPU 0-3 (small cores)"
-
 # === ZRAM 配置 (Emerald Hill 硬件加速 + 扩容) ===
 # 原厂出厂: persist.vendor.zram_comp_algorithm 默认为 lz4, ZRAM 大小 50% RAM ≈ 8GB.
 # init.rc 代码兜底默认是 lz77eh (Emerald Hill 硬件), 但出厂 persist 属性覆盖为 lz4.
@@ -699,7 +680,6 @@ is_nr_mode_value() {
     _nr_off_since=0
     _nr_restored=0
     _prev_screen=""
-    _prev_screen_irq=""
     _just_off=0
     _hist_count=0
     _sim2_check_count=0
@@ -793,12 +773,6 @@ is_nr_mode_value() {
         fi
         _prev_screen="$_screen"
 
-        # --- IRQ affinity: re-apply after resume (bcmdhd resets on suspend/resume) ---
-        if [ "$_screen" = "on" ] && [ "$_prev_screen_irq" = "off" ]; then
-            apply_irq_affinity
-        fi
-        _prev_screen_irq="$_screen"
-
         # --- SIM2 radio management (check every ~10 on-screen cycles) ---
         # 只在亮屏时检查: 息屏期间任何 telephony IPC 都会唤醒 modem 打断 kernel suspend。
         # boot 阶段的关闭由 boot+20s / boot+120s / boot+300s 三次一次性尝试保证。
@@ -829,9 +803,16 @@ is_nr_mode_value() {
                     _elapsed=$((_now - _nr_off_since))
                     _since_nr=$((_now - _nr_restored))
                     if [ "$_elapsed" -ge "$_NR_DELAY" ] && [ "$_since_nr" -ge "$_NR_COOLDOWN" ]; then
+                        # tethering 检测: 只检查真正的热点/USB 接口是否 UP。
+                        # wlan1/wlan2 是 bcmdhd P2P 虚拟接口, Wi-Fi 开启时就存在(state DOWN),
+                        # 不代表 tethering。误判会永久阻止 NR 降级。
+                        # 参考: dumpsys tethering → tetherableWifiRegexs 不含 P2P 接口。
                         _tether=0
-                        for _tif in swlan0 wlan1 wlan2 ap0 rndis0 ncm0; do
-                            [ -d "/sys/class/net/$_tif" ] && _tether=1 && break
+                        for _tif in swlan0 ap0 softap0 rndis0 ncm0; do
+                            if [ -d "/sys/class/net/$_tif" ]; then
+                                _tif_state=$(cat "/sys/class/net/$_tif/operstate" 2>/dev/null)
+                                [ "$_tif_state" = "up" ] && _tether=1 && break
+                            fi
                         done
                         if [ "$_tether" -eq 0 ]; then
                             _cur=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
