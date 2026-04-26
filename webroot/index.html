@@ -157,14 +157,9 @@
           <div class="section-sub" id="perf-policy-desc" style="margin-top:10px">读取当前调度策略…</div>
         </article>
 
-        <article class=”surface-card”>
-          <div class=”panel-head”>
-            <div class=”panel-copy”>
-              <div class=”kicker”>调度原理</div>
-              <div class=”panel-title”>模式说明</div>
-              <div class=”panel-desc”>通过 cpuset 核心分配和 sched_pixel 响应时间控制升频行为，不直接写 scaling_max_freq，不对抗 Thermal HAL。自动模式以默认参数为底座，长亮屏前台按 default → light → battery 慢切换。</div>
-            </div>
-          </div>
+        <article class=”note-card”>
+          <div class=”note-title”>调度原理 · 模式说明</div>
+          <div class=”note-body”>通过 cpuset 核心分配和 sched_pixel 响应时间控制升频行为，不直接写 scaling_max_freq，不对抗 Thermal HAL。自动模式以默认参数为底座，长亮屏前台按 default → light → battery 慢切换。</div>
         </article>
 
         <div class="section-block">
@@ -195,14 +190,9 @@
           <div class="profile-list" id="profile-list"></div>
         </div>
 
-        <article class="surface-card">
-          <div class="panel-head">
-            <div class="panel-copy">
-              <div class="kicker">自动模式</div>
-              <div class="panel-title">切换逻辑</div>
-              <div class="panel-desc">steady-screen 候选先保持默认约 45s，再进长亮屏；VIRTUAL-SKIN ≥ 40.8°C 持续约 90s 压到省电；温度回落后恢复长亮屏；息屏后回到 balanced。</div>
-            </div>
-          </div>
+        <article class="note-card">
+          <div class="note-title">自动模式 · 切换逻辑</div>
+          <div class="note-body">steady-screen 候选先保持默认约 45s，再进长亮屏；VIRTUAL-SKIN ≥ 40.8°C 持续约 90s 压到省电；温度回落后恢复长亮屏；息屏后回到 balanced。</div>
         </article>
       </div>
     </section>
