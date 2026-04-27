@@ -14,7 +14,7 @@ PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
 read_valid_profile() {
     _prof=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
     case "$_prof" in
-        responsive|balanced|light|battery|default) printf '%s' "$_prof" ;;
+        responsive|balanced|battery|default) printf '%s' "$_prof" ;;
         *) printf '%s' "$2" ;;
     esac
 }
@@ -33,10 +33,7 @@ emit_profile_state() {
     _policy=$(read_valid_policy)
     _reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null | tr -d '\r')
     case "$_reason" in
-        feed_warmup) _reason="steady_screen_warmup" ;;
-        feed_hold) _reason="steady_screen_hold" ;;
-        feed_hot) _reason="steady_hot_guard" ;;
-        nonfeed_reset) _reason="nonsteady_reset" ;;
+        feed_warmup|feed_hold|feed_hot|nonfeed_reset) _reason="" ;;
     esac
     printf '"profile":"%s","manual_profile":"%s","policy":"%s","auto_reason":"%s"' \
         "$_active" "$_manual" "$_policy" "$(json_escape "$_reason")"
@@ -55,7 +52,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     newpolicy=$(printf '%s' "$body" | sed -n 's/.*"policy"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
 
     case "$newprof" in
-        ''|responsive|balanced|light|battery|default) ;;
+        ''|responsive|balanced|battery|default) ;;
         *) json_error '400 Bad Request' 'invalid profile' ;;
     esac
     case "$newpolicy" in
@@ -95,7 +92,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         auto)
             _active=$(read_valid_profile "$PROFILE_FILE" 'default')
             case "$_active" in
-                default|balanced|light|battery) _target="$_active" ;;
+                default|balanced|battery) _target="$_active" ;;
                 *) _target="default" ;;
             esac
             _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_target" "$MODDIR" 2>/dev/null)

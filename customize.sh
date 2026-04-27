@@ -98,6 +98,10 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
         fi
     done
     ui_print "  ✓ 已迁移用户配置"
+    # v4.3.22: light 已删除, 映射到 balanced
+    for _mf in "$MODPATH/.current_profile" "$MODPATH/.profile_manual"; do
+        [ -f "$_mf" ] && grep -q '^light$' "$_mf" && printf 'balanced' > "$_mf"
+    done
     ui_print ""
 fi
 
@@ -140,14 +144,13 @@ if [ "$_is_upgrade" -eq 0 ]; then
 
     # --- CPU 调度 ---
     ui_print "  ② CPU 调度:"
-    _CPU_VALS="battery light balanced default responsive"
+    _CPU_VALS="battery balanced default responsive"
     _CPU_LABEL_battery="省电"
-    _CPU_LABEL_light="长亮屏"
-    _CPU_LABEL_balanced="均衡手动"
+    _CPU_LABEL_balanced="均衡模式"
     _CPU_LABEL_default="默认 (自动基线)"
     _CPU_LABEL_responsive="响应优先"
-    _cpu_idx=3
-    _cpu_total=5
+    _cpu_idx=2
+    _cpu_total=4
     while true; do
         _i=0; _cpu_cur=""
         for _v in $_CPU_VALS; do

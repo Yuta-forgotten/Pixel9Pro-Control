@@ -248,7 +248,7 @@ manage_sim2_radio() {
 
 valid_profile() {
     case "$1" in
-        responsive|balanced|light|battery|default) return 0 ;;
+        responsive|balanced|battery|default) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -264,6 +264,8 @@ read_valid_profile() {
     _profile_path="$1"
     _profile_default="$2"
     _profile_value=$(cat "$_profile_path" 2>/dev/null | tr -d ' \n\r\t')
+    # v4.3.22: light 已删除, 映射到 balanced
+    [ "$_profile_value" = "light" ] && _profile_value="balanced"
     if valid_profile "$_profile_value"; then
         printf '%s' "$_profile_value"
     else
@@ -338,31 +340,6 @@ foreground_package_name() {
         _pkg=$(dumpsys window 2>/dev/null | grep 'mCurrentFocus' | head -1 | sed 's/.* \([^/ ][^/ ]*\)\/.*/\1/')
     fi
     printf '%s' "$_pkg" | tr -d ' \r\n'
-}
-
-is_steady_screen_package() {
-    case "$1" in
-        ''|com.google.android.apps.nexuslauncher|com.android.launcher3|com.android.systemui)
-            return 1
-            ;;
-        com.ss.android.ugc.aweme|\
-        com.zhiliaoapp.musically|\
-        com.tencent.mm|\
-        com.tencent.mobileqq|\
-        com.instagram.android|\
-        org.telegram.messenger|\
-        com.radolyn.ayugram|\
-        tv.danmaku.bili|\
-        com.xingin.xhs|\
-        com.sina.weibo|\
-        com.ss.android.article.news|\
-        com.zhihu.android)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
 }
 
 # ──────────────────────────────────────────────────────────
@@ -575,16 +552,31 @@ is_nr_mode_value() {
         mv "${STANDBY_DIAG_FILE}.tmp" "$STANDBY_DIAG_FILE"
     }
 
+    _read_odpm_uws() {
+        # Read ODPM cumulative energy (µWs) for modem rails
+        # VSYS_PWR_MODEM: iio:device0 CH9, VSYS_PWR_RFFE: iio:device1 CH11
+        _odpm_modem=0; _odpm_rffe=0
+        _d0=$(cat /sys/bus/iio/devices/iio:device0/energy_value 2>/dev/null)
+        _d1=$(cat /sys/bus/iio/devices/iio:device1/energy_value 2>/dev/null)
+        _odpm_modem=$(printf '%s' "$_d0" | sed -n 's/.*VSYS_PWR_MODEM\], *\([0-9]*\).*/\1/p')
+        _odpm_rffe=$(printf '%s' "$_d1" | sed -n 's/.*VSYS_PWR_RFFE\], *\([0-9]*\).*/\1/p')
+        [ -z "$_odpm_modem" ] && _odpm_modem=0
+        [ -z "$_odpm_rffe" ] && _odpm_rffe=0
+    }
+
     _write_power_session() {
         _ps_start="$1"
         _ps_level="$2"
         _ps_charge="$3"
         _ps_reason="$4"
+        _read_odpm_uws
         {
             printf 'start_ts=%s\n' "$_ps_start"
             printf 'start_level=%s\n' "$_ps_level"
             printf 'start_charge_uah=%s\n' "${_ps_charge:-0}"
             printf 'reset_reason=%s\n' "$_ps_reason"
+            printf 'odpm_modem_uws=%s\n' "$_odpm_modem"
+            printf 'odpm_rffe_uws=%s\n' "$_odpm_rffe"
         } > "${POWER_SESSION_FILE}.tmp"
         mv "${POWER_SESSION_FILE}.tmp" "$POWER_SESSION_FILE"
     }
@@ -716,17 +708,12 @@ is_nr_mode_value() {
     _power_charge_seen_full=0
     _power_reset_armed=0
     _power_hist_count=0
-    _AUTO_STEADY_DELAY=45
-    _AUTO_EXIT_DELAY=30
     _AUTO_BATTERY_TEMP=40800
     _AUTO_BATTERY_HOLD=90
     _AUTO_LIGHT_COOL_TEMP=40400
     _AUTO_LIGHT_COOL_HOLD=60
-    _auto_steady_since=0
-    _auto_nonsteady_since=0
     _auto_hot_since=0
     _auto_cool_since=0
-    _auto_pkg=""
     _active_profile=$(read_valid_profile "$PROFILE_FILE" 'default')
     _cycle_count=0
     _idle_isolate_prev=""
@@ -889,11 +876,8 @@ is_nr_mode_value() {
 
         if [ "$_screen_off_isolate" -eq 1 ]; then
             _worker_mode="idle_isolate"
-            _auto_steady_since=0
-            _auto_nonsteady_since=0
             _auto_hot_since=0
             _auto_cool_since=0
-            _auto_pkg=""
         else
             _track_power_window
 
@@ -904,61 +888,34 @@ is_nr_mode_value() {
             _target_reason=""
 
             if [ "$_profile_policy" = "manual" ]; then
-                _auto_steady_since=0
-                _auto_nonsteady_since=0
                 _auto_hot_since=0
                 _auto_cool_since=0
-                _auto_pkg=""
                 if [ "$_screen" = "on" ] && [ "$_active_profile" != "$_manual_profile" ]; then
                     if apply_profile_state "$_manual_profile" "manual_policy"; then
                         _active_profile="$_manual_profile"
                     fi
                 fi
             elif [ "$_screen" = "on" ]; then
-                _fg_pkg=$(foreground_package_name)
-                if is_steady_screen_package "$_fg_pkg"; then
-                    if [ "$_fg_pkg" != "$_auto_pkg" ]; then
-                        _auto_pkg="$_fg_pkg"
-                        _auto_steady_since=$_now
-                        _auto_hot_since=0
-                        _auto_cool_since=0
-                    fi
-                    _auto_nonsteady_since=0
-
-                    if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$_AUTO_BATTERY_TEMP" ] 2>/dev/null; then
-                        [ "$_auto_hot_since" -eq 0 ] && _auto_hot_since=$_now
-                        _auto_cool_since=0
-                    elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$_AUTO_LIGHT_COOL_TEMP" ] 2>/dev/null; then
-                        [ "$_auto_cool_since" -eq 0 ] && _auto_cool_since=$_now
-                        _auto_hot_since=0
-                    else
-                        _auto_hot_since=0
-                        _auto_cool_since=0
-                    fi
-
-                    if [ "$_active_profile" = "battery" ] && [ "$_auto_cool_since" -gt 0 ] && [ $((_now - _auto_cool_since)) -ge "$_AUTO_LIGHT_COOL_HOLD" ]; then
-                        _target_profile="light"
-                        _target_reason="hot_cooldown"
-                    elif [ "$_auto_hot_since" -gt 0 ] && [ $((_now - _auto_hot_since)) -ge "$_AUTO_BATTERY_HOLD" ]; then
-                        _target_profile="battery"
-                        _target_reason="steady_hot_guard"
-                    elif [ "$_auto_steady_since" -gt 0 ] && [ $((_now - _auto_steady_since)) -ge "$_AUTO_STEADY_DELAY" ]; then
-                        _target_profile="light"
-                        _target_reason="steady_screen_hold"
-                    else
-                        _target_profile="balanced"
-                        _target_reason="steady_screen_warmup"
-                    fi
+                if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$_AUTO_BATTERY_TEMP" ] 2>/dev/null; then
+                    [ "$_auto_hot_since" -eq 0 ] && _auto_hot_since=$_now
+                    _auto_cool_since=0
+                elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$_AUTO_LIGHT_COOL_TEMP" ] 2>/dev/null; then
+                    [ "$_auto_cool_since" -eq 0 ] && _auto_cool_since=$_now
+                    _auto_hot_since=0
                 else
                     _auto_hot_since=0
                     _auto_cool_since=0
-                    _auto_steady_since=0
-                    _auto_pkg=""
-                    [ "$_auto_nonsteady_since" -eq 0 ] && _auto_nonsteady_since=$_now
-                    if [ $((_now - _auto_nonsteady_since)) -ge "$_AUTO_EXIT_DELAY" ]; then
-                        _target_profile="balanced"
-                        _target_reason="nonsteady_reset"
-                    fi
+                fi
+
+                if [ "$_active_profile" = "battery" ] && [ "$_auto_cool_since" -gt 0 ] && [ $((_now - _auto_cool_since)) -ge "$_AUTO_LIGHT_COOL_HOLD" ]; then
+                    _target_profile="balanced"
+                    _target_reason="hot_cooldown"
+                elif [ "$_auto_hot_since" -gt 0 ] && [ $((_now - _auto_hot_since)) -ge "$_AUTO_BATTERY_HOLD" ]; then
+                    _target_profile="battery"
+                    _target_reason="steady_hot_guard"
+                else
+                    _target_profile="balanced"
+                    _target_reason="auto_balanced"
                 fi
 
                 if [ -n "$_target_profile" ]; then
@@ -981,9 +938,6 @@ is_nr_mode_value() {
                 fi
                 _auto_hot_since=0
                 _auto_cool_since=0
-                _auto_steady_since=0
-                _auto_nonsteady_since=0
-                _auto_pkg=""
             fi
         fi
 

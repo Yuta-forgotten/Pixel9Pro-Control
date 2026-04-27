@@ -52,29 +52,20 @@ const PROFILES = {
   responsive: {
     name: '响应优先',
     summary: '最明显的手动高响应档，保留全核并让中核/大核更早介入。',
-    desc: '前台: cpu0-7 · 小核 12ms · 中核 24ms · 大核 80ms',
+    desc: '前台: cpu0-7 · 小核 12ms · 中核 20ms · 大核 80ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     modeClass: 'mode-game',
-    detail: '<b>响应优先</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 12ms / 中核 24ms / 大核 80ms<br><br>这是现在最明显的手动高响应档。它不是“极限性能模式”，而是保留全核调度并让中核、大核更早补位，用更直接的交互提速感和自动/默认模式拉开差异。'
+    detail: '<b>响应优先</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 12ms / 中核 20ms / 大核 80ms<br><br>手动高响应档：保留全核调度并让中核、大核更早补位，交互提速感最明显。'
   },
   balanced: {
-    name: '均衡手动',
-    summary: '保留全核可调度，但明显放慢 X4，适合作为稳定的手动主力档。',
-    desc: '前台: cpu0-7 · 小核 16ms · 中核 40ms · 大核 160ms',
+    name: '均衡模式',
+    summary: '小核高效区间运行，中核积极补位，X4 突发吸收。唯一日常主力档。',
+    desc: '前台: cpu0-7 · 小核 16ms · 中核 24ms · 大核 160ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     modeClass: 'mode-balanced',
-    detail: '<b>均衡手动</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 16ms / 中核 40ms / 大核 160ms<br><br>这是推荐的手动主力档：保留全核弹性，但显著放慢 X4 常态介入，让系统更稳、更均衡。适合不想交给自动控制、又不追求最高响应的人。'
-  },
-  light: {
-    name: '长亮屏',
-    summary: '前台限制在 0-6，直接避免 X4 常态介入，适合社交和短视频长亮屏。',
-    desc: '前台: cpu0-6 · 小核 24ms · 中核 64ms · 大核 200ms',
-    icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.8 1.42-1.42zM1 13h3v-2H1v2zm10-9h2V1h-2v3zm7.45 1.46l1.79-1.8-1.41-1.41-1.8 1.79 1.42 1.42zM17.24 19.16l1.8 1.79 1.41-1.41-1.79-1.8-1.42 1.42zM20 11v2h3v-2h-3zM11 20h2v3h-2v-3zm-7.45-2.54l-1.79 1.8 1.41 1.41 1.8-1.79-1.42-1.42zM12 6a6 6 0 100 12 6 6 0 000-12z"/></svg>',
-    hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.8 1.42-1.42zM1 13h3v-2H1v2zm10-9h2V1h-2v3zm7.45 1.46l1.79-1.8-1.41-1.41-1.8 1.79 1.42 1.42zM17.24 19.16l1.8 1.79 1.41-1.41-1.79-1.8-1.42 1.42zM20 11v2h3v-2h-3zM11 20h2v3h-2v-3zm-7.45-2.54l-1.79 1.8 1.41 1.41 1.8-1.79-1.42-1.42zM12 6a6 6 0 100 12 6 6 0 000-12z"/></svg>',
-    modeClass: 'mode-light',
-    detail: '<b>长亮屏</b><br><br><b>cpuset</b>: top-app → cpu0-6，background → cpu0-3<br><b>response_time</b>: 小核 24ms / 中核 64ms / 大核 200ms<br><br>这是面向阅读、社交、短视频 steady-state 负载的低温方案：不再把小核锁死在 820MHz，也不再让前台默认挤到中大核，而是让小核低频浮动承接持续杂务，中核按需补位，X4 基本不参与。'
+    detail: '<b>均衡模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 16ms / 中核 24ms / 大核 160ms<br><br>小核 16ms 保持 955-1197MHz 高效区间，中核 24ms 比出厂更积极补位，X4 以 160ms 做突发吸收器。'
   },
   battery: {
     name: '省电模式',
@@ -720,7 +711,7 @@ function syncProfileUi() {
   refs.perfCurrentDesc.textContent = isAuto ? `${profile.desc} · ${describeAutoReason(state.autoReason)}` : profile.desc;
   refs.perfPolicyDesc.textContent = isAuto
     ? `自动模式已启用：当前按“${describeAutoReason(state.autoReason)}”运行，手动点卡片会退出自动。`
-    : `手动模式：当前固定为“${profile.name}”。切到自动后，长亮屏 steady-state 前台会按 balanced → light → battery 慢切换。`;
+    : `手动模式：当前固定为”${profile.name}”。切到自动后，系统仅在温度过高时收口到省电模式。`;
   refs.profilePolicyManualBtn.className = `tiny-btn${!isAuto ? ' primary' : ''}`;
   refs.profilePolicyAutoBtn.className = `tiny-btn${isAuto ? ' primary' : ''}`;
   refs.profilePolicyManualBtn.disabled = state.profilePolicyBusy;
@@ -733,12 +724,10 @@ function syncProfileUi() {
 
 function describeAutoReason(reason) {
   switch (reason) {
-    case 'steady_screen_warmup': return '长亮屏预热阶段，保持平衡';
-    case 'steady_screen_hold': return '长亮屏 steady-state，已切轻度';
+    case 'auto_balanced': return '自动均衡运行中';
     case 'steady_hot_guard': return '持续热平台，已压到省电';
-    case 'hot_cooldown': return '热平台已回落，恢复轻度';
-    case 'nonsteady_reset': return '已退出长亮屏场景，恢复平衡';
-    case 'screen_off_reset': return '已息屏，恢复平衡';
+    case 'hot_cooldown': return '热平台已回落，恢复均衡';
+    case 'screen_off_reset': return '已息屏，恢复均衡';
     case 'auto_enabled': return '已启用自动调度';
     case 'manual_policy': return '切回手动';
     case 'manual_selected': return '手动指定模式';
@@ -782,7 +771,7 @@ function syncThermalUi() {
 
 function renderProfileCards() {
   refs.profileList.innerHTML = '';
-  ['responsive', 'balanced', 'light', 'battery', 'default'].forEach((key) => {
+  ['responsive', 'balanced', 'battery', 'default'].forEach((key) => {
     const p = PROFILES[key];
     const card = document.createElement('article');
     card.className = 'profile-card profile-option';
@@ -2026,7 +2015,8 @@ async function openEnergyDetail() {
     const list2 = document.createElement('div'); list2.className = 'data-list';
     list2.appendChild(row('屏幕', esc(d.screen)));
     list2.appendChild(row('CPU', esc(d.cpu)));
-    list2.appendChild(row('蜂窝', esc(d.cell)));
+    list2.appendChild(row('蜂窝 (ODPM 实测)', d.odpm_modem && d.odpm_modem.total_mah != null ? esc(d.odpm_modem.total_mah) + ' mAh' : '无基线'));
+    list2.appendChild(row('蜂窝 (系统估算)', esc(d.cell) + ' mAh', 'badge off'));
     list2.appendChild(row('WiFi', esc(d.wifi)));
     list2.appendChild(row('唤醒锁', esc(d.wakelock)));
     frag.appendChild(list2);
@@ -2294,7 +2284,6 @@ function bindStaticEvents() {
     const cpuSet = {
       responsive: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3',
       balanced: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3',
-      light: 'top-app: cpu0-6\nforeground: cpu0-6\nbackground: cpu0-3',
       battery: 'top-app: cpu0-6\nforeground: cpu0-6\nbackground: cpu0-3',
       default: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3'
     };

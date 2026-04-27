@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # ============================================================
 # Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v4.3.21
-# 用法: sh cpu_profile.sh [responsive|balanced|light|battery|default|status]
+# 用法: sh cpu_profile.sh [responsive|balanced|battery|default|status]
 #
 # 核心原理:
 #   - 不再写 scaling_max_freq / scaling_min_freq (会被 thermal HAL 覆盖)
@@ -40,44 +40,28 @@ case "$PROFILE" in
 
     responsive)
         # ── 响应优先 ─────────────────────────────────────────
-        # 作为最明显的手动高响应档，保留 top-app 全核并让中核/大核更早介入。
-        # 不追求“游戏模式”式的极端峰值，只强调日常前台交互的明确提速感。
-        apply_sched_pixel 12 24 80
-        cpuset_write "top-app"           "0-7"
-        cpuset_write "foreground"        "0-6"
-        cpuset_write "background"        "0-3"
-        cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: RESPONSIVE [top-app→0-7, response 12/24/80ms]"
+        apply_sched_pixel 12 20 80
+        cpuset_write “top-app”           “0-7”
+        cpuset_write “foreground”        “0-6”
+        cpuset_write “background”        “0-3”
+        cpuset_write “system-background” “0-3”
+        log -t pixel9pro_ctrl “CPU: RESPONSIVE [top-app→0-7, response 12/20/80ms]”
         ;;
 
     balanced)
-        # ── 平衡模式 ─────────────────────────────────────────
-        # 保留 top-app 全核可调度，避免 steady-state 负载全挤到中核。
-        # 相比 stock，适度加快中核响应，但明显放慢大核，优先让小/中核消化日常前台。
-        apply_sched_pixel 16 40 160
+        # ── 均衡模式 ─────────────────────────────────────────
+        # 小核 16ms 保持 955-1197MHz 高效区间, 中核 24ms 比 stock 更积极补位
+        # X4 以 160ms 做突发吸收器, 不常态介入
+        apply_sched_pixel 16 24 160
         cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: BALANCED [top-app→0-7, response 16/40/160ms]"
-        ;;
-
-    light)
-        # ── 长亮屏 ─────────────────────────────────────────
-        # 面向阅读/社交/短视频这类长时间亮屏 steady-state 负载。
-        # 让 top-app 停留在 0-6，直接避免 X4 常态介入。
-        apply_sched_pixel 24 64 200
-        cpuset_write "top-app"           "0-6"
-        cpuset_write "foreground"        "0-6"
-        cpuset_write "background"        "0-3"
-        cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: LIGHT [top-app→0-6, response 24/64/200ms]"
+        log -t pixel9pro_ctrl "CPU: BALANCED [top-app→0-7, response 16/24/160ms]"
         ;;
 
     battery)
         # ── 省电模式 ─────────────────────────────────────────
-        # 在 long-screen 基础上继续放慢小/中核升频，并继续禁用 X4。
-        # 用于明确把长时间前台温度压下去，而不是追求交互峰值。
         apply_sched_pixel 32 96 200
         cpuset_write "top-app"           "0-6"
         cpuset_write "foreground"        "0-6"
@@ -127,7 +111,7 @@ case "$PROFILE" in
         ;;
 
     *)
-        echo "Usage: $0 [responsive|balanced|light|battery|default|status]"
+        echo "Usage: $0 [responsive|balanced|battery|default|status]"
         exit 1
         ;;
 esac

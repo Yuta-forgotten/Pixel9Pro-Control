@@ -89,8 +89,11 @@ _scope_level_start=${_cur_level:-0}
 _scope_charge_start=$_cur_charge
 _scope_reason='boot_init'
 
+_odpm_modem_base=0
+_odpm_rffe_base=0
+
 if [ -s "$POWER_SESSION_FILE" ]; then
-    unset start_ts start_level start_charge_uah reset_reason
+    unset start_ts start_level start_charge_uah reset_reason odpm_modem_uws odpm_rffe_uws
     . "$POWER_SESSION_FILE"
     case "${start_ts:-}" in
         ''|*[!0-9]*) ;;
@@ -105,6 +108,14 @@ if [ -s "$POWER_SESSION_FILE" ]; then
         *) _scope_charge_start=$start_charge_uah ;;
     esac
     [ -n "${reset_reason:-}" ] && _scope_reason=$reset_reason
+    case "${odpm_modem_uws:-}" in
+        ''|*[!0-9]*) ;;
+        *) _odpm_modem_base=$odpm_modem_uws ;;
+    esac
+    case "${odpm_rffe_uws:-}" in
+        ''|*[!0-9]*) ;;
+        *) _odpm_rffe_base=$odpm_rffe_uws ;;
+    esac
 fi
 
 _scope_elapsed=$((_now - _scope_start))
@@ -117,6 +128,26 @@ fi
 _scope_used='null'
 if [ "$_scope_charge_start" -gt 0 ] 2>/dev/null && [ "$_cur_charge" -gt 0 ] 2>/dev/null && [ "$_scope_charge_start" -ge "$_cur_charge" ] 2>/dev/null; then
     _scope_used=$(awk -v s="$_scope_charge_start" -v c="$_cur_charge" 'BEGIN { printf "%.1f", (s - c) / 1000 }')
+fi
+
+# ODPM real modem power: read current IIO values, subtract session baseline
+_odpm_modem_mah='null'
+_odpm_rffe_mah='null'
+_odpm_total_mah='null'
+_odpm_modem_now=0; _odpm_rffe_now=0
+_d0_now=$(cat /sys/bus/iio/devices/iio:device0/energy_value 2>/dev/null)
+_d1_now=$(cat /sys/bus/iio/devices/iio:device1/energy_value 2>/dev/null)
+_odpm_modem_now=$(printf '%s' "$_d0_now" | sed -n 's/.*VSYS_PWR_MODEM\], *\([0-9]*\).*/\1/p')
+_odpm_rffe_now=$(printf '%s' "$_d1_now" | sed -n 's/.*VSYS_PWR_RFFE\], *\([0-9]*\).*/\1/p')
+[ -z "$_odpm_modem_now" ] && _odpm_modem_now=0
+[ -z "$_odpm_rffe_now" ] && _odpm_rffe_now=0
+if [ "$_odpm_modem_base" -gt 0 ] 2>/dev/null && [ "$_odpm_modem_now" -gt "$_odpm_modem_base" ] 2>/dev/null; then
+    _odpm_modem_mah=$(awk -v m="$_odpm_modem_now" -v mb="$_odpm_modem_base" -v r="$_odpm_rffe_now" -v rb="$_odpm_rffe_base" \
+        'BEGIN { v=3.87; modem=(m-mb)/1000000/3600/v*1000; rffe=(r-rb)/1000000/3600/v*1000; printf "%.1f", modem }')
+    _odpm_rffe_mah=$(awk -v r="$_odpm_rffe_now" -v rb="$_odpm_rffe_base" \
+        'BEGIN { v=3.87; rffe=(r-rb)/1000000/3600/v*1000; printf "%.1f", rffe }')
+    _odpm_total_mah=$(awk -v m="$_odpm_modem_now" -v mb="$_odpm_modem_base" -v r="$_odpm_rffe_now" -v rb="$_odpm_rffe_base" \
+        'BEGIN { v=3.87; total=((m-mb)+(r-rb))/1000000/3600/v*1000; printf "%.1f", total }')
 fi
 
 _scope_json=$(printf '{"mode":"discharge_session","start_ts":%s,"elapsed_sec":%s,"level_start":%s,"level_now":%s,"level_drop":%s,"used_mah":%s,"reset_reason":%s,"reset_rule":%s,"source":"module_power_session"}' \
@@ -339,9 +370,15 @@ _charge_state_json=$(printf '{"status":%s,"level":%s,"charge_uah":%s}' \
     "$(json_num_or_null "$_cur_level")" \
     "$(json_num_or_null "$_cur_charge")")
 
+_odpm_json=$(printf '{"modem_mah":%s,"rffe_mah":%s,"total_mah":%s,"source":"odpm_iio"}' \
+    "$(json_num_or_null "$_odpm_modem_mah")" \
+    "$(json_num_or_null "$_odpm_rffe_mah")" \
+    "$(json_num_or_null "$_odpm_total_mah")")
+
 _final_json=$(printf '%s' "$_core_json" | sed 's/}$//')
-_final_json=$(printf '%s,"scope":%s,"today":%s,"charge_state":%s,"batterystats_window":%s,"generated_at":%s,"cache_ttl_sec":%s}' \
+_final_json=$(printf '%s,"odpm_modem":%s,"scope":%s,"today":%s,"charge_state":%s,"batterystats_window":%s,"generated_at":%s,"cache_ttl_sec":%s}' \
     "$_final_json" \
+    "$_odpm_json" \
     "$_scope_json" \
     "$_today_json" \
     "$_charge_state_json" \
