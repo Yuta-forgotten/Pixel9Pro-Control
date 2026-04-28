@@ -1,8 +1,24 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.3.21 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.3.26 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
-# 流程: 等待启动 → 系统设置优化 → 内核参数 → CPU配置 → 统一后台 → WebUI
+# 流程: 等待启动 → 系统设置优化 → 内核参数 → 四层功耗优化 → CPU配置 → 统一后台 → WebUI
+#
+# v4.3.26 变更:
+#   - L1 后台限制从硬编码包名改为配置文件驱动 (.bg_restrict_list + .bg_restrict_enabled)
+#   - 新增 WebUI "后台应用限制" 卡片: 主开关 + 包名列表 + 实时 bucket/appops 状态 + 添加/移除
+#   - 新增 CGI bg_restrict.sh: toggle/add/remove 三种 action
+#   - 首次运行自动预置 QQ/QQ音乐 到默认列表, 用户可通过 WebUI 自由增删
+#
+# v4.3.25 变更:
+#   - 新增四层功耗方案 (L1-L4), 经 AOSP 官方文档验证每一层 API 可靠性:
+#     L1: 官方 API 后台限制 (persistent) — App Standby Bucket + AppOps + deviceidle whitelist + Freezer
+#     L2: vendor_sched 后台 CPU 限制 (volatile, enforce 守护) — ug_bg_uclamp_max/ug_bg_group_throttle
+#     L3: APF Touch Boost 关闭 (system.prop 持久化) — vendor.powerhal.apf_enabled=false
+#     L4: response_time_ms (volatile, boot-time only) — 已有, 由 cpu_profile.sh 管理
+#   - cpu_profile.sh 新增 enforce 子命令: 只做 procfs 读写, 零 IPC, 零 wakelock
+#   - 新建 system.prop: vendor.powerhal.apf_enabled=false (PowerHAL 启动前生效)
+#   - worker 亮屏分支每周期调用 enforce, 保证 vendor_sched 参数不被 PowerHAL hint 覆盖
 #
 # v4.3.21 变更:
 #   - 修复 NR 降级 tethering 误判: wlan1/wlan2 (bcmdhd P2P 虚拟接口) 被误判为热点,
@@ -119,6 +135,7 @@ PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
 SIM2_AUTO_FILE="$MODDIR/.sim2_auto_manage"
 IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
+POWER_PROFILE_FILE="$MODDIR/.power_profile"
 
 detect_root_impl() {
     if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
@@ -244,6 +261,93 @@ manage_sim2_radio() {
             fi
             ;;
     esac
+}
+
+# ── 四层功耗方案: 参数定义 ──────────────────────────────
+# Power profile: balanced (默认) / battery (省电)
+# L1 (persistent): App Standby Bucket + AppOps + deviceidle whitelist + Freezer
+# L2 (volatile): vendor_sched 后台 CPU 限制
+# L3 (system.prop): APF touch boost = false
+# L4 (volatile, boot-time): response_time_ms (由 cpu_profile.sh 管理)
+#
+# AOSP 验证:
+#   - App Standby Bucket: UsageStatsService 持久化到 app_idle_stats.xml, 重启后保留
+#     am set-standby-bucket 设置 reason=FORCED_BY_USER, 只有用户交互才会提升
+#   - AppOps: 持久化到 appops.xml, 系统不会自动回退
+#   - deviceidle whitelist: 持久化到 deviceidle.xml
+#   - vendor_sched: /proc/vendor_sched/ 纯 RAM, PowerHAL 在 hint 时可能覆盖
+#   - APF: vendor.powerhal.apf_enabled 由 PowerHAL 启动时读取, system.prop 保证先于 HAL 生效
+
+VENDOR_SCHED="/proc/vendor_sched"
+
+_power_profile_params() {
+    # 根据 power profile 返回参数 (balanced / battery)
+    # 格式: bg_uclamp_max bg_group_throttle
+    _pp=$(cat "$POWER_PROFILE_FILE" 2>/dev/null | tr -d ' \n\r')
+    case "$_pp" in
+        battery) echo "150 80" ;;
+        *)       echo "200 100" ;;
+    esac
+}
+
+apply_l1_persistent_limits() {
+    # L1: 官方 API 后台限制 — persistent, 从配置文件读取包名列表
+    # 文件: .bg_restrict_list (每行一个包名), .bg_restrict_enabled (on/off)
+    BG_ENABLED_FILE="$MODDIR/.bg_restrict_enabled"
+    BG_LIST_FILE="$MODDIR/.bg_restrict_list"
+
+    [ -f "$BG_ENABLED_FILE" ] || printf 'on' > "$BG_ENABLED_FILE"
+    if [ ! -s "$BG_LIST_FILE" ]; then
+        # 首次运行: 预置默认限制列表, 用户可通过 WebUI 增删
+        cat > "$BG_LIST_FILE" <<'DEFLIST'
+com.tencent.mobileqq
+com.tencent.qqmusic
+DEFLIST
+    fi
+
+    _bg_enabled=$(cat "$BG_ENABLED_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    if [ "$_bg_enabled" != "on" ]; then
+        log -t pixel9pro_ctrl "L1: bg restrict disabled by user, skip"
+        return 0
+    fi
+
+    _count=0
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        _pkg=$(printf '%s' "$_line" | tr -d ' \n\r\t')
+        [ -z "$_pkg" ] && continue
+        case "$_pkg" in \#*) continue ;; esac
+        am set-standby-bucket "$_pkg" restricted 2>/dev/null
+        cmd appops set "$_pkg" RUN_IN_BACKGROUND ignore 2>/dev/null
+        cmd appops set "$_pkg" RUN_ANY_IN_BACKGROUND ignore 2>/dev/null
+        _count=$((_count + 1))
+    done < "$BG_LIST_FILE"
+
+    # Cached App Freezer: 确保开启 (cgroup v2 freeze, 缓存进程零 CPU)
+    settings put global cached_apps_freezer_enabled 1 2>/dev/null
+
+    log -t pixel9pro_ctrl "L1: bg restrict applied to $_count packages, freezer=1"
+}
+
+apply_l2_vendor_sched() {
+    # L2: vendor_sched 后台 CPU 限制 — volatile, 需要 enforce 守护
+    _params=$(_power_profile_params)
+    _bg_uclamp=$(echo "$_params" | cut -d' ' -f1)
+    _bg_throttle=$(echo "$_params" | cut -d' ' -f2)
+    echo "$_bg_uclamp" > "$VENDOR_SCHED/ug_bg_uclamp_max" 2>/dev/null
+    echo "$_bg_throttle" > "$VENDOR_SCHED/ug_bg_group_throttle" 2>/dev/null
+    log -t pixel9pro_ctrl "L2: vendor_sched bg_uclamp_max=$_bg_uclamp bg_throttle=$_bg_throttle"
+}
+
+apply_l3_apf() {
+    # L3: APF touch boost — system.prop 已设 vendor.powerhal.apf_enabled=false
+    # 这里做 runtime 兜底, 以防 system.prop 未被加载
+    _apf=$(getprop vendor.powerhal.apf_enabled 2>/dev/null)
+    if [ "$_apf" != "false" ]; then
+        setprop vendor.powerhal.apf_enabled false 2>/dev/null
+        log -t pixel9pro_ctrl "L3: APF disabled at runtime (fallback)"
+    else
+        log -t pixel9pro_ctrl "L3: APF already disabled via system.prop"
+    fi
 }
 
 valid_profile() {
@@ -378,7 +482,7 @@ if [ ! -f "$SIM2_AUTO_FILE" ]; then
 fi
 [ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
 
-log -t pixel9pro_ctrl "v4.3.21[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.3.26[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -459,7 +563,16 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.3.21[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.3.26[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+
+# ──────────────────────────────────────────────────────────
+# 2.5 四层功耗优化 (L1-L3, boot 阶段一次性应用)
+#     L4 (response_time_ms) 由后续 cpu_profile.sh 管理
+# ──────────────────────────────────────────────────────────
+[ -f "$POWER_PROFILE_FILE" ] || printf 'balanced' > "$POWER_PROFILE_FILE"
+apply_l1_persistent_limits
+apply_l2_vendor_sched
+apply_l3_apf
 
 # 延迟复写：NTP 服务器和扫描类设置可能在用户解锁后被系统回写。
 (
@@ -779,6 +892,12 @@ is_nr_mode_value() {
                 manage_sim2_radio
                 _sim2_check_count=0
             fi
+        fi
+
+        # --- L2 enforce: 亮屏时每周期校验 vendor_sched 参数 ---
+        # 只做 procfs 读写, 零 IPC, 零 wakelock. 参数正确时无操作。
+        if [ "$_screen" = "on" ]; then
+            sh "$MODDIR/scripts/cpu_profile.sh" enforce "$MODDIR" 2>/dev/null
         fi
 
         # --- NR screen-off switch ---

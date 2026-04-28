@@ -1,13 +1,13 @@
 #!/system/bin/sh
 # ============================================================
-# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v4.3.21
-# 用法: sh cpu_profile.sh [responsive|balanced|battery|default|status]
+# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v4.3.25
+# 用法: sh cpu_profile.sh [responsive|balanced|battery|default|status|enforce]
 #
 # 核心原理:
 #   - 不再写 scaling_max_freq / scaling_min_freq (会被 thermal HAL 覆盖)
 #   - 通过 sched_pixel 参数控制频率行为, cpuset 路由 top-app/background
 #   - foreground cpuset 由 system_server 框架层管理, 固定为 0-6, 不可覆盖
-#   - 当前目标不是“造一个极限性能模式”，而是把不同前台场景拉开成更清晰的可感知方案
+#   - 当前目标不是”造一个极限性能模式”，而是把不同前台场景拉开成更清晰的可感知方案
 #
 # Tensor G4 拓扑：
 #   cpu0-3  Cortex-A520 (小核)  820-1950 MHz
@@ -17,6 +17,11 @@
 # sched_pixel 参数说明 (源码: cpufreq_gov.c):
 #   response_time_ms: 越大 → 升频越慢 → 自然趴在低频
 #   down_rate_limit_us: 由内核根据 response_time_ms 自动计算, 不可独立写入
+#
+# enforce 子命令:
+#   校验 vendor_sched 参数是否被 PowerHAL hint 覆盖, 仅在偏差时写回
+#   只做 procfs 读写 (cat + echo), 零 IPC, 零 wakelock
+#   亮屏时由 worker 每 15s 调用一次, 参数正确时无输出无日志
 # ============================================================
 
 PROFILE="${1:-default}"
@@ -25,6 +30,8 @@ MODDIR="${2:-${0%/scripts/*}}"
 CPU0="/sys/devices/system/cpu/cpu0/cpufreq"
 CPU4="/sys/devices/system/cpu/cpu4/cpufreq"
 CPU7="/sys/devices/system/cpu/cpu7/cpufreq"
+VENDOR_SCHED="/proc/vendor_sched"
+POWER_PROFILE_FILE="$MODDIR/.power_profile"
 
 write_if_exists() { [ -f "$1" ] && echo "$2" > "$1" 2>/dev/null; }
 cpuset_write()    { [ -f "/dev/cpuset/$1/cpus" ] && echo "$2" > "/dev/cpuset/$1/cpus" 2>/dev/null; }
@@ -110,8 +117,30 @@ case "$PROFILE" in
         dumpsys thermalservice 2>/dev/null | grep "Thermal Status:" | head -1
         ;;
 
+    enforce)
+        # ── vendor_sched 参数守护 ───────────────────────────────
+        # 只做 procfs 读写, 参数正确时零开销
+        _pp=$(cat "$POWER_PROFILE_FILE" 2>/dev/null | tr -d ' \n\r')
+        case "$_pp" in
+            battery) _target_bg_uclamp=150; _target_bg_throttle=80 ;;
+            *)       _target_bg_uclamp=200; _target_bg_throttle=100 ;;
+        esac
+        _cur_uclamp=$(cat "$VENDOR_SCHED/ug_bg_uclamp_max" 2>/dev/null | tr -d ' \n\r')
+        _cur_throttle=$(cat "$VENDOR_SCHED/ug_bg_group_throttle" 2>/dev/null | tr -d ' \n\r')
+        _fixed=0
+        if [ "$_cur_uclamp" != "$_target_bg_uclamp" ]; then
+            echo "$_target_bg_uclamp" > "$VENDOR_SCHED/ug_bg_uclamp_max" 2>/dev/null
+            _fixed=1
+        fi
+        if [ "$_cur_throttle" != "$_target_bg_throttle" ]; then
+            echo "$_target_bg_throttle" > "$VENDOR_SCHED/ug_bg_group_throttle" 2>/dev/null
+            _fixed=1
+        fi
+        [ "$_fixed" -eq 1 ] && log -t pixel9pro_ctrl "L2 enforce: restored bg_uclamp=$_target_bg_uclamp bg_throttle=$_target_bg_throttle"
+        ;;
+
     *)
-        echo "Usage: $0 [responsive|balanced|battery|default|status]"
+        echo "Usage: $0 [responsive|balanced|battery|default|status|enforce]"
         exit 1
         ;;
 esac

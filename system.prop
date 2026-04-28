@@ -1,0 +1,9 @@
+# Pixel 9 Pro Control — persistent properties
+# Applied by APatch/KSU/Magisk at post-fs-data, BEFORE PowerHAL starts.
+
+# L3: Disable APF (Adaptive Performance Framework) touch boost.
+# Stock: true. Each touch event triggers INTERACTION hint → CPU frequency spike.
+# Scene CSV showed X4 big core awakened 77% of the time during passive video playback.
+# With APF disabled, touch events no longer trigger aggressive CPU boosts.
+# PowerHAL reads this property at initialization and respects it for the entire session.
+vendor.powerhal.apf_enabled=false

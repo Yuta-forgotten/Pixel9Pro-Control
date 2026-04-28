@@ -357,6 +357,31 @@
         <article class="surface-card">
           <div class="panel-head">
             <div class="panel-copy">
+              <div class="kicker">后台功耗控制</div>
+              <div class="panel-title">后台应用限制</div>
+              <div class="panel-desc" id="bg-restrict-desc">通过 AOSP 官方 API 限制后台应用活动，降低 CPU 和唤醒开销。列表中的应用将被设为 RESTRICTED + 禁止后台运行。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="bg-restrict-refresh-btn" type="button">刷新</button>
+              <button class="tiny-btn primary" id="bg-restrict-toggle-btn" type="button"><span id="bg-restrict-toggle-label">读取中…</span></button>
+            </div>
+          </div>
+          <div class="data-list" id="bg-restrict-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+          <div id="bg-restrict-add-area" style="margin-top:14px;display:flex;gap:8px;align-items:center">
+            <input type="text" id="bg-restrict-pkg-input" placeholder="com.example.app" style="flex:1;height:36px;padding:0 12px;border:1px solid var(--border);border-radius:18px;background:var(--bg-1);color:var(--text);font-size:13px;outline:none">
+            <button class="tiny-btn primary" id="bg-restrict-add-btn" type="button">添加</button>
+          </div>
+          <div class="note-card" style="margin-top:14px">
+            <div class="note-title">使用说明</div>
+            <div class="note-body">将需要限制后台的应用包名添加到列表，模块会通过系统官方接口降低其后台优先级并禁止其自启后台服务。限制在重启后自动保留。当你正常打开这些应用时，系统会临时恢复权限，前台使用完全不受影响。状态显示"已限制"表示限制已完全生效，"未生效"说明应用刚被使用过、系统临时提升了权限，点击刷新可重新应用。</div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
               <div class="kicker">待机诊断</div>
               <div class="panel-title">后台 worker 摘要</div>
               <div class="panel-desc">后台统一工作循环的实时状态，包括当前分支、下次唤醒时间和 NR / 调度状态。</div>

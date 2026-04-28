@@ -20,6 +20,7 @@ const API = {
   energy: '/cgi-bin/energy.sh',
   checkBaseband: '/cgi-bin/check_baseband.sh',
   standbyGuard: '/cgi-bin/standby_guard.sh',
+  bgRestrict: '/cgi-bin/bg_restrict.sh',
 };
 
 const STORAGE_THEME_KEY = 'pixel9pro_theme_mode';
@@ -184,6 +185,8 @@ const state = {
   sim2AutoManage: 'off',
   idleIsolateMode: 'off',
   standbyGuardBusy: false,
+  bgRestrictEnabled: 'on',
+  bgRestrictBusy: false,
   standbyDiag: null,
   uecapMode: 'unknown',
   uecapActiveMode: 'unknown',
@@ -281,6 +284,12 @@ function initRefs() {
   refs.idleIsolateToggleLabel = $('idle-isolate-toggle-label');
   refs.idleIsolateRows = $('idle-isolate-rows');
   refs.standbyDiagRows = $('standby-diag-rows');
+  refs.bgRestrictDesc = $('bg-restrict-desc');
+  refs.bgRestrictToggleBtn = $('bg-restrict-toggle-btn');
+  refs.bgRestrictToggleLabel = $('bg-restrict-toggle-label');
+  refs.bgRestrictRows = $('bg-restrict-rows');
+  refs.bgRestrictAddBtn = $('bg-restrict-add-btn');
+  refs.bgRestrictPkgInput = $('bg-restrict-pkg-input');
   refs.nrSwitchToggleLabel = $('nr-switch-toggle-label');
   refs.nrSwitchRows = $('nr-switch-rows');
   refs.uecapDesc = $('uecap-desc');
@@ -529,7 +538,7 @@ async function runPollCycle() {
   if (shouldPollOptim() && (now - state.poller.lastRun.slow) >= getPollInterval('slow')) {
     jobs.push({
       key: 'slow',
-      run: () => Promise.allSettled([refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp(), refreshStandbyGuard(), loadInfo()])
+      run: () => Promise.allSettled([refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp(), refreshStandbyGuard(), refreshBgRestrict(), loadInfo()])
     });
   }
 
@@ -1410,6 +1419,119 @@ async function toggleIdleIsolateMode() {
   );
 }
 
+// ── 后台应用限制 ─────────────────────────────────────────
+function bgRestrictStatus(bucket, appops) {
+  const restricted = bucket === '45' && appops === 'ignore';
+  if (restricted) return { text: '已限制', cls: 'good' };
+  if (appops === 'ignore') return { text: '部分限制（已禁后台）', cls: 'warn' };
+  if (bucket === '45') return { text: '部分限制（仅降优先级）', cls: 'warn' };
+  return { text: '未生效 — 点刷新重试', cls: 'err' };
+}
+
+function renderBgRestrict(data) {
+  state.bgRestrictEnabled = data.enabled === 'on' ? 'on' : 'off';
+  const on = state.bgRestrictEnabled === 'on';
+  refs.bgRestrictToggleLabel.textContent = on ? '关闭' : '开启';
+  refs.bgRestrictToggleBtn.disabled = state.bgRestrictBusy;
+  refs.bgRestrictDesc.textContent = on
+    ? '已开启：列表中的应用将被限制后台活动，降低 CPU 和唤醒开销。'
+    : '已关闭：所有后台限制已解除，应用可自由运行后台服务。';
+  refs.bgRestrictRows.innerHTML = '';
+  if (!data.packages || data.packages.length === 0) {
+    refs.bgRestrictRows.appendChild(buildInfoRow('限制列表', '空 — 请添加包名', 'off'));
+    return;
+  }
+  data.packages.forEach((p) => {
+    const st = bgRestrictStatus(p.bucket, p.appops);
+    const row = document.createElement('div');
+    row.className = 'data-row';
+    row.style.alignItems = 'center';
+    const key = document.createElement('span');
+    key.className = 'data-key';
+    key.style.flex = '1';
+    key.style.wordBreak = 'break-all';
+    key.textContent = p.pkg;
+    const badge = document.createElement('span');
+    badge.className = `badge ${st.cls}`;
+    badge.textContent = st.text;
+    badge.style.marginRight = '8px';
+    const rmBtn = document.createElement('button');
+    rmBtn.className = 'tiny-btn';
+    rmBtn.textContent = '移除';
+    rmBtn.style.flexShrink = '0';
+    rmBtn.addEventListener('click', () => bgRestrictRemove(p.pkg));
+    row.appendChild(key);
+    row.appendChild(badge);
+    row.appendChild(rmBtn);
+    refs.bgRestrictRows.appendChild(row);
+  });
+}
+
+async function refreshBgRestrict() {
+  try {
+    const data = await apiFetch(API.bgRestrict, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'refresh' }),
+      timeoutMs: 10000
+    });
+    if (data.ok) renderBgRestrict(data);
+    else {
+      const fallback = await apiFetch(API.bgRestrict, { timeoutMs: 8000 });
+      renderBgRestrict(fallback);
+    }
+  } catch (err) {
+    refs.bgRestrictRows.innerHTML = '';
+    refs.bgRestrictRows.appendChild(errorBlock('获取失败：' + err.message));
+  }
+}
+
+async function bgRestrictAction(body, successText) {
+  if (state.bgRestrictBusy) return;
+  state.bgRestrictBusy = true;
+  refs.bgRestrictToggleBtn.disabled = true;
+  refs.bgRestrictAddBtn.disabled = true;
+  try {
+    const data = await apiFetch(API.bgRestrict, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      timeoutMs: 10000
+    });
+    if (data.ok) {
+      renderBgRestrict(data);
+      showToast(successText);
+    } else {
+      showToast(`操作失败：${data.error || '未知'}`);
+    }
+  } catch (e) {
+    showToast('请求失败：' + e.message);
+  } finally {
+    state.bgRestrictBusy = false;
+    refs.bgRestrictToggleBtn.disabled = false;
+    refs.bgRestrictAddBtn.disabled = false;
+  }
+}
+
+async function toggleBgRestrict() {
+  const next = state.bgRestrictEnabled === 'on' ? 'off' : 'on';
+  await bgRestrictAction({ action: 'toggle' }, next === 'on' ? '后台限制已开启' : '后台限制已关闭');
+}
+
+async function bgRestrictAdd() {
+  const pkg = (refs.bgRestrictPkgInput.value || '').trim();
+  if (!pkg || !/^[a-zA-Z][a-zA-Z0-9._]*$/.test(pkg)) {
+    showToast('请输入有效的包名 (如 com.example.app)');
+    return;
+  }
+  await bgRestrictAction({ action: 'add', package: pkg }, `已添加 ${pkg}`);
+  refs.bgRestrictPkgInput.value = '';
+}
+
+async function bgRestrictRemove(pkg) {
+  await bgRestrictAction({ action: 'remove', package: pkg }, `已移除 ${pkg}`);
+}
+
 async function verifyUecapSwitch(mode, expectedHash, initialData) {
   const nonce = ++state.uecapVerifyNonce;
   const label = UECAP_MODES.find((m) => m.id === mode)?.name || mode;
@@ -2174,7 +2296,7 @@ async function toggleSwapMode() {
 async function doFullRefresh() {
   showToast('正在刷新…', 1000);
   await Promise.all([refreshCpu(), refreshThermal(), refreshSwap()]);
-  await Promise.allSettled([refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp(), refreshStandbyGuard(), loadInfo()]);
+  await Promise.allSettled([refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp(), refreshStandbyGuard(), refreshBgRestrict(), loadInfo()]);
   markPollFresh(['cpu', 'thermal', 'optim', 'slow']);
   queueNextPoll(computeNextPollDelay());
   showToast('已刷新');
@@ -2266,6 +2388,10 @@ function bindStaticEvents() {
   $('nr-switch-toggle-btn').addEventListener('click', toggleNrSwitch);
   $('sim2-auto-toggle-btn').addEventListener('click', toggleSim2AutoManage);
   $('idle-isolate-toggle-btn').addEventListener('click', toggleIdleIsolateMode);
+  $('bg-restrict-toggle-btn').addEventListener('click', toggleBgRestrict);
+  $('bg-restrict-add-btn').addEventListener('click', bgRestrictAdd);
+  $('bg-restrict-pkg-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') bgRestrictAdd(); });
+  $('bg-restrict-refresh-btn').addEventListener('click', refreshBgRestrict);
   $('nr-switch-detail-btn').addEventListener('click', () => openDetail('NR 息屏降级详情', NR_SWITCH_DETAIL));
   $('uecap-detail-btn').addEventListener('click', () => openDetail('UE 网络能力配置', UECAP_DETAIL));
   $('baseband-detail-btn').addEventListener('click', () => openDetail('基带模块说明', BASEBAND_DETAIL));
@@ -2333,7 +2459,7 @@ function bindStaticEvents() {
 
 async function refreshDeferredInitData() {
   markPollFresh(['optim', 'slow']);
-  await Promise.allSettled([refreshSwap(), refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp(), refreshStandbyGuard()]);
+  await Promise.allSettled([refreshSwap(), refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp(), refreshStandbyGuard(), refreshBgRestrict()]);
   queueNextPoll(computeNextPollDelay());
 }
 
