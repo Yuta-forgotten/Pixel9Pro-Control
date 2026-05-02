@@ -48,17 +48,16 @@
 - 自动模式不会自动进入 `responsive`
 - steady-screen 候选只做低频、保守的用户空间近似识别
 
-### 四层功耗优化
+### 三层功耗优化
 
 | 层 | 机制 | 持久化 | 说明 |
 |----|------|--------|------|
 | L1 | App Standby Bucket + AppOps | 重启保留 | 列表中的应用降至 RESTRICTED + 禁止后台自启，WebUI 可增删 |
 | L2 | vendor_sched 后台 CPU 限制 | volatile + enforce 守护 | bg_uclamp_max=200, bg_group_throttle=100 (亮屏每 15s 校验) |
-| L3 | APF Touch Boost 关闭 | system.prop 持久 | 触摸不再触发大核频率飙升 |
-| L4 | sched_pixel response_time_ms | volatile, boot-time | 由 CPU 调度模式管理 |
+| L3 | sched_pixel response_time_ms | volatile, boot-time | 由 CPU 调度模式管理 |
 
 - L1 通过 WebUI「后台应用限制」卡片配置，支持添加/移除/开关/刷新
-- L2/L3 全自动，无需用户操作
+- L2 全自动，无需用户操作
 - EAS 调度修正：`sched_util_clamp_min=0`（stock=1024 向调度器发送虚假 100% 利用率信号）
 
 ### 温控优化 (4 档可调)

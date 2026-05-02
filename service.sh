@@ -19,14 +19,13 @@
 #   - 首次运行自动预置 QQ/QQ音乐 到默认列表, 用户可通过 WebUI 自由增删
 #
 # v4.3.25 变更:
-#   - 新增四层功耗方案 (L1-L4), 经 AOSP 官方文档验证每一层 API 可靠性:
+#   - 新增三层功耗方案 (L1-L3):
 #     L1: 官方 API 后台限制 (persistent) — App Standby Bucket + AppOps + Freezer
 #     L2: vendor_sched 后台 CPU 限制 (volatile, enforce 守护) — ug_bg_uclamp_max/ug_bg_group_throttle
-#     L3: APF Touch Boost 关闭 (system.prop 持久化) — vendor.powerhal.apf_enabled=false
-#     L4: response_time_ms (volatile, boot-time only) — 已有, 由 cpu_profile.sh 管理
+#     L3: response_time_ms (volatile, boot-time only) — 已有, 由 cpu_profile.sh 管理
 #   - cpu_profile.sh 新增 enforce 子命令: 只做 procfs 读写, 零 IPC, 零 wakelock
-#   - 新建 system.prop: vendor.powerhal.apf_enabled=false (PowerHAL 启动前生效)
 #   - worker 亮屏分支每周期调用 enforce, 保证 vendor_sched 参数不被 PowerHAL hint 覆盖
+#   - [v4.3.28] 移除无效属性 vendor.powerhal.apf_enabled=false (Pixel 9 Pro PowerHAL 不识别)
 #
 # v4.3.21 变更:
 #   - 修复 NR 降级 tethering 误判: wlan1/wlan2 (bcmdhd P2P 虚拟接口) 被误判为热点,
@@ -271,19 +270,20 @@ manage_sim2_radio() {
     esac
 }
 
-# ── 四层功耗方案: 参数定义 ──────────────────────────────
+# ── 三层功耗方案: 参数定义 ──────────────────────────────
 # Power profile: balanced (默认) / battery (省电)
 # L1 (persistent): App Standby Bucket + AppOps + Freezer
 # L2 (volatile): vendor_sched 后台 CPU 限制
-# L3 (system.prop): APF touch boost = false
-# L4 (volatile, boot-time): response_time_ms (由 cpu_profile.sh 管理)
+# L3 (volatile, boot-time): response_time_ms (由 cpu_profile.sh 管理)
 #
 # AOSP 验证:
 #   - App Standby Bucket: UsageStatsService 持久化到 app_idle_stats.xml, 重启后保留
 #     am set-standby-bucket 设置 reason=FORCED_BY_USER, 只有用户交互才会提升
 #   - AppOps: 持久化到 appops.xml, 系统不会自动回退
 #   - vendor_sched: /proc/vendor_sched/ 纯 RAM, PowerHAL 在 hint 时可能覆盖
-#   - APF: vendor.powerhal.apf_enabled 由 PowerHAL 启动时读取, system.prop 保证先于 HAL 生效
+#
+# 注: 旧版 L3 "APF touch boost" (vendor.powerhal.apf_enabled=false) 已在 v4.3.28 移除,
+#     Pixel 9 Pro PowerHAL 不识别该属性, INTERACTION hint 未配置且零次触发 (2026-05-03 验证)
 
 VENDOR_SCHED="/proc/vendor_sched"
 
@@ -345,17 +345,10 @@ apply_l2_vendor_sched() {
     log -t pixel9pro_ctrl "L2: vendor_sched bg_uclamp_max=$_bg_uclamp bg_throttle=$_bg_throttle"
 }
 
-apply_l3_apf() {
-    # L3: APF touch boost — system.prop 已设 vendor.powerhal.apf_enabled=false
-    # 这里做 runtime 兜底, 以防 system.prop 未被加载
-    _apf=$(getprop vendor.powerhal.apf_enabled 2>/dev/null)
-    if [ "$_apf" != "false" ]; then
-        setprop vendor.powerhal.apf_enabled false 2>/dev/null
-        log -t pixel9pro_ctrl "L3: APF disabled at runtime (fallback)"
-    else
-        log -t pixel9pro_ctrl "L3: APF already disabled via system.prop"
-    fi
-}
+# [已移除] apply_l3_apf — v4.3.28 移除
+# vendor.powerhal.apf_enabled 在 Pixel 9 Pro 上无效:
+#   PowerHAL 二进制不含 apf 字符串, INTERACTION hint 未配置
+#   Pixel 9 Pro 使用 HBoost + ADPF 机制替代旧 INTERACTION hint
 
 valid_profile() {
     case "$1" in
@@ -573,13 +566,12 @@ esac
 log -t pixel9pro_ctrl "v4.3.27[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
-# 2.5 四层功耗优化 (L1-L3, boot 阶段一次性应用)
-#     L4 (response_time_ms) 由后续 cpu_profile.sh 管理
+# 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)
+#     L3 (response_time_ms) 由后续 cpu_profile.sh 管理
 # ──────────────────────────────────────────────────────────
 [ -f "$POWER_PROFILE_FILE" ] || printf 'balanced' > "$POWER_PROFILE_FILE"
 apply_l1_persistent_limits
 apply_l2_vendor_sched
-apply_l3_apf
 
 # 延迟复写：NTP 服务器和扫描类设置可能在用户解锁后被系统回写。
 (

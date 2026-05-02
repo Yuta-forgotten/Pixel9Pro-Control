@@ -1,9 +1,10 @@
 # Pixel 9 Pro Control — persistent properties
-# Applied by APatch/KSU/Magisk at post-fs-data, BEFORE PowerHAL starts.
-
-# L3: Disable APF (Adaptive Performance Framework) touch boost.
-# Stock: true. Each touch event triggers INTERACTION hint → CPU frequency spike.
-# Scene CSV showed X4 big core awakened 77% of the time during passive video playback.
-# With APF disabled, touch events no longer trigger aggressive CPU boosts.
-# PowerHAL reads this property at initialization and respects it for the entire session.
-vendor.powerhal.apf_enabled=false
+# Applied by APatch/KSU/Magisk at post-fs-data, BEFORE system services start.
+#
+# 注意: Pixel 9 Pro (Tensor G4, Android 17) 的 PowerHAL 使用 HBoost + ADPF
+# 替代旧 Pixel 的 INTERACTION hint 机制。不再有传统意义上的 "touch boost" 属性。
+# 此前写在此处的 vendor.powerhal.apf_enabled=false 已于 v4.3.28 移除:
+#   - PowerHAL 二进制不含 apf 字符串 (strings 验证)
+#   - powerhint-proto.json 无 INTERACTION hint 配置
+#   - dumpsys IPower 统计 INTERACTION 触发零次
+#   - 属性来源于旧 Pixel 社区经验，Pixel 9 Pro 上从未生效
