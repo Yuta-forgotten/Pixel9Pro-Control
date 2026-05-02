@@ -10,7 +10,7 @@
 #   - B44 fix: customize.sh 升级迁移追加 .bg_restrict_list/.bg_restrict_enabled
 #   - B45 fix: refreshBgRestrict() 轮询改为 GET 只读, 手动刷新才 POST refresh
 #   - L1 注释移除未实现的 deviceidle whitelist 声明
-#   - B46 fix: 屏幕检测从失效的 DRM dpms 改为 enabled 节点 (Android 17 QPR1 Beta)
+#   - B46 fix: 屏幕检测从 legacy DRM dpms 改为 enabled 节点 (dpms 在 atomic driver 下不更新)
 #
 # v4.3.26 变更:
 #   - L1 后台限制从硬编码包名改为配置文件驱动 (.bg_restrict_list + .bg_restrict_enabled)
@@ -843,8 +843,9 @@ is_nr_mode_value() {
         _cycle_count=$((_cycle_count + 1))
 
         # --- Single screen state check per cycle (sysfs first, IPC-free) ---
-        # Android 17 QPR1 Beta: DRM dpms 节点不再可靠（亮屏仍报 Off），
-        # 改用同路径 enabled 节点：enabled=亮屏, disabled=息屏，同为 sysfs 直读零 IPC。
+        # DRM dpms 是 legacy 属性，仅在 full modeset 时更新 (drm_atomic_helper.c)。
+        # Exynos DECON 走 self-refresh 路径不触发 modeset → dpms 永远停在 Off。
+        # enabled 检查 encoder 连接状态，每次 atomic commit 无条件更新，可靠。
         _drm_en=$(cat /sys/class/drm/card0-DSI-1/enabled 2>/dev/null)
         case "$_drm_en" in
             enabled) _screen="on" ;;
