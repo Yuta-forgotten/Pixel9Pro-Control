@@ -500,7 +500,10 @@ manage_sim2_radio
 
 # 开机时先全局关闭 WiFi multicast (RMBD 基础策略)
 # 后续由 screen-aware 循环在亮屏时恢复
-dumpsys wifi disable-multicast 2>/dev/null
+# [v4.3.28] 移除 dumpsys wifi disable-multicast:
+#   WifiShellCommand 不含 disable-multicast 子命令 (AOSP 源码验证),
+#   dumpsys wifi disable-multicast 仅触发 dump 输出, 不改变多播状态。
+#   实际控制由 ip link set wlan0 multicast off 完成 (移除接口 MULTICAST 标志)。
 ip link set wlan0 multicast off 2>/dev/null
 
 # === 内核 I/O 参数优化 ===
@@ -868,7 +871,6 @@ is_nr_mode_value() {
         if [ "$_screen" != "$_mc_state" ]; then
             if [ "$_screen" = "off" ]; then
                 ip link set wlan0 multicast off 2>/dev/null
-                dumpsys wifi disable-multicast 2>/dev/null
             else
                 ip link set wlan0 multicast on 2>/dev/null
             fi
