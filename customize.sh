@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# customize.sh v4.3.21 — 安装时配置 (APatch / KernelSU / Magisk)
+# customize.sh v4.3.27 — 安装时配置 (APatch / KernelSU / Magisk)
 # 检测机型 → 迁移旧设置 → 音量键选择功能 → 温控配置
 ##############################################################
 
@@ -49,7 +49,7 @@ ROOT_IMPL=$(detect_root_impl)
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Pixel 9 Pro 温控调度控制台"
-    ui_print "  v4.3.21"
+    ui_print "  v4.3.27"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Root: $ROOT_IMPL"
 
@@ -92,7 +92,8 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
                .sim2_auto_manage .idle_isolate_mode \
                .swap_mode .ntp_server .uecap_mode .uecap_manual_mode \
                .uecap_policy .uecap_reason .sim2_radio_off \
-               .nr_saved_mode .webui_token; do
+               .nr_saved_mode .webui_token \
+               .bg_restrict_list .bg_restrict_enabled; do
         if [ -f "$OLDDIR/$_sf" ]; then
             cp "$OLDDIR/$_sf" "$MODPATH/$_sf" 2>/dev/null
         fi

@@ -5,7 +5,7 @@ system:
     待机功耗优化 / NR 息屏降级 / NTP 时间同步.
     WebUI 控制台运行在 busybox httpd (127.0.0.1:6210), 仅本机 WebView 可访问.
   port: 6210 (loopback only)
-  version: v4.3.26 / versionCode=60
+  version: v4.3.27 / versionCode=61
   supported_devices:
     - caiman (Pixel 9 Pro)
     - komodo (Pixel 9 Pro XL)
@@ -123,7 +123,7 @@ architecture:
     - name: 统一后台工作循环 (v4.3.0 Doze 友好)
       description: |
         v4.3.0 将原 4 个独立后台循环合并为 1 个统一工作循环子 shell.
-        每周期仅调用 1 次 dumpsys display 判断屏幕状态, 其余功能在同一循环内按需执行.
+        每周期通过 DRM dpms sysfs 判断屏幕状态（v4.3.18 起不再调用 dumpsys display）, 其余功能在同一循环内按需执行.
       interval: |
         亮屏 15s / 息屏首次 60s (NR 防抖) / 息屏后续 600s / 温度突发 5s
       functions:
@@ -508,6 +508,35 @@ agent_handoff:
     - 息屏 600s 长休眠是 Doze 友好的关键, 不要在息屏路径增加短间隔 dumpsys 调用.
 
 changelog:
+  # --- 2026-04-28 v4.3.27 四层功耗完整性审计修复 (B42-B45) ---
+  - timestamp: 2026-04-28T23:00:00+08:00
+    file_path: webroot/cgi-bin/bg_restrict.sh
+    action: MODIFY
+    description: >
+      Fixes B42: remove_restrict() 增加 am set-standby-bucket active, 移除包时恢复 bucket.
+  - timestamp: 2026-04-28T23:00:00+08:00
+    file_path: webroot/cgi-bin/standby_guard.sh
+    action: MODIFY
+    description: >
+      Fixes B43: restore_sim2_unmanaged_state() 从废弃的 radio power/ims enable
+      改为 cmd phone set-sim-count 2, 与 service.sh manage_sim2_radio() 一致.
+  - timestamp: 2026-04-28T23:00:00+08:00
+    file_path: customize.sh
+    action: MODIFY
+    description: >
+      Fixes B44: 升级迁移列表追加 .bg_restrict_list 和 .bg_restrict_enabled, 防止升级丢失.
+  - timestamp: 2026-04-28T23:00:00+08:00
+    file_path: webroot/app.js
+    action: MODIFY
+    description: >
+      Fixes B45: refreshBgRestrict() 改为 GET 只读; 新增 forceRefreshBgRestrict() POST 重新应用.
+      手动刷新按钮绑定 forceRefreshBgRestrict(), 轮询路径用 GET 避免无意义 IPC.
+  - timestamp: 2026-04-28T23:00:00+08:00
+    file_path: service.sh
+    action: MODIFY
+    description: >
+      L1 注释移除未实现的 "deviceidle whitelist" 声明, 与实际代码一致.
+
   # --- 2026-04-28 v4.3.26 L1后台限制配置文件化 + WebUI后台应用限制卡片 ---
   - timestamp: 2026-04-28T11:00:00+08:00
     file_path: service.sh

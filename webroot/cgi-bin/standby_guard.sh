@@ -59,8 +59,7 @@ emit_state() {
 restore_sim2_unmanaged_state() {
     _prev_state=$(cat "$SIM2_RADIO_STATE_FILE" 2>/dev/null | tr -d ' \n\r\t')
     if [ "$_prev_state" = "disabled" ]; then
-        cmd phone radio power -s 1 on 2>/dev/null
-        cmd phone ims enable -s 1 2>/dev/null
+        cmd phone set-sim-count 2 2>/dev/null
         printf 'enabled' > "$SIM2_RADIO_STATE_FILE"
     fi
 }

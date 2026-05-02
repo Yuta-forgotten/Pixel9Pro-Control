@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- Release: `v4.3.26`
-- versionCode: `60`
-- Asset: `pixel9pro_control_v4.3.26.zip`
+- Release: `v4.3.27`
+- versionCode: `61`
+- Asset: `pixel9pro_control_v4.3.27.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -105,7 +105,7 @@
 
 | 状态 | sleep 间隔 | 探屏方式 |
 |------|-----------|----------|
-| 亮屏 | 15s | sysfs `card0-DSI-1/dpms`（IPC-free） |
+| 亮屏 | 15s | sysfs `card0-DSI-1/enabled`（IPC-free） |
 | 息屏首次 | 60s | 同上 |
 | 息屏后续 | 600s | 同上 |
 | 已降 LTE | 300s | 同上 |

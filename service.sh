@@ -1,8 +1,16 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.3.26 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.3.27 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 四层功耗优化 → CPU配置 → 统一后台 → WebUI
+#
+# v4.3.27 变更:
+#   - B42 fix: bg_restrict.sh remove_restrict() 增加 bucket 恢复 (am set-standby-bucket active)
+#   - B43 fix: standby_guard.sh SIM2 恢复从废弃 radio power 改为 set-sim-count 2
+#   - B44 fix: customize.sh 升级迁移追加 .bg_restrict_list/.bg_restrict_enabled
+#   - B45 fix: refreshBgRestrict() 轮询改为 GET 只读, 手动刷新才 POST refresh
+#   - L1 注释移除未实现的 deviceidle whitelist 声明
+#   - B46 fix: 屏幕检测从失效的 DRM dpms 改为 enabled 节点 (Android 17 QPR1 Beta)
 #
 # v4.3.26 变更:
 #   - L1 后台限制从硬编码包名改为配置文件驱动 (.bg_restrict_list + .bg_restrict_enabled)
@@ -12,7 +20,7 @@
 #
 # v4.3.25 变更:
 #   - 新增四层功耗方案 (L1-L4), 经 AOSP 官方文档验证每一层 API 可靠性:
-#     L1: 官方 API 后台限制 (persistent) — App Standby Bucket + AppOps + deviceidle whitelist + Freezer
+#     L1: 官方 API 后台限制 (persistent) — App Standby Bucket + AppOps + Freezer
 #     L2: vendor_sched 后台 CPU 限制 (volatile, enforce 守护) — ug_bg_uclamp_max/ug_bg_group_throttle
 #     L3: APF Touch Boost 关闭 (system.prop 持久化) — vendor.powerhal.apf_enabled=false
 #     L4: response_time_ms (volatile, boot-time only) — 已有, 由 cpu_profile.sh 管理
@@ -265,7 +273,7 @@ manage_sim2_radio() {
 
 # ── 四层功耗方案: 参数定义 ──────────────────────────────
 # Power profile: balanced (默认) / battery (省电)
-# L1 (persistent): App Standby Bucket + AppOps + deviceidle whitelist + Freezer
+# L1 (persistent): App Standby Bucket + AppOps + Freezer
 # L2 (volatile): vendor_sched 后台 CPU 限制
 # L3 (system.prop): APF touch boost = false
 # L4 (volatile, boot-time): response_time_ms (由 cpu_profile.sh 管理)
@@ -274,7 +282,6 @@ manage_sim2_radio() {
 #   - App Standby Bucket: UsageStatsService 持久化到 app_idle_stats.xml, 重启后保留
 #     am set-standby-bucket 设置 reason=FORCED_BY_USER, 只有用户交互才会提升
 #   - AppOps: 持久化到 appops.xml, 系统不会自动回退
-#   - deviceidle whitelist: 持久化到 deviceidle.xml
 #   - vendor_sched: /proc/vendor_sched/ 纯 RAM, PowerHAL 在 hint 时可能覆盖
 #   - APF: vendor.powerhal.apf_enabled 由 PowerHAL 启动时读取, system.prop 保证先于 HAL 生效
 
@@ -482,7 +489,7 @@ if [ ! -f "$SIM2_AUTO_FILE" ]; then
 fi
 [ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
 
-log -t pixel9pro_ctrl "v4.3.26[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.3.27[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -563,7 +570,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.3.26[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.3.27[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 2.5 四层功耗优化 (L1-L3, boot 阶段一次性应用)
@@ -836,12 +843,12 @@ is_nr_mode_value() {
         _cycle_count=$((_cycle_count + 1))
 
         # --- Single screen state check per cycle (sysfs first, IPC-free) ---
-        # 用 DRM dpms 直接读屏幕状态，避免每周期 dumpsys display 唤起 system_server，
-        # 该 IPC 是 kernel suspend 的主要 userspace-abort 来源之一。
-        _dpms=$(cat /sys/class/drm/card0-DSI-1/dpms 2>/dev/null)
-        case "$_dpms" in
-            On) _screen="on" ;;
-            Off|Standby|Suspend) _screen="off" ;;
+        # Android 17 QPR1 Beta: DRM dpms 节点不再可靠（亮屏仍报 Off），
+        # 改用同路径 enabled 节点：enabled=亮屏, disabled=息屏，同为 sysfs 直读零 IPC。
+        _drm_en=$(cat /sys/class/drm/card0-DSI-1/enabled 2>/dev/null)
+        case "$_drm_en" in
+            enabled) _screen="on" ;;
+            disabled) _screen="off" ;;
             *)
                 # sysfs 路径异常或早期 boot 阶段：降级到原 IPC 路径
                 _scr=$(dumpsys display 2>/dev/null | grep "mScreenState=" | head -1 | sed 's/.*mScreenState=//' | tr -d ' ')

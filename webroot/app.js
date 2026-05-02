@@ -1469,14 +1469,26 @@ function renderBgRestrict(data) {
 
 async function refreshBgRestrict() {
   try {
+    const data = await apiFetch(API.bgRestrict, { timeoutMs: 8000 });
+    renderBgRestrict(data);
+  } catch (err) {
+    refs.bgRestrictRows.innerHTML = '';
+    refs.bgRestrictRows.appendChild(errorBlock('获取失败：' + err.message));
+  }
+}
+
+async function forceRefreshBgRestrict() {
+  try {
     const data = await apiFetch(API.bgRestrict, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'refresh' }),
       timeoutMs: 10000
     });
-    if (data.ok) renderBgRestrict(data);
-    else {
+    if (data.ok) {
+      renderBgRestrict(data);
+      showToast('已重新应用后台限制');
+    } else {
       const fallback = await apiFetch(API.bgRestrict, { timeoutMs: 8000 });
       renderBgRestrict(fallback);
     }
@@ -2391,7 +2403,7 @@ function bindStaticEvents() {
   $('bg-restrict-toggle-btn').addEventListener('click', toggleBgRestrict);
   $('bg-restrict-add-btn').addEventListener('click', bgRestrictAdd);
   $('bg-restrict-pkg-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') bgRestrictAdd(); });
-  $('bg-restrict-refresh-btn').addEventListener('click', refreshBgRestrict);
+  $('bg-restrict-refresh-btn').addEventListener('click', forceRefreshBgRestrict);
   $('nr-switch-detail-btn').addEventListener('click', () => openDetail('NR 息屏降级详情', NR_SWITCH_DETAIL));
   $('uecap-detail-btn').addEventListener('click', () => openDetail('UE 网络能力配置', UECAP_DETAIL));
   $('baseband-detail-btn').addEventListener('click', () => openDetail('基带模块说明', BASEBAND_DETAIL));

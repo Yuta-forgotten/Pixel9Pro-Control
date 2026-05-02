@@ -52,6 +52,7 @@ apply_restrict() {
 
 remove_restrict() {
     _pkg="$1"
+    am set-standby-bucket "$_pkg" active 2>/dev/null
     cmd appops set "$_pkg" RUN_IN_BACKGROUND allow 2>/dev/null
     cmd appops set "$_pkg" RUN_ANY_IN_BACKGROUND allow 2>/dev/null
 }
