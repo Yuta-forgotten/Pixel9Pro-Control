@@ -3,8 +3,22 @@
 # CGI: /cgi-bin/uecap.sh
 # GET  -> 返回当前 UECap 策略 / 档位 / hash
 # POST -> 切换 auto/manual 策略，或在 manual 下切换档位
+#
+# Magisk 自适应: 安装时若检测到 Magisk, customize.sh 会删除
+# uecap_profile.sh 与基带 binarypb, 并写入 .uecap_policy=disabled.
+# 此时本 CGI 直接返回 stub 状态, 不再 source uecap_profile.sh.
 ##############################################################
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
+
+# Magisk 短路: 无 uecap_profile.sh 或显式 disabled → 返回 stub
+_uecap_policy=$(cat "$MODDIR/.uecap_policy" 2>/dev/null | tr -d ' \n\r')
+if [ ! -f "$MODDIR/uecap_profile.sh" ] || [ "$_uecap_policy" = "disabled" ]; then
+    require_loopback
+    json_headers
+    printf '%s\n' '{"ok":true,"reloading":false,"policy":"disabled","mode":"disabled","manual_mode":"disabled","active_mode":"stock","reason":"magisk_no_baseband","disabled":true,"disabled_message":"Magisk 版不含基带 UECap 覆盖。Magic Mount 与 modem cbd 早期 mmap 加载存在 race, 强制覆盖会卡 G logo。如需 UE 三档切换请使用 APatch / KSU + metamodule。","modes":[],"hash":"","stock_hash":""}'
+    exit 0
+fi
+
 . "$MODDIR/uecap_profile.sh"
 
 emit_status() {

@@ -59,6 +59,24 @@ if [ "$ROOT_IMPL" = "KernelSU" ]; then
     ui_print ""
 fi
 
+# ── Magisk 自适应: 剔除基带 UECap 覆盖 ─────────────────────────
+# 原因: Magisk Magic Mount (bind mount + tmpfs overlay) 在 post-fs-data
+# 阶段才发生, 而 modem cbd 早期 mmap 加载 /vendor/firmware/uecapconfig/
+# *.binarypb. 两者存在 race, 强行覆盖会导致 cbd 重启循环, 卡 G logo
+# 滚动条 (用户实测反馈). APatch / KSU+metamodule 走 OverlayFS, 接管时机
+# 早于 cbd, 无此问题.
+# 适配方案: Magisk 下安装时就地删除 binarypb + 改 CGI 为 stub + 跳过菜单.
+IS_MAGISK_NO_BASEBAND=0
+if [ "$ROOT_IMPL" = "Magisk" ]; then
+    IS_MAGISK_NO_BASEBAND=1
+    ui_print "  ⚠ Magisk 下自动剔除基带 UECap 覆盖"
+    ui_print "    (规避 Magic Mount × modem cbd 启动 race)"
+    rm -rf "$MODPATH/system/vendor/firmware/uecapconfig" 2>/dev/null
+    rmdir "$MODPATH/system/vendor/firmware" 2>/dev/null
+    rm -f "$MODPATH/uecap_profile.sh" 2>/dev/null
+    ui_print ""
+fi
+
 case "$device" in
     komodo)
         ui_print "  机型: Pixel 9 Pro XL (komodo)"
@@ -174,6 +192,14 @@ if [ "$_is_upgrade" -eq 0 ]; then
     ui_print ""
 
     # --- UECap 网络能力 ---
+    if [ "$IS_MAGISK_NO_BASEBAND" -eq 1 ]; then
+        ui_print "  ③ 网络能力配置: 跳过 (Magisk 不含基带覆盖)"
+        echo "disabled" > "$MODPATH/.uecap_manual_mode"
+        echo "disabled" > "$MODPATH/.uecap_mode"
+        echo "disabled" > "$MODPATH/.uecap_policy"
+        echo "magisk_no_baseband" > "$MODPATH/.uecap_reason"
+        ui_print ""
+    else
     ui_print "  ③ 网络能力配置:"
     _UE_VALS="balanced special universal"
     _UE_LABEL_balanced="国内频段 (推荐)"
@@ -200,6 +226,7 @@ if [ "$_is_upgrade" -eq 0 ]; then
     echo "manual" > "$MODPATH/.uecap_policy"
     ui_print "    ✓ $_ue_label"
     ui_print ""
+    fi
 
     # --- NR 息屏降级 ---
     ui_print "  ④ NR 息屏降级 (息屏自动切 LTE 省电):"
@@ -258,6 +285,13 @@ else
     [ -f "$MODPATH/.uecap_manual_mode" ] || echo 'balanced' > "$MODPATH/.uecap_manual_mode"
     [ -f "$MODPATH/.uecap_mode" ] || echo 'balanced' > "$MODPATH/.uecap_mode"
     [ -f "$MODPATH/.uecap_policy" ] || echo 'manual' > "$MODPATH/.uecap_policy"
+    # Magisk: 升级时若从 APatch/KSU 迁移过来的配置, 强制覆盖为 disabled
+    if [ "$IS_MAGISK_NO_BASEBAND" -eq 1 ]; then
+        echo 'disabled' > "$MODPATH/.uecap_manual_mode"
+        echo 'disabled' > "$MODPATH/.uecap_mode"
+        echo 'disabled' > "$MODPATH/.uecap_policy"
+        echo 'magisk_no_baseband' > "$MODPATH/.uecap_reason"
+    fi
     [ -f "$MODPATH/.nr_screen_switch" ] || echo 'off' > "$MODPATH/.nr_screen_switch"
     [ -f "$MODPATH/.sim2_auto_manage" ] || echo 'on'  > "$MODPATH/.sim2_auto_manage"
     [ -f "$MODPATH/.idle_isolate_mode" ] || echo 'off' > "$MODPATH/.idle_isolate_mode"

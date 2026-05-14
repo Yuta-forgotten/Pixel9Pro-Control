@@ -2,6 +2,8 @@
 ##############################################################
 # CGI: /cgi-bin/check_baseband.sh
 # GET -> 返回独立基带模块 (pixel9pro_baseband_trial) 安装状态与配置详情
+#
+# Magisk 自适应: .uecap_policy=disabled 时直接返回 not_applicable
 ##############################################################
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
 
@@ -9,6 +11,13 @@ require_loopback
 [ "$REQUEST_METHOD" = "GET" ] || json_error '405 Method Not Allowed' 'GET only'
 
 json_headers
+
+# Magisk 短路
+_uecap_policy=$(cat "$MODDIR/.uecap_policy" 2>/dev/null | tr -d ' \n\r')
+if [ "$_uecap_policy" = "disabled" ]; then
+    printf '%s\n' '{"ok":true,"installed":false,"applicable":false,"reason":"magisk_no_baseband","message":"Magisk 版不含基带配置模块对接, 跳过检测。"}'
+    exit 0
+fi
 
 baseband_module_dir="/data/adb/modules/pixel9pro_baseband_trial"
 
