@@ -47,6 +47,11 @@ case "$PROFILE" in
 
     responsive)
         # ── 响应优先 ─────────────────────────────────────────
+        # 注意: X4=80ms 仅是名义升频值, 实测不主导 X4 是否介入
+        #   (logs/2026-04-26_dex2oat_responsive_x4_analysis.txt: responsive +6C 下 X4 仍基本不工作)
+        #   X4 是否上场由 PowerHAL HBoost / EAS 放置决定, 不由 response_time_ms 主导
+        # 该档真实可感知差异只是"中核比 balanced 早 4ms 补位", 非性能全开, 非 X4 档
+        # 自动策略禁止进入此档 (见 service.sh slow auto policy)
         apply_sched_pixel 12 20 80
         cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
