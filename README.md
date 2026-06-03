@@ -27,26 +27,27 @@
 
 | 模式 | top-app | 说明 | 小核 resp | 中核 resp | 大核 resp |
 |------|---------|------|-----------|-----------|-----------|
-| 响应优先 | cpu0-7 | 明显加快交互响应 | 12ms | 20ms | 80ms |
-| 均衡 | cpu0-7 | 小核能效区间（自己调试，没有官方或者权威数据支持，酌情使用） | 16ms | 24ms | 160ms |
-| 省电 | cpu0-6 | 放慢升频 | 32ms | 96ms | 200ms |
-| 默认 | cpu0-7 | 自动模式默认Google调度 | 16ms | 64ms | 200ms |
+| 响应优先 | cpu0-7 | 手动高激进档；不参与自动策略 | 12ms | 20ms | 80ms |
+| 均衡 | cpu0-7 | 日常主力，日志验证后的推荐底座 | 16ms | 24ms | 160ms |
+| 省电 | cpu0-6 | 避免 X4 常态介入，优先控温和续航 | 32ms | 96ms | 200ms |
+| 默认 | cpu0-7 | 接近 Google 默认响应曲线，作为保守回退 | 16ms | 64ms | 200ms |
 
 - 调度通过 `cpuset` 和 `sched_pixel response_time_ms` 控制；不直接写 `scaling_max_freq`
+- `foreground/cpus` 会被 framework 重置到 `0-6`，模块主要托管 `top-app/background/system-background`
 
 ### 前台自动调度
 
 - 模式：`manual` / `auto`
 - `manual`：固定使用当前选中的 profile
-- `auto`：以 `default` 作为自动模式的默认底座，只在亮屏前台做**慢切换收口**
-  - steady-screen 候选前台先保持 `default`
-  - 同一长亮屏场景持续约 `45s` 后切到 `light`
+- `auto`：以 `balanced` 作为亮屏日常底座，只在持续热平台做**慢切换收口**
+  - 亮屏前台默认保持 `balanced`
   - `VIRTUAL-SKIN >= 40.8°C` 持续约 `90s` 后压到 `battery`
-  - `battery` 状态下温度回落到 `40.4°C` 以下持续约 `60s` 后恢复 `light`
-  - 息屏或退出 steady-screen 超过约 `30s` 后回到 `balanced`
+  - `battery` 状态下温度回落到 `40.4°C` 以下持续约 `60s` 后恢复 `balanced`
+  - 息屏后回到 `balanced`
 
 - 自动模式不会自动进入 `responsive`
-- steady-screen 候选只做低频、保守的用户空间近似识别
+- `responsive 12/20/80` 只表示更激进的升频响应，不代表更省电；长亮屏/热平台请使用 `balanced` 或 `battery`
+- `light` 已在 v4.3.22 删除：实测 steady-state 前台负载下，小核低频高占用会诱发中核补偿升频，反而更费电
 
 ### 三层功耗优化
 

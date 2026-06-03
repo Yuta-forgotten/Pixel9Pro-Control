@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.3.28 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.3.29 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
 #
@@ -57,8 +57,8 @@
 #   - 息屏路径不再执行 cmd phone / settings put preferred_network_mode 以外的 radio 命令
 #
 # v4.3.15 变更:
-#   - 新增慢切换自动调度策略: feed 类前台长亮屏时 balanced→light，持续热平台时 light→battery
-#   - 自动策略只在亮屏前台生效，息屏或退出 feed 后回到 balanced，避免高频来回切换
+#   - 新增慢切换自动调度策略: feed 类前台长亮屏保持 balanced，持续热平台时 balanced→battery
+#   - 自动策略只在亮屏前台生效，息屏或温度回落后回到 balanced，避免高频来回切换
 #   - 新增 .profile_policy / .profile_manual / .profile_auto_reason 状态文件
 #
 # v4.3.14 变更:
@@ -566,7 +566,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.3.28[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.3.29[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)
@@ -825,8 +825,8 @@ is_nr_mode_value() {
     _power_hist_count=0
     _AUTO_BATTERY_TEMP=40800
     _AUTO_BATTERY_HOLD=90
-    _AUTO_LIGHT_COOL_TEMP=40400
-    _AUTO_LIGHT_COOL_HOLD=60
+    _AUTO_BALANCED_COOL_TEMP=40400
+    _AUTO_BALANCED_COOL_HOLD=60
     _auto_hot_since=0
     _auto_cool_since=0
     _active_profile=$(read_valid_profile "$PROFILE_FILE" 'default')
@@ -1020,7 +1020,7 @@ is_nr_mode_value() {
                 if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$_AUTO_BATTERY_TEMP" ] 2>/dev/null; then
                     [ "$_auto_hot_since" -eq 0 ] && _auto_hot_since=$_now
                     _auto_cool_since=0
-                elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$_AUTO_LIGHT_COOL_TEMP" ] 2>/dev/null; then
+                elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$_AUTO_BALANCED_COOL_TEMP" ] 2>/dev/null; then
                     [ "$_auto_cool_since" -eq 0 ] && _auto_cool_since=$_now
                     _auto_hot_since=0
                 else
@@ -1028,7 +1028,7 @@ is_nr_mode_value() {
                     _auto_cool_since=0
                 fi
 
-                if [ "$_active_profile" = "battery" ] && [ "$_auto_cool_since" -gt 0 ] && [ $((_now - _auto_cool_since)) -ge "$_AUTO_LIGHT_COOL_HOLD" ]; then
+                if [ "$_active_profile" = "battery" ] && [ "$_auto_cool_since" -gt 0 ] && [ $((_now - _auto_cool_since)) -ge "$_AUTO_BALANCED_COOL_HOLD" ]; then
                     _target_profile="balanced"
                     _target_reason="hot_cooldown"
                 elif [ "$_auto_hot_since" -gt 0 ] && [ $((_now - _auto_hot_since)) -ge "$_AUTO_BATTERY_HOLD" ]; then

@@ -1,13 +1,13 @@
 #!/system/bin/sh
 # ============================================================
-# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v4.3.25
+# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v4.3.29
 # 用法: sh cpu_profile.sh [responsive|balanced|battery|default|status|enforce]
 #
 # 核心原理:
 #   - 不再写 scaling_max_freq / scaling_min_freq (会被 thermal HAL 覆盖)
 #   - 通过 sched_pixel 参数控制频率行为, cpuset 路由 top-app/background
 #   - foreground cpuset 由 system_server 框架层管理, 固定为 0-6, 不可覆盖
-#   - 当前目标不是”造一个极限性能模式”，而是把不同前台场景拉开成更清晰的可感知方案
+#   - 当前目标不是"造一个极限性能模式", 而是把不同前台场景拉开成更清晰的可感知方案
 #
 # Tensor G4 拓扑：
 #   cpu0-3  Cortex-A520 (小核)  820-1950 MHz
@@ -48,11 +48,11 @@ case "$PROFILE" in
     responsive)
         # ── 响应优先 ─────────────────────────────────────────
         apply_sched_pixel 12 20 80
-        cpuset_write “top-app”           “0-7”
-        cpuset_write “foreground”        “0-6”
-        cpuset_write “background”        “0-3”
-        cpuset_write “system-background” “0-3”
-        log -t pixel9pro_ctrl “CPU: RESPONSIVE [top-app→0-7, response 12/20/80ms]”
+        cpuset_write "top-app"           "0-7"
+        cpuset_write "foreground"        "0-6"
+        cpuset_write "background"        "0-3"
+        cpuset_write "system-background" "0-3"
+        log -t pixel9pro_ctrl "CPU: RESPONSIVE [top-app→0-7, response 12/20/80ms]"
         ;;
 
     balanced)
