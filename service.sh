@@ -827,6 +827,7 @@ is_nr_mode_value() {
     _AUTO_BATTERY_HOLD=90
     _AUTO_BALANCED_COOL_TEMP=40400
     _AUTO_BALANCED_COOL_HOLD=60
+    _AUTO_CHARGING_SEV=2
     _auto_hot_since=0
     _auto_cool_since=0
     _active_profile=$(read_valid_profile "$PROFILE_FILE" 'default')
@@ -1017,26 +1018,43 @@ is_nr_mode_value() {
                     fi
                 fi
             elif [ "$_screen" = "on" ]; then
-                if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$_AUTO_BATTERY_TEMP" ] 2>/dev/null; then
-                    [ "$_auto_hot_since" -eq 0 ] && _auto_hot_since=$_now
-                    _auto_cool_since=0
-                elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$_AUTO_BALANCED_COOL_TEMP" ] 2>/dev/null; then
-                    [ "$_auto_cool_since" -eq 0 ] && _auto_cool_since=$_now
+                if [ "${_p_is_charging:-0}" -eq 1 ] 2>/dev/null; then
+                    # 充电态: 不走 40.8C 软收口; 仅当系统温控真正介入(thermalservice severity>=MODERATE)才降 battery
+                    # severity 是系统去抖后的整机温控等级, 直接判定, 不累积温度计时
                     _auto_hot_since=0
+                    _auto_cool_since=0
+                    _sev=$(dumpsys thermalservice 2>/dev/null | grep "Thermal Status:" | head -1 | sed 's/.*Thermal Status:[[:space:]]*//' | tr -d ' \n\r')
+                    case "$_sev" in ''|*[!0-9]*) _sev=0 ;; esac
+                    if [ "$_sev" -ge "$_AUTO_CHARGING_SEV" ] 2>/dev/null; then
+                        _target_profile="battery"
+                        _target_reason="charging_thermal_mitigation"
+                    else
+                        _target_profile="balanced"
+                        _target_reason="charging_no_throttle"
+                    fi
                 else
-                    _auto_hot_since=0
-                    _auto_cool_since=0
-                fi
+                    # 放电态: 原有 40.8C/90s 软收口 (VIRTUAL-SKIN)
+                    if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$_AUTO_BATTERY_TEMP" ] 2>/dev/null; then
+                        [ "$_auto_hot_since" -eq 0 ] && _auto_hot_since=$_now
+                        _auto_cool_since=0
+                    elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$_AUTO_BALANCED_COOL_TEMP" ] 2>/dev/null; then
+                        [ "$_auto_cool_since" -eq 0 ] && _auto_cool_since=$_now
+                        _auto_hot_since=0
+                    else
+                        _auto_hot_since=0
+                        _auto_cool_since=0
+                    fi
 
-                if [ "$_active_profile" = "battery" ] && [ "$_auto_cool_since" -gt 0 ] && [ $((_now - _auto_cool_since)) -ge "$_AUTO_BALANCED_COOL_HOLD" ]; then
-                    _target_profile="balanced"
-                    _target_reason="hot_cooldown"
-                elif [ "$_auto_hot_since" -gt 0 ] && [ $((_now - _auto_hot_since)) -ge "$_AUTO_BATTERY_HOLD" ]; then
-                    _target_profile="battery"
-                    _target_reason="steady_hot_guard"
-                else
-                    _target_profile="balanced"
-                    _target_reason="auto_balanced"
+                    if [ "$_active_profile" = "battery" ] && [ "$_auto_cool_since" -gt 0 ] && [ $((_now - _auto_cool_since)) -ge "$_AUTO_BALANCED_COOL_HOLD" ]; then
+                        _target_profile="balanced"
+                        _target_reason="hot_cooldown"
+                    elif [ "$_auto_hot_since" -gt 0 ] && [ $((_now - _auto_hot_since)) -ge "$_AUTO_BATTERY_HOLD" ]; then
+                        _target_profile="battery"
+                        _target_reason="steady_hot_guard"
+                    else
+                        _target_profile="balanced"
+                        _target_reason="auto_balanced"
+                    fi
                 fi
 
                 if [ -n "$_target_profile" ]; then
