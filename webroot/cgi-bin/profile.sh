@@ -14,7 +14,7 @@ PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
 read_valid_profile() {
     _prof=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
     case "$_prof" in
-        responsive|balanced|battery|default) printf '%s' "$_prof" ;;
+        performance|balanced|battery|default) printf '%s' "$_prof" ;;
         *) printf '%s' "$2" ;;
     esac
 }
@@ -52,7 +52,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     newpolicy=$(printf '%s' "$body" | sed -n 's/.*"policy"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
 
     case "$newprof" in
-        ''|responsive|balanced|battery|default) ;;
+        ''|performance|balanced|battery|default) ;;
         *) json_error '400 Bad Request' 'invalid profile' ;;
     esac
     case "$newpolicy" in
@@ -69,7 +69,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                     _temp_raw=${_result#BLOCKED:}
                     _temp_c=$(awk "BEGIN{printf \"%.1f\", ${_temp_raw:-0}/1000}")
                     json_headers
-                    printf '{"ok":false,"error":"温度过高 (%s°C)，请先降温后再切到响应优先"}\n' "$_temp_c"
+                    printf '{"ok":false,"error":"温度过高 (%s°C)，请先降温后再切换性能档"}\n' "$_temp_c"
                     ;;
                 *)
                     json_error '500 Internal Server Error' 'profile script failed'

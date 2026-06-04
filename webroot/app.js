@@ -50,14 +50,14 @@ const THEME_ICONS = {
 };
 
 const PROFILES = {
-  responsive: {
-    name: '响应优先',
-    summary: '最明显的手动高响应档，保留全核并让中核/大核更早介入。',
-    desc: '前台: cpu0-7 · 小核 12ms · 中核 20ms · 大核 80ms',
+  performance: {
+    name: '性能优先',
+    summary: '还闸放开内核动态 boost (ADPF/HBoost/fork)，并让中大核更早介入的手动性能档。',
+    desc: '前台: cpu0-7 · 小核 12ms · 中核 20ms · 大核 80ms · uclamp.min→1024',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     modeClass: 'mode-game',
-    detail: '<b>响应优先</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 12ms / 中核 20ms / 大核 80ms<br><br>手动高响应档：保留全核调度并让中核、大核更早补位，交互提速感最明显。'
+    detail: '<b>性能优先</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 12ms / 中核 20ms / 大核 80ms<br><b>sched_util_clamp_min</b>: 0 → 1024（还 Google 出厂 uclamp.min 上限，放开 ADPF/HBoost/fork/ExoPlayer 动态 boost）<br><br>顺内核“还闸”的手动性能档：恢复出厂 uclamp.min 上限让框架动态 boost 生效，并让中大核更早补位。放开 boost 后温升更快，自动温控收口只在均衡↔省电生效，手动锁此档时不会被自动拉回。'
   },
   balanced: {
     name: '均衡模式',
@@ -780,7 +780,7 @@ function syncThermalUi() {
 
 function renderProfileCards() {
   refs.profileList.innerHTML = '';
-  ['responsive', 'balanced', 'battery', 'default'].forEach((key) => {
+  ['performance', 'balanced', 'battery', 'default'].forEach((key) => {
     const p = PROFILES[key];
     const card = document.createElement('article');
     card.className = 'profile-card profile-option';
@@ -2420,7 +2420,7 @@ function bindStaticEvents() {
   $('reboot-cancel-btn').addEventListener('click', cancelThermalChange);
   $('open-cpu-detail-btn').addEventListener('click', () => {
     const cpuSet = {
-      responsive: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3',
+      performance: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3',
       balanced: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3',
       battery: 'top-app: cpu0-6\nforeground: cpu0-6\nbackground: cpu0-3',
       default: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3'

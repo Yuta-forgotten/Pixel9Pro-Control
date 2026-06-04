@@ -1,13 +1,15 @@
 #!/system/bin/sh
 # ============================================================
-# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v4.3.29
-# 用法: sh cpu_profile.sh [responsive|balanced|battery|default|status|enforce]
+# Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v4.4.0
+# 用法: sh cpu_profile.sh [performance|balanced|battery|default|status|enforce]
 #
 # 核心原理:
-#   - 不再写 scaling_max_freq / scaling_min_freq (会被 thermal HAL 覆盖)
-#   - 通过 sched_pixel 参数控制频率行为, cpuset 路由 top-app/background
+#   - 不写 scaling_max_freq / scaling_min_freq (会被 thermal HAL 覆盖)
+#   - 通过 sched_pixel response_time_ms 控制升频节奏, cpuset 路由 top-app/background
+#   - performance 档额外把 sched_util_clamp_min 0→1024, 还 Google 出厂 uclamp.min 上限,
+#     放开 ADPF/HBoost/fork/ExoPlayer 等内核动态 boost (顺内核"还闸", 非用户态"抢闸")
+#   - 不写 vendor ug_fg_uclamp_min (实测在 per-task effmin 不可见、不可验证, 见 01_cpu)
 #   - foreground cpuset 由 system_server 框架层管理, 固定为 0-6, 不可覆盖
-#   - 当前目标不是"造一个极限性能模式", 而是把不同前台场景拉开成更清晰的可感知方案
 #
 # Tensor G4 拓扑：
 #   cpu0-3  Cortex-A520 (小核)  820-1950 MHz
@@ -17,6 +19,11 @@
 # sched_pixel 参数说明 (源码: cpufreq_gov.c):
 #   response_time_ms: 越大 → 升频越慢 → 自然趴在低频
 #   down_rate_limit_us: 由内核根据 response_time_ms 自动计算, 不可独立写入
+#
+# sched_util_clamp_min (Linux 5.x mainline, /proc/sys/kernel/):
+#   它是 uclamp.min 的"系统级上限(cap)" — 限制任务可请求的最大 uclamp.min,
+#   不是"给任务发 util 信号"(内核文档 sched-util-clamp)。出厂 1024。
+#   performance=1024 放开 boost; 其它档=0 抑制走 per-task 请求路径的 boost。
 #
 # enforce 子命令:
 #   校验 vendor_sched 参数是否被 PowerHAL hint 覆盖, 仅在偏差时写回
@@ -31,6 +38,7 @@ CPU0="/sys/devices/system/cpu/cpu0/cpufreq"
 CPU4="/sys/devices/system/cpu/cpu4/cpufreq"
 CPU7="/sys/devices/system/cpu/cpu7/cpufreq"
 VENDOR_SCHED="/proc/vendor_sched"
+UCLAMP_CAP_MIN="/proc/sys/kernel/sched_util_clamp_min"
 POWER_PROFILE_FILE="$MODDIR/.power_profile"
 
 write_if_exists() { [ -f "$1" ] && echo "$2" > "$1" 2>/dev/null; }
@@ -43,28 +51,38 @@ apply_sched_pixel() {
     write_if_exists "$CPU7/sched_pixel/response_time_ms"   "$3"
 }
 
+apply_uclamp_cap() {
+    # $1: sched_util_clamp_min — uclamp.min 系统级上限(cap)。
+    #   performance=1024 还 Google 出厂上限放开动态 boost; 其它档=0。
+    #   volatile, 不被 PowerHAL/Thermal 覆盖 (无需 enforce 守护)。
+    write_if_exists "$UCLAMP_CAP_MIN" "$1"
+}
+
 case "$PROFILE" in
 
-    responsive)
-        # ── 响应优先 ─────────────────────────────────────────
-        # 注意: X4=80ms 仅是名义升频值, 实测不主导 X4 是否介入
-        #   (logs/2026-04-26_dex2oat_responsive_x4_analysis.txt: responsive +6C 下 X4 仍基本不工作)
-        #   X4 是否上场由 PowerHAL HBoost / EAS 放置决定, 不由 response_time_ms 主导
-        # 该档真实可感知差异只是"中核比 balanced 早 4ms 补位", 非性能全开, 非 X4 档
-        # 自动策略禁止进入此档 (见 service.sh slow auto policy)
+    performance)
+        # ── 性能优先 (顺内核还闸) ─────────────────────────────
+        # 核心: sched_util_clamp_min 0→1024, 还 Google 出厂 uclamp.min 上限,
+        #   放开 ADPF/HBoost/fork/ExoPlayer 等内核动态 boost (都走 uclamp.min 路径)。
+        # response 12/20/80: 中大核更早补位; X4 是否上场仍由 PowerHAL HBoost/EAS 决定,
+        #   不由 response_time_ms 主导 (logs/2026-04-26_dex2oat_responsive_x4_analysis.txt)。
+        # 手动专用, 自动策略禁止进入 (见 service.sh slow auto policy)。
+        # 发热提示: 放开 boost 后温升更快, 自动温控收口只在 balanced↔battery 生效。
         apply_sched_pixel 12 20 80
+        apply_uclamp_cap 1024
         cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: RESPONSIVE [top-app→0-7, response 12/20/80ms]"
+        log -t pixel9pro_ctrl "CPU: PERFORMANCE [cap=1024, response 12/20/80ms]"
         ;;
 
     balanced)
         # ── 均衡模式 ─────────────────────────────────────────
         # 小核 16ms 保持 955-1197MHz 高效区间, 中核 24ms 比 stock 更积极补位
-        # X4 以 160ms 做突发吸收器, 不常态介入
+        # X4 以 160ms 做突发吸收器, 不常态介入。cap=0 (省电基线, 非性能档)。
         apply_sched_pixel 16 24 160
+        apply_uclamp_cap 0
         cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
@@ -75,6 +93,7 @@ case "$PROFILE" in
     battery)
         # ── 省电模式 ─────────────────────────────────────────
         apply_sched_pixel 32 96 200
+        apply_uclamp_cap 0
         cpuset_write "top-app"           "0-6"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
@@ -85,6 +104,7 @@ case "$PROFILE" in
     default)
         # ── 默认模式 / 自动默认底座 ─────────────────────────
         apply_sched_pixel 16 64 200
+        apply_uclamp_cap 0
         cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
@@ -113,6 +133,10 @@ case "$PROFILE" in
                 "$(cat $path/down_rate_limit_us 2>/dev/null || echo N/A)"
         done
         echo ""
+        echo "=== uclamp cap ==="
+        printf "sched_util_clamp_min=%s  (performance=1024 / 其它=0)\n" \
+            "$(cat $UCLAMP_CAP_MIN 2>/dev/null || echo N/A)"
+        echo ""
         echo "=== cpuset ==="
         for set in top-app foreground background system-background; do
             printf "%-18s %s\n" "$set" "$(cat /dev/cpuset/$set/cpus 2>/dev/null)"
@@ -125,6 +149,7 @@ case "$PROFILE" in
     enforce)
         # ── vendor_sched 参数守护 ───────────────────────────────
         # 只做 procfs 读写, 参数正确时零开销
+        # 注: sched_util_clamp_min 不被 PowerHAL 覆盖, 不在此守护 (由各档切换时管理)
         _pp=$(cat "$POWER_PROFILE_FILE" 2>/dev/null | tr -d ' \n\r')
         case "$_pp" in
             battery) _target_bg_uclamp=150; _target_bg_throttle=80 ;;
@@ -145,7 +170,7 @@ case "$PROFILE" in
         ;;
 
     *)
-        echo "Usage: $0 [responsive|balanced|battery|default|status|enforce]"
+        echo "Usage: $0 [performance|balanced|battery|default|status|enforce]"
         exit 1
         ;;
 esac

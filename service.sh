@@ -1,8 +1,15 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.3.29 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.4.0 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
+#
+# v4.4.0 变更:
+#   - CPU 新增 performance 档 (替换 responsive): 进档 sched_util_clamp_min 0→1024 还 Google
+#     出厂 uclamp.min 上限, 放开 ADPF/HBoost/fork/ExoPlayer 动态 boost (顺内核"还闸")
+#   - sched_util_clamp_min 改为按档管理 (cpu_profile.sh), 移除 boot 阶段独立写 0
+#   - 纠正旧机理: 它是 uclamp.min 系统级上限(cap), 非"虚假 100% util 信号"
+#   - 老用户 responsive 配置自动迁移到 performance
 #
 # v4.3.27 变更:
 #   - B42 fix: bg_restrict.sh remove_restrict() 增加 bucket 恢复 (am set-standby-bucket active)
@@ -34,7 +41,7 @@
 #
 # v4.3.20 变更:
 #   - 修复 NR 降级 adaptive sleep bug: 等待期间 worker 从 600s 跳到 60s 间隔
-#   - 新增 sched_util_clamp_min=0 (stock=1024 向 EAS 发送虚假 100% 利用率信号)
+#   - 新增 sched_util_clamp_min=0 (v4.4.0 已改为按档管理; 机理纠正见 cpu_profile.sh)
 #   - 新增 apply_irq_affinity (后在 v4.3.21 回滚, 方案错误)
 #
 # v4.3.19 变更:
@@ -352,7 +359,7 @@ apply_l2_vendor_sched() {
 
 valid_profile() {
     case "$1" in
-        responsive|balanced|battery|default) return 0 ;;
+        performance|balanced|battery|default) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -370,6 +377,8 @@ read_valid_profile() {
     _profile_value=$(cat "$_profile_path" 2>/dev/null | tr -d ' \n\r\t')
     # v4.3.22: light 已删除, 映射到 balanced
     [ "$_profile_value" = "light" ] && _profile_value="balanced"
+    # v4.4.0: responsive 改名 performance (加 cap 管理), 旧值映射
+    [ "$_profile_value" = "responsive" ] && _profile_value="performance"
     if valid_profile "$_profile_value"; then
         printf '%s' "$_profile_value"
     else
@@ -482,7 +491,7 @@ if [ ! -f "$SIM2_AUTO_FILE" ]; then
 fi
 [ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
 
-log -t pixel9pro_ctrl "v4.3.28[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.4.0[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -511,12 +520,11 @@ echo 3000 > /proc/sys/vm/dirty_writeback_centisecs 2>/dev/null
 echo 50 > /proc/sys/vm/dirty_ratio 2>/dev/null
 echo 20 > /proc/sys/vm/dirty_background_ratio 2>/dev/null
 
-# === EAS 调度修正 (Sultan 内核 + XDA teoweed 思路) ===
-# stock sched_util_clamp_min=1024 向 EAS 发送虚假 100% 利用率信号,
-# 阻止轻负载被正确路由到小核。设为 0 后 EAS 根据实际负载决策。
-# 验证: 不被 Power HAL / Thermal HAL 覆盖, suspend/resume 后保持。
-echo 0 > /proc/sys/kernel/sched_util_clamp_min 2>/dev/null
-log -t pixel9pro_ctrl "EAS: sched_util_clamp_min=0 (fix false 100% util signal)"
+# === uclamp.min cap (sched_util_clamp_min) 现由 cpu_profile.sh 按档管理 ===
+# 纠正旧机理: 它是 uclamp.min 的"系统级上限(cap)", 不是"虚假 100% util 信号"
+#   (内核文档 sched-util-clamp; 出厂 1024 仅是允许的最大请求值, 不主动抬 util)。
+# v4.4.0 起不在 boot 独立写: performance=1024(还 Google 动态 boost) / 其它档=0,
+#   由 cpu_profile.sh 各分支成对管理; 下方第 3 节的 cpu_profile.sh 调用会按当前档写好 cap。
 
 # === ZRAM 配置 (Emerald Hill 硬件加速 + 扩容) ===
 # 原厂出厂: persist.vendor.zram_comp_algorithm 默认为 lz4, ZRAM 大小 50% RAM ≈ 8GB.
@@ -566,7 +574,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.3.29[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.4.0[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)

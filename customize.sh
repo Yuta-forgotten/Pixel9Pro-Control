@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# customize.sh v4.3.29 — 安装时配置 (APatch / KernelSU / Magisk)
+# customize.sh v4.4.0 — 安装时配置 (APatch / KernelSU / Magisk)
 # 检测机型 → 迁移旧设置 → 音量键选择功能 → 温控配置
 ##############################################################
 
@@ -49,7 +49,7 @@ ROOT_IMPL=$(detect_root_impl)
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Pixel 9 Pro 温控调度控制台"
-    ui_print "  v4.3.29"
+    ui_print "  v4.4.0"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Root: $ROOT_IMPL"
 
@@ -118,8 +118,10 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     done
     ui_print "  ✓ 已迁移用户配置"
     # v4.3.22: light 已删除, 映射到 balanced
+    # v4.4.0: responsive 改名 performance (加 cap 管理), 旧值映射
     for _mf in "$MODPATH/.current_profile" "$MODPATH/.profile_manual"; do
         [ -f "$_mf" ] && grep -q '^light$' "$_mf" && printf 'balanced' > "$_mf"
+        [ -f "$_mf" ] && grep -q '^responsive$' "$_mf" && printf 'performance' > "$_mf"
     done
     ui_print ""
 fi
@@ -163,11 +165,11 @@ if [ "$_is_upgrade" -eq 0 ]; then
 
     # --- CPU 调度 ---
     ui_print "  ② CPU 调度:"
-    _CPU_VALS="battery balanced default responsive"
+    _CPU_VALS="battery balanced default performance"
     _CPU_LABEL_battery="省电"
     _CPU_LABEL_balanced="均衡模式"
     _CPU_LABEL_default="默认 (自动基线)"
-    _CPU_LABEL_responsive="响应优先"
+    _CPU_LABEL_performance="性能 (还闸放开 boost)"
     _cpu_idx=2
     _cpu_total=4
     while true; do
