@@ -10,6 +10,7 @@ PROFILE_FILE="$MODDIR/.current_profile"
 PROFILE_POLICY_FILE="$MODDIR/.profile_policy"
 PROFILE_MANUAL_FILE="$MODDIR/.profile_manual"
 PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
+PROFILE_HISTORY_FILE="$MODDIR/.profile_history"
 
 read_valid_profile() {
     _prof=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
@@ -27,16 +28,59 @@ read_valid_policy() {
     esac
 }
 
+append_profile_history() {
+    _ph_profile="$1"
+    _ph_reason="$2"
+    _ph_epoch=$(date +%s 2>/dev/null || echo 0)
+    _ph_policy=$(read_valid_policy)
+    _ph_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null | tr -d ' \n\r\t')
+    case "$_ph_status" in
+        Charging|Full) _ph_charging=1 ;;
+        *) _ph_charging=0 ;;
+    esac
+    _ph_vs=$(sed -n 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/p' "$THERMAL_CACHE" 2>/dev/null | head -1)
+    case "$_ph_vs" in
+        ''|*[!0-9]*) _ph_vs=0 ;;
+    esac
+    _ph_sev=$(dumpsys thermalservice 2>/dev/null | grep "Thermal Status:" | head -1 | sed 's/.*Thermal Status:[[:space:]]*//' | tr -d ' \n\r')
+    case "$_ph_sev" in
+        ''|*[!0-9]*) _ph_sev=-1 ;;
+    esac
+    _ph_cap=$(cat /proc/sys/kernel/sched_util_clamp_min 2>/dev/null | tr -d ' \n\r\t')
+    case "$_ph_cap" in
+        ''|*[!0-9]*) _ph_cap=-1 ;;
+    esac
+    _ph_resp0=$(cat /sys/devices/system/cpu/cpu0/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
+    _ph_resp4=$(cat /sys/devices/system/cpu/cpu4/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
+    _ph_resp7=$(cat /sys/devices/system/cpu/cpu7/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
+    [ -n "$_ph_resp0" ] || _ph_resp0="na"
+    [ -n "$_ph_resp4" ] || _ph_resp4="na"
+    [ -n "$_ph_resp7" ] || _ph_resp7="na"
+    _ph_response="${_ph_resp0}/${_ph_resp4}/${_ph_resp7}"
+
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "$_ph_epoch" "$_ph_policy" "$_ph_profile" "$_ph_reason" \
+        "$_ph_charging" "$_ph_vs" "$_ph_sev" "$_ph_cap" "$_ph_response" \
+        >> "$PROFILE_HISTORY_FILE" 2>/dev/null
+
+    _ph_lines=$(wc -l < "$PROFILE_HISTORY_FILE" 2>/dev/null)
+    if [ "${_ph_lines:-0}" -gt 500 ] 2>/dev/null; then
+        _ph_trim=$((_ph_lines - 500))
+        sed -i "1,${_ph_trim}d" "$PROFILE_HISTORY_FILE" 2>/dev/null
+    fi
+}
+
 emit_profile_state() {
     _active=$(read_valid_profile "$PROFILE_FILE" 'default')
     _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" "$_active")
     _policy=$(read_valid_policy)
     _reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null | tr -d '\r')
+    _last_profile_change=$(tail -n 1 "$PROFILE_HISTORY_FILE" 2>/dev/null | tr -d '\r')
     case "$_reason" in
         feed_warmup|feed_hold|feed_hot|nonfeed_reset) _reason="" ;;
     esac
-    printf '"profile":"%s","manual_profile":"%s","policy":"%s","auto_reason":"%s"' \
-        "$_active" "$_manual" "$_policy" "$(json_escape "$_reason")"
+    printf '"profile":"%s","manual_profile":"%s","policy":"%s","auto_reason":"%s","last_profile_change":"%s"' \
+        "$_active" "$_manual" "$_policy" "$(json_escape "$_reason")" "$(json_escape "$_last_profile_change")"
 }
 
 require_loopback
@@ -81,6 +125,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         printf '%s' "$newprof" > "$PROFILE_MANUAL_FILE"
         printf 'manual' > "$PROFILE_POLICY_FILE"
         printf 'manual_selected' > "$PROFILE_AUTO_REASON_FILE"
+        append_profile_history "$newprof" "manual_selected"
         json_headers
         printf '{"ok":true,'
         emit_profile_state
@@ -100,6 +145,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             printf '%s' "$_target" > "$PROFILE_FILE"
             printf 'auto' > "$PROFILE_POLICY_FILE"
             printf 'auto_enabled' > "$PROFILE_AUTO_REASON_FILE"
+            append_profile_history "$_target" "auto_enabled"
             ;;
         manual)
             _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'default')
@@ -108,6 +154,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             printf '%s' "$_manual" > "$PROFILE_FILE"
             printf 'manual' > "$PROFILE_POLICY_FILE"
             printf 'manual_policy' > "$PROFILE_AUTO_REASON_FILE"
+            append_profile_history "$_manual" "manual_policy"
             ;;
         '')
             json_error '400 Bad Request' 'missing profile or policy'

@@ -737,6 +737,11 @@ function describeAutoReason(reason) {
     case 'steady_hot_guard': return '持续热平台，已压到省电';
     case 'hot_cooldown': return '热平台已回落，恢复均衡';
     case 'screen_off_reset': return '已息屏，恢复均衡';
+    case 'deep_standby_reset': return '深度待机，恢复均衡';
+    case 'charging_no_throttle': return '充电温度舒适，保持均衡';
+    case 'charging_thermal_mitigation': return '充电温控介入，已压到省电';
+    case 'charging_comfort_hot': return '充电体感偏热，已压到省电';
+    case 'charging_comfort_cooldown': return '充电温度回落，恢复均衡';
     case 'auto_enabled': return '已启用自动调度';
     case 'manual_policy': return '切回手动';
     case 'manual_selected': return '手动指定模式';

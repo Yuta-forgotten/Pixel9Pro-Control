@@ -1,8 +1,13 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.4.0 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.4.1 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
+#
+# v4.4.1 变更:
+#   - 自动调度新增充电体感热闸: VIRTUAL-SKIN >= 41.0C 持续 120s 才压 battery,
+#     <= 39.5C 持续 90s 才恢复 balanced; thermalservice severity>=2 仍立即收口.
+#   - 新增 .profile_history 切档证据链, 记录 profile/reason/充电状态/VIRTUAL-SKIN/severity/cap/response.
 #
 # v4.4.0 变更:
 #   - CPU 新增 performance 档 (替换 responsive): 进档 sched_util_clamp_min 0→1024 还 Google
@@ -146,6 +151,7 @@ PROFILE_FILE="$MODDIR/.current_profile"
 PROFILE_POLICY_FILE="$MODDIR/.profile_policy"
 PROFILE_MANUAL_FILE="$MODDIR/.profile_manual"
 PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
+PROFILE_HISTORY_FILE="$MODDIR/.profile_history"
 SIM2_AUTO_FILE="$MODDIR/.sim2_auto_manage"
 IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
@@ -395,6 +401,51 @@ read_valid_profile_policy() {
     fi
 }
 
+append_profile_history() {
+    _ph_profile="$1"
+    _ph_reason="$2"
+    _ph_epoch="${_now:-}"
+    case "$_ph_epoch" in
+        ''|*[!0-9]*) _ph_epoch=$(date +%s 2>/dev/null || echo 0) ;;
+    esac
+    _ph_policy=$(read_valid_profile_policy)
+    _ph_charging="${_p_is_charging:-0}"
+    case "$_ph_charging" in
+        1) ;;
+        *) _ph_charging=0 ;;
+    esac
+    _ph_vs="${_vs_temp:-}"
+    case "$_ph_vs" in
+        ''|*[!0-9]*) _ph_vs=0 ;;
+    esac
+    _ph_sev="${_sev:-}"
+    case "$_ph_sev" in
+        ''|*[!0-9]*) _ph_sev=-1 ;;
+    esac
+    _ph_cap=$(cat /proc/sys/kernel/sched_util_clamp_min 2>/dev/null | tr -d ' \n\r\t')
+    case "$_ph_cap" in
+        ''|*[!0-9]*) _ph_cap=-1 ;;
+    esac
+    _ph_resp0=$(cat /sys/devices/system/cpu/cpu0/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
+    _ph_resp4=$(cat /sys/devices/system/cpu/cpu4/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
+    _ph_resp7=$(cat /sys/devices/system/cpu/cpu7/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
+    [ -n "$_ph_resp0" ] || _ph_resp0="na"
+    [ -n "$_ph_resp4" ] || _ph_resp4="na"
+    [ -n "$_ph_resp7" ] || _ph_resp7="na"
+    _ph_response="${_ph_resp0}/${_ph_resp4}/${_ph_resp7}"
+
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "$_ph_epoch" "$_ph_policy" "$_ph_profile" "$_ph_reason" \
+        "$_ph_charging" "$_ph_vs" "$_ph_sev" "$_ph_cap" "$_ph_response" \
+        >> "$PROFILE_HISTORY_FILE" 2>/dev/null
+
+    _ph_lines=$(wc -l < "$PROFILE_HISTORY_FILE" 2>/dev/null)
+    if [ "${_ph_lines:-0}" -gt 500 ] 2>/dev/null; then
+        _ph_trim=$((_ph_lines - 500))
+        sed -i "1,${_ph_trim}d" "$PROFILE_HISTORY_FILE" 2>/dev/null
+    fi
+}
+
 profile_lock_acquire() {
     _plock="$LOCKDIR_BASE/profile.lock"
     mkdir -p "$LOCKDIR_BASE" 2>/dev/null
@@ -437,6 +488,7 @@ apply_profile_state() {
     if [ "$_rc" -eq 0 ]; then
         printf '%s' "$_target" > "$PROFILE_FILE"
         printf '%s' "$_reason" > "$PROFILE_AUTO_REASON_FILE"
+        append_profile_history "$_target" "$_reason"
         log -t pixel9pro_ctrl "CPU profile applied: $_target ($_reason)"
         profile_lock_release
         return 0
@@ -491,7 +543,7 @@ if [ ! -f "$SIM2_AUTO_FILE" ]; then
 fi
 [ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
 
-log -t pixel9pro_ctrl "v4.4.0[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.4.1[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -574,7 +626,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.4.0[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.4.1[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)
@@ -836,8 +888,14 @@ is_nr_mode_value() {
     _AUTO_BALANCED_COOL_TEMP=40400
     _AUTO_BALANCED_COOL_HOLD=60
     _AUTO_CHARGING_SEV=2
+    _AUTO_CHARGING_COMFORT_TEMP=41000
+    _AUTO_CHARGING_COMFORT_HOLD=120
+    _AUTO_CHARGING_COMFORT_COOL_TEMP=39500
+    _AUTO_CHARGING_COMFORT_COOL_HOLD=90
     _auto_hot_since=0
     _auto_cool_since=0
+    _auto_charge_hot_since=0
+    _auto_charge_cool_since=0
     _active_profile=$(read_valid_profile "$PROFILE_FILE" 'default')
     _cycle_count=0
     _idle_isolate_prev=""
@@ -1008,18 +1066,29 @@ is_nr_mode_value() {
             _worker_mode="idle_isolate"
             _auto_hot_since=0
             _auto_cool_since=0
+            _auto_charge_hot_since=0
+            _auto_charge_cool_since=0
         else
             _track_power_window
+            if [ -z "$_vs_temp" ] && [ "$_screen" = "on" ]; then
+                _vs_temp=$(sed -n 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/p' "$THERMAL_CACHE" 2>/dev/null | head -1)
+                case "$_vs_temp" in
+                    ''|*[!0-9]*) _vs_temp="" ;;
+                esac
+            fi
 
             # --- Slow auto profile policy ---
             _profile_policy=$(read_valid_profile_policy)
             _manual_profile=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'balanced')
             _target_profile=""
             _target_reason=""
+            _sev=""
 
             if [ "$_profile_policy" = "manual" ]; then
                 _auto_hot_since=0
                 _auto_cool_since=0
+                _auto_charge_hot_since=0
+                _auto_charge_cool_since=0
                 if [ "$_screen" = "on" ] && [ "$_active_profile" != "$_manual_profile" ]; then
                     if apply_profile_state "$_manual_profile" "manual_policy"; then
                         _active_profile="$_manual_profile"
@@ -1027,21 +1096,46 @@ is_nr_mode_value() {
                 fi
             elif [ "$_screen" = "on" ]; then
                 if [ "${_p_is_charging:-0}" -eq 1 ] 2>/dev/null; then
-                    # 充电态: 不走 40.8C 软收口; 仅当系统温控真正介入(thermalservice severity>=MODERATE)才降 battery
-                    # severity 是系统去抖后的整机温控等级, 直接判定, 不累积温度计时
+                    # 充电态: ADB/线充会抬高壳温, 单看系统 severity 反应偏晚。
+                    # 因此拆成两道闸: severity>=MODERATE 立即收口; VIRTUAL-SKIN 体感热只慢切换。
                     _auto_hot_since=0
                     _auto_cool_since=0
                     _sev=$(dumpsys thermalservice 2>/dev/null | grep "Thermal Status:" | head -1 | sed 's/.*Thermal Status:[[:space:]]*//' | tr -d ' \n\r')
                     case "$_sev" in ''|*[!0-9]*) _sev=0 ;; esac
                     if [ "$_sev" -ge "$_AUTO_CHARGING_SEV" ] 2>/dev/null; then
+                        _auto_charge_cool_since=0
                         _target_profile="battery"
                         _target_reason="charging_thermal_mitigation"
                     else
-                        _target_profile="balanced"
-                        _target_reason="charging_no_throttle"
+                        if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$_AUTO_CHARGING_COMFORT_TEMP" ] 2>/dev/null; then
+                            [ "$_auto_charge_hot_since" -eq 0 ] && _auto_charge_hot_since=$_now
+                            _auto_charge_cool_since=0
+                        elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$_AUTO_CHARGING_COMFORT_COOL_TEMP" ] 2>/dev/null; then
+                            [ "$_auto_charge_cool_since" -eq 0 ] && _auto_charge_cool_since=$_now
+                            _auto_charge_hot_since=0
+                        else
+                            _auto_charge_hot_since=0
+                            _auto_charge_cool_since=0
+                        fi
+
+                        if [ "$_active_profile" = "battery" ] && [ "$_auto_charge_cool_since" -gt 0 ] && [ $((_now - _auto_charge_cool_since)) -ge "$_AUTO_CHARGING_COMFORT_COOL_HOLD" ]; then
+                            _target_profile="balanced"
+                            _target_reason="charging_comfort_cooldown"
+                        elif [ "$_active_profile" = "battery" ]; then
+                            _target_profile="battery"
+                            _target_reason="charging_comfort_hot"
+                        elif [ "$_auto_charge_hot_since" -gt 0 ] && [ $((_now - _auto_charge_hot_since)) -ge "$_AUTO_CHARGING_COMFORT_HOLD" ]; then
+                            _target_profile="battery"
+                            _target_reason="charging_comfort_hot"
+                        else
+                            _target_profile="balanced"
+                            _target_reason="charging_no_throttle"
+                        fi
                     fi
                 else
                     # 放电态: 原有 40.8C/90s 软收口 (VIRTUAL-SKIN)
+                    _auto_charge_hot_since=0
+                    _auto_charge_cool_since=0
                     if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$_AUTO_BATTERY_TEMP" ] 2>/dev/null; then
                         [ "$_auto_hot_since" -eq 0 ] && _auto_hot_since=$_now
                         _auto_cool_since=0
@@ -1085,6 +1179,8 @@ is_nr_mode_value() {
                 fi
                 _auto_hot_since=0
                 _auto_cool_since=0
+                _auto_charge_hot_since=0
+                _auto_charge_cool_since=0
             fi
         fi
 

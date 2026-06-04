@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- Release: `v4.4.0`
-- versionCode: `64`
-- Asset: `pixel9pro_control_v4.4.0.zip`
+- Release: `v4.4.1`
+- versionCode: `65`
+- Asset: `pixel9pro_control_v4.4.1.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -43,9 +43,12 @@
   - 亮屏前台默认保持 `balanced`
   - `VIRTUAL-SKIN >= 40.8°C` 持续约 `90s` 后压到 `battery`
   - `battery` 状态下温度回落到 `40.4°C` 以下持续约 `60s` 后恢复 `balanced`
+  - 充电 / 有线 ADB 场景独立使用体感热闸：`VIRTUAL-SKIN >= 41.0°C` 持续约 `120s` 后压到 `battery`
+  - 充电体感热回落到 `39.5°C` 以下持续约 `90s` 后恢复 `balanced`；系统 `thermalservice severity >= 2` 时仍立即压到 `battery`
   - 息屏后回到 `balanced`
 
 - 自动模式不会自动进入 `performance`
+- `.profile_history` 会记录最近 500 条切档证据（时间、policy、profile、reason、充电状态、VIRTUAL-SKIN、thermal severity、cap、response_time_ms），用于 ADB + Scene 复盘
 - `performance` 在 `12/20/80` 升频节奏基础上把 `sched_util_clamp_min` 还原到出厂 `1024`，放开 ADPF/HBoost/fork/ExoPlayer 等内核动态 boost（顺内核“还闸”，不写 vendor 黑箱地板）；放开 boost 后温升更快，长亮屏/热平台请使用 `balanced` 或 `battery`
 - `light` 已在 v4.3.22 删除：实测 steady-state 前台负载下，小核低频高占用会诱发中核补偿升频，反而更费电
 - `responsive` 已在 v4.4.0 由 `performance` 取代（两者同为 `12/20/80`，performance 多了 cap 还闸维度）；老配置自动迁移

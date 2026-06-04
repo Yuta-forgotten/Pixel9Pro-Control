@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# customize.sh v4.4.0 — 安装时配置 (APatch / KernelSU / Magisk)
+# customize.sh v4.4.1 — 安装时配置 (APatch / KernelSU / Magisk)
 # 检测机型 → 迁移旧设置 → 音量键选择功能 → 温控配置
 ##############################################################
 
@@ -49,7 +49,7 @@ ROOT_IMPL=$(detect_root_impl)
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Pixel 9 Pro 温控调度控制台"
-    ui_print "  v4.4.0"
+ui_print "  v4.4.1"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Root: $ROOT_IMPL"
 
@@ -106,7 +106,7 @@ _is_upgrade=0
 if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     _is_upgrade=1
     ui_print "  检测到已有配置, 正在迁移..."
-    for _sf in .thermal_offset .current_profile .profile_policy .profile_manual .profile_auto_reason .nr_screen_switch \
+    for _sf in .thermal_offset .current_profile .profile_policy .profile_manual .profile_auto_reason .profile_history .nr_screen_switch \
                .sim2_auto_manage .idle_isolate_mode \
                .swap_mode .ntp_server .uecap_mode .uecap_manual_mode \
                .uecap_policy .uecap_reason .sim2_radio_off \
