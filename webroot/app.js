@@ -140,6 +140,7 @@ const UECAP_VERIFY_INTERVAL_MS = 1500;
 const UECAP_VERIFY_TIMEOUT_MS = 15000;
 const WEBUI_IDLE_MS = 45000;
 const POLL_MIN_DELAY_MS = 900;
+const TEMP_CHART_REFRESH_MS = 10000;
 const POLL_INTERVALS = {
   cpu: { home: 5000, perf: 4000, relaxedHome: 12000, relaxedPerf: 9000 },
   thermal: { home: 12000, thermal: 10000, relaxedHome: 24000, relaxedThermal: 20000 },
@@ -210,7 +211,13 @@ const state = {
   },
   lastClusters: null,
   pull: { y0: 0, active: false, dist: 0, busy: false },
-  thermalModal: { pending: 4, prev: 4 }
+  thermalModal: { pending: 4, prev: 4 },
+  tempChart: {
+    timer: null,
+    draw: null,
+    activeRange: 10,
+    requestId: 0
+  }
 };
 
 function $(id){ return document.getElementById(id); }
@@ -391,6 +398,7 @@ function closeRebootModal() {
 }
 
 function openDetail(title, html) {
+  stopTempChartRefresh();
   refs.detailTitle.textContent = title;
   refs.detailBody.innerHTML = html;
   refs.detailModal.classList.add('open');
@@ -399,9 +407,32 @@ function openDetail(title, html) {
 }
 
 function closeDetailModal(){
+  stopTempChartRefresh();
   refs.detailModal.classList.remove('open');
   popModalIfTop('detail');
   queueNextPoll(POLL_MIN_DELAY_MS);
+}
+
+function stopTempChartRefresh() {
+  if (state.tempChart.timer) {
+    clearTimeout(state.tempChart.timer);
+    state.tempChart.timer = null;
+  }
+  state.tempChart.draw = null;
+  state.tempChart.requestId += 1;
+}
+
+function scheduleTempChartRefresh(delay = TEMP_CHART_REFRESH_MS) {
+  if (state.tempChart.timer) clearTimeout(state.tempChart.timer);
+  if (!refs.detailModal.classList.contains('open') || !state.tempChart.draw) return;
+  state.tempChart.timer = window.setTimeout(async () => {
+    state.tempChart.timer = null;
+    if (!refs.detailModal.classList.contains('open') || !state.tempChart.draw) return;
+    try {
+      await state.tempChart.draw(state.tempChart.activeRange, { silent: true });
+    } catch (_) {}
+    scheduleTempChartRefresh();
+  }, delay);
 }
 
 function errorBlock(msg) {
@@ -1996,6 +2027,7 @@ async function triggerThermalBurst() {
 }
 
 function openTempChart() {
+  stopTempChartRefresh();
   triggerThermalBurst();
   refs.detailTitle.textContent = '温度历史';
   const ranges = [
@@ -2005,17 +2037,21 @@ function openTempChart() {
     { min: 720, label: '12h', chart: false },
   ];
   let active = 10;
+  state.tempChart.activeRange = active;
   refs.detailBody.innerHTML =
     '<div class="chart-range-chips" id="chart-ranges"></div>' +
     '<div id="chart-area"></div>';
   const chipsEl = document.getElementById('chart-ranges');
   const areaEl = document.getElementById('chart-area');
-  const draw = async (rangeMin) => {
+  const draw = async (rangeMin, options = {}) => {
+    const requestId = ++state.tempChart.requestId;
     active = rangeMin;
+    state.tempChart.activeRange = rangeMin;
     const isChart = ranges.find((r) => r.min === rangeMin)?.chart;
     chipsEl.querySelectorAll('.chart-chip').forEach((b) => b.classList.toggle('active', Number(b.dataset.range) === rangeMin));
-    areaEl.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">加载中…</div>';
+    if (!options.silent) areaEl.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">加载中…</div>';
     const data = await fetchTempHistory(rangeMin);
+    if (requestId !== state.tempChart.requestId || state.tempChart.draw !== draw) return;
     if (!data || data.length < 2) {
       areaEl.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">数据不足，等待短时采样继续积累</div>';
       return;
@@ -2067,14 +2103,21 @@ function openTempChart() {
     btn.className = `chart-chip${r.min === active ? ' active' : ''}`;
     btn.dataset.range = String(r.min);
     btn.textContent = r.label;
-    btn.addEventListener('click', () => draw(r.min));
+    btn.addEventListener('click', () => {
+      draw(r.min).catch(() => {}).then(() => scheduleTempChartRefresh());
+    });
     chipsEl.appendChild(btn);
   });
   refs.detailModal.classList.add('open');
-  window.setTimeout(() => draw(active), 80);
+  state.tempChart.draw = draw;
+  window.setTimeout(() => {
+    if (!refs.detailModal.classList.contains('open') || state.tempChart.draw !== draw) return;
+    draw(active).catch(() => {}).then(() => scheduleTempChartRefresh());
+  }, 80);
 }
 
 async function openEnergyDetail() {
+  stopTempChartRefresh();
   refs.detailTitle.textContent = '功耗统计';
   refs.detailBody.innerHTML = '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在分析 batterystats，约需 2-3 秒…</div>';
   refs.detailModal.classList.add('open');
@@ -2460,7 +2503,7 @@ function bindStaticEvents() {
   });
   window.addEventListener('popstate', (evt) => {
     const s = evt.state;
-    if (refs.detailModal.classList.contains('open')) { refs.detailModal.classList.remove('open'); return; }
+    if (refs.detailModal.classList.contains('open')) { stopTempChartRefresh(); refs.detailModal.classList.remove('open'); return; }
     if (refs.themeModal.classList.contains('open')) { refs.themeModal.classList.remove('open'); return; }
     if (refs.rebootModal.classList.contains('open')) { refs.rebootModal.classList.remove('open'); return; }
   });

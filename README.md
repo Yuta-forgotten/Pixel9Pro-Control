@@ -4,11 +4,15 @@
 
 ## 当前版本
 
-- Release: `v4.4.2`
-- versionCode: `66`
-- Asset: `pixel9pro_control_v4.4.2.zip`
+- Release: `v4.4.3`
+- versionCode: `67`
+- Asset: `pixel9pro_control_v4.4.3.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
+
+### v4.4.3
+
+- 修复 WebUI 温度历史折线图只加载一次的问题：弹窗打开后每 10 秒静默刷新，关闭、返回或切换其它详情时自动清理刷新器。
 
 
 ## 支持设备

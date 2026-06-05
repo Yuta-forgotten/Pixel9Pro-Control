@@ -1,8 +1,11 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.4.2 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.4.3 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
+#
+# v4.4.3 变更:
+#   - 修复 WebUI 温度历史折线图: 打开后自动静默刷新, 关闭/返回时清理刷新器.
 #
 # v4.4.2 变更:
 #   - 修复温度实时显示: thermalservice 只解析 Current temperatures from HAL, 缓存超过 30s 即重建.
@@ -576,7 +579,7 @@ if [ ! -f "$SIM2_AUTO_FILE" ]; then
 fi
 [ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
 
-log -t pixel9pro_ctrl "v4.4.2[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.4.3[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -659,7 +662,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.4.2[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.4.3[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)
