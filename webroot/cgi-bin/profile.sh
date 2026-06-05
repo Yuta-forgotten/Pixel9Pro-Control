@@ -50,9 +50,9 @@ append_profile_history() {
     case "$_ph_cap" in
         ''|*[!0-9]*) _ph_cap=-1 ;;
     esac
-    _ph_resp0=$(cat /sys/devices/system/cpu/cpu0/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
-    _ph_resp4=$(cat /sys/devices/system/cpu/cpu4/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
-    _ph_resp7=$(cat /sys/devices/system/cpu/cpu7/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
+    _ph_resp0=$(cat /sys/devices/system/cpu/cpu0/cpufreq/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
+    _ph_resp4=$(cat /sys/devices/system/cpu/cpu4/cpufreq/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
+    _ph_resp7=$(cat /sys/devices/system/cpu/cpu7/cpufreq/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
     [ -n "$_ph_resp0" ] || _ph_resp0="na"
     [ -n "$_ph_resp4" ] || _ph_resp4="na"
     [ -n "$_ph_resp7" ] || _ph_resp7="na"

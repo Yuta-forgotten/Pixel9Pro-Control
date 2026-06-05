@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- Release: `v4.4.1`
-- versionCode: `65`
-- Asset: `pixel9pro_control_v4.4.1.zip`
+- Release: `v4.4.2`
+- versionCode: `66`
+- Asset: `pixel9pro_control_v4.4.2.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -48,7 +48,7 @@
   - 息屏后回到 `balanced`
 
 - 自动模式不会自动进入 `performance`
-- `.profile_history` 会记录最近 500 条切档证据（时间、policy、profile、reason、充电状态、VIRTUAL-SKIN、thermal severity、cap、response_time_ms），用于 ADB + Scene 复盘
+- `.profile_history` 会记录启动 baseline 与最近 500 条切档证据（时间、policy、profile、reason、充电状态、VIRTUAL-SKIN、thermal severity、cap、response_time_ms），用于 ADB + Scene 复盘
 - `performance` 在 `12/20/80` 升频节奏基础上把 `sched_util_clamp_min` 还原到出厂 `1024`，放开 ADPF/HBoost/fork/ExoPlayer 等内核动态 boost（顺内核“还闸”，不写 vendor 黑箱地板）；放开 boost 后温升更快，长亮屏/热平台请使用 `balanced` 或 `battery`
 - `light` 已在 v4.3.22 删除：实测 steady-state 前台负载下，小核低频高占用会诱发中核补偿升频，反而更费电
 - `responsive` 已在 v4.4.0 由 `performance` 取代（两者同为 `12/20/80`，performance 多了 cap 还闸维度）；老配置自动迁移
@@ -76,6 +76,8 @@
 
 偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。各传感器 Google 原厂首档不同（HINT 37°C 最低，GPU 43°C 最高），偏移统一叠加。安全阈值 `55°C` 保留不变。
 
+WebUI 实时温度优先解析 `thermalservice` 的 `Current temperatures from HAL`，缓存超过 `30s` 会强制重建，避免长时间运行后旧缓存或 `Cached temperatures` 段造成显示偏差。
+
 ### ZRAM / 内存优化
 
 - 算法：`lz77eh`（Emerald Hill 硬件加速）
@@ -101,7 +103,7 @@
 
 ### NR 息屏降级
 
-- 息屏超过 60 秒后将网络模式切换到 LTE
+- 息屏超过 300 秒后将网络模式切换到 LTE
 - 亮屏时恢复保存的 NR 模式
 - 热点开启时跳过切换
 

@@ -44,9 +44,26 @@ esac
 
 # --- 实时模式 ---
 json_headers
+_cache_max_age=30
+_now=$(date +%s 2>/dev/null || echo 0)
 if [ -s "$THERMAL_CACHE" ]; then
-    cat "$THERMAL_CACHE"
+    _mtime=$(stat -c %Y "$THERMAL_CACHE" 2>/dev/null)
+    case "$_mtime" in
+        ''|*[!0-9]*) _mtime=0 ;;
+    esac
+    if [ "$_mtime" -gt 0 ] && [ $((_now - _mtime)) -le "$_cache_max_age" ] 2>/dev/null; then
+        cat "$THERMAL_CACHE"
+        exit 0
+    fi
+fi
+
+_json=$(build_thermal_json 2>/dev/null)
+if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
+    _tmp="${THERMAL_CACHE}.$$.$_now.tmp"
+    printf '%s' "$_json" > "$_tmp" 2>/dev/null
+    mv "$_tmp" "$THERMAL_CACHE" 2>/dev/null
+    printf '%s' "$_json"
     exit 0
 fi
 
-build_thermal_json
+[ -s "$THERMAL_CACHE" ] && cat "$THERMAL_CACHE" || printf '[]'

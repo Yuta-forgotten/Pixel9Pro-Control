@@ -1,8 +1,12 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.4.1 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.4.2 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
+#
+# v4.4.2 变更:
+#   - 修复温度实时显示: thermalservice 只解析 Current temperatures from HAL, 缓存超过 30s 即重建.
+#   - 修复 .profile_history 启动后不生成: boot baseline 写入 service_start, 并修正 response_time_ms 路径.
 #
 # v4.4.1 变更:
 #   - 自动调度新增充电体感热闸: VIRTUAL-SKIN >= 41.0C 持续 120s 才压 battery,
@@ -426,9 +430,9 @@ append_profile_history() {
     case "$_ph_cap" in
         ''|*[!0-9]*) _ph_cap=-1 ;;
     esac
-    _ph_resp0=$(cat /sys/devices/system/cpu/cpu0/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
-    _ph_resp4=$(cat /sys/devices/system/cpu/cpu4/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
-    _ph_resp7=$(cat /sys/devices/system/cpu/cpu7/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
+    _ph_resp0=$(cat /sys/devices/system/cpu/cpu0/cpufreq/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
+    _ph_resp4=$(cat /sys/devices/system/cpu/cpu4/cpufreq/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
+    _ph_resp7=$(cat /sys/devices/system/cpu/cpu7/cpufreq/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
     [ -n "$_ph_resp0" ] || _ph_resp0="na"
     [ -n "$_ph_resp4" ] || _ph_resp4="na"
     [ -n "$_ph_resp7" ] || _ph_resp7="na"
@@ -444,6 +448,35 @@ append_profile_history() {
         _ph_trim=$((_ph_lines - 500))
         sed -i "1,${_ph_trim}d" "$PROFILE_HISTORY_FILE" 2>/dev/null
     fi
+}
+
+ensure_profile_history_baseline() {
+    [ -s "$PROFILE_HISTORY_FILE" ] && return 0
+    _ph_saved_now="${_now:-}"
+    _now=$(date +%s 2>/dev/null || echo 0)
+    _p_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null | tr -d '\r')
+    _p_status=$(printf '%s' "$_p_status" | sed 's/[[:space:]]*$//')
+    case "$_p_status" in
+        Charging|Full) _p_is_charging=1 ;;
+        *) _p_is_charging=0 ;;
+    esac
+    . "$MODDIR/webroot/cgi-bin/_thermal_cache.sh" 2>/dev/null
+    if command -v build_thermal_json >/dev/null 2>&1; then
+        _ph_json=$(build_thermal_json 2>/dev/null)
+        if [ -n "$_ph_json" ] && [ "$_ph_json" != "[]" ]; then
+            _ph_tmp="${THERMAL_CACHE}.$$.$_now.tmp"
+            printf '%s' "$_ph_json" > "$_ph_tmp" 2>/dev/null
+            mv "$_ph_tmp" "$THERMAL_CACHE" 2>/dev/null
+        fi
+    fi
+    _vs_temp=$(sed -n 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/p' "$THERMAL_CACHE" 2>/dev/null | head -1)
+    case "$_vs_temp" in
+        ''|*[!0-9]*) _vs_temp=0 ;;
+    esac
+    _sev=$(dumpsys thermalservice 2>/dev/null | grep "Thermal Status:" | head -1 | sed 's/.*Thermal Status:[[:space:]]*//' | tr -d ' \n\r')
+    case "$_sev" in ''|*[!0-9]*) _sev=0 ;; esac
+    append_profile_history "$(read_valid_profile "$PROFILE_FILE" 'default')" "service_start"
+    _now="$_ph_saved_now"
 }
 
 profile_lock_acquire() {
@@ -543,7 +576,7 @@ if [ ! -f "$SIM2_AUTO_FILE" ]; then
 fi
 [ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
 
-log -t pixel9pro_ctrl "v4.4.1[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.4.2[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -626,7 +659,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.4.1[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.4.2[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)
@@ -653,6 +686,7 @@ PROFILE=$(read_valid_profile "$PROFILE_FILE" 'default')
 [ -f "$PROFILE_AUTO_REASON_FILE" ] || printf 'manual_policy' > "$PROFILE_AUTO_REASON_FILE"
 sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" "$MODDIR" 2>/dev/null
 log -t pixel9pro_ctrl "CPU profile: $PROFILE"
+ensure_profile_history_baseline
 
 # ──────────────────────────────────────────────────────────
 # 4. 统一后台工作循环 (Doze 友好)
@@ -1041,8 +1075,9 @@ is_nr_mode_value() {
             # --- 亮屏 / burst: 执行 thermal 更新 ---
             _json=$(build_thermal_json 2>/dev/null)
             if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
-                printf '%s' "$_json" > "${THERMAL_CACHE}.tmp"
-                mv "${THERMAL_CACHE}.tmp" "$THERMAL_CACHE"
+                _thermal_tmp="${THERMAL_CACHE}.$$.$_now.tmp"
+                printf '%s' "$_json" > "$_thermal_tmp"
+                mv "$_thermal_tmp" "$THERMAL_CACHE"
 
                 _vs_temp=$(printf '%s' "$_json" | sed 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/')
                 if [ -n "$_vs_temp" ] && [ "$_vs_temp" != "$_json" ]; then
@@ -1058,7 +1093,7 @@ is_nr_mode_value() {
                     fi
                 fi
             else
-                rm -f "${THERMAL_CACHE}.tmp"
+                rm -f "${THERMAL_CACHE}.$$.$_now.tmp"
             fi
         fi
 
