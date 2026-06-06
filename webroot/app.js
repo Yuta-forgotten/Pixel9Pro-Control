@@ -62,11 +62,11 @@ const PROFILES = {
   balanced: {
     name: '均衡模式',
     summary: '小核高效区间运行，中核积极补位，X4 突发吸收。唯一日常主力档。',
-    desc: '前台: cpu0-7 · 小核 16ms · 中核 24ms · 大核 160ms',
+    desc: '前台: cpu0-7 · 小核 16ms · 中核 40ms · 大核 200ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     modeClass: 'mode-balanced',
-    detail: '<b>均衡模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 16ms / 中核 24ms / 大核 160ms<br><br>小核 16ms 保持 955-1197MHz 高效区间，中核 24ms 比出厂更积极补位，X4 以 160ms 做突发吸收器。'
+    detail: '<b>均衡模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 16ms / 中核 40ms / 大核 200ms<br><br>小核 16ms 保持高效区间，避免低频高占用；中核 40ms 减少视频/feed 稳态补偿升频；X4 以 200ms 作为更晚的 burst 兜底。'
   },
   battery: {
     name: '省电模式',

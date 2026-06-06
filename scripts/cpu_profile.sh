@@ -79,15 +79,17 @@ case "$PROFILE" in
 
     balanced)
         # ── 均衡模式 ─────────────────────────────────────────
-        # 小核 16ms 保持 955-1197MHz 高效区间, 中核 24ms 比 stock 更积极补位
-        # X4 以 160ms 做突发吸收器, 不常态介入。cap=0 (省电基线, 非性能档)。
-        apply_sched_pixel 16 24 160
+        # v4.4.4 低热日用底座:
+        # 小核 16ms 保持高效区间, 避免旧 light 的低频高占用。
+        # 中核 40ms 介于旧 balanced(24ms) 与 default(64ms) 之间, 减少视频/feed 稳态补偿升频。
+        # X4 200ms 作为更晚的 burst 兜底, 不做持续负载主力。cap=0 (省电基线, 非性能档)。
+        apply_sched_pixel 16 40 200
         apply_uclamp_cap 0
         cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: BALANCED [top-app→0-7, response 16/24/160ms]"
+        log -t pixel9pro_ctrl "CPU: BALANCED [top-app→0-7, response 16/40/200ms]"
         ;;
 
     battery)

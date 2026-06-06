@@ -4,11 +4,15 @@
 
 ## 当前版本
 
-- Release: `v4.4.3`
-- versionCode: `67`
-- Asset: `pixel9pro_control_v4.4.3.zip`
+- Release: `v4.4.4`
+- versionCode: `68`
+- Asset: `pixel9pro_control_v4.4.4.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
+
+### v4.4.4
+
+- 调整 `balanced` 为低热日用底座：`response_time_ms` 从 `16/24/160` 改为 `16/40/200`，保持 `top-app=cpu0-7` 与 `sched_util_clamp_min=0`。目标是在 PiliPlus/视频/信息流等稳态前台负载下降低中核持续补偿与 X4 介入，同时保留日常 burst 兜底。
 
 ### v4.4.3
 
@@ -32,7 +36,7 @@
 | 模式 | top-app | 说明 | 小核 resp | 中核 resp | 大核 resp |
 |------|---------|------|-----------|-----------|-----------|
 | 性能优先 | cpu0-7 | 还闸放开动态 boost (cap→1024)，手动专用；不参与自动策略 | 12ms | 20ms | 80ms |
-| 均衡 | cpu0-7 | 日常主力，日志验证后的推荐底座 | 16ms | 24ms | 160ms |
+| 均衡 | cpu0-7 | 低热日用底座，兼顾视频/feed 稳态和日常 burst | 16ms | 40ms | 200ms |
 | 省电 | cpu0-6 | 避免 X4 常态介入，优先控温和续航 | 32ms | 96ms | 200ms |
 | 默认 | cpu0-7 | 接近 Google 默认响应曲线，作为保守回退 | 16ms | 64ms | 200ms |
 
