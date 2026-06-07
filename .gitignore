@@ -4,6 +4,7 @@ dist/
 
 # Local project metadata / release drafts
 .ai_changelog.yaml
+AUDIT.md
 RELEASE_v*.md
 readme.txt
 release_review/
