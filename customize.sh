@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# customize.sh v4.4.6 — 安装时配置 (APatch / KernelSU / Magisk)
+# customize.sh v4.4.7 — 安装时配置 (APatch / KernelSU / Magisk)
 # 检测机型 → 迁移旧设置 → 音量键选择功能 → 温控配置
 ##############################################################
 
@@ -16,6 +16,8 @@ SCHED_OWNER_FILE="$MODPATH/.cpu_sched_owner"
 DEVICE_FILE="$MODPATH/.device_variant"
 
 OLDDIR="/data/adb/modules/pixel9pro_control"
+
+[ -f "$MODPATH/scripts/scheduler_detect_lib.sh" ] && . "$MODPATH/scripts/scheduler_detect_lib.sh"
 
 detect_root_impl() {
     if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
@@ -46,15 +48,39 @@ chooseport() {
 }
 
 choose_sched_owner() {
-    ui_print "  $1 Uperf Game Turbo 共存模式:"
-    ui_print "    [音量+] = 关闭  [音量-] = 开启"
-    if chooseport; then
-        echo "pixel" > "$SCHED_OWNER_FILE"
-        ui_print "    ✓ 关闭 (本模块管理 CPU 调度)"
+    detect_uperf_module 2>/dev/null
+    ui_print "  $1 CPU 调度接管:"
+    if [ "$UPERF_DETECTED" = "yes" ]; then
+        _up_name="${UPERF_MODULE_NAME:-Uperf Game Turbo}"
+        _up_id="${UPERF_MODULE_ID:-uperf}"
+        ui_print "    检测到 Uperf Game Turbo: $_up_name ($_up_id)"
+        case "$UPERF_MODULE_STATE" in
+            disabled)       ui_print "    状态: 已禁用" ;;
+            pending_update) ui_print "    状态: 待重启更新生效" ;;
+            pending_remove) ui_print "    状态: 待重启移除" ;;
+            *)              ui_print "    状态: 已安装" ;;
+        esac
+        ui_print "    [音量+] = 本模块覆盖接管  [音量-] = 不覆盖"
+        if chooseport; then
+            echo "pixel" > "$SCHED_OWNER_FILE"
+            ui_print "    ✓ 本模块覆盖接管 CPU 调度"
+        else
+            echo "external" > "$SCHED_OWNER_FILE"
+            echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
+            ui_print "    ✓ 不覆盖, CPU 调度交给 Uperf/外部模块"
+        fi
     else
-        echo "external" > "$SCHED_OWNER_FILE"
-        echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
-        ui_print "    ✓ 开启 (CPU 调度交给 Uperf/外部模块)"
+        ui_print "    未检测到 Uperf Game Turbo"
+        ui_print "    此项只决定本模块是否写 CPU 调度节点, 不会安装外部模块"
+        ui_print "    [音量+] = 启用本模块调度  [音量-] = 不启用"
+        if chooseport; then
+            echo "pixel" > "$SCHED_OWNER_FILE"
+            ui_print "    ✓ 启用本模块 CPU 调度"
+        else
+            echo "external" > "$SCHED_OWNER_FILE"
+            echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
+            ui_print "    ✓ 不启用本模块 CPU 调度, 保留系统/外部调度现状"
+        fi
     fi
     ui_print ""
 }
@@ -64,7 +90,7 @@ ROOT_IMPL=$(detect_root_impl)
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Pixel 9 Pro 温控调度控制台"
-ui_print "  v4.4.6"
+ui_print "  v4.4.7"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Root: $ROOT_IMPL"
 
@@ -208,7 +234,7 @@ if [ "$_is_upgrade" -eq 0 ]; then
     ui_print "    ✓ $_cpu_label"
     ui_print ""
 
-    # --- Uperf 共存 ---
+    # --- CPU 调度接管 / Uperf 外部调度 ---
     choose_sched_owner "③"
 
     # --- UECap 网络能力 ---
@@ -302,7 +328,7 @@ else
     [ -f "$PROFILE_MANUAL_FILE" ] || cp "$PROFILE_FILE" "$PROFILE_MANUAL_FILE" 2>/dev/null || echo 'default' > "$PROFILE_MANUAL_FILE"
     [ -f "$PROFILE_POLICY_FILE" ] || echo 'manual' > "$PROFILE_POLICY_FILE"
     if [ ! -f "$SCHED_OWNER_FILE" ]; then
-        ui_print "  新增设置 — Uperf 共存模式"
+        ui_print "  新增设置 — CPU 调度接管"
         choose_sched_owner "③"
     else
         _sched_owner=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')

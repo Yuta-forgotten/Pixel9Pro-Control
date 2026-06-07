@@ -13,6 +13,8 @@ PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
 PROFILE_HISTORY_FILE="$MODDIR/.profile_history"
 SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 
+[ -f "$MODDIR/scripts/scheduler_detect_lib.sh" ] && . "$MODDIR/scripts/scheduler_detect_lib.sh"
+
 read_valid_profile() {
     _prof=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
     case "$_prof" in
@@ -90,8 +92,18 @@ emit_profile_state() {
     case "$_reason" in
         feed_warmup|feed_hold|feed_hot|nonfeed_reset) _reason="" ;;
     esac
-    printf '"profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","auto_reason":"%s","last_profile_change":"%s"' \
-        "$_active" "$_manual" "$_policy" "$_sched_owner" "$(json_escape "$_reason")" "$(json_escape "$_last_profile_change")"
+    detect_uperf_module 2>/dev/null
+    if [ "$UPERF_DETECTED" = "yes" ]; then
+        _uperf_detected=true
+    else
+        _uperf_detected=false
+    fi
+
+    printf '"profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","auto_reason":"%s","last_profile_change":"%s","uperf_detected":%s,"uperf_module_id":"%s","uperf_module_name":"%s","uperf_module_path":"%s","uperf_module_source":"%s","uperf_module_state":"%s","uperf_module_enabled":"%s"' \
+        "$_active" "$_manual" "$_policy" "$_sched_owner" "$(json_escape "$_reason")" "$(json_escape "$_last_profile_change")" \
+        "$_uperf_detected" "$(json_escape "$UPERF_MODULE_ID")" "$(json_escape "$UPERF_MODULE_NAME")" \
+        "$(json_escape "$UPERF_MODULE_PATH")" "$(json_escape "$UPERF_MODULE_SOURCE")" \
+        "$(json_escape "$UPERF_MODULE_STATE")" "$(json_escape "$UPERF_MODULE_ENABLED")"
 }
 
 require_loopback
@@ -143,8 +155,13 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     fi
 
     if [ "$(read_valid_sched_owner)" = "external" ]; then
+        detect_uperf_module 2>/dev/null
         json_headers
-        printf '{"ok":false,"error":"Uperf 共存模式已开启，CPU 调度由外部模块接管"}\n'
+        if [ "$UPERF_DETECTED" = "yes" ]; then
+            printf '{"ok":false,"error":"CPU 调度由 Uperf/外部模块接管"}\n'
+        else
+            printf '{"ok":false,"error":"本模块 CPU 调度未启用"}\n'
+        fi
         exit 0
     fi
 

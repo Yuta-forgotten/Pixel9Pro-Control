@@ -8,7 +8,9 @@
 
 本模块整体架构清晰，主链路是“安装期配置 + 开机服务守护 + WebUI CGI 控制 + 前端状态展示”。高风险 root 操作大多有输入枚举、loopback、token、锁和状态文件约束，未发现明显的远程未授权写入入口，也未发现主模块存在 `rm -rf /data`、直接改 system 分区、乱改权限等不可逆高危动作。
 
-本次已补齐 `Uperf Game Turbo 共存模式`: 新增 `.cpu_sched_owner`，支持安装向导、旧版升级刷入、WebUI 性能页三处开关。开启后，本模块停止写入 CPU 调度相关节点，包括 `sched_pixel response_time_ms`、`sched_util_clamp_min`、`/dev/cpuset/*/cpus`、`/proc/vendor_sched/ug_bg_*`，让 Uperf 或其它外部调度模块接管 CPU。
+本次已补齐 `Uperf Game Turbo / 外部调度接管模式`: `.cpu_sched_owner` 支持安装向导、旧版升级刷入、WebUI 性能页三处开关。开启 external 后，本模块停止写入 CPU 调度相关节点，包括 `sched_pixel response_time_ms`、`sched_util_clamp_min`、`/dev/cpuset/*/cpus`、`/proc/vendor_sched/ug_bg_*`，让 Uperf 或其它外部调度模块接管 CPU。
+
+v4.4.7 在 v4.4.6 审计硬化基础上补齐 Uperf Game Turbo 探测与调度接管语义：安装向导与 WebUI 共用 `scripts/scheduler_detect_lib.sh` 扫描 `/data/adb/modules_update` 与 `/data/adb/modules`。检测到 Uperf 时提示“本模块覆盖接管 / 不覆盖”，未检测到时提示“启用 / 不启用本模块 CPU 调度”，不再给出安装外部模块的暗示。
 
 v4.4.6 已按本审计修复可闭环余患: 后台限制会记录 `.bg_restrict_baseline` 并按原 bucket/appops 恢复，`.profile_history` 增加 `sched_owner` 字段，`energy.sh` cache lock 增加 stale 回收，WebUI httpd 改用 pid 文件定位本模块实例，WebUI token 改为每次 service 启动轮换。
 
@@ -18,7 +20,7 @@ v4.4.6 已按本审计修复可闭环余患: 后台限制会记录 `.bg_restrict
 
 | 模块区域 | 入口文件 | 作用 | 审计结论 |
 |---|---|---|---|
-| 安装期配置 | `customize.sh` | 机型识别、Magisk 自适应、温控偏移、CPU 档位、Uperf 共存、UECap、NR、NTP、迁移旧配置 | 已加入旧版升级共存开关; Magisk 下剔除 UECap 覆盖是合理止血 |
+| 安装期配置 | `customize.sh` | 机型识别、Magisk 自适应、温控偏移、CPU 档位、调度接管/Uperf 覆盖关系、UECap、NR、NTP、迁移旧配置 | 已加入旧版升级调度接管开关; Magisk 下剔除 UECap 覆盖是合理止血 |
 | 开机服务 | `service.sh` | WebUI token/httpd、UECap 应用、待机设置、SIM2、后台限制、ZRAM、CPU profile、统一 worker | 逻辑完整; 外部接管时已跳过 L2/L3 CPU 写入; httpd 已改 pid 文件定位 |
 | CPU 调度 | `scripts/cpu_profile.sh` | 4 个 profile、status、vendor_sched enforce | 不写 `scaling_min/max`; 外部接管时 no-op |
 | WebUI 安全底座 | `webroot/cgi-bin/_common.sh` | loopback、token、JSON POST、锁 | 基础完备; loopback 不是本机 App 隔离边界 |
@@ -59,7 +61,7 @@ v4.4.6 已按本审计修复可闭环余患: 后台限制会记录 `.bg_restrict
 2. Magisk 下删除 UECap binarypb 覆盖与 CGI 实体，避免 Magic Mount 与 modem cbd 早期 mmap race。
 3. 根据 `ro.product.device` 选择 `caiman` / `komodo` 温控 stock JSON。
 4. 若检测到旧模块目录，迁移状态文件。
-5. 首次安装通过音量键配置温控、CPU、Uperf 共存、UECap、NR、NTP、ZRAM。
+5. 首次安装通过音量键配置温控、CPU、调度接管/Uperf 覆盖关系、UECap、NR、NTP、ZRAM。
 6. 升级安装补齐缺失默认值。
 7. 以 stock thermal JSON 为基准生成当前 offset 的 `thermal_info_config.json`。
 
@@ -68,7 +70,7 @@ v4.4.6 已按本审计修复可闭环余患: 后台限制会记录 `.bg_restrict
 - 首装路径完整。
 - 升级迁移已覆盖 `.thermal_offset`、profile、NR/SIM2/idle、swap、NTP、UECap、后台限制、WebUI token。
 - 本次已补 `.cpu_sched_owner` 迁移。
-- 本次已补旧版升级场景: 若旧版本没有 `.cpu_sched_owner`，刷入新版本时会显示“新增设置 — Uperf 共存模式”，由音量键选择。
+- 本次已补旧版升级场景: 若旧版本没有 `.cpu_sched_owner`，刷入新版本时会显示“新增设置 — CPU 调度接管”，由音量键选择。
 - Magisk 下主动剔除 UECap 覆盖是正确的功能取舍，避免基带早期加载 race。
 
 潜在问题:
@@ -139,14 +141,15 @@ v4.4.6 已按本审计修复可闭环余患: 后台限制会记录 `.bg_restrict
 - external 模式下 worker 每周期写 `.profile_auto_reason=external_scheduler`，功能正确但有轻微无意义写入，可改成值变化才写。
 - profile POST 与 owner POST 共用 `profile.sh`，契约清楚，但未来字段增多时建议拆分 `/profile.sh` 与 `/scheduler_owner.sh`。
 
-### 4. Uperf 共存逻辑
+### 4. Uperf / 外部调度接管逻辑
 
-本次补丁覆盖四层:
+当前实现覆盖五层:
 
 | 层 | 文件 | 行为 |
 |---|---|---|
-| 安装/升级 | `customize.sh` | 首装与旧版升级都可选择 external |
-| 后端状态 | `profile.sh` | GET/POST 读写 `sched_owner`，external 阻止切 profile |
+| Uperf 探测 | `scripts/scheduler_detect_lib.sh` | 扫描 `modules_update/modules` 的 `module.prop`，识别 Uperf Game Turbo 并输出 id/name/path/source/state/enabled |
+| 安装/升级 | `customize.sh` | 首装与旧版升级都可选择 `pixel/external`；检测到 Uperf 时给“覆盖/不覆盖”，未检测到时给“启用/不启用本模块调度” |
+| 后端状态 | `profile.sh` | GET/POST 读写 `sched_owner`，GET 返回 Uperf 探测字段，external 阻止切 profile |
 | 实际写节点 | `cpu_profile.sh` | external 下所有写操作 no-op，status 仍可读 |
 | 后台 worker | `service.sh` | external 下 boot/enforce/auto 都跳过 |
 | 前端 | `app.js/index.html` | 性能页显示接管方，禁用手动/自动/profile 卡片 |
@@ -156,6 +159,7 @@ v4.4.6 已按本审计修复可闭环余患: 后台限制会记录 `.bg_restrict
 - 这是真正的“停止抢写”，不是只隐藏 UI。
 - 对已安装低版本用户，升级刷入时可选择。
 - WebUI 可运行时切换，不必重新刷包。
+- 未检测到 Uperf 时，external 的语义是“本模块不写 CPU 调度节点，保留系统或其它外部调度现状”，不是“安装 Uperf”。
 
 边界:
 
@@ -357,12 +361,13 @@ v4.4.6 已按本审计修复可闭环余患: 后台限制会记录 `.bg_restrict
 |---|---|---|
 | `scripts/cpu_profile.sh` | 新增 `SCHED_OWNER_FILE` 与 external no-op; status 输出 owner | 正确，底层兜底 |
 | `service.sh` | boot L2/L3 与 worker enforce/auto 识别 external | 正确，覆盖后台回写层 |
-| `webroot/cgi-bin/profile.sh` | GET 输出 `sched_owner`; POST 支持 `pixel/external`; external 阻止 profile/policy | 正确，后端兜底 |
-| `webroot/app.js` | 性能页共存状态、按钮、禁用 profile 卡片 | 正确，避免误操作 |
+| `scripts/scheduler_detect_lib.sh` | 新增 Uperf Game Turbo 只读探测: `id=uperf` 或 name/description 同时含 `uperf`/`game turbo` | 正确，安装期与 WebUI 共用口径 |
+| `webroot/cgi-bin/profile.sh` | GET 输出 `sched_owner` 与 Uperf 探测字段; POST 支持 `pixel/external`; external 阻止 profile/policy | 正确，后端兜底 |
+| `webroot/app.js` | 性能页显示探测状态和接管方，按钮按“覆盖/不覆盖/启用/停用”切换，禁用 profile 卡片 | 正确，避免误操作 |
 | `webroot/index.html` / `app.css` | 新增调度接管 UI 与禁用态 | 正确 |
-| `customize.sh` | 首装与旧版升级均提供 Uperf 共存开关; 迁移 `.cpu_sched_owner` | 正确，覆盖前辈指出的升级场景 |
+| `customize.sh` | 首装与旧版升级均提供 CPU 调度接管选择; 检测到 Uperf 时提示覆盖/不覆盖，未检测到时提示启用/不启用本模块调度; 迁移 `.cpu_sched_owner` | 正确，覆盖前辈指出的升级场景与无 Uperf 场景 |
 | `ntp.sh` | POST 增加 `require_json_post` | 加固一致性 |
-| `module.prop` / `README.md` | 升级 v4.4.6，记录审计修复与共存模式 | 正确 |
+| `module.prop` / `README.md` | 升级 v4.4.7，记录 Uperf 探测与调度接管选择 | 正确 |
 | `scripts/bg_restrict_lib.sh` | 新增后台限制 baseline 记录/恢复共享逻辑 | 修复 R4，避免 CGI 与 service 恢复策略分叉 |
 | `energy.sh` | cache lock 增加 stale 回收 | 修复 R6 |
 | `service.sh` | WebUI token 每次启动轮换，httpd pid 文件管理 | 缩短 token 暴露窗口，修复 R9 |
@@ -464,7 +469,7 @@ Uperf 的优势不是“更激进地锁频”，而是更细粒度的用户态 s
 
 ### 刷入/升级验证
 
-1. 从 v4.4.4 或更低版本升级，确认安装期出现“新增设置 — Uperf 共存模式”。
+1. 从 v4.4.4 或更低版本升级，确认安装期出现“新增设置 — CPU 调度接管”。
 2. 选择开启后，重启进入系统，检查:
 
 ```sh
@@ -503,10 +508,10 @@ cat /dev/cpuset/top-app/cpus
 
 ## 最终判断
 
-本模块可以与 Uperf Game Turbo 共存，但必须开启 `Uperf 共存模式`，让本模块停止 CPU 调度写入。仅“社区有人能在 Pixel 9 Pro 跑 Uperf”不能证明两套调度可同时接管; 这次补丁解决的是本模块这一侧的抢写问题。外部 Uperf 模块若自身 stop/start PowerHAL 或做其它全局 root 调度操作，本模块无法替它兜底，只能通过 A/B 日志验证实际效果。
+本模块可以与 Uperf Game Turbo 共存，但必须将 CPU 调度接管方设为 `external`，让本模块停止 CPU 调度写入。仅“社区有人能在 Pixel 9 Pro 跑 Uperf”不能证明两套调度可同时接管; 这次补丁解决的是本模块这一侧的抢写问题。外部 Uperf 模块若自身 stop/start PowerHAL 或做其它全局 root 调度操作，本模块无法替它兜底，只能通过 A/B 日志验证实际效果。
 
 在当前代码基础上，建议优先继续做三件事:
 
 1. 对 WebUI token bootstrap 做本机 App 威胁模型增强。v4.4.6 已做启动轮换，但 BusyBox 静态 WebUI 仍无法彻底隔离本机恶意 App。
-2. 为 Uperf 共存增加一键诊断页，展示四类调度节点最近值和本模块是否写入。
+2. 为外部调度接管增加一键诊断页，展示四类调度节点最近值和本模块是否写入。
 3. 为 VM 参数增加原始值 baseline，恢复时不再依赖写死 stock 数值。

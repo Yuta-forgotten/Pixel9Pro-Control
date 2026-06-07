@@ -171,6 +171,13 @@ const state = {
   manualProfile: 'balanced',
   profilePolicy: 'manual',
   schedOwner: 'pixel',
+  uperfDetected: false,
+  uperfModuleId: '',
+  uperfModuleName: '',
+  uperfModulePath: '',
+  uperfModuleSource: '',
+  uperfModuleState: '',
+  uperfModuleEnabled: 'no',
   autoReason: '',
   currentOffset: 4,
   swapMode: 'unknown',
@@ -446,6 +453,16 @@ function errorBlock(msg) {
   el.style.cssText = 'color:var(--danger)';
   el.textContent = msg;
   return el;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[ch]));
 }
 
 function showToast(msg, dur = 2500) {
@@ -748,26 +765,82 @@ function positionMarkers() {
   refs.mkModLbl.style.display = state.currentOffset === 0 ? 'none' : '';
 }
 
+function getUperfName() {
+  return state.uperfModuleName || state.uperfModuleId || 'Uperf Game Turbo';
+}
+
+function getUperfStateText() {
+  switch (state.uperfModuleState) {
+    case 'disabled': return '已禁用';
+    case 'pending_update': return '待重启更新';
+    case 'pending_remove': return '待重启移除';
+    case 'active': return '已安装';
+    default: return state.uperfDetected ? '已安装' : '未检测到';
+  }
+}
+
+function isUperfEnabled() {
+  return state.uperfDetected && state.uperfModuleEnabled === 'yes';
+}
+
+function getSchedulerStatusText() {
+  const name = getUperfName();
+  if (state.schedOwner === 'external') {
+    if (!state.uperfDetected) return '未启用本模块调度';
+    return isUperfEnabled() ? `${name} 接管 (${getUperfStateText()})` : `${name} ${getUperfStateText()}`;
+  }
+  return state.uperfDetected ? `本模块覆盖 ${name}` : 'Pixel 温控模块';
+}
+
+function getSchedulerToggleText() {
+  if (state.schedOwnerBusy) return '切换中…';
+  if (state.schedOwner === 'external') {
+    return state.uperfDetected ? '本模块覆盖接管' : '启用本模块调度';
+  }
+  return state.uperfDetected ? '不覆盖 Uperf' : '停用本模块调度';
+}
+
+function getSchedulerExternalDesc() {
+  const name = getUperfName();
+  if (state.uperfDetected) {
+    const owner = isUperfEnabled() ? `CPU 调度交给 ${name}` : `检测到 ${name} (${getUperfStateText()})`;
+    return `${owner}；本模块保留温控、待机与系统优化，不写 CPU 调度节点。`;
+  }
+  return '未检测到 Uperf Game Turbo；本模块当前不写 CPU 调度节点，保留系统或其它外部调度现状。';
+}
+
+function getSchedulerPixelDesc() {
+  const name = getUperfName();
+  if (state.uperfDetected) {
+    return `检测到 ${name}，当前由本模块覆盖接管 CPU 调度。`;
+  }
+  return '未检测到 Uperf Game Turbo，当前由本模块管理 CPU 调度。';
+}
+
 function syncProfileUi() {
   const profile = PROFILES[state.currentProfile] || PROFILES.unknown;
   const isAuto = state.profilePolicy === 'auto';
   const isExternal = state.schedOwner === 'external';
   if (isExternal) {
-    refs.topbarProfileChip.textContent = 'Uperf 接管';
-    refs.perfCurrentName.textContent = 'Uperf 共存模式';
-    refs.perfCurrentDesc.textContent = '本模块保留温控、待机与系统优化，不写 CPU 调度节点。';
-    refs.perfPolicyDesc.textContent = 'CPU 调度由 Uperf / 外部模块接管；手动、自动和模式卡片已暂停。';
+    refs.topbarProfileChip.textContent = state.uperfDetected ? (isUperfEnabled() ? 'Uperf 接管' : 'Uperf 未启用') : '调度停用';
+    refs.perfCurrentName.textContent = state.uperfDetected
+      ? (isUperfEnabled() ? `${getUperfName()} 接管` : `${getUperfName()} ${getUperfStateText()}`)
+      : '本模块调度未启用';
+    refs.perfCurrentDesc.textContent = getSchedulerExternalDesc();
+    refs.perfPolicyDesc.textContent = state.uperfDetected
+      ? '本模块不覆盖 CPU 调度；手动、自动和模式卡片已暂停。'
+      : '未检测到 Uperf；手动、自动和模式卡片已暂停，系统或其它外部调度保持现状。';
     refs.profilePolicyManualBtn.className = 'tiny-btn';
     refs.profilePolicyAutoBtn.className = 'tiny-btn';
     refs.profilePolicyManualBtn.disabled = true;
     refs.profilePolicyAutoBtn.disabled = true;
-    refs.schedOwnerLabel.textContent = 'Uperf / 外部模块';
+    refs.schedOwnerLabel.textContent = getSchedulerStatusText();
     refs.schedOwnerToggleBtn.className = 'tiny-btn primary';
     refs.schedOwnerToggleBtn.disabled = state.schedOwnerBusy;
-    refs.schedOwnerToggleLabel.textContent = state.schedOwnerBusy ? '切换中…' : '恢复本模块调度';
+    refs.schedOwnerToggleLabel.textContent = getSchedulerToggleText();
     refs.hero.className = 'hero-card mode-game';
     refs.heroIcon.innerHTML = PROFILES.performance.hero;
-    refs.heroMode.textContent = 'Uperf 接管';
+    refs.heroMode.textContent = state.uperfDetected ? (isUperfEnabled() ? 'Uperf 接管' : 'Uperf 未启用') : '调度停用';
     document.querySelectorAll('.profile-option').forEach((card) => {
       card.classList.remove('selected');
       card.classList.add('disabled');
@@ -777,17 +850,18 @@ function syncProfileUi() {
   refs.topbarProfileChip.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
   refs.perfCurrentName.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
   refs.perfCurrentDesc.textContent = isAuto ? `${profile.desc} · ${describeAutoReason(state.autoReason)}` : profile.desc;
-  refs.perfPolicyDesc.textContent = isAuto
+  const pixelPolicyDesc = isAuto
     ? `自动模式已启用：当前按“${describeAutoReason(state.autoReason)}”运行，手动点卡片会退出自动。`
     : `手动模式：当前固定为”${profile.name}”。切到自动后，系统仅在温度过高时收口到省电模式。`;
+  refs.perfPolicyDesc.textContent = state.uperfDetected ? `${pixelPolicyDesc} ${getSchedulerPixelDesc()}` : pixelPolicyDesc;
   refs.profilePolicyManualBtn.className = `tiny-btn${!isAuto ? ' primary' : ''}`;
   refs.profilePolicyAutoBtn.className = `tiny-btn${isAuto ? ' primary' : ''}`;
   refs.profilePolicyManualBtn.disabled = state.profilePolicyBusy;
   refs.profilePolicyAutoBtn.disabled = state.profilePolicyBusy;
-  refs.schedOwnerLabel.textContent = 'Pixel 温控模块';
+  refs.schedOwnerLabel.textContent = getSchedulerStatusText();
   refs.schedOwnerToggleBtn.className = 'tiny-btn';
   refs.schedOwnerToggleBtn.disabled = state.schedOwnerBusy;
-  refs.schedOwnerToggleLabel.textContent = state.schedOwnerBusy ? '切换中…' : '开启 Uperf 共存';
+  refs.schedOwnerToggleLabel.textContent = getSchedulerToggleText();
   refs.hero.className = `hero-card ${profile.modeClass}`;
   refs.heroIcon.innerHTML = profile.hero;
   refs.heroMode.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
@@ -820,6 +894,13 @@ function applyProfileState(data) {
   state.manualProfile = PROFILES[data.manual_profile] ? data.manual_profile : state.currentProfile;
   state.profilePolicy = data.policy === 'auto' ? 'auto' : 'manual';
   state.schedOwner = data.sched_owner === 'external' ? 'external' : 'pixel';
+  state.uperfDetected = data.uperf_detected === true || data.uperf_detected === 'true';
+  state.uperfModuleId = typeof data.uperf_module_id === 'string' ? data.uperf_module_id : '';
+  state.uperfModuleName = typeof data.uperf_module_name === 'string' ? data.uperf_module_name : '';
+  state.uperfModulePath = typeof data.uperf_module_path === 'string' ? data.uperf_module_path : '';
+  state.uperfModuleSource = typeof data.uperf_module_source === 'string' ? data.uperf_module_source : '';
+  state.uperfModuleState = typeof data.uperf_module_state === 'string' ? data.uperf_module_state : '';
+  state.uperfModuleEnabled = typeof data.uperf_module_enabled === 'string' ? data.uperf_module_enabled : 'no';
   state.autoReason = typeof data.auto_reason === 'string' ? data.auto_reason : '';
   syncProfileUi();
   syncHeroDesc();
@@ -829,7 +910,8 @@ function syncHeroDesc() {
   const parts = [];
   const preset = THERMAL_PRESETS[state.currentOffset];
   if (preset) parts.push(preset.name);
-  if (state.schedOwner === 'external') parts.push('Uperf 接管');
+  if (state.schedOwner === 'external') parts.push(state.uperfDetected ? (isUperfEnabled() ? 'Uperf 接管' : 'Uperf 未启用') : '调度停用');
+  else if (state.uperfDetected) parts.push('覆盖 Uperf');
   if (state.swapMode === 'optimized') parts.push('内存已优化');
   else if (state.swapMode === 'stock') parts.push('内存默认');
   refs.heroDesc.textContent = parts.join(' · ') || '正在读取配置…';
@@ -1092,6 +1174,13 @@ async function loadSavedProfile() {
     state.manualProfile = 'balanced';
     state.profilePolicy = 'manual';
     state.schedOwner = 'pixel';
+    state.uperfDetected = false;
+    state.uperfModuleId = '';
+    state.uperfModuleName = '';
+    state.uperfModulePath = '';
+    state.uperfModuleSource = '';
+    state.uperfModuleState = '';
+    state.uperfModuleEnabled = 'no';
     state.autoReason = '';
     syncProfileUi();
     syncHeroDesc();
@@ -2258,8 +2347,10 @@ async function openEnergyDetail() {
 
 async function applyProfile(profile) {
   if (state.schedOwner === 'external') {
-    showToast('Uperf 共存模式已开启');
-    appendLog('CPU 调度由外部模块接管，未切换本模块 profile', 'warn');
+    showToast(state.uperfDetected ? getSchedulerStatusText() : '本模块调度未启用');
+    appendLog(state.uperfDetected
+      ? `${getSchedulerStatusText()}，未切换本模块 profile`
+      : '本模块 CPU 调度未启用，未切换 profile', 'warn');
     return;
   }
   if (profile === state.currentProfile || state.cpuBusy) return;
@@ -2291,8 +2382,10 @@ async function applyProfile(profile) {
 
 async function setProfilePolicy(policy) {
   if (state.schedOwner === 'external') {
-    showToast('Uperf 共存模式已开启');
-    appendLog('CPU 调度由外部模块接管，自动/手动策略暂停', 'warn');
+    showToast(state.uperfDetected ? getSchedulerStatusText() : '本模块调度未启用');
+    appendLog(state.uperfDetected
+      ? `${getSchedulerStatusText()}，自动/手动策略暂停`
+      : '本模块 CPU 调度未启用，自动/手动策略暂停', 'warn');
     return;
   }
   if (state.profilePolicy === policy || state.profilePolicyBusy) return;
@@ -2332,7 +2425,10 @@ async function toggleSchedOwner() {
   const nextOwner = state.schedOwner === 'external' ? 'pixel' : 'external';
   state.schedOwnerBusy = true;
   syncProfileUi();
-  appendLog(nextOwner === 'external' ? '开启 Uperf 共存模式…' : '恢复本模块 CPU 调度…', 'dim');
+  const actionText = nextOwner === 'external'
+    ? (state.uperfDetected ? '不覆盖 Uperf，交出 CPU 调度…' : '停用本模块 CPU 调度…')
+    : (state.uperfDetected ? '本模块覆盖接管 CPU 调度…' : '启用本模块 CPU 调度…');
+  appendLog(actionText, 'dim');
   refs.logCard.classList.add('open');
   try {
     const data = await apiFetch(API.profile, {
@@ -2343,10 +2439,14 @@ async function toggleSchedOwner() {
     });
     if (data.ok) {
       applyProfileState(data);
-      showToast(nextOwner === 'external' ? '已开启 Uperf 共存' : '已恢复本模块调度');
+      showToast(nextOwner === 'external'
+        ? (state.uperfDetected ? '已不覆盖 Uperf' : '已停用本模块调度')
+        : (state.uperfDetected ? '本模块已覆盖接管' : '已启用本模块调度'));
       appendLog(nextOwner === 'external'
-        ? 'Uperf 共存已开启：本模块停止写 CPU 调度节点'
-        : `本模块调度已恢复：${PROFILES[state.currentProfile].name}`, 'ok');
+        ? (state.uperfDetected
+          ? '不覆盖 Uperf：本模块停止写 CPU 调度节点'
+          : '本模块 CPU 调度已停用：保留系统/外部调度现状')
+        : `本模块调度已启用：${PROFILES[state.currentProfile].name}`, 'ok');
       refreshCpu();
     } else {
       showToast(`切换失败：${data.error || '未知'}`);
@@ -2558,7 +2658,7 @@ function bindStaticEvents() {
     };
     let html = `<b>当前模式</b><br>${(PROFILES[state.currentProfile] || PROFILES.unknown).name}<br><br>`;
     html += state.schedOwner === 'external'
-      ? '<b>cpuset 分配</b><br>由 Uperf / 外部模块接管'
+      ? `<b>cpuset 分配</b><br>${escapeHtml(getSchedulerStatusText())}`
       : `<b>cpuset 分配</b><br>${(cpuSet[state.currentProfile] || '未设置').replace(/\n/g, '<br>')}`;
     if (state.lastClusters && state.lastClusters.length) {
       state.lastClusters.forEach((cluster, index) => {

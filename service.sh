@@ -1,17 +1,17 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.4.6 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.4.7 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
 #
 # v4.4.6 变更:
 #   - WebUI token 改为每次 service 启动轮换, 缩短本机泄露后的可用窗口。
 #   - L1 后台限制新增 .bg_restrict_baseline, 移除/关闭时按原 bucket/appops 恢复。
-#   - .profile_history 追加 sched_owner 字段, 便于 Uperf 共存复盘。
+#   - .profile_history 追加 sched_owner 字段, 便于外部调度接管复盘。
 #   - WebUI httpd 改用 pid 文件停止本模块实例, 避免端口粗匹配误杀。
 #
 # v4.4.5 变更:
-#   - 新增 Uperf 共存模式: 外部接管时跳过 response_time_ms / uclamp / cpuset / vendor_sched 写入
+#   - 新增外部调度接管模式: external 时跳过 response_time_ms / uclamp / cpuset / vendor_sched 写入
 #
 # v4.4.4 变更:
 #   - balanced 低热日用底座: response_time_ms 16/24/160 -> 16/40/200, 保持 top-app 0-7 与 cap=0。
@@ -645,7 +645,7 @@ if [ ! -f "$SIM2_AUTO_FILE" ]; then
 fi
 [ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
 
-log -t pixel9pro_ctrl "v4.4.6[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.4.7[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -728,7 +728,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.4.6[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.4.7[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)
