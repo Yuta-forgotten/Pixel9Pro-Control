@@ -40,9 +40,18 @@ CPU7="/sys/devices/system/cpu/cpu7/cpufreq"
 VENDOR_SCHED="/proc/vendor_sched"
 UCLAMP_CAP_MIN="/proc/sys/kernel/sched_util_clamp_min"
 POWER_PROFILE_FILE="$MODDIR/.power_profile"
+SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 
 write_if_exists() { [ -f "$1" ] && echo "$2" > "$1" 2>/dev/null; }
 cpuset_write()    { [ -f "/dev/cpuset/$1/cpus" ] && echo "$2" > "/dev/cpuset/$1/cpus" 2>/dev/null; }
+
+read_sched_owner() {
+    _owner=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    case "$_owner" in
+        external) printf 'external' ;;
+        *)        printf 'pixel' ;;
+    esac
+}
 
 apply_sched_pixel() {
     # $1-3: response_time_ms  (小核 / 中核 / 大核)
@@ -57,6 +66,17 @@ apply_uclamp_cap() {
     #   volatile, 不被 PowerHAL/Thermal 覆盖 (无需 enforce 守护)。
     write_if_exists "$UCLAMP_CAP_MIN" "$1"
 }
+
+SCHED_OWNER=$(read_sched_owner)
+if [ "$SCHED_OWNER" = "external" ]; then
+    case "$PROFILE" in
+        status) ;;
+        *)
+            log -t pixel9pro_ctrl "CPU: skip $PROFILE, scheduler owner=external"
+            exit 0
+            ;;
+    esac
+fi
 
 case "$PROFILE" in
 
@@ -115,6 +135,9 @@ case "$PROFILE" in
         ;;
 
     status)
+        echo "=== 调度所有权 ==="
+        printf "cpu_sched_owner=%s  (pixel=本模块 / external=外部模块接管)\n" "$SCHED_OWNER"
+        echo ""
         echo "=== CPU 频率 ==="
         for cpu in 0 4 7; do
             path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"

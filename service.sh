@@ -1,8 +1,11 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.4.4 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.4.5 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
+#
+# v4.4.5 变更:
+#   - 新增 Uperf 共存模式: 外部接管时跳过 response_time_ms / uclamp / cpuset / vendor_sched 写入
 #
 # v4.4.4 变更:
 #   - balanced 低热日用底座: response_time_ms 16/24/160 -> 16/40/200, 保持 top-app 0-7 与 cap=0。
@@ -161,6 +164,7 @@ PROFILE_POLICY_FILE="$MODDIR/.profile_policy"
 PROFILE_MANUAL_FILE="$MODDIR/.profile_manual"
 PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
 PROFILE_HISTORY_FILE="$MODDIR/.profile_history"
+SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 SIM2_AUTO_FILE="$MODDIR/.sim2_auto_manage"
 IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
@@ -410,6 +414,14 @@ read_valid_profile_policy() {
     fi
 }
 
+read_valid_sched_owner() {
+    _owner_value=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    case "$_owner_value" in
+        external) printf 'external' ;;
+        *)        printf 'pixel' ;;
+    esac
+}
+
 append_profile_history() {
     _ph_profile="$1"
     _ph_reason="$2"
@@ -515,6 +527,11 @@ apply_profile_state() {
 
     valid_profile "$_target" || return 1
 
+    if [ "$(read_valid_sched_owner)" = "external" ]; then
+        log -t pixel9pro_ctrl "CPU profile skipped: scheduler owner=external ($_target/$_reason)"
+        return 0
+    fi
+
     if ! profile_lock_acquire; then
         log -t pixel9pro_ctrl "CPU profile busy, skip auto switch -> $_target ($_reason)"
         return 1
@@ -581,7 +598,7 @@ if [ ! -f "$SIM2_AUTO_FILE" ]; then
 fi
 [ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
 
-log -t pixel9pro_ctrl "v4.4.4[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.4.5[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -664,15 +681,20 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.4.4[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.4.5[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)
 #     L3 (response_time_ms) 由后续 cpu_profile.sh 管理
 # ──────────────────────────────────────────────────────────
 [ -f "$POWER_PROFILE_FILE" ] || printf 'balanced' > "$POWER_PROFILE_FILE"
+[ -f "$SCHED_OWNER_FILE" ] || printf 'pixel' > "$SCHED_OWNER_FILE"
 apply_l1_persistent_limits
-apply_l2_vendor_sched
+if [ "$(read_valid_sched_owner)" = "external" ]; then
+    log -t pixel9pro_ctrl "L2: skipped, scheduler owner=external"
+else
+    apply_l2_vendor_sched
+fi
 
 # 延迟复写：NTP 服务器和扫描类设置可能在用户解锁后被系统回写。
 (
@@ -689,8 +711,12 @@ PROFILE=$(read_valid_profile "$PROFILE_FILE" 'default')
 [ -f "$PROFILE_MANUAL_FILE" ] || printf '%s' "$PROFILE" > "$PROFILE_MANUAL_FILE"
 [ -f "$PROFILE_POLICY_FILE" ] || printf 'manual' > "$PROFILE_POLICY_FILE"
 [ -f "$PROFILE_AUTO_REASON_FILE" ] || printf 'manual_policy' > "$PROFILE_AUTO_REASON_FILE"
-sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" "$MODDIR" 2>/dev/null
-log -t pixel9pro_ctrl "CPU profile: $PROFILE"
+if [ "$(read_valid_sched_owner)" = "external" ]; then
+    log -t pixel9pro_ctrl "CPU profile skipped: scheduler owner=external"
+else
+    sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" "$MODDIR" 2>/dev/null
+    log -t pixel9pro_ctrl "CPU profile: $PROFILE"
+fi
 ensure_profile_history_baseline
 
 # ──────────────────────────────────────────────────────────
@@ -942,6 +968,7 @@ is_nr_mode_value() {
     while true; do
         _now=$(date +%s 2>/dev/null || echo 0)
         _cycle_count=$((_cycle_count + 1))
+        _sched_owner=$(read_valid_sched_owner)
 
         # --- Single screen state check per cycle (sysfs first, IPC-free) ---
         # DRM dpms 是 legacy 属性，仅在 full modeset 时更新 (drm_atomic_helper.c)。
@@ -1004,7 +1031,7 @@ is_nr_mode_value() {
 
         # --- L2 enforce: 亮屏时每周期校验 vendor_sched 参数 ---
         # 只做 procfs 读写, 零 IPC, 零 wakelock. 参数正确时无操作。
-        if [ "$_screen" = "on" ]; then
+        if [ "$_screen" = "on" ] && [ "$_sched_owner" != "external" ]; then
             sh "$MODDIR/scripts/cpu_profile.sh" enforce "$MODDIR" 2>/dev/null
         fi
 
@@ -1124,7 +1151,13 @@ is_nr_mode_value() {
             _target_reason=""
             _sev=""
 
-            if [ "$_profile_policy" = "manual" ]; then
+            if [ "$_sched_owner" = "external" ]; then
+                _auto_hot_since=0
+                _auto_cool_since=0
+                _auto_charge_hot_since=0
+                _auto_charge_cool_since=0
+                printf '%s' 'external_scheduler' > "$PROFILE_AUTO_REASON_FILE"
+            elif [ "$_profile_policy" = "manual" ]; then
                 _auto_hot_since=0
                 _auto_cool_since=0
                 _auto_charge_hot_since=0

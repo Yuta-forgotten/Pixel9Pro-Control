@@ -170,6 +170,7 @@ const state = {
   currentProfile: 'unknown',
   manualProfile: 'balanced',
   profilePolicy: 'manual',
+  schedOwner: 'pixel',
   autoReason: '',
   currentOffset: 4,
   swapMode: 'unknown',
@@ -177,6 +178,7 @@ const state = {
   webuiToken: '',
   cpuBusy: false,
   profilePolicyBusy: false,
+  schedOwnerBusy: false,
   thermalBusy: false,
   thermalApplyBusy: false,
   swapBusy: false,
@@ -258,6 +260,9 @@ function initRefs() {
   refs.perfPolicyDesc = $('perf-policy-desc');
   refs.profilePolicyManualBtn = $('profile-policy-manual-btn');
   refs.profilePolicyAutoBtn = $('profile-policy-auto-btn');
+  refs.schedOwnerLabel = $('sched-owner-label');
+  refs.schedOwnerToggleBtn = $('sched-owner-toggle-btn');
+  refs.schedOwnerToggleLabel = $('sched-owner-toggle-label');
   refs.cpuRows = $('cpu-rows');
   refs.profileList = $('profile-list');
   refs.refreshBtn = $('refresh-cpu-btn');
@@ -746,6 +751,29 @@ function positionMarkers() {
 function syncProfileUi() {
   const profile = PROFILES[state.currentProfile] || PROFILES.unknown;
   const isAuto = state.profilePolicy === 'auto';
+  const isExternal = state.schedOwner === 'external';
+  if (isExternal) {
+    refs.topbarProfileChip.textContent = 'Uperf 接管';
+    refs.perfCurrentName.textContent = 'Uperf 共存模式';
+    refs.perfCurrentDesc.textContent = '本模块保留温控、待机与系统优化，不写 CPU 调度节点。';
+    refs.perfPolicyDesc.textContent = 'CPU 调度由 Uperf / 外部模块接管；手动、自动和模式卡片已暂停。';
+    refs.profilePolicyManualBtn.className = 'tiny-btn';
+    refs.profilePolicyAutoBtn.className = 'tiny-btn';
+    refs.profilePolicyManualBtn.disabled = true;
+    refs.profilePolicyAutoBtn.disabled = true;
+    refs.schedOwnerLabel.textContent = 'Uperf / 外部模块';
+    refs.schedOwnerToggleBtn.className = 'tiny-btn primary';
+    refs.schedOwnerToggleBtn.disabled = state.schedOwnerBusy;
+    refs.schedOwnerToggleLabel.textContent = state.schedOwnerBusy ? '切换中…' : '恢复本模块调度';
+    refs.hero.className = 'hero-card mode-game';
+    refs.heroIcon.innerHTML = PROFILES.performance.hero;
+    refs.heroMode.textContent = 'Uperf 接管';
+    document.querySelectorAll('.profile-option').forEach((card) => {
+      card.classList.remove('selected');
+      card.classList.add('disabled');
+    });
+    return;
+  }
   refs.topbarProfileChip.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
   refs.perfCurrentName.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
   refs.perfCurrentDesc.textContent = isAuto ? `${profile.desc} · ${describeAutoReason(state.autoReason)}` : profile.desc;
@@ -756,10 +784,17 @@ function syncProfileUi() {
   refs.profilePolicyAutoBtn.className = `tiny-btn${isAuto ? ' primary' : ''}`;
   refs.profilePolicyManualBtn.disabled = state.profilePolicyBusy;
   refs.profilePolicyAutoBtn.disabled = state.profilePolicyBusy;
+  refs.schedOwnerLabel.textContent = 'Pixel 温控模块';
+  refs.schedOwnerToggleBtn.className = 'tiny-btn';
+  refs.schedOwnerToggleBtn.disabled = state.schedOwnerBusy;
+  refs.schedOwnerToggleLabel.textContent = state.schedOwnerBusy ? '切换中…' : '开启 Uperf 共存';
   refs.hero.className = `hero-card ${profile.modeClass}`;
   refs.heroIcon.innerHTML = profile.hero;
   refs.heroMode.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
-  document.querySelectorAll('.profile-option').forEach((card) => card.classList.toggle('selected', card.dataset.profile === state.currentProfile));
+  document.querySelectorAll('.profile-option').forEach((card) => {
+    card.classList.remove('disabled');
+    card.classList.toggle('selected', card.dataset.profile === state.currentProfile);
+  });
 }
 
 function describeAutoReason(reason) {
@@ -784,6 +819,7 @@ function applyProfileState(data) {
   state.currentProfile = PROFILES[data.profile] ? data.profile : 'unknown';
   state.manualProfile = PROFILES[data.manual_profile] ? data.manual_profile : state.currentProfile;
   state.profilePolicy = data.policy === 'auto' ? 'auto' : 'manual';
+  state.schedOwner = data.sched_owner === 'external' ? 'external' : 'pixel';
   state.autoReason = typeof data.auto_reason === 'string' ? data.auto_reason : '';
   syncProfileUi();
   syncHeroDesc();
@@ -793,6 +829,7 @@ function syncHeroDesc() {
   const parts = [];
   const preset = THERMAL_PRESETS[state.currentOffset];
   if (preset) parts.push(preset.name);
+  if (state.schedOwner === 'external') parts.push('Uperf 接管');
   if (state.swapMode === 'optimized') parts.push('内存已优化');
   else if (state.swapMode === 'stock') parts.push('内存默认');
   refs.heroDesc.textContent = parts.join(' · ') || '正在读取配置…';
@@ -1054,6 +1091,7 @@ async function loadSavedProfile() {
     state.currentProfile = 'unknown';
     state.manualProfile = 'balanced';
     state.profilePolicy = 'manual';
+    state.schedOwner = 'pixel';
     state.autoReason = '';
     syncProfileUi();
     syncHeroDesc();
@@ -2219,6 +2257,11 @@ async function openEnergyDetail() {
 }
 
 async function applyProfile(profile) {
+  if (state.schedOwner === 'external') {
+    showToast('Uperf 共存模式已开启');
+    appendLog('CPU 调度由外部模块接管，未切换本模块 profile', 'warn');
+    return;
+  }
   if (profile === state.currentProfile || state.cpuBusy) return;
   const prevPolicy = state.profilePolicy;
   const card = refs.profileList.querySelector(`[data-profile="${profile}"]`);
@@ -2247,6 +2290,11 @@ async function applyProfile(profile) {
 }
 
 async function setProfilePolicy(policy) {
+  if (state.schedOwner === 'external') {
+    showToast('Uperf 共存模式已开启');
+    appendLog('CPU 调度由外部模块接管，自动/手动策略暂停', 'warn');
+    return;
+  }
   if (state.profilePolicy === policy || state.profilePolicyBusy) return;
   state.profilePolicyBusy = true;
   syncProfileUi();
@@ -2275,6 +2323,40 @@ async function setProfilePolicy(policy) {
     appendLog(String(err), 'err');
   } finally {
     state.profilePolicyBusy = false;
+    syncProfileUi();
+  }
+}
+
+async function toggleSchedOwner() {
+  if (state.schedOwnerBusy) return;
+  const nextOwner = state.schedOwner === 'external' ? 'pixel' : 'external';
+  state.schedOwnerBusy = true;
+  syncProfileUi();
+  appendLog(nextOwner === 'external' ? '开启 Uperf 共存模式…' : '恢复本模块 CPU 调度…', 'dim');
+  refs.logCard.classList.add('open');
+  try {
+    const data = await apiFetch(API.profile, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sched_owner: nextOwner }),
+      timeoutMs: 8000
+    });
+    if (data.ok) {
+      applyProfileState(data);
+      showToast(nextOwner === 'external' ? '已开启 Uperf 共存' : '已恢复本模块调度');
+      appendLog(nextOwner === 'external'
+        ? 'Uperf 共存已开启：本模块停止写 CPU 调度节点'
+        : `本模块调度已恢复：${PROFILES[state.currentProfile].name}`, 'ok');
+      refreshCpu();
+    } else {
+      showToast(`切换失败：${data.error || '未知'}`);
+      appendLog(data.error || '切换失败', 'err');
+    }
+  } catch (err) {
+    showToast('请求失败，检查服务是否运行');
+    appendLog(String(err), 'err');
+  } finally {
+    state.schedOwnerBusy = false;
     syncProfileUi();
   }
 }
@@ -2443,6 +2525,7 @@ function bindStaticEvents() {
   $('theme-open-btn-2').addEventListener('click', openThemeSheet);
   $('refresh-all-btn').addEventListener('click', doFullRefresh);
   $('refresh-cpu-btn').addEventListener('click', refreshCpu);
+  $('sched-owner-toggle-btn').addEventListener('click', toggleSchedOwner);
   $('swap-toggle-btn').addEventListener('click', toggleSwapMode);
   $('swap-detail-btn').addEventListener('click', () => openDetail('内存优化详情', SWAP_DETAIL));
   $('nr-switch-toggle-btn').addEventListener('click', toggleNrSwitch);
@@ -2474,7 +2557,9 @@ function bindStaticEvents() {
       default: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3'
     };
     let html = `<b>当前模式</b><br>${(PROFILES[state.currentProfile] || PROFILES.unknown).name}<br><br>`;
-    html += `<b>cpuset 分配</b><br>${(cpuSet[state.currentProfile] || '未设置').replace(/\n/g, '<br>')}`;
+    html += state.schedOwner === 'external'
+      ? '<b>cpuset 分配</b><br>由 Uperf / 外部模块接管'
+      : `<b>cpuset 分配</b><br>${(cpuSet[state.currentProfile] || '未设置').replace(/\n/g, '<br>')}`;
     if (state.lastClusters && state.lastClusters.length) {
       state.lastClusters.forEach((cluster, index) => {
         const maxHz = cluster.max > 0 ? cluster.max : (CLUSTERS[index]?.maxHz || 0);

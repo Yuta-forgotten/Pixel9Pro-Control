@@ -4,11 +4,16 @@
 
 ## 当前版本
 
-- Release: `v4.4.4`
-- versionCode: `68`
-- Asset: `pixel9pro_control_v4.4.4.zip`
+- Release: `v4.4.5`
+- versionCode: `69`
+- Asset: `pixel9pro_control_v4.4.5.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
+
+### v4.4.5
+
+- 新增 `Uperf Game Turbo 共存模式`：安装向导与 WebUI 性能页均可开启。开启后，本模块停止写入 CPU 调度相关节点，包括 `sched_pixel response_time_ms`、`sched_util_clamp_min`、`/dev/cpuset/*/cpus` 与 `/proc/vendor_sched/ug_bg_*`，CPU 调度权交给 Uperf/外部模块。
+- 共存模式仅让出 CPU 调度权；温控阈值、ZRAM/VM、NR 息屏降级、SIM2 空槽管理、后台应用限制、UECap 管理等功能仍按原逻辑运行。
 
 ### v4.4.4
 
@@ -42,6 +47,7 @@
 
 - 调度通过 `cpuset` 和 `sched_pixel response_time_ms` 控制；不直接写 `scaling_max_freq`
 - `foreground/cpus` 会被 framework 重置到 `0-6`，模块主要托管 `top-app/background/system-background`
+- 开启 `Uperf 共存模式` 后，本模块不再写 CPU 调度节点，WebUI 的 profile/auto/enforce 会暂停，由 Uperf/外部模块接管。
 
 ### 前台自动调度
 
@@ -71,6 +77,7 @@
 
 - L1 通过 WebUI「后台应用限制」卡片配置，支持添加/移除/开关/刷新
 - L2 全自动，无需用户操作
+- Uperf 共存模式下跳过 L2/L3 写入，避免与外部调度模块互相覆盖
 - `sched_util_clamp_min` 按档管理：它是 uclamp.min 的**系统级上限 (cap)**，不是“虚假 100% 利用率信号”（内核文档 sched-util-clamp）；非性能档=`0`（抑制走 per-task 请求路径的 boost），`performance`=`1024`（还 Google 出厂上限，放开动态 boost）
 
 ### 温控优化 (4 档可调)

@@ -20,6 +20,7 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         "$server" "${auto_time:-1}" "$dev_time"
 
 elif [ "$REQUEST_METHOD" = "POST" ]; then
+    require_json_post
     require_token
     acquire_lock "ntp"
     json_headers

@@ -10,7 +10,7 @@
 <meta http-equiv="Expires" content="0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' http://127.0.0.1:6210; connect-src 'self' http://127.0.0.1:6210; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' http://127.0.0.1:6210">
 <title>温控调度控制台</title>
-<link rel="stylesheet" href="/app.css?v=4.3.21.1">
+<link rel="stylesheet" href="/app.css?v=4.4.5">
 </head>
 <body>
 <div class="app-shell">
@@ -155,9 +155,15 @@
             <button class="tiny-btn" id="profile-policy-auto-btn" type="button">自动</button>
           </div>
           <div class="section-sub" id="perf-policy-desc" style="margin-top:10px">读取当前调度策略…</div>
+          <div class="data-list" style="margin-top:12px">
+            <div class="data-row"><span class="data-key">调度接管</span><span class="data-val" id="sched-owner-label">读取中</span></div>
+          </div>
+          <div class="header-actions" style="margin-top:12px;justify-content:flex-start">
+            <button class="tiny-btn" id="sched-owner-toggle-btn" type="button"><span id="sched-owner-toggle-label">读取中…</span></button>
+          </div>
         </article>
 
-        <div class=”section-block”>
+        <div class="section-block">
           <div class="section-head">
             <div class="section-copy">
               <div class="kicker">实时频率</div>
@@ -519,6 +525,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=4.3.21.1"></script>
+<script src="/app.js?v=4.4.5"></script>
 </body>
 </html>

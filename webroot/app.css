@@ -613,6 +613,11 @@ button{border:none;background:none;padding:0;color:inherit}
   border-color:transparent;
 }
 
+.profile-card.disabled{
+  opacity:.56;
+  cursor:not-allowed;
+}
+
 .profile-card.loading .profile-icon{animation:pulse 1s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
 

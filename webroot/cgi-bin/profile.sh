@@ -11,6 +11,7 @@ PROFILE_POLICY_FILE="$MODDIR/.profile_policy"
 PROFILE_MANUAL_FILE="$MODDIR/.profile_manual"
 PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
 PROFILE_HISTORY_FILE="$MODDIR/.profile_history"
+SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 
 read_valid_profile() {
     _prof=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
@@ -25,6 +26,14 @@ read_valid_policy() {
     case "$_policy" in
         auto|manual) printf '%s' "$_policy" ;;
         *) printf 'manual' ;;
+    esac
+}
+
+read_valid_sched_owner() {
+    _owner=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    case "$_owner" in
+        external) printf 'external' ;;
+        *)        printf 'pixel' ;;
     esac
 }
 
@@ -74,13 +83,14 @@ emit_profile_state() {
     _active=$(read_valid_profile "$PROFILE_FILE" 'default')
     _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" "$_active")
     _policy=$(read_valid_policy)
+    _sched_owner=$(read_valid_sched_owner)
     _reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null | tr -d '\r')
     _last_profile_change=$(tail -n 1 "$PROFILE_HISTORY_FILE" 2>/dev/null | tr -d '\r')
     case "$_reason" in
         feed_warmup|feed_hold|feed_hot|nonfeed_reset) _reason="" ;;
     esac
-    printf '"profile":"%s","manual_profile":"%s","policy":"%s","auto_reason":"%s","last_profile_change":"%s"' \
-        "$_active" "$_manual" "$_policy" "$(json_escape "$_reason")" "$(json_escape "$_last_profile_change")"
+    printf '"profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","auto_reason":"%s","last_profile_change":"%s"' \
+        "$_active" "$_manual" "$_policy" "$_sched_owner" "$(json_escape "$_reason")" "$(json_escape "$_last_profile_change")"
 }
 
 require_loopback
@@ -94,6 +104,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     body=$(dd bs=1 count="$len" 2>/dev/null)
     newprof=$(printf '%s' "$body" | sed -n 's/.*"profile"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
     newpolicy=$(printf '%s' "$body" | sed -n 's/.*"policy"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
+    newowner=$(printf '%s' "$body" | sed -n 's/.*"sched_owner"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
 
     case "$newprof" in
         ''|performance|balanced|battery|default) ;;
@@ -103,6 +114,38 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         ''|auto|manual) ;;
         *) json_error '400 Bad Request' 'invalid policy' ;;
     esac
+    case "$newowner" in
+        ''|pixel|external) ;;
+        *) json_error '400 Bad Request' 'invalid scheduler owner' ;;
+    esac
+
+    if [ -n "$newowner" ]; then
+        if [ "$newowner" = "external" ]; then
+            printf 'external' > "$SCHED_OWNER_FILE"
+            printf 'external_scheduler' > "$PROFILE_AUTO_REASON_FILE"
+            append_profile_history "$(read_valid_profile "$PROFILE_FILE" 'default')" "external_scheduler"
+        else
+            _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'default')
+            printf 'pixel' > "$SCHED_OWNER_FILE"
+            _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_manual" "$MODDIR" 2>/dev/null)
+            [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
+            printf '%s' "$_manual" > "$PROFILE_FILE"
+            printf 'manual' > "$PROFILE_POLICY_FILE"
+            printf 'pixel_scheduler' > "$PROFILE_AUTO_REASON_FILE"
+            append_profile_history "$_manual" "pixel_scheduler"
+        fi
+        json_headers
+        printf '{"ok":true,'
+        emit_profile_state
+        printf '}\n'
+        exit 0
+    fi
+
+    if [ "$(read_valid_sched_owner)" = "external" ]; then
+        json_headers
+        printf '{"ok":false,"error":"Uperf 共存模式已开启，CPU 调度由外部模块接管"}\n'
+        exit 0
+    fi
 
     if [ -n "$newprof" ]; then
         _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$newprof" "$MODDIR" 2>/dev/null)

@@ -1,6 +1,6 @@
 #!/system/bin/sh
 ##############################################################
-# customize.sh v4.4.4 — 安装时配置 (APatch / KernelSU / Magisk)
+# customize.sh v4.4.5 — 安装时配置 (APatch / KernelSU / Magisk)
 # 检测机型 → 迁移旧设置 → 音量键选择功能 → 温控配置
 ##############################################################
 
@@ -12,6 +12,7 @@ OFFSET_FILE="$MODPATH/.thermal_offset"
 PROFILE_FILE="$MODPATH/.current_profile"
 PROFILE_POLICY_FILE="$MODPATH/.profile_policy"
 PROFILE_MANUAL_FILE="$MODPATH/.profile_manual"
+SCHED_OWNER_FILE="$MODPATH/.cpu_sched_owner"
 DEVICE_FILE="$MODPATH/.device_variant"
 
 OLDDIR="/data/adb/modules/pixel9pro_control"
@@ -44,12 +45,26 @@ chooseport() {
     done
 }
 
+choose_sched_owner() {
+    ui_print "  $1 Uperf Game Turbo 共存模式:"
+    ui_print "    [音量+] = 关闭  [音量-] = 开启"
+    if chooseport; then
+        echo "pixel" > "$SCHED_OWNER_FILE"
+        ui_print "    ✓ 关闭 (本模块管理 CPU 调度)"
+    else
+        echo "external" > "$SCHED_OWNER_FILE"
+        echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
+        ui_print "    ✓ 开启 (CPU 调度交给 Uperf/外部模块)"
+    fi
+    ui_print ""
+}
+
 device=$(getprop ro.product.device 2>/dev/null)
 ROOT_IMPL=$(detect_root_impl)
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Pixel 9 Pro 温控调度控制台"
-ui_print "  v4.4.4"
+ui_print "  v4.4.5"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Root: $ROOT_IMPL"
 
@@ -111,7 +126,7 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
                .swap_mode .ntp_server .uecap_mode .uecap_manual_mode \
                .uecap_policy .uecap_reason .sim2_radio_off \
                .nr_saved_mode .webui_token \
-               .bg_restrict_list .bg_restrict_enabled; do
+               .bg_restrict_list .bg_restrict_enabled .cpu_sched_owner; do
         if [ -f "$OLDDIR/$_sf" ]; then
             cp "$OLDDIR/$_sf" "$MODPATH/$_sf" 2>/dev/null
         fi
@@ -193,16 +208,19 @@ if [ "$_is_upgrade" -eq 0 ]; then
     ui_print "    ✓ $_cpu_label"
     ui_print ""
 
+    # --- Uperf 共存 ---
+    choose_sched_owner "③"
+
     # --- UECap 网络能力 ---
     if [ "$IS_MAGISK_NO_BASEBAND" -eq 1 ]; then
-        ui_print "  ③ 网络能力配置: 跳过 (Magisk 不含基带覆盖)"
+        ui_print "  ④ 网络能力配置: 跳过 (Magisk 不含基带覆盖)"
         echo "disabled" > "$MODPATH/.uecap_manual_mode"
         echo "disabled" > "$MODPATH/.uecap_mode"
         echo "disabled" > "$MODPATH/.uecap_policy"
         echo "magisk_no_baseband" > "$MODPATH/.uecap_reason"
         ui_print ""
     else
-    ui_print "  ③ 网络能力配置:"
+    ui_print "  ④ 网络能力配置:"
     _UE_VALS="balanced special universal"
     _UE_LABEL_balanced="国内频段 (推荐)"
     _UE_LABEL_special="全面增强"
@@ -231,7 +249,7 @@ if [ "$_is_upgrade" -eq 0 ]; then
     fi
 
     # --- NR 息屏降级 ---
-    ui_print "  ④ NR 息屏降级 (息屏自动切 LTE 省电):"
+    ui_print "  ⑤ NR 息屏降级 (息屏自动切 LTE 省电):"
     ui_print "    [音量+] = 关闭  [音量-] = 开启"
     if chooseport; then
         echo "off" > "$MODPATH/.nr_screen_switch"
@@ -243,7 +261,7 @@ if [ "$_is_upgrade" -eq 0 ]; then
     ui_print ""
 
     # --- NTP ---
-    ui_print "  ⑤ NTP 服务器:"
+    ui_print "  ⑥ NTP 服务器:"
     _NTP_VALS="ntp.aliyun.com ntp1.xiaomi.com ntp.myhuaweicloud.com time.android.com"
     _NTP_LABEL_0="阿里云 (推荐)"
     _NTP_LABEL_1="小米"
@@ -283,6 +301,16 @@ else
     [ -f "$PROFILE_FILE" ] || echo 'default' > "$PROFILE_FILE"
     [ -f "$PROFILE_MANUAL_FILE" ] || cp "$PROFILE_FILE" "$PROFILE_MANUAL_FILE" 2>/dev/null || echo 'default' > "$PROFILE_MANUAL_FILE"
     [ -f "$PROFILE_POLICY_FILE" ] || echo 'manual' > "$PROFILE_POLICY_FILE"
+    if [ ! -f "$SCHED_OWNER_FILE" ]; then
+        ui_print "  新增设置 — Uperf 共存模式"
+        choose_sched_owner "③"
+    else
+        _sched_owner=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
+        case "$_sched_owner" in
+            pixel|external) ;;
+            *) echo 'pixel' > "$SCHED_OWNER_FILE" ;;
+        esac
+    fi
     [ -f "$MODPATH/.profile_auto_reason" ] || echo 'manual_policy' > "$MODPATH/.profile_auto_reason"
     [ -f "$MODPATH/.uecap_manual_mode" ] || echo 'balanced' > "$MODPATH/.uecap_manual_mode"
     [ -f "$MODPATH/.uecap_mode" ] || echo 'balanced' > "$MODPATH/.uecap_mode"
