@@ -10,23 +10,25 @@
 
 本次已补齐 `Uperf Game Turbo 共存模式`: 新增 `.cpu_sched_owner`，支持安装向导、旧版升级刷入、WebUI 性能页三处开关。开启后，本模块停止写入 CPU 调度相关节点，包括 `sched_pixel response_time_ms`、`sched_util_clamp_min`、`/dev/cpuset/*/cpus`、`/proc/vendor_sched/ug_bg_*`，让 Uperf 或其它外部调度模块接管 CPU。
 
-仍需保留的主要风险是: WebUI token 通过本机 loopback GET 引导给前端，能防普通网页跨站，但无法彻底防本机恶意 App 主动访问 `127.0.0.1:6210`; UECap bind mount 与 modem restart 属于设备敏感操作; thermal service 在线重启依赖服务名和当前系统状态; 后台限制移除会把 bucket/appops 恢复到 active/allow，未记录应用原始策略。
+v4.4.6 已按本审计修复可闭环余患: 后台限制会记录 `.bg_restrict_baseline` 并按原 bucket/appops 恢复，`.profile_history` 增加 `sched_owner` 字段，`energy.sh` cache lock 增加 stale 回收，WebUI httpd 改用 pid 文件定位本模块实例，WebUI token 改为每次 service 启动轮换。
+
+仍需保留的主要风险是: WebUI token 通过本机 loopback GET 引导给前端，能防普通网页跨站，但无法彻底防本机恶意 App 主动访问 `127.0.0.1:6210`; UECap bind mount 与 modem restart 属于设备敏感操作; thermal service 在线重启依赖服务名和当前系统状态。
 
 ## 功能与入口图谱
 
 | 模块区域 | 入口文件 | 作用 | 审计结论 |
 |---|---|---|---|
 | 安装期配置 | `customize.sh` | 机型识别、Magisk 自适应、温控偏移、CPU 档位、Uperf 共存、UECap、NR、NTP、迁移旧配置 | 已加入旧版升级共存开关; Magisk 下剔除 UECap 覆盖是合理止血 |
-| 开机服务 | `service.sh` | WebUI token/httpd、UECap 应用、待机设置、SIM2、后台限制、ZRAM、CPU profile、统一 worker | 逻辑完整; 外部接管时已跳过 L2/L3 CPU 写入 |
+| 开机服务 | `service.sh` | WebUI token/httpd、UECap 应用、待机设置、SIM2、后台限制、ZRAM、CPU profile、统一 worker | 逻辑完整; 外部接管时已跳过 L2/L3 CPU 写入; httpd 已改 pid 文件定位 |
 | CPU 调度 | `scripts/cpu_profile.sh` | 4 个 profile、status、vendor_sched enforce | 不写 `scaling_min/max`; 外部接管时 no-op |
 | WebUI 安全底座 | `webroot/cgi-bin/_common.sh` | loopback、token、JSON POST、锁 | 基础完备; loopback 不是本机 App 隔离边界 |
 | 温控配置 | `set_thermal.sh` + thermal JSON | 改写模块 overlay 内 `thermal_info_config.json` 并尝试重启 thermal | 输入枚举安全; 在线重启存在系统版本适配风险 |
 | 温度读取 | `thermal.sh` / `_thermal_cache.sh` | thermalservice + sysfs 缓存与历史 | 低频缓存合理; 解析依赖 dumpsys 文本格式 |
 | UECap | `uecap_profile.sh` / `uecap.sh` | binarypb bind mount、hash 校验、modem restart | APatch/KSU 可用; Magisk 禁用合理; 属敏感操作 |
 | 待机网络 | `nr_switch.sh` / `standby_guard.sh` | NR 息屏降级、SIM2 空槽、待机隔离 | 使用 `cmd phone set-sim-count` 比旧 radio power 更稳 |
-| 后台限制 | `bg_restrict.sh` | App Standby + AppOps 列表管理 | 输入包名有白名单; 恢复策略未保存原值 |
+| 后台限制 | `bg_restrict.sh` + `scripts/bg_restrict_lib.sh` | App Standby + AppOps 列表管理 | 输入包名有白名单; v4.4.6 起保存 baseline 并按原值恢复 |
 | 内存 | `swap.sh` + service boot | ZRAM lz77eh、VM sysctl | 可回退; `swapoff` 失败时保留现状 |
-| 功耗详情 | `energy.sh` | batterystats + 模块会话 + ODPM | 口径说明清晰; 锁存在低风险 stale 问题 |
+| 功耗详情 | `energy.sh` | batterystats + 模块会话 + ODPM | 口径说明清晰; v4.4.6 已补 cache lock stale 回收 |
 | 前端 | `webroot/app.js` / `index.html` / `app.css` | Material WebUI、状态轮询、操作按钮 | 已支持 Uperf 接管状态与禁用 profile 卡片 |
 
 ## 审计范围说明
@@ -99,9 +101,9 @@
 
 潜在问题:
 
-- `service.sh` 文件偏长，职责多，后续维护成本高。建议拆成 `lib_state.sh`、`lib_radio.sh`、`lib_power.sh`、`lib_webui.sh`。
+- `service.sh` 文件偏长，职责多，后续维护成本高。v4.4.6 已先拆出 `scripts/bg_restrict_lib.sh`，后续仍建议继续拆成 `lib_state.sh`、`lib_radio.sh`、`lib_power.sh`、`lib_webui.sh`。
 - boot 阶段同时处理 UECap、ZRAM、系统设置、WebUI、worker，某个慢命令可能拖延后续步骤。当前大多静默失败，建议关键路径增加更明确的状态文件。
-- `pkill -f "httpd -p .*${PORT}"` 匹配粒度较粗，虽然端口固定，但仍建议改为记录 httpd pid 文件。
+- WebUI httpd 已改为 `.webui_httpd.pid` 定位本模块实例，并校验 cmdline 后才 kill；若端口被其它进程占用，仅写 warning。
 
 ### 3. CPU 调度状态机
 
@@ -133,7 +135,7 @@
 
 潜在问题:
 
-- `.profile_history` 不记录 `sched_owner` 字段。外部接管时可通过 reason 判断，但后续分析更方便的做法是把 CSV 扩展为 `owner` 列。
+- v4.4.6 起 `.profile_history` 已记录 `sched_owner` 字段。旧记录仍为 9 列，新记录为 10 列，解析时需兼容。
 - external 模式下 worker 每周期写 `.profile_auto_reason=external_scheduler`，功能正确但有轻微无意义写入，可改成值变化才写。
 - profile POST 与 owner POST 共用 `profile.sh`，契约清楚，但未来字段增多时建议拆分 `/profile.sh` 与 `/scheduler_owner.sh`。
 
@@ -277,7 +279,7 @@
 
 - `dumpsys batterystats` 文本格式变化会导致解析偏差。
 - `_core_json` 中 UID Top 应用排序依赖 batterystats 输出顺序，未重新排序; 若原输出已按功耗排列则可用，否则可能不是严格 Top。
-- cache lock 没有 stale 回收，建议复用 `_common.sh`。
+- cache lock 已在 v4.4.6 增加 pid + timestamp stale 回收。
 
 ## 代码质量审计
 
@@ -299,7 +301,7 @@
 | 多 CGI | sed 解析 JSON | 简单字段可用，复杂输入脆弱 | 继续保持短枚举; 复杂输入引入严格解析 |
 | `energy.sh` | awk 大段解析 batterystats | 维护门槛高 | 增加样例输入 fixture 与离线测试 |
 | 状态文件 | profile history CSV 列含义靠代码约定 | 后续加字段容易破坏旧解析 | 写 header 或版本化 |
-| 恢复逻辑 | VM/appops/bucket 未保存 stock 快照 | “恢复默认”可能不是原始默认 | 首次启动保存 baseline |
+| 恢复逻辑 | VM 参数未保存 stock 快照；appops/bucket v4.4.6 已保存 baseline | “恢复默认”可能不是原始默认 | VM 首次启动保存 baseline |
 
 ### 回归测试缺口
 
@@ -360,21 +362,24 @@
 | `webroot/index.html` / `app.css` | 新增调度接管 UI 与禁用态 | 正确 |
 | `customize.sh` | 首装与旧版升级均提供 Uperf 共存开关; 迁移 `.cpu_sched_owner` | 正确，覆盖前辈指出的升级场景 |
 | `ntp.sh` | POST 增加 `require_json_post` | 加固一致性 |
-| `module.prop` / `README.md` | 升级 v4.4.5，记录共存模式 | 正确 |
+| `module.prop` / `README.md` | 升级 v4.4.6，记录审计修复与共存模式 | 正确 |
+| `scripts/bg_restrict_lib.sh` | 新增后台限制 baseline 记录/恢复共享逻辑 | 修复 R4，避免 CGI 与 service 恢复策略分叉 |
+| `energy.sh` | cache lock 增加 stale 回收 | 修复 R6 |
+| `service.sh` | WebUI token 每次启动轮换，httpd pid 文件管理 | 缩短 token 暴露窗口，修复 R9 |
 
 ## 风险发现
 
 | 编号 | 等级 | 位置 | 发现 | 影响 | 建议 |
 |---|---|---|---|---|---|
-| R1 | P1 | `info.sh` + WebUI token 设计 | `info.sh` 在 loopback GET 中返回 `webui_token`，前端再用于 POST | 能防普通网页跨站，但本机恶意 App 可直接访问 `127.0.0.1:6210` 获取 token 后调用 root CGI | 若威胁模型包含本机恶意 App，需要改为 Root 管理器授权 WebUI、随机一次性 URL、Unix socket/本地抽象 socket 或前端外部注入 token；BusyBox httpd 静态 CGI 难以彻底解决 |
+| R1 | P1 | `info.sh` + WebUI token 设计 | `info.sh` 在 loopback GET 中返回 `webui_token`，前端再用于 POST；v4.4.6 token 改为每次 service 启动轮换 | 能防普通网页跨站并缩短泄露窗口，但本机恶意 App 仍可直接访问 `127.0.0.1:6210` 获取 token 后调用 root CGI | 若威胁模型包含本机恶意 App，需要改为 Root 管理器授权 WebUI、随机一次性 URL、Unix socket/本地抽象 socket 或前端外部注入 token；BusyBox httpd 静态 CGI 难以彻底解决 |
 | R2 | P2 | `uecap_profile.sh` | 对 `/vendor/firmware/uecapconfig/...binarypb` 做 bind mount 并 restart modem | APatch/KSU 下可实现能力切换，但 Android 更新、SELinux context、modem 早期加载时序变化可能引发无服务或重启循环 | 保持 Magisk 禁用; APatch/KSU 每次系统大版本更新后先手动验证 hash 与 modem restart |
 | R3 | P2 | `set_thermal.sh` | 切换温控后尝试 stop/start thermal 服务 | 服务名变化或 thermal 当前状态异常时可能无法即时生效，需重启 | UI 已有重启提示; 建议记录实际命中的 service name 到状态文件 |
-| R4 | P2 | `bg_restrict.sh` | remove 时统一恢复 active/allow | 若用户原本对该 App 有更严格策略，移除模块限制会覆盖成更宽松 | 后续可保存每个包的原始 bucket/appops 快照，再按原值恢复 |
+| R4 | Fixed v4.4.6 | `bg_restrict.sh` + `scripts/bg_restrict_lib.sh` | remove 时统一恢复 active/allow | 已新增 `.bg_restrict_baseline`，添加限制前记录 bucket/RUN_IN_BACKGROUND/RUN_ANY_IN_BACKGROUND，移除或关闭时优先按原值恢复 | 老版本已限制且无 baseline 的包仍走 legacy fallback，后续新增/重新添加的包可完整恢复 |
 | R5 | P2 | `service.sh` ZRAM | boot 阶段可能执行 `swapoff /dev/block/zram0` | 高内存压力时失败会保留现状; 成功时短时影响内存管理 | 已有失败保护; 建议只在早期开机或低压状态执行重配 |
-| R6 | P3 | `energy.sh` | 自建 cache lock 无 stale 回收 | 异常退出时可能长期不写新 cache，但 GET 可继续计算或读旧 cache | 可复用 `_common.sh` 的 lock stale 回收模式 |
+| R6 | Fixed v4.4.6 | `energy.sh` | 自建 cache lock 无 stale 回收 | 已增加 pid + timestamp stale 回收，异常退出后下一次请求可清理旧锁 | 保留旧 cache 兜底逻辑 |
 | R7 | P3 | 多个 CGI | 用 sed 解析 JSON | 当前字段均白名单/短 body，风险可控; 复杂 JSON 会解析失败 | 保持字段枚举; 若将来增加复杂输入，改用 toybox/cmd 可用 JSON 工具或更严格解析 |
 | R8 | P3 | `standby_guard.sh` | source `.standby_diag_state` | 文件由本模块写入，root 环境下可控; 非 root 难以写入模块目录 | 若进一步硬化，可改为逐行 key 白名单解析 |
-| R9 | P3 | `service.sh` httpd | `pkill -f "httpd -p .*${PORT}"` | 可能杀掉同端口其它 httpd | 端口固定且模块独占，实际风险低 |
+| R9 | Fixed v4.4.6 | `service.sh` httpd | `pkill -f "httpd -p .*${PORT}"` | 已改 `.webui_httpd.pid` + cmdline 校验，仅停止本模块实例；端口被其它进程占用时只记录 warning | 若 pid 文件缺失，会按本模块 webroot/port 查找同一实例 |
 
 ## 安全面审计
 
@@ -502,6 +507,6 @@ cat /dev/cpuset/top-app/cpus
 
 在当前代码基础上，建议优先继续做三件事:
 
-1. 对 WebUI token bootstrap 做本机 App 威胁模型增强。
-2. 后台限制保存原始 bucket/appops，移除时按原值恢复。
-3. 为 Uperf 共存增加一键诊断页，展示四类调度节点最近值和本模块是否写入。
+1. 对 WebUI token bootstrap 做本机 App 威胁模型增强。v4.4.6 已做启动轮换，但 BusyBox 静态 WebUI 仍无法彻底隔离本机恶意 App。
+2. 为 Uperf 共存增加一键诊断页，展示四类调度节点最近值和本模块是否写入。
+3. 为 VM 参数增加原始值 baseline，恢复时不再依赖写死 stock 数值。

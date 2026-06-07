@@ -66,6 +66,52 @@ write_energy_cache() {
     mv "${ENERGY_CACHE_TS}.tmp" "$ENERGY_CACHE_TS"
 }
 
+try_acquire_energy_lock() {
+    _lock="$1"
+    _lock_now="$2"
+    _lock_max_age=180
+    mkdir -p "$LOCKDIR_BASE" 2>/dev/null
+    if mkdir "$_lock" 2>/dev/null; then
+        echo "$$" > "$_lock/pid" 2>/dev/null
+        echo "$_lock_now" > "$_lock/ts" 2>/dev/null
+        return 0
+    fi
+
+    _lock_pid=$(cat "$_lock/pid" 2>/dev/null)
+    _lock_ts=$(cat "$_lock/ts" 2>/dev/null | tr -d ' \n\r\t')
+    _lock_stale=0
+    if [ -z "$_lock_pid" ]; then
+        _lock_stale=1
+    elif ! kill -0 "$_lock_pid" 2>/dev/null; then
+        _lock_stale=1
+    else
+        case "$_lock_ts" in
+            ''|*[!0-9]*) ;;
+            *)
+                _lock_age=$((_lock_now - _lock_ts))
+                [ "$_lock_age" -gt "$_lock_max_age" ] 2>/dev/null && _lock_stale=1
+                ;;
+        esac
+    fi
+
+    if [ "$_lock_stale" -eq 1 ]; then
+        rm -f "$_lock/pid" "$_lock/ts" 2>/dev/null
+        rmdir "$_lock" 2>/dev/null
+        if mkdir "$_lock" 2>/dev/null; then
+            echo "$$" > "$_lock/pid" 2>/dev/null
+            echo "$_lock_now" > "$_lock/ts" 2>/dev/null
+            return 0
+        fi
+    fi
+    return 1
+}
+
+release_energy_lock() {
+    _lock="$1"
+    rm -f "$_lock/pid" "$_lock/ts" 2>/dev/null
+    rmdir "$_lock" 2>/dev/null
+}
+
 _now=$(date +%s 2>/dev/null || echo 0)
 if read_energy_cache_if_fresh "$_now"; then
     exit 0
@@ -262,10 +308,8 @@ fi
 
 _energy_lock="$LOCKDIR_BASE/energy_cache.lock"
 _have_energy_lock=0
-mkdir -p "$LOCKDIR_BASE" 2>/dev/null
-if mkdir "$_energy_lock" 2>/dev/null; then
+if try_acquire_energy_lock "$_energy_lock" "$_now"; then
     _have_energy_lock=1
-    echo "$$" > "$_energy_lock/pid" 2>/dev/null
 else
     if [ -s "$ENERGY_CACHE" ]; then
         cat "$ENERGY_CACHE"
@@ -387,6 +431,5 @@ _final_json=$(printf '%s,"odpm_modem":%s,"scope":%s,"today":%s,"charge_state":%s
     "$ENERGY_CACHE_TTL")
 
 [ "$_have_energy_lock" -eq 1 ] && write_energy_cache "$_final_json" "$_now"
-[ "$_have_energy_lock" -eq 1 ] && rm -f "$_energy_lock/pid" 2>/dev/null
-[ "$_have_energy_lock" -eq 1 ] && rmdir "$_energy_lock" 2>/dev/null
+[ "$_have_energy_lock" -eq 1 ] && release_energy_lock "$_energy_lock"
 printf '%s\n' "$_final_json"

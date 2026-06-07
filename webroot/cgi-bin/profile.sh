@@ -42,6 +42,7 @@ append_profile_history() {
     _ph_reason="$2"
     _ph_epoch=$(date +%s 2>/dev/null || echo 0)
     _ph_policy=$(read_valid_policy)
+    _ph_owner=$(read_valid_sched_owner)
     _ph_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null | tr -d ' \n\r\t')
     case "$_ph_status" in
         Charging|Full) _ph_charging=1 ;;
@@ -67,8 +68,8 @@ append_profile_history() {
     [ -n "$_ph_resp7" ] || _ph_resp7="na"
     _ph_response="${_ph_resp0}/${_ph_resp4}/${_ph_resp7}"
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-        "$_ph_epoch" "$_ph_policy" "$_ph_profile" "$_ph_reason" \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "$_ph_epoch" "$_ph_policy" "$_ph_owner" "$_ph_profile" "$_ph_reason" \
         "$_ph_charging" "$_ph_vs" "$_ph_sev" "$_ph_cap" "$_ph_response" \
         >> "$PROFILE_HISTORY_FILE" 2>/dev/null
 

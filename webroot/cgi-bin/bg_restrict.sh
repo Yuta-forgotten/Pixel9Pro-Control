@@ -5,30 +5,22 @@
 # POST -> 开关切换 / 添加包名 / 移除包名
 ##############################################################
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
+. "$MODDIR/scripts/bg_restrict_lib.sh"
 
 BG_ENABLED_FILE="$MODDIR/.bg_restrict_enabled"
 BG_LIST_FILE="$MODDIR/.bg_restrict_list"
-
-read_enabled() {
-    _v=$(cat "$BG_ENABLED_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    case "$_v" in on|off) printf '%s' "$_v" ;; *) printf 'on' ;; esac
-}
+BG_BASELINE_FILE="$MODDIR/.bg_restrict_baseline"
 
 emit_pkg_status() {
     _pkg="$1"
-    _bucket=$(am get-standby-bucket "$_pkg" 2>/dev/null | tr -d ' \n\r')
-    _appops_bg=$(cmd appops get "$_pkg" RUN_ANY_IN_BACKGROUND 2>/dev/null | tr -d '\r')
-    case "$_appops_bg" in
-        *"ignore"*|*"IGNORE"*) _ops_mode="ignore" ;;
-        *"allow"*|*"ALLOW"*|*"default"*|*"DEFAULT"*) _ops_mode="allow" ;;
-        *) _ops_mode="unknown" ;;
-    esac
+    _bucket=$(bg_read_standby_bucket "$_pkg")
+    _ops_mode=$(bg_read_appop_mode "$_pkg" RUN_ANY_IN_BACKGROUND)
     printf '{"pkg":"%s","bucket":"%s","appops":"%s"}' \
         "$(json_escape "$_pkg")" "$(json_escape "$_bucket")" "$_ops_mode"
 }
 
 emit_state() {
-    _enabled=$(read_enabled)
+    _enabled=$(bg_read_enabled)
     printf '"enabled":"%s","packages":[' "$_enabled"
     _first=1
     if [ -s "$BG_LIST_FILE" ]; then
@@ -41,40 +33,6 @@ emit_state() {
         done < "$BG_LIST_FILE"
     fi
     printf ']'
-}
-
-apply_restrict() {
-    _pkg="$1"
-    am set-standby-bucket "$_pkg" restricted 2>/dev/null
-    cmd appops set "$_pkg" RUN_IN_BACKGROUND ignore 2>/dev/null
-    cmd appops set "$_pkg" RUN_ANY_IN_BACKGROUND ignore 2>/dev/null
-}
-
-remove_restrict() {
-    _pkg="$1"
-    am set-standby-bucket "$_pkg" active 2>/dev/null
-    cmd appops set "$_pkg" RUN_IN_BACKGROUND allow 2>/dev/null
-    cmd appops set "$_pkg" RUN_ANY_IN_BACKGROUND allow 2>/dev/null
-}
-
-apply_all() {
-    [ -s "$BG_LIST_FILE" ] || return
-    while IFS= read -r _line || [ -n "$_line" ]; do
-        _p=$(printf '%s' "$_line" | tr -d ' \n\r\t')
-        [ -z "$_p" ] && continue
-        case "$_p" in \#*) continue ;; esac
-        apply_restrict "$_p"
-    done < "$BG_LIST_FILE"
-}
-
-remove_all() {
-    [ -s "$BG_LIST_FILE" ] || return
-    while IFS= read -r _line || [ -n "$_line" ]; do
-        _p=$(printf '%s' "$_line" | tr -d ' \n\r\t')
-        [ -z "$_p" ] && continue
-        case "$_p" in \#*) continue ;; esac
-        remove_restrict "$_p"
-    done < "$BG_LIST_FILE"
 }
 
 require_loopback
@@ -98,18 +56,18 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
 
     case "$action" in
         toggle)
-            cur=$(read_enabled)
+            cur=$(bg_read_enabled)
             if [ "$cur" = "on" ]; then
                 printf 'off' > "$BG_ENABLED_FILE"
-                remove_all
+                bg_remove_all
             else
                 printf 'on' > "$BG_ENABLED_FILE"
-                apply_all
+                bg_apply_all
             fi
             ;;
         refresh)
-            cur=$(read_enabled)
-            [ "$cur" = "on" ] && apply_all
+            cur=$(bg_read_enabled)
+            [ "$cur" = "on" ] && bg_apply_all
             ;;
         add)
             [ -z "$pkg" ] && json_error '400 Bad Request' 'missing package name'
@@ -120,8 +78,8 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
                 json_error '400 Bad Request' 'package already in list'
             fi
             printf '%s\n' "$pkg" >> "$BG_LIST_FILE"
-            cur=$(read_enabled)
-            [ "$cur" = "on" ] && apply_restrict "$pkg"
+            cur=$(bg_read_enabled)
+            [ "$cur" = "on" ] && bg_apply_restrict "$pkg"
             ;;
         remove)
             [ -z "$pkg" ] && json_error '400 Bad Request' 'missing package name'
@@ -129,7 +87,7 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
                 grep -vxF "$pkg" "$BG_LIST_FILE" > "${BG_LIST_FILE}.tmp" 2>/dev/null
                 mv "${BG_LIST_FILE}.tmp" "$BG_LIST_FILE"
             fi
-            remove_restrict "$pkg"
+            bg_remove_restrict "$pkg"
             ;;
         *)
             json_error '400 Bad Request' 'unknown action (toggle/refresh/add/remove)'

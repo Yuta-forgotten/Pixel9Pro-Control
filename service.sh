@@ -1,8 +1,14 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.4.5 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.4.6 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
+#
+# v4.4.6 变更:
+#   - WebUI token 改为每次 service 启动轮换, 缩短本机泄露后的可用窗口。
+#   - L1 后台限制新增 .bg_restrict_baseline, 移除/关闭时按原 bucket/appops 恢复。
+#   - .profile_history 追加 sched_owner 字段, 便于 Uperf 共存复盘。
+#   - WebUI httpd 改用 pid 文件停止本模块实例, 避免端口粗匹配误杀。
 #
 # v4.4.5 变更:
 #   - 新增 Uperf 共存模式: 外部接管时跳过 response_time_ms / uclamp / cpuset / vendor_sched 写入
@@ -29,7 +35,7 @@
 #   - 老用户 responsive 配置自动迁移到 performance
 #
 # v4.3.27 变更:
-#   - B42 fix: bg_restrict.sh remove_restrict() 增加 bucket 恢复 (am set-standby-bucket active)
+#   - B42 fix: bg_restrict.sh remove_restrict() 增加 bucket 恢复 (v4.4.6 起优先按 baseline 原值恢复)
 #   - B43 fix: standby_guard.sh SIM2 恢复从废弃 radio power 改为 set-sim-count 2
 #   - B44 fix: customize.sh 升级迁移追加 .bg_restrict_list/.bg_restrict_enabled
 #   - B45 fix: refreshBgRestrict() 轮询改为 GET 只读, 手动刷新才 POST refresh
@@ -156,6 +162,7 @@
 ##############################################################
 MODDIR="${0%/*}"
 PORT=6210
+HTTPD_PID_FILE="$MODDIR/.webui_httpd.pid"
 TOKEN_FILE="$MODDIR/.webui_token"
 THERMAL_CACHE="$MODDIR/.thermal_cache.json"
 LOCKDIR_BASE="$MODDIR/.locks"
@@ -170,6 +177,8 @@ IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
 POWER_PROFILE_FILE="$MODDIR/.power_profile"
 
+. "$MODDIR/scripts/bg_restrict_lib.sh" 2>/dev/null
+
 detect_root_impl() {
     if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
         echo "apatch"
@@ -183,6 +192,45 @@ detect_root_impl() {
 }
 
 ROOT_IMPL=$(detect_root_impl)
+
+find_webui_httpd_pid() {
+    for _pid in $(pidof httpd 2>/dev/null) $(pidof busybox 2>/dev/null); do
+        case "$_pid" in ''|*[!0-9]*) continue ;; esac
+        _cmd=$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)
+        case "$_cmd" in
+            *httpd*"$MODDIR/webroot"*|*httpd*"127.0.0.1:$PORT"*|*httpd*":$PORT"*)
+                printf '%s' "$_pid"
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+stop_webui_httpd() {
+    _pid=$(cat "$HTTPD_PID_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    if [ -n "$_pid" ] && [ -r "/proc/$_pid/cmdline" ]; then
+        _cmd=$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)
+        case "$_cmd" in
+            *httpd*"$MODDIR/webroot"*|*httpd*"127.0.0.1:$PORT"*|*httpd*":$PORT"*)
+                kill "$_pid" 2>/dev/null
+                rm -f "$HTTPD_PID_FILE" 2>/dev/null
+                return 0
+                ;;
+        esac
+    fi
+
+    _pid=$(find_webui_httpd_pid)
+    if [ -n "$_pid" ]; then
+        kill "$_pid" 2>/dev/null
+    fi
+    rm -f "$HTTPD_PID_FILE" 2>/dev/null
+}
+
+record_webui_httpd_pid() {
+    _pid=$(find_webui_httpd_pid)
+    [ -n "$_pid" ] && printf '%s\n' "$_pid" > "$HTTPD_PID_FILE" 2>/dev/null
+}
 
 read_onoff_file() {
     _flag_value=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
@@ -326,8 +374,10 @@ _power_profile_params() {
 apply_l1_persistent_limits() {
     # L1: 官方 API 后台限制 — persistent, 从配置文件读取包名列表
     # 文件: .bg_restrict_list (每行一个包名), .bg_restrict_enabled (on/off)
+    #       .bg_restrict_baseline (限制前 bucket/appops 原值)
     BG_ENABLED_FILE="$MODDIR/.bg_restrict_enabled"
     BG_LIST_FILE="$MODDIR/.bg_restrict_list"
+    BG_BASELINE_FILE="$MODDIR/.bg_restrict_baseline"
 
     [ -f "$BG_ENABLED_FILE" ] || printf 'on' > "$BG_ENABLED_FILE"
     if [ ! -s "$BG_LIST_FILE" ]; then
@@ -349,9 +399,7 @@ DEFLIST
         _pkg=$(printf '%s' "$_line" | tr -d ' \n\r\t')
         [ -z "$_pkg" ] && continue
         case "$_pkg" in \#*) continue ;; esac
-        am set-standby-bucket "$_pkg" restricted 2>/dev/null
-        cmd appops set "$_pkg" RUN_IN_BACKGROUND ignore 2>/dev/null
-        cmd appops set "$_pkg" RUN_ANY_IN_BACKGROUND ignore 2>/dev/null
+        bg_apply_restrict "$_pkg"
         _count=$((_count + 1))
     done < "$BG_LIST_FILE"
 
@@ -430,6 +478,7 @@ append_profile_history() {
         ''|*[!0-9]*) _ph_epoch=$(date +%s 2>/dev/null || echo 0) ;;
     esac
     _ph_policy=$(read_valid_profile_policy)
+    _ph_owner=$(read_valid_sched_owner)
     _ph_charging="${_p_is_charging:-0}"
     case "$_ph_charging" in
         1) ;;
@@ -455,8 +504,8 @@ append_profile_history() {
     [ -n "$_ph_resp7" ] || _ph_resp7="na"
     _ph_response="${_ph_resp0}/${_ph_resp4}/${_ph_resp7}"
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-        "$_ph_epoch" "$_ph_policy" "$_ph_profile" "$_ph_reason" \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "$_ph_epoch" "$_ph_policy" "$_ph_owner" "$_ph_profile" "$_ph_reason" \
         "$_ph_charging" "$_ph_vs" "$_ph_sev" "$_ph_cap" "$_ph_response" \
         >> "$PROFILE_HISTORY_FILE" 2>/dev/null
 
@@ -574,11 +623,9 @@ sleep 20
 # 1.1 WebUI 安全: token 生成 + 环境变量导出
 # ──────────────────────────────────────────────────────────
 mkdir -p "$LOCKDIR_BASE" 2>/dev/null
-if [ ! -s "$TOKEN_FILE" ]; then
-    token=$(dd if=/dev/urandom bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
-    [ -n "$token" ] || token="$(date +%s 2>/dev/null)_$$"
-    printf '%s' "$token" > "$TOKEN_FILE"
-fi
+token=$(dd if=/dev/urandom bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
+[ -n "$token" ] || token="$(date +%s 2>/dev/null)_$$"
+printf '%s' "$token" > "$TOKEN_FILE"
 chmod 600 "$TOKEN_FILE" 2>/dev/null
 
 export PIXEL9PRO_MODDIR="$MODDIR"
@@ -598,7 +645,7 @@ if [ ! -f "$SIM2_AUTO_FILE" ]; then
 fi
 [ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
 
-log -t pixel9pro_ctrl "v4.4.5[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.4.6[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -681,7 +728,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.4.5[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.4.6[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)
@@ -1300,12 +1347,13 @@ fi
 
 if [ -n "$BB" ]; then
     chmod 755 "$MODDIR/webroot/cgi-bin/"* 2>/dev/null
-    pkill -f "httpd -p .*${PORT}" 2>/dev/null
+    stop_webui_httpd
     sleep 1
     if "$BB" nc -z 127.0.0.1 $PORT 2>/dev/null; then
         log -t pixel9pro_ctrl "WARNING: port $PORT already in use"
     else
         "$BB" httpd -p "127.0.0.1:$PORT" -h "$MODDIR/webroot"
+        record_webui_httpd_pid
         log -t pixel9pro_ctrl "WebUI(loopback)[$ROOT_IMPL]: http://127.0.0.1:$PORT"
     fi
 else
