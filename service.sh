@@ -1,8 +1,15 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.4.7 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.4.8 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
+#
+# v4.4.8 变更:
+#   - WebUI token 不再通过 info.sh GET 下发, 改为浏览器端手动配对, 收紧本机 App 攻击面。
+#   - external 且未检测到启用中的 Uperf 时, boot/WebUI 做一次 balanced sanitize, 避免残留 cap=1024 / vendor_sched 高 boost。
+#   - NR 息屏降级补齐 ap_br_wlan*/ap_br_softap* 热点桥接接口, 并从 preferred_network_mode 初始化 LTE/5G 状态。
+#   - .profile_history 兼容旧 9 列记录, 启动时追加 10 列 sched_owner baseline。
+#   - WebUI pid/lock 状态文件权限收紧。
 #
 # v4.4.6 变更:
 #   - WebUI token 改为每次 service 启动轮换, 缩短本机泄露后的可用窗口。
@@ -178,6 +185,7 @@ STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
 POWER_PROFILE_FILE="$MODDIR/.power_profile"
 
 . "$MODDIR/scripts/bg_restrict_lib.sh" 2>/dev/null
+[ -f "$MODDIR/scripts/scheduler_detect_lib.sh" ] && . "$MODDIR/scripts/scheduler_detect_lib.sh" 2>/dev/null
 
 detect_root_impl() {
     if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
@@ -229,7 +237,10 @@ stop_webui_httpd() {
 
 record_webui_httpd_pid() {
     _pid=$(find_webui_httpd_pid)
-    [ -n "$_pid" ] && printf '%s\n' "$_pid" > "$HTTPD_PID_FILE" 2>/dev/null
+    if [ -n "$_pid" ]; then
+        printf '%s\n' "$_pid" > "$HTTPD_PID_FILE" 2>/dev/null
+        chmod 600 "$HTTPD_PID_FILE" 2>/dev/null
+    fi
 }
 
 read_onoff_file() {
@@ -516,8 +527,15 @@ append_profile_history() {
     fi
 }
 
+profile_history_has_owner_field() {
+    [ -s "$PROFILE_HISTORY_FILE" ] || return 1
+    _ph_last=$(tail -n 1 "$PROFILE_HISTORY_FILE" 2>/dev/null)
+    _ph_cols=$(printf '%s\n' "$_ph_last" | awk -F',' '{print NF}')
+    [ "${_ph_cols:-0}" -ge 10 ] 2>/dev/null
+}
+
 ensure_profile_history_baseline() {
-    [ -s "$PROFILE_HISTORY_FILE" ] && return 0
+    profile_history_has_owner_field && return 0
     _ph_saved_now="${_now:-}"
     _now=$(date +%s 2>/dev/null || echo 0)
     _p_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null | tr -d '\r')
@@ -603,6 +621,32 @@ apply_profile_state() {
     return 1
 }
 
+scheduler_external_active() {
+    if command -v detect_uperf_module >/dev/null 2>&1; then
+        detect_uperf_module 2>/dev/null
+        [ "$UPERF_DETECTED" = "yes" ] && [ "$UPERF_MODULE_ENABLED" = "yes" ] && return 0
+    fi
+    return 1
+}
+
+sanitize_external_without_scheduler() {
+    [ "$(read_valid_sched_owner)" = "external" ] || return 0
+    scheduler_external_active && return 0
+
+    echo 200 > "$VENDOR_SCHED/ug_bg_uclamp_max" 2>/dev/null
+    echo 100 > "$VENDOR_SCHED/ug_bg_group_throttle" 2>/dev/null
+    if sh "$MODDIR/scripts/cpu_profile.sh" balanced "$MODDIR" force 2>/dev/null; then
+        printf '%s' 'balanced' > "$PROFILE_FILE"
+        printf '%s' 'external_no_scheduler_sanitized' > "$PROFILE_AUTO_REASON_FILE"
+        append_profile_history "balanced" "external_no_scheduler_sanitized"
+        log -t pixel9pro_ctrl "CPU external without active Uperf: sanitized to balanced baseline"
+        return 0
+    fi
+
+    log -t pixel9pro_ctrl "WARNING: CPU external without active Uperf, sanitize failed"
+    return 1
+}
+
 foreground_package_name() {
     _pkg=$(dumpsys activity top 2>/dev/null | grep '^  ACTIVITY ' | head -1 | sed 's/.*ACTIVITY \([^/ ][^/ ]*\)\/.*/\1/')
     if [ -z "$_pkg" ]; then
@@ -623,6 +667,7 @@ sleep 20
 # 1.1 WebUI 安全: token 生成 + 环境变量导出
 # ──────────────────────────────────────────────────────────
 mkdir -p "$LOCKDIR_BASE" 2>/dev/null
+chmod 700 "$LOCKDIR_BASE" 2>/dev/null
 token=$(dd if=/dev/urandom bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
 [ -n "$token" ] || token="$(date +%s 2>/dev/null)_$$"
 printf '%s' "$token" > "$TOKEN_FILE"
@@ -645,7 +690,7 @@ if [ ! -f "$SIM2_AUTO_FILE" ]; then
 fi
 [ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
 
-log -t pixel9pro_ctrl "v4.4.7[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.4.8[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -728,7 +773,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.4.7[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.4.8[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)
@@ -736,6 +781,7 @@ log -t pixel9pro_ctrl "v4.4.7[$ROOT_IMPL]: keep-5G standby settings applied (rad
 # ──────────────────────────────────────────────────────────
 [ -f "$POWER_PROFILE_FILE" ] || printf 'balanced' > "$POWER_PROFILE_FILE"
 [ -f "$SCHED_OWNER_FILE" ] || printf 'pixel' > "$SCHED_OWNER_FILE"
+sanitize_external_without_scheduler
 apply_l1_persistent_limits
 if [ "$(read_valid_sched_owner)" = "external" ]; then
     log -t pixel9pro_ctrl "L2: skipped, scheduler owner=external"
@@ -964,8 +1010,19 @@ is_nr_mode_value() {
         echo "33" > "$NR_MODE_FILE"
     fi
 
+    _NR_LTE=9
     _mc_state=""
-    _nr_state="5g"
+    _cur_slot0=$(_nr_slot0_val "$_cur")
+    case "$_cur_slot0" in
+        ''|null|*[!0-9-]*) _nr_state="5g" ;;
+        *)
+            if [ "$_cur_slot0" -lt "$_NR_LTE" ] 2>/dev/null || [ "$_cur_slot0" -eq "$_NR_LTE" ] 2>/dev/null; then
+                _nr_state="lte"
+            else
+                _nr_state="5g"
+            fi
+            ;;
+    esac
     _nr_off_since=0
     _nr_restored=0
     _prev_screen=""
@@ -977,7 +1034,6 @@ is_nr_mode_value() {
     # 每次 attach/detach 持 s5100_wake_lock ~1-2s。300s 防抖,只在真待机时切。
     _NR_DELAY=300
     _NR_COOLDOWN=600
-    _NR_LTE=9
     # _NR_LTE_POLL: 切换到 LTE 后,worker 多久醒一次检查屏幕状态。
     # 60s 节奏会让 alarmtimer.4.auto 与 suspend 流程挤兑(实测 71 次 failed_suspend)。
     # 300s 把 wakeup 密度降到 12 次/h,给 kernel 真正的 deep suspend 窗口。
@@ -1103,10 +1159,10 @@ is_nr_mode_value() {
                     if [ "$_elapsed" -ge "$_NR_DELAY" ] && [ "$_since_nr" -ge "$_NR_COOLDOWN" ]; then
                         # tethering 检测: 只检查真正的热点/USB 接口是否 UP。
                         # wlan1/wlan2 是 bcmdhd P2P 虚拟接口, Wi-Fi 开启时就存在(state DOWN),
-                        # 不代表 tethering。误判会永久阻止 NR 降级。
-                        # 参考: dumpsys tethering → tetherableWifiRegexs 不含 P2P 接口。
+                        # 不代表 tethering。Android 17 Pixel 热点常见桥接接口是 ap_br_wlan*。
                         _tether=0
-                        for _tif in swlan0 ap0 softap0 rndis0 ncm0; do
+                        for _tif in swlan0 ap0 softap0 rndis0 ncm0 /sys/class/net/ap_br_wlan* /sys/class/net/ap_br_softap*; do
+                            case "$_tif" in /sys/class/net/*) _tif="${_tif##*/}" ;; esac
                             if [ -d "/sys/class/net/$_tif" ]; then
                                 _tif_state=$(cat "/sys/class/net/$_tif/operstate" 2>/dev/null)
                                 [ "$_tif_state" = "up" ] && _tether=1 && break

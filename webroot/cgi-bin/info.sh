@@ -19,7 +19,6 @@ mv=$(grep '^version=' "$moddir/module.prop" 2>/dev/null \
 
 # WebUI httpd 进程 RSS (CGI 的父进程即 httpd)
 httpd_rss=$(awk '/^VmRSS/{print $2}' "/proc/$PPID/status" 2>/dev/null)
-token=$(read_webui_token)
 
 # 内存信息 (KB)
 mem_total=$(awk '/^MemTotal/{print $2}' /proc/meminfo 2>/dev/null)
@@ -43,7 +42,6 @@ else
     baseband_version=""
 fi
 
-printf '{"model":"%s","version":"%s","version_code":"%s","module_version":"%s","httpd_rss_kb":%s,"webui_token":"%s","baseband_installed":%s,"baseband_version":"%s","mem_total_kb":%s,"mem_avail_kb":%s,"swap_total_kb":%s,"swap_free_kb":%s,"kernel":"%s","uptime_sec":%s}' \
-    "$(json_escape "$model")" "$(json_escape "$version")" "$vc" "$mv" "${httpd_rss:-0}" "$(json_escape "$token")" "$baseband_installed" "$(json_escape "$baseband_version")" \
+printf '{"model":"%s","version":"%s","version_code":"%s","module_version":"%s","httpd_rss_kb":%s,"auth_required":true,"baseband_installed":%s,"baseband_version":"%s","mem_total_kb":%s,"mem_avail_kb":%s,"swap_total_kb":%s,"swap_free_kb":%s,"kernel":"%s","uptime_sec":%s}' \
+    "$(json_escape "$model")" "$(json_escape "$version")" "$vc" "$mv" "${httpd_rss:-0}" "$baseband_installed" "$(json_escape "$baseband_version")" \
     "${mem_total:-0}" "${mem_avail:-0}" "${swap_total:-0}" "${swap_free:-0}" "$(json_escape "${kernel:-}")" "${uptime_sec:-0}"
-

@@ -67,6 +67,7 @@ require_token() {
 acquire_lock() {
     name="$1"
     mkdir -p "$LOCKDIR_BASE" 2>/dev/null
+    chmod 700 "$LOCKDIR_BASE" 2>/dev/null
     LOCK_PATH="$LOCKDIR_BASE/${name}.lock"
     if mkdir "$LOCK_PATH" 2>/dev/null; then
         echo "$$" > "$LOCK_PATH/pid" 2>/dev/null

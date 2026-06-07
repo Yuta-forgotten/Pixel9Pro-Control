@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # ============================================================
 # Pixel 9 Pro — Tensor G4 CPU 场景调度切换 v4.4.0
-# 用法: sh cpu_profile.sh [performance|balanced|battery|default|status|enforce]
+# 用法: sh cpu_profile.sh [performance|balanced|battery|default|status|enforce] [MODDIR] [force]
 #
 # 核心原理:
 #   - 不写 scaling_max_freq / scaling_min_freq (会被 thermal HAL 覆盖)
@@ -33,6 +33,7 @@
 
 PROFILE="${1:-default}"
 MODDIR="${2:-${0%/scripts/*}}"
+FORCE_APPLY="${3:-}"
 
 CPU0="/sys/devices/system/cpu/cpu0/cpufreq"
 CPU4="/sys/devices/system/cpu/cpu4/cpufreq"
@@ -72,8 +73,11 @@ if [ "$SCHED_OWNER" = "external" ]; then
     case "$PROFILE" in
         status) ;;
         *)
-            log -t pixel9pro_ctrl "CPU: skip $PROFILE, scheduler owner=external"
-            exit 0
+            if [ "$FORCE_APPLY" != "force" ]; then
+                log -t pixel9pro_ctrl "CPU: skip $PROFILE, scheduler owner=external"
+                exit 0
+            fi
+            log -t pixel9pro_ctrl "CPU: force apply $PROFILE while scheduler owner=external"
             ;;
     esac
 fi

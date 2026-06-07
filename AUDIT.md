@@ -8,13 +8,15 @@
 
 本模块整体架构清晰，主链路是“安装期配置 + 开机服务守护 + WebUI CGI 控制 + 前端状态展示”。高风险 root 操作大多有输入枚举、loopback、token、锁和状态文件约束，未发现明显的远程未授权写入入口，也未发现主模块存在 `rm -rf /data`、直接改 system 分区、乱改权限等不可逆高危动作。
 
+v4.4.8 已按 2026-06-08 ADB 实机审查修复可闭环问题: `info.sh` 不再通过 GET 返回 WebUI token，前端改为会话配对 token；external 且未检测到启用中的 Uperf 时会先做一次 `balanced` 安全底座清理，避免旧高 boost 残留；NR 热点保护补齐 Android 17 `ap_br_wlan*` / `ap_br_softap*` 桥接接口，关闭 NR 降级时立即恢复保存模式；`.profile_history` 会兼容旧 9 列记录并追加 10 列 `sched_owner` baseline；WebUI pid/lock 状态文件权限收紧。
+
 本次已补齐 `Uperf Game Turbo / 外部调度接管模式`: `.cpu_sched_owner` 支持安装向导、旧版升级刷入、WebUI 性能页三处开关。开启 external 后，本模块停止写入 CPU 调度相关节点，包括 `sched_pixel response_time_ms`、`sched_util_clamp_min`、`/dev/cpuset/*/cpus`、`/proc/vendor_sched/ug_bg_*`，让 Uperf 或其它外部调度模块接管 CPU。
 
 v4.4.7 在 v4.4.6 审计硬化基础上补齐 Uperf Game Turbo 探测与调度接管语义：安装向导与 WebUI 共用 `scripts/scheduler_detect_lib.sh` 扫描 `/data/adb/modules_update` 与 `/data/adb/modules`。检测到 Uperf 时提示“本模块覆盖接管 / 不覆盖”，未检测到时提示“启用 / 不启用本模块 CPU 调度”，不再给出安装外部模块的暗示。
 
 v4.4.6 已按本审计修复可闭环余患: 后台限制会记录 `.bg_restrict_baseline` 并按原 bucket/appops 恢复，`.profile_history` 增加 `sched_owner` 字段，`energy.sh` cache lock 增加 stale 回收，WebUI httpd 改用 pid 文件定位本模块实例，WebUI token 改为每次 service 启动轮换。
 
-仍需保留的主要风险是: WebUI token 通过本机 loopback GET 引导给前端，能防普通网页跨站，但无法彻底防本机恶意 App 主动访问 `127.0.0.1:6210`; UECap bind mount 与 modem restart 属于设备敏感操作; thermal service 在线重启依赖服务名和当前系统状态。
+仍需保留的主要风险是: WebUI token 改为手动/URL hash 会话配对后，普通本机 App 已不能从 `info.sh` 直接获取 token，但已拥有 root 或能读取 `/data/adb/modules/pixel9pro_control/.webui_token` 的进程仍不在本模块防护边界内; UECap bind mount 与 modem restart 属于设备敏感操作; thermal service 在线重启依赖服务名和当前系统状态。
 
 ## 功能与入口图谱
 
@@ -376,7 +378,7 @@ v4.4.6 已按本审计修复可闭环余患: 后台限制会记录 `.bg_restrict
 
 | 编号 | 等级 | 位置 | 发现 | 影响 | 建议 |
 |---|---|---|---|---|---|
-| R1 | P1 | `info.sh` + WebUI token 设计 | `info.sh` 在 loopback GET 中返回 `webui_token`，前端再用于 POST；v4.4.6 token 改为每次 service 启动轮换 | 能防普通网页跨站并缩短泄露窗口，但本机恶意 App 仍可直接访问 `127.0.0.1:6210` 获取 token 后调用 root CGI | 若威胁模型包含本机恶意 App，需要改为 Root 管理器授权 WebUI、随机一次性 URL、Unix socket/本地抽象 socket 或前端外部注入 token；BusyBox httpd 静态 CGI 难以彻底解决 |
+| R1 | Mitigated v4.4.8 | `info.sh` + WebUI token 设计 | `info.sh` 曾在 loopback GET 中返回 `webui_token`; v4.4.8 改为不返回 token, 前端使用 `#token=` 或首次写操作 prompt 进行会话配对 | 普通本机 App 不能再直接 GET token 后调用 root CGI; 已有 root 或能读取 token 文件的进程仍越过边界 | 保持 token 文件 0600; 若继续加强, 可接入 Root 管理器原生 WebUI 授权或 Unix socket |
 | R2 | P2 | `uecap_profile.sh` | 对 `/vendor/firmware/uecapconfig/...binarypb` 做 bind mount 并 restart modem | APatch/KSU 下可实现能力切换，但 Android 更新、SELinux context、modem 早期加载时序变化可能引发无服务或重启循环 | 保持 Magisk 禁用; APatch/KSU 每次系统大版本更新后先手动验证 hash 与 modem restart |
 | R3 | P2 | `set_thermal.sh` | 切换温控后尝试 stop/start thermal 服务 | 服务名变化或 thermal 当前状态异常时可能无法即时生效，需重启 | UI 已有重启提示; 建议记录实际命中的 service name 到状态文件 |
 | R4 | Fixed v4.4.6 | `bg_restrict.sh` + `scripts/bg_restrict_lib.sh` | remove 时统一恢复 active/allow | 已新增 `.bg_restrict_baseline`，添加限制前记录 bucket/RUN_IN_BACKGROUND/RUN_ANY_IN_BACKGROUND，移除或关闭时优先按原值恢复 | 老版本已限制且无 baseline 的包仍走 legacy fallback，后续新增/重新添加的包可完整恢复 |
@@ -402,7 +404,7 @@ v4.4.6 已按本审计修复可闭环余患: 后台限制会记录 `.bg_restrict
 
 ### 主要安全余患
 
-本模块的 WebUI 安全边界是“本机 loopback + token”。这对浏览器跨站请求有效，但不是 Android 本机 App 级强隔离。若设备上存在恶意 App 且它可主动访问 `127.0.0.1:6210`，它可以 GET `info.sh` 拿 token，再发 POST 调用 root CGI。这不是当前补丁引入的问题，是现有 BusyBox httpd WebUI 架构的天然边界。
+本模块的 WebUI 安全边界是“本机 loopback + token”。v4.4.8 起 `info.sh` 不再返回 token，普通本机 App 无法仅靠访问 `127.0.0.1:6210` 获取写权限。用户需要通过 root 可读的 `.webui_token` 做会话配对。若攻击者已经拥有 root 或可读取 `/data/adb/modules/pixel9pro_control/.webui_token`，则不在本模块 WebUI 防护边界内。
 
 ## 功能正确性审计
 
