@@ -3,4 +3,4 @@ name=Pixel 9 Pro 温控调度控制台
 version=v4.4.8
 versionCode=72
 author=Yuta
-description=温控阈值优化(4档) · CPU调度(4模式, 含 performance 还闸放开动态boost) · Uperf探测与调度接管选择 · 三层功耗优化(L1-L3, 含后台限制原值恢复) · ZRAM lz77eh硬件加速 · UECap 三档切换+基带重载(APatch/KSU) · Magisk 自适应(自动剔除基带覆盖避免 G logo 卡屏) · SIM2空槽省电(手动) · NR息屏降级 · sched_util_clamp_min 按档管理 · 待机隔离诊断 · Kernel suspend 友好 worker · WebUI token轮换 · Material 3 WebUI
+description=温控阈值 · 可选 Pixel 原厂 CPU 调度/UGT 外部调度让权 · ZRAM/VM · UECap 切换 · NR 息屏降级 · SIM2 空槽管理 · WebUI
