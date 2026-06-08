@@ -518,7 +518,7 @@ function loadWebuiTokenFromSession() {
 
 function ensureWebuiToken() {
   if (state.webuiToken) return true;
-  const token = window.prompt('请输入 WebUI token');
+  const token = window.prompt('请输入 WebUI token\n\n获取方式: root shell 执行\ncat /data/adb/modules/pixel9pro_control/.webui_token\n\n也可打开 http://127.0.0.1:6210/#token=<token> 完成会话配对');
   if (!setWebuiToken(token)) {
     showToast('缺少或无效的 WebUI token');
     return false;

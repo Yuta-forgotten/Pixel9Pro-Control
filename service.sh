@@ -391,8 +391,8 @@ apply_l1_persistent_limits() {
     BG_BASELINE_FILE="$MODDIR/.bg_restrict_baseline"
 
     [ -f "$BG_ENABLED_FILE" ] || printf 'on' > "$BG_ENABLED_FILE"
-    if [ ! -s "$BG_LIST_FILE" ]; then
-        # 首次运行: 预置默认限制列表, 用户可通过 WebUI 增删
+    if [ ! -e "$BG_LIST_FILE" ]; then
+        # 首次运行: 预置默认限制列表。文件存在但为空时表示用户已清空列表，不再重置默认包名。
         cat > "$BG_LIST_FILE" <<'DEFLIST'
 com.tencent.mobileqq
 com.tencent.qqmusic
