@@ -10,6 +10,7 @@
 #   - NR 息屏降级补齐 ap_br_wlan*/ap_br_softap* 热点桥接接口, 并从 preferred_network_mode 初始化 LTE/5G 状态。
 #   - .profile_history 兼容旧 9 列记录, 启动时追加 10 列 sched_owner baseline。
 #   - WebUI pid/lock 状态文件权限收紧。
+#   - 后台应用限制改为按包策略, 首次默认仅预置抖音 "离开后停止"。
 #
 # v4.4.6 变更:
 #   - WebUI token 改为每次 service 启动轮换, 缩短本机泄露后的可用窗口。
@@ -53,7 +54,7 @@
 #   - L1 后台限制从硬编码包名改为配置文件驱动 (.bg_restrict_list + .bg_restrict_enabled)
 #   - 新增 WebUI "后台应用限制" 卡片: 主开关 + 包名列表 + 实时 bucket/appops 状态 + 添加/移除
 #   - 新增 CGI bg_restrict.sh: toggle/add/remove 三种 action
-#   - 首次运行自动预置 QQ/QQ音乐 到默认列表, 用户可通过 WebUI 自由增删
+#   - 首次运行自动预置默认列表, 用户可通过 WebUI 自由增删
 #
 # v4.3.25 变更:
 #   - 新增三层功耗方案 (L1-L3):
@@ -383,21 +384,22 @@ _power_profile_params() {
 }
 
 apply_l1_persistent_limits() {
-    # L1: 官方 API 后台限制 — persistent, 从配置文件读取包名列表
-    # 文件: .bg_restrict_list (每行一个包名), .bg_restrict_enabled (on/off)
+    # L1: 官方 API 后台限制 — persistent, 从配置文件读取包名策略
+    # 文件: .bg_restrict_list (pkg|policy|delay_min), .bg_restrict_enabled (on/off)
     #       .bg_restrict_baseline (限制前 bucket/appops 原值)
     BG_ENABLED_FILE="$MODDIR/.bg_restrict_enabled"
     BG_LIST_FILE="$MODDIR/.bg_restrict_list"
     BG_BASELINE_FILE="$MODDIR/.bg_restrict_baseline"
+    BG_STOP_STATE_FILE="$MODDIR/.bg_restrict_stop_state"
 
     [ -f "$BG_ENABLED_FILE" ] || printf 'on' > "$BG_ENABLED_FILE"
     if [ ! -e "$BG_LIST_FILE" ]; then
-        # 首次运行: 预置默认限制列表。文件存在但为空时表示用户已清空列表，不再重置默认包名。
+        # 首次运行: 只预置抖音。文件存在但为空时表示用户已清空列表，不再重置默认包名。
         cat > "$BG_LIST_FILE" <<'DEFLIST'
-com.tencent.mobileqq
-com.tencent.qqmusic
+com.ss.android.ugc.aweme|stop_after_leave|5
 DEFLIST
     fi
+    rm -f "$BG_STOP_STATE_FILE" 2>/dev/null
 
     _bg_enabled=$(cat "$BG_ENABLED_FILE" 2>/dev/null | tr -d ' \n\r\t')
     if [ "$_bg_enabled" != "on" ]; then
@@ -407,10 +409,10 @@ DEFLIST
 
     _count=0
     while IFS= read -r _line || [ -n "$_line" ]; do
-        _pkg=$(printf '%s' "$_line" | tr -d ' \n\r\t')
-        [ -z "$_pkg" ] && continue
-        case "$_pkg" in \#*) continue ;; esac
-        bg_apply_restrict "$_pkg"
+        bg_parse_entry "$_line"
+        [ -z "$_bg_pkg" ] && continue
+        case "$_bg_pkg" in \#*) continue ;; esac
+        bg_apply_policy "$_bg_pkg" "$_bg_policy"
         _count=$((_count + 1))
     done < "$BG_LIST_FILE"
 
@@ -997,6 +999,76 @@ is_nr_mode_value() {
         _power_prev_is_charging=$_p_is_charging
     }
 
+    _bg_stop_state_get() {
+        _bg_stop_pkg="$1"
+        _bg_stop_since=0
+        _bg_stop_done=0
+        [ -s "$BG_STOP_STATE_FILE" ] || return 0
+        _bg_stop_line=$(awk -F'|' -v p="$_bg_stop_pkg" '$1 == p { print; exit }' "$BG_STOP_STATE_FILE" 2>/dev/null)
+        [ -n "$_bg_stop_line" ] || return 0
+        _old_ifs="$IFS"
+        IFS='|'
+        set -- $_bg_stop_line
+        IFS="$_old_ifs"
+        case "$2" in ''|*[!0-9]*) _bg_stop_since=0 ;; *) _bg_stop_since="$2" ;; esac
+        case "$3" in 1) _bg_stop_done=1 ;; *) _bg_stop_done=0 ;; esac
+    }
+
+    _bg_stop_state_set() {
+        _bg_stop_pkg="$1"
+        _bg_stop_since="$2"
+        _bg_stop_done="$3"
+        mkdir -p "${BG_STOP_STATE_FILE%/*}" 2>/dev/null
+        awk -F'|' -v p="$_bg_stop_pkg" '$1 != p' "$BG_STOP_STATE_FILE" > "${BG_STOP_STATE_FILE}.tmp" 2>/dev/null
+        printf '%s|%s|%s\n' "$_bg_stop_pkg" "$_bg_stop_since" "$_bg_stop_done" >> "${BG_STOP_STATE_FILE}.tmp"
+        mv "${BG_STOP_STATE_FILE}.tmp" "$BG_STOP_STATE_FILE" 2>/dev/null
+    }
+
+    _enforce_stop_after_leave() {
+        _bg_stop_next_due=0
+        [ "$(bg_read_enabled)" = "on" ] || return 0
+        [ "${_screen_off_isolate:-0}" -eq 1 ] 2>/dev/null && return 0
+        [ -s "$BG_LIST_FILE" ] || return 0
+
+        _fg_pkg=""
+        if [ "$_screen" = "on" ] || [ "${_just_off:-0}" -eq 1 ] 2>/dev/null; then
+            _fg_pkg=$(foreground_package_name)
+        fi
+
+        while IFS= read -r _line || [ -n "$_line" ]; do
+            bg_parse_entry "$_line"
+            [ -z "$_bg_pkg" ] && continue
+            case "$_bg_pkg" in \#*) continue ;; esac
+            [ "$_bg_policy" = "stop_after_leave" ] || continue
+
+            if [ -n "$_fg_pkg" ] && [ "$_fg_pkg" = "$_bg_pkg" ]; then
+                _bg_stop_state_set "$_bg_pkg" "$_now" 0
+                continue
+            fi
+
+            _bg_stop_state_get "$_bg_pkg"
+            if [ "$_bg_stop_since" -eq 0 ] 2>/dev/null; then
+                continue
+            fi
+
+            _delay_sec=$((_bg_delay * 60))
+            _elapsed=$((_now - _bg_stop_since))
+            if [ "$_elapsed" -ge "$_delay_sec" ] 2>/dev/null; then
+                if [ "$_bg_stop_done" -ne 1 ]; then
+                    am force-stop "$_bg_pkg" 2>/dev/null
+                    _bg_stop_state_set "$_bg_pkg" "$_now" 1
+                    log -t pixel9pro_ctrl "L1: force-stopped $_bg_pkg after ${_bg_delay}m away from foreground"
+                fi
+            else
+                _due=$((_delay_sec - _elapsed))
+                [ "$_due" -lt 15 ] 2>/dev/null && _due=15
+                if [ "$_bg_stop_next_due" -eq 0 ] || [ "$_due" -lt "$_bg_stop_next_due" ]; then
+                    _bg_stop_next_due=$_due
+                fi
+            fi
+        done < "$BG_LIST_FILE"
+    }
+
     # NR key detection
     _nr_key="preferred_network_mode1"
     _v=$(settings get global preferred_network_mode1 2>/dev/null | tr -d ' \n\r')
@@ -1360,6 +1432,8 @@ is_nr_mode_value() {
             fi
         fi
 
+        _enforce_stop_after_leave
+
         # --- Adaptive sleep ---
         if [ "$_screen" = "on" ]; then
             _next_sleep_secs=15
@@ -1377,6 +1451,9 @@ is_nr_mode_value() {
             _next_sleep_secs=60
         else
             _next_sleep_secs=600
+        fi
+        if [ "${_bg_stop_next_due:-0}" -gt 0 ] 2>/dev/null && [ "$_bg_stop_next_due" -lt "$_next_sleep_secs" ] 2>/dev/null; then
+            _next_sleep_secs="$_bg_stop_next_due"
         fi
         _diag_profile_policy=$(read_valid_profile_policy)
         _write_standby_diag_state "$_now" "$_screen" "$_worker_mode" "$_next_sleep_secs" "$_burst_effective" "$_nr_enabled" "$_nr_state" "$_diag_profile_policy" "$_active_profile" "$_idle_isolate" "$_sim2_auto" "$_cycle_count"

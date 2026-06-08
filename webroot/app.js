@@ -156,6 +156,27 @@ const NTP_SERVERS = [
   { id: 'time.android.com', name: 'Google 默认', desc: 'Pixel 出厂默认 NTP 服务器' },
 ];
 
+const BG_RESTRICT_POLICY_ORDER = ['stop_after_leave', 'block_all', 'block_services', 'bucket'];
+const BG_RESTRICT_POLICIES = {
+  stop_after_leave: {
+    label: '离开后停止',
+    desc: '离开前台或锁屏后等待指定时间，再停止进程并释放后台尾巴。'
+  },
+  block_all: {
+    label: '禁止后台活动',
+    desc: '限制后台服务、自启动式后台运行、jobs、alarms 与后台网络配额。'
+  },
+  block_services: {
+    label: '禁止后台服务',
+    desc: '禁止后台服务继续跑，同时保留一部分系统调度空间。'
+  },
+  bucket: {
+    label: '降低后台优先级',
+    desc: '只降低 App Standby Bucket，适合先观察通知与同步影响。'
+  }
+};
+const BG_RESTRICT_DELAYS = [3, 5, 10];
+
 const ZONE_LABELS = {
   'VIRTUAL-SKIN': '机身温度',
   'SKIN': '机身温度',
@@ -310,6 +331,8 @@ function initRefs() {
   refs.bgRestrictRows = $('bg-restrict-rows');
   refs.bgRestrictAddBtn = $('bg-restrict-add-btn');
   refs.bgRestrictPkgInput = $('bg-restrict-pkg-input');
+  refs.bgRestrictPolicySelect = $('bg-restrict-policy-select');
+  refs.bgRestrictDelaySelect = $('bg-restrict-delay-select');
   refs.nrSwitchToggleLabel = $('nr-switch-toggle-label');
   refs.nrSwitchRows = $('nr-switch-rows');
   refs.uecapDesc = $('uecap-desc');
@@ -1639,51 +1662,162 @@ async function toggleIdleIsolateMode() {
 }
 
 // ── 后台应用限制 ─────────────────────────────────────────
-function bgRestrictStatus(bucket, appops) {
-  const restricted = bucket === '45' && appops === 'ignore';
-  if (restricted) return { text: '已限制', cls: 'good' };
-  if (appops === 'ignore') return { text: '部分限制（已禁后台）', cls: 'warn' };
-  if (bucket === '45') return { text: '部分限制（仅降优先级）', cls: 'warn' };
-  return { text: '未生效 — 点刷新重试', cls: 'err' };
+function normalizeBgPolicy(policy) {
+  return BG_RESTRICT_POLICIES[policy] ? policy : 'block_all';
+}
+
+function normalizeBgDelay(delay) {
+  const value = Number(delay);
+  return BG_RESTRICT_DELAYS.includes(value) ? value : 5;
+}
+
+function createBgPolicySelect(value) {
+  const select = document.createElement('select');
+  select.className = 'bg-policy-select';
+  BG_RESTRICT_POLICY_ORDER.forEach((id) => {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = BG_RESTRICT_POLICIES[id].label;
+    opt.selected = id === value;
+    select.appendChild(opt);
+  });
+  return select;
+}
+
+function createBgDelaySelect(value) {
+  const select = document.createElement('select');
+  select.className = 'bg-delay-select';
+  BG_RESTRICT_DELAYS.forEach((min) => {
+    const opt = document.createElement('option');
+    opt.value = String(min);
+    opt.textContent = `${min}分钟`;
+    opt.selected = min === value;
+    select.appendChild(opt);
+  });
+  return select;
+}
+
+function syncBgDelayControl(policySelect, delaySelect) {
+  if (!policySelect || !delaySelect) return;
+  delaySelect.disabled = state.bgRestrictBusy || policySelect.value !== 'stop_after_leave';
+}
+
+function syncBgRestrictControls() {
+  const busy = state.bgRestrictBusy;
+  if (refs.bgRestrictToggleBtn) refs.bgRestrictToggleBtn.disabled = busy;
+  if (refs.bgRestrictAddBtn) refs.bgRestrictAddBtn.disabled = busy;
+  if (refs.bgRestrictPolicySelect) refs.bgRestrictPolicySelect.disabled = busy;
+  if (refs.bgRestrictDelaySelect) syncBgDelayControl(refs.bgRestrictPolicySelect, refs.bgRestrictDelaySelect);
+  document.querySelectorAll('#bg-restrict-rows .bg-policy-row').forEach((row) => {
+    const policySelect = row.querySelector('.bg-policy-select');
+    const delaySelect = row.querySelector('.bg-delay-select');
+    const saveBtn = row.querySelector('.bg-policy-save');
+    const removeBtn = row.querySelector('.bg-policy-remove');
+    if (policySelect) policySelect.disabled = busy;
+    if (delaySelect) syncBgDelayControl(policySelect, delaySelect);
+    if (saveBtn) saveBtn.disabled = busy;
+    if (removeBtn) removeBtn.disabled = busy;
+  });
+}
+
+function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled) {
+  if (!enabled) return { text: '已关闭', cls: 'off' };
+  const bucketText = String(bucket || '').toLowerCase();
+  const bgMode = String(opBg || '').toLowerCase();
+  const anyMode = String(opAny || '').toLowerCase();
+  const rareOrLower = bucketText === '40' || bucketText === 'rare' || bucketText === '45' || bucketText === 'restricted';
+  const restricted = bucketText === '45' || bucketText === 'restricted';
+  const bgIgnored = bgMode === 'ignore';
+  const anyIgnored = anyMode === 'ignore';
+  switch (policy) {
+    case 'bucket':
+      return rareOrLower ? { text: '已降优先级', cls: 'good' } : { text: '未生效，点刷新重试', cls: 'err' };
+    case 'block_services':
+      if (restricted && bgIgnored) return { text: '已禁后台服务', cls: 'good' };
+      if (restricted || bgIgnored) return { text: '部分生效', cls: 'warn' };
+      return { text: '未生效，点刷新重试', cls: 'err' };
+    case 'stop_after_leave':
+      if (restricted && bgIgnored && anyIgnored) return { text: '已限制，离开后停止', cls: 'good' };
+      if (restricted || bgIgnored || anyIgnored) return { text: '部分生效', cls: 'warn' };
+      return { text: '未生效，点刷新重试', cls: 'err' };
+    case 'block_all':
+    default:
+      if (restricted && bgIgnored && anyIgnored) return { text: '已禁后台活动', cls: 'good' };
+      if (restricted || bgIgnored || anyIgnored) return { text: '部分生效', cls: 'warn' };
+      return { text: '未生效，点刷新重试', cls: 'err' };
+  }
 }
 
 function renderBgRestrict(data) {
   state.bgRestrictEnabled = data.enabled === 'on' ? 'on' : 'off';
   const on = state.bgRestrictEnabled === 'on';
   refs.bgRestrictToggleLabel.textContent = on ? '关闭' : '开启';
-  refs.bgRestrictToggleBtn.disabled = state.bgRestrictBusy;
   refs.bgRestrictDesc.textContent = on
-    ? '已开启：列表中的应用将被限制后台活动，降低 CPU 和唤醒开销。'
-    : '已关闭：所有后台限制已解除，应用可自由运行后台服务。';
+    ? '已开启：可按包选择后台策略；默认抖音为离开前台或锁屏后延时停止，前台使用不受影响。'
+    : '已关闭：列表保留，但 bucket/AppOps 已恢复，离开后停止倒计时已清空。';
   refs.bgRestrictRows.replaceChildren();
-  if (!data.packages || data.packages.length === 0) {
-    refs.bgRestrictRows.appendChild(buildInfoRow('限制列表', '空 — 请添加包名', 'off'));
+  const packages = Array.isArray(data.packages) ? data.packages : [];
+  if (packages.length === 0) {
+    refs.bgRestrictRows.appendChild(buildInfoRow('限制列表', '空，请添加包名', 'off'));
+    syncBgRestrictControls();
     return;
   }
-  data.packages.forEach((p) => {
-    const st = bgRestrictStatus(p.bucket, p.appops);
+  packages.forEach((p) => {
+    const policy = normalizeBgPolicy(p.policy);
+    const delay = normalizeBgDelay(p.delay);
+    const meta = BG_RESTRICT_POLICIES[policy];
+    const opBg = p.op_bg || '';
+    const opAny = p.op_any || p.appops || '';
+    const st = bgRestrictStatus(p.pkg, p.bucket, opBg, opAny, policy, on);
     const row = document.createElement('div');
-    row.className = 'data-row';
-    row.style.alignItems = 'center';
-    const key = document.createElement('span');
-    key.className = 'data-key';
-    key.style.flex = '1';
-    key.style.wordBreak = 'break-all';
-    key.textContent = p.pkg;
+    row.className = 'data-row bg-policy-row';
+
+    const main = document.createElement('div');
+    main.className = 'bg-policy-main';
+    const title = document.createElement('div');
+    title.className = 'bg-policy-title';
+    title.textContent = p.pkg;
+    const detail = document.createElement('div');
+    detail.className = 'bg-policy-detail';
+    detail.textContent = policy === 'stop_after_leave'
+      ? `${meta.label} · ${delay}分钟 · ${meta.desc}`
+      : `${meta.label} · ${meta.desc}`;
+    main.appendChild(title);
+    main.appendChild(detail);
+
     const badge = document.createElement('span');
     badge.className = `badge ${st.cls}`;
     badge.textContent = st.text;
-    badge.style.marginRight = '8px';
+    const statusWrap = document.createElement('div');
+    statusWrap.className = 'bg-policy-status';
+    statusWrap.appendChild(badge);
+
+    const controls = document.createElement('div');
+    controls.className = 'bg-policy-controls';
+    const policySelect = createBgPolicySelect(policy);
+    const delaySelect = createBgDelaySelect(delay);
+    policySelect.addEventListener('change', () => syncBgDelayControl(policySelect, delaySelect));
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'tiny-btn primary bg-policy-save';
+    saveBtn.type = 'button';
+    saveBtn.textContent = '保存';
+    saveBtn.addEventListener('click', () => bgRestrictUpdate(p.pkg, policySelect.value, delaySelect.value));
     const rmBtn = document.createElement('button');
-    rmBtn.className = 'tiny-btn';
+    rmBtn.className = 'tiny-btn bg-policy-remove';
+    rmBtn.type = 'button';
     rmBtn.textContent = '移除';
-    rmBtn.style.flexShrink = '0';
     rmBtn.addEventListener('click', () => bgRestrictRemove(p.pkg));
-    row.appendChild(key);
-    row.appendChild(badge);
-    row.appendChild(rmBtn);
+    controls.appendChild(policySelect);
+    controls.appendChild(delaySelect);
+    controls.appendChild(saveBtn);
+    controls.appendChild(rmBtn);
+
+    row.appendChild(main);
+    row.appendChild(statusWrap);
+    row.appendChild(controls);
     refs.bgRestrictRows.appendChild(row);
   });
+  syncBgRestrictControls();
 }
 
 async function refreshBgRestrict() {
@@ -1706,7 +1840,7 @@ async function forceRefreshBgRestrict() {
     });
     if (data.ok) {
       renderBgRestrict(data);
-      showToast('已重新应用后台限制');
+      showToast('已重新应用后台策略');
     } else {
       const fallback = await apiFetch(API.bgRestrict, { timeoutMs: 8000 });
       renderBgRestrict(fallback);
@@ -1720,8 +1854,9 @@ async function forceRefreshBgRestrict() {
 async function bgRestrictAction(body, successText) {
   if (state.bgRestrictBusy) return;
   state.bgRestrictBusy = true;
-  refs.bgRestrictToggleBtn.disabled = true;
-  refs.bgRestrictAddBtn.disabled = true;
+  syncBgRestrictControls();
+  let nextData = null;
+  let ok = false;
   try {
     const data = await apiFetch(API.bgRestrict, {
       method: 'POST',
@@ -1730,7 +1865,8 @@ async function bgRestrictAction(body, successText) {
       timeoutMs: 10000
     });
     if (data.ok) {
-      renderBgRestrict(data);
+      nextData = data;
+      ok = true;
       showToast(successText);
     } else {
       showToast(`操作失败：${data.error || '未知'}`);
@@ -1739,9 +1875,10 @@ async function bgRestrictAction(body, successText) {
     showToast('请求失败：' + e.message);
   } finally {
     state.bgRestrictBusy = false;
-    refs.bgRestrictToggleBtn.disabled = false;
-    refs.bgRestrictAddBtn.disabled = false;
+    if (nextData) renderBgRestrict(nextData);
+    syncBgRestrictControls();
   }
+  return ok;
 }
 
 async function toggleBgRestrict() {
@@ -1755,8 +1892,17 @@ async function bgRestrictAdd() {
     showToast('请输入有效的包名 (如 com.example.app)');
     return;
   }
-  await bgRestrictAction({ action: 'add', package: pkg }, `已添加 ${pkg}`);
-  refs.bgRestrictPkgInput.value = '';
+  const policy = normalizeBgPolicy(refs.bgRestrictPolicySelect.value);
+  const delay = normalizeBgDelay(refs.bgRestrictDelaySelect.value);
+  const ok = await bgRestrictAction({ action: 'add', package: pkg, policy, delay }, `已添加 ${pkg}`);
+  if (ok) refs.bgRestrictPkgInput.value = '';
+}
+
+async function bgRestrictUpdate(pkg, policy, delay) {
+  await bgRestrictAction(
+    { action: 'update', package: pkg, policy: normalizeBgPolicy(policy), delay: normalizeBgDelay(delay) },
+    `已更新 ${pkg}`
+  );
 }
 
 async function bgRestrictRemove(pkg) {
@@ -2691,6 +2837,7 @@ function bindStaticEvents() {
   $('bg-restrict-toggle-btn').addEventListener('click', toggleBgRestrict);
   $('bg-restrict-add-btn').addEventListener('click', bgRestrictAdd);
   $('bg-restrict-pkg-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') bgRestrictAdd(); });
+  $('bg-restrict-policy-select').addEventListener('change', syncBgRestrictControls);
   $('bg-restrict-refresh-btn').addEventListener('click', forceRefreshBgRestrict);
   $('nr-switch-detail-btn').addEventListener('click', () => openDetail('NR 息屏降级详情', NR_SWITCH_DETAIL));
   $('uecap-detail-btn').addEventListener('click', () => openDetail('UE 网络能力配置', UECAP_DETAIL));

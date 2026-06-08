@@ -164,6 +164,18 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
         [ -f "$_mf" ] && grep -q '^light$' "$_mf" && printf 'balanced' > "$_mf"
         [ -f "$_mf" ] && grep -q '^responsive$' "$_mf" && printf 'performance' > "$_mf"
     done
+    # v4.4.8: only migrate the untouched old QQ/QQMusic default list.
+    _bg_list="$MODPATH/.bg_restrict_list"
+    if [ -f "$_bg_list" ]; then
+        _bg_norm=$(sed 's/[[:space:]]//g' "$_bg_list" 2>/dev/null | sed '/^$/d')
+        _old_default=$(printf 'com.tencent.mobileqq\ncom.tencent.qqmusic')
+        if [ "$_bg_norm" = "$_old_default" ]; then
+            cat > "$_bg_list" <<'DEFLIST'
+com.ss.android.ugc.aweme|stop_after_leave|5
+DEFLIST
+            ui_print "  ✓ 后台限制默认列表已迁移为抖音"
+        fi
+    fi
     ui_print ""
 fi
 
