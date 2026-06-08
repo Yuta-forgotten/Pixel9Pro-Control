@@ -20,8 +20,8 @@ read_onoff_file() {
 }
 
 emit_state() {
-    sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" 'off')
-    idle_isolate=$(read_onoff_file "$IDLE_ISOLATE_FILE" 'off')
+    _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" 'off')
+    _idle_isolate_mode=$(read_onoff_file "$IDLE_ISOLATE_FILE" 'off')
 
     diag_updated_at=""
     diag_screen="unknown"
@@ -49,7 +49,7 @@ emit_state() {
     fi
 
     printf '"sim2_auto_manage":"%s","idle_isolate_mode":"%s","diag_updated_at":"%s","diag_screen":"%s","diag_worker_mode":"%s","diag_next_sleep_secs":"%s","diag_burst_active":"%s","diag_nr_switch":"%s","diag_nr_state":"%s","diag_profile_policy":"%s","diag_active_profile":"%s","diag_cycle_count":"%s"' \
-        "$sim2_auto" "$idle_isolate" \
+        "$_sim2_auto" "$_idle_isolate_mode" \
         "$(json_escape "$diag_updated_at")" "$(json_escape "$diag_screen")" "$(json_escape "$diag_worker_mode")" \
         "$(json_escape "$diag_next_sleep_secs")" "$(json_escape "$diag_burst_active")" "$(json_escape "$diag_nr_switch")" \
         "$(json_escape "$diag_nr_state")" "$(json_escape "$diag_profile_policy")" "$(json_escape "$diag_active_profile")" \

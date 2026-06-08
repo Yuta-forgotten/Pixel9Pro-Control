@@ -51,17 +51,18 @@ bg_normalize_delay() {
 
 bg_parse_entry() {
     _bg_raw=$(printf '%s' "$1" | tr -d ' \n\r\t')
-    _bg_pkg="${_bg_raw%%|*}"
     _bg_policy="block_all"
     _bg_delay="5"
-    if [ "$_bg_raw" != "$_bg_pkg" ]; then
-        _bg_rest="${_bg_raw#*|}"
-        _bg_policy="${_bg_rest%%|*}"
-        if [ "$_bg_rest" != "$_bg_policy" ]; then
-            _bg_delay="${_bg_rest#*|}"
-            case "$_bg_delay" in *'|'*) _bg_delay="${_bg_delay%%|*}" ;; esac
-        fi
-    fi
+    case "$_bg_raw" in
+        *'|'*)
+            _bg_pkg=$(printf '%s' "$_bg_raw" | cut -d '|' -f 1)
+            _bg_policy=$(printf '%s' "$_bg_raw" | cut -d '|' -f 2)
+            _bg_delay=$(printf '%s' "$_bg_raw" | cut -d '|' -f 3)
+            ;;
+        *)
+            _bg_pkg="$_bg_raw"
+            ;;
+    esac
     _bg_policy=$(bg_normalize_policy "$_bg_policy")
     _bg_delay=$(bg_normalize_delay "$_bg_delay")
 }
