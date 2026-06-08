@@ -4,11 +4,16 @@
 
 ## 当前版本
 
-- Release: `v4.4.9`
-- versionCode: `73`
-- Asset: `pixel9pro_control_v4.4.9.zip`
+- Release: `v4.4.10`
+- versionCode: `74`
+- Asset: `pixel9pro_control_v4.4.10.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
+
+### v4.4.10
+
+- 修复 `external` 调度接管时 standby worker 诊断 `active_profile` 可能沿用旧缓存的问题，确保 WebUI 待机守护诊断与 `profile.sh` 当前状态一致。
+- 保留 v4.4.9 的 token prompt 预填、待机隔离响应修正、后台限制解析修正与 CSP console error 修正。
 
 ### v4.4.9
 

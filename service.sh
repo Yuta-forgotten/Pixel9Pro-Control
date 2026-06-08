@@ -1,8 +1,11 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.4.9 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh v4.4.10 — 开机服务 (Doze 友好后台 + M3 WebUI)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
+#
+# v4.4.10 变更:
+#   - 修复 standby worker 在 external 调度接管后诊断 active_profile 可能沿用旧缓存的问题。
 #
 # v4.4.9 变更:
 #   - WebUI 首次写操作通过 auth.sh 预填 token prompt, 按前辈要求优先易用性。
@@ -697,7 +700,7 @@ if [ ! -f "$SIM2_AUTO_FILE" ]; then
 fi
 [ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
 
-log -t pixel9pro_ctrl "v4.4.9[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "v4.4.10[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -780,7 +783,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.4.9[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "v4.4.10[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)
@@ -1336,6 +1339,7 @@ is_nr_mode_value() {
                 _auto_cool_since=0
                 _auto_charge_hot_since=0
                 _auto_charge_cool_since=0
+                _active_profile=$(read_valid_profile "$PROFILE_FILE" "$_active_profile")
                 printf '%s' 'external_scheduler' > "$PROFILE_AUTO_REASON_FILE"
             elif [ "$_profile_policy" = "manual" ]; then
                 _auto_hot_since=0
