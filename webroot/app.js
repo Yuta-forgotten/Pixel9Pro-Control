@@ -18,6 +18,7 @@ const API = {
   thermalBurst: '/cgi-bin/thermal_burst.sh',
   ntp: '/cgi-bin/ntp.sh',
   energy: '/cgi-bin/energy.sh',
+  historyExport: '/cgi-bin/history_export.sh',
   checkBaseband: '/cgi-bin/check_baseband.sh',
   standbyGuard: '/cgi-bin/standby_guard.sh',
   bgRestrict: '/cgi-bin/bg_restrict.sh',
@@ -53,39 +54,39 @@ const THEME_ICONS = {
 const PROFILES = {
   performance: {
     name: '性能优先',
-    summary: '还闸放开内核动态 boost (ADPF/HBoost/fork)，并让中大核更早介入的手动性能档。',
+    summary: '放开内核动态 boost 上限，并让中大核更早介入的手动性能档。',
     desc: '前台: cpu0-7 · 小核 12ms · 中核 20ms · 大核 80ms · uclamp.min→1024',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     modeClass: 'mode-game',
-    detail: '<b>性能优先</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 12ms / 中核 20ms / 大核 80ms<br><b>sched_util_clamp_min</b>: 0 → 1024（还 Google 出厂 uclamp.min 上限，放开 ADPF/HBoost/fork/ExoPlayer 动态 boost）<br><br>顺内核“还闸”的手动性能档：恢复出厂 uclamp.min 上限让框架动态 boost 生效，并让中大核更早补位。放开 boost 后温升更快，自动温控收口只在均衡↔省电生效，手动锁此档时不会被自动拉回。'
+    detail: '<b>性能优先</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 12ms / 中核 20ms / 大核 80ms<br><b>sched_util_clamp_min</b>: 0 → 1024（恢复 Google 出厂 uclamp.min 上限，允许 ADPF/HBoost/fork/ExoPlayer 动态 boost 发挥作用）<br><br>这是手动性能档：中大核更早补位，前台峰值响应更强。代价是温升更快；自动策略只在均衡和省电之间切换，手动锁定性能优先时不会自动拉回。'
   },
   balanced: {
     name: '均衡模式',
-    summary: '小核高效区间运行，中核积极补位，X4 突发吸收。唯一日常主力档。',
+    summary: '小核保持响应，中核适度补位，X4 只处理突发负载。日常主力档。',
     desc: '前台: cpu0-7 · 小核 16ms · 中核 40ms · 大核 200ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     modeClass: 'mode-balanced',
-    detail: '<b>均衡模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 16ms / 中核 40ms / 大核 200ms<br><br>小核 16ms 保持高效区间，避免低频高占用；中核 40ms 减少视频/feed 稳态补偿升频；X4 以 200ms 作为更晚的 burst 兜底。'
+    detail: '<b>均衡模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 16ms / 中核 40ms / 大核 200ms<br><br>小核保持及时响应，避免低频高占用；中核适度补位，减少视频/feed 稳态升频；X4 仅作为较晚的突发兜底。'
   },
   battery: {
     name: '省电模式',
-    summary: '在长亮屏基础上继续放慢小中核升频，优先把前台温度压下来。',
+    summary: '放慢小中核升频并减少 X4 参与，优先控制前台温度和耗电。',
     desc: '前台: cpu0-6 · 小核 32ms · 中核 96ms · 大核 200ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     modeClass: 'mode-battery',
-    detail: '<b>省电模式</b><br><br><b>cpuset</b>: top-app → cpu0-6，background → cpu0-3<br><b>response_time</b>: 小核 32ms / 中核 96ms / 大核 200ms<br><br>相比长亮屏模式进一步放慢小核和中核的升频，继续把 X4 排除在前台之外。适合明确以低发热和续航优先的长时间前台场景。'
+    detail: '<b>省电模式</b><br><br><b>cpuset</b>: top-app → cpu0-6，background → cpu0-3<br><b>response_time</b>: 小核 32ms / 中核 96ms / 大核 200ms<br><br>放慢小核和中核升频，并把 X4 排除在前台常规调度之外。适合长时间亮屏、低发热和续航优先的场景。'
   },
   default: {
     name: '默认模式',
-    summary: '恢复系统默认 cpuset 与 sched_pixel 响应参数，也是自动模式的默认底座。',
+    summary: '恢复接近 Google 默认的 cpuset 与 sched_pixel 响应参数，作为对照和回退。',
     desc: '前台: cpu0-7 · 小核 16ms · 中核 64ms · 大核 200ms',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     modeClass: 'mode-stock',
-    detail: '<b>默认模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，foreground → cpu0-6<br><b>response_time</b>: 小核 16ms / 中核 64ms / 大核 200ms<br><br>这是 Pixel 系统默认 sched_pixel 参数，也是自动模式启动时的底座。它不是主动性能优化档，而是“最标准、最容易判断自动收口效果”的对照组。'
+    detail: '<b>默认模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，foreground → cpu0-6<br><b>response_time</b>: 小核 16ms / 中核 64ms / 大核 200ms<br><br>这是接近 Pixel 系统默认的 sched_pixel 参数。它不是性能优化档，主要用于回退、对照和排查自动策略效果。'
   },
   unknown: {
     name: '未选择',
@@ -159,20 +160,20 @@ const NTP_SERVERS = [
 const BG_RESTRICT_POLICY_ORDER = ['stop_after_leave', 'block_all', 'block_services', 'bucket'];
 const BG_RESTRICT_POLICIES = {
   stop_after_leave: {
-    label: '离开后停止',
-    desc: '离开前台或锁屏后等待指定时间，再停止进程并释放后台尾巴。'
+    label: '休眠',
+    desc: '锁屏或离开前台后等待 3/5/10 分钟，再 force-stop，释放进程、内存和 SDK 尾巴。'
   },
   block_all: {
     label: '禁止后台活动',
-    desc: '限制后台服务、自启动式后台运行、jobs、alarms 与后台网络配额。'
+    desc: '限制后台服务、自启动式后台运行、jobs、alarms 与后台网络配额，推送和同步风险较高。'
   },
   block_services: {
     label: '禁止后台服务',
-    desc: '禁止后台服务继续跑，同时保留一部分系统调度空间。'
+    desc: '禁止后台服务继续运行，保留一部分 jobs、alarms 和推送处理空间。'
   },
   bucket: {
     label: '降低后台优先级',
-    desc: '只降低 App Standby Bucket，适合先观察通知与同步影响。'
+    desc: '只降低 App Standby Bucket，减少后台执行机会，适合先观察通知与同步影响。'
   }
 };
 const BG_RESTRICT_DELAYS = [3, 5, 10];
@@ -1737,7 +1738,7 @@ function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled) {
       if (restricted || bgIgnored) return { text: '部分生效', cls: 'warn' };
       return { text: '未生效，点刷新重试', cls: 'err' };
     case 'stop_after_leave':
-      if (restricted && bgIgnored && anyIgnored) return { text: '已限制，离开后停止', cls: 'good' };
+      if (restricted && bgIgnored && anyIgnored) return { text: '已限制，休眠计时', cls: 'good' };
       if (restricted || bgIgnored || anyIgnored) return { text: '部分生效', cls: 'warn' };
       return { text: '未生效，点刷新重试', cls: 'err' };
     case 'block_all':
@@ -1753,12 +1754,12 @@ function renderBgRestrict(data) {
   const on = state.bgRestrictEnabled === 'on';
   refs.bgRestrictToggleLabel.textContent = on ? '关闭' : '开启';
   refs.bgRestrictDesc.textContent = on
-    ? '已开启：可按包选择后台策略；默认抖音为离开前台或锁屏后延时停止，前台使用不受影响。'
-    : '已关闭：列表保留，但 bucket/AppOps 已恢复，离开后停止倒计时已清空。';
+    ? '已开启：可按包选择后台策略；默认抖音为休眠，锁屏或离开前台后延时 force-stop，前台使用不受影响。'
+    : '已关闭：列表保留，但 bucket/AppOps 已恢复，休眠倒计时已清空。';
   refs.bgRestrictRows.replaceChildren();
   const packages = Array.isArray(data.packages) ? data.packages : [];
   if (packages.length === 0) {
-    refs.bgRestrictRows.appendChild(buildInfoRow('限制列表', '空，请添加包名', 'off'));
+    refs.bgRestrictRows.appendChild(buildInfoRow('限制列表', '空，已按用户配置保留，不会自动重建默认包名', 'off'));
     syncBgRestrictControls();
     return;
   }
@@ -2264,6 +2265,21 @@ function fmtMah(value) {
   return Number.isFinite(num) ? `${num.toFixed(1)} mAh` : '—';
 }
 
+function fmtMahPerHour(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? `${num.toFixed(1)} mAh/h` : '—';
+}
+
+function fmtMilliwatt(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? `${num.toFixed(0)} mW` : '—';
+}
+
+function fmtTempC(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? `${num.toFixed(1)}°C` : '—';
+}
+
 function fmtSignedPercent(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return '—';
@@ -2344,7 +2360,11 @@ async function fetchTempHistory(minutes) {
   }
 }
 
-async function triggerThermalBurst() {
+async function triggerThermalBurst(options = {}) {
+  if (!state.webuiToken) {
+    if (!options.prompt) return false;
+    if (!ensureWebuiToken()) return false;
+  }
   try {
     await apiFetch(API.thermalBurst, {
       method: 'POST',
@@ -2352,12 +2372,15 @@ async function triggerThermalBurst() {
       body: '{}',
       timeoutMs: 4000
     });
-  } catch (_) {}
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 function openTempChart() {
   stopTempChartRefresh();
-  triggerThermalBurst();
+  triggerThermalBurst({ prompt: false });
   refs.detailTitle.textContent = '温度历史';
   const ranges = [
     { min: 10, label: '10分钟', chart: true },
@@ -2446,6 +2469,37 @@ function openTempChart() {
   }, 80);
 }
 
+async function exportHistoryWindow(minutes, button) {
+  const oldText = button ? button.textContent : '';
+  if (button) {
+    button.disabled = true;
+    button.textContent = '保存中...';
+  }
+  try {
+    const data = await apiFetch(API.historyExport, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ minutes }),
+      timeoutMs: 10000
+    });
+    if (data && data.ok) {
+      showToast(`已保存到 ${data.path}`, 4200);
+      appendLog(`历史数据已保存: ${data.path}`, 'ok');
+    } else {
+      showToast(`保存失败：${data?.error || '未知错误'}`);
+    }
+  } catch (err) {
+    if (!/missing WebUI token/i.test(String(err?.message || ''))) {
+      showToast(`保存失败：${err.message || err}`);
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+    }
+  }
+}
+
 async function openEnergyDetail() {
   stopTempChartRefresh();
   refs.detailTitle.textContent = '功耗统计';
@@ -2477,7 +2531,7 @@ async function openEnergyDetail() {
 
     const intro = document.createElement('div');
     intro.style.cssText = 'margin-bottom:14px;font-size:13px;line-height:20px;color:var(--text-2)';
-    intro.textContent = '默认按“当前放电会话”看范围；系统分项和应用排行仍来自 Android batterystats 当前窗口。';
+    intro.textContent = '默认按“当前放电会话”和模块短窗口采样看趋势；Android batterystats 分项只作为系统窗口参考。';
     frag.appendChild(intro);
 
     frag.appendChild(heading('统计范围', '当前会话由模块维护，避免把长期 batterystats 累计误当成这一次切换后的结果。'));
@@ -2505,7 +2559,44 @@ async function openEnergyDetail() {
     listToday.appendChild(row('净电量变化', fmtSignedPercent(today.net_level_delta), Number(today.net_level_delta) < 0 ? 'badge warn' : 'badge good'));
     frag.appendChild(listToday);
 
-    frag.appendChild(heading('Android batterystats', esc(bs.note)));
+    const windows = Array.isArray(d.history_windows) ? d.history_windows : [];
+    frag.appendChild(heading('短窗口趋势', '基于模块 .power_history / .thermal_history 汇总。采样少于 2 个时只说明数据不足，不作为功耗结论。'));
+    const listWin = document.createElement('div'); listWin.className = 'data-list';
+    if (!windows.length) {
+      listWin.appendChild(row('短窗口', '暂无数据', 'badge off'));
+    } else {
+      windows.forEach((win) => {
+        const min = Number(win.minutes);
+        const p = win.power || {};
+        const t = win.thermal || {};
+        const pSamples = Number(p.samples || 0);
+        const tSamples = Number(t.samples || 0);
+        const pText = pSamples >= 2
+          ? `${fmtMahPerHour(p.avg_discharge_mah_per_h)} · ${fmtMilliwatt(p.avg_discharge_mw)} · ${fmtMah(p.discharge_mah)}`
+          : '功耗样本不足';
+        const tText = tSamples >= 2
+          ? `平均 ${fmtTempC(t.temp_avg_c)} / 最高 ${fmtTempC(t.temp_max_c)}`
+          : '温度样本不足';
+        listWin.appendChild(row(`近 ${min} 分钟功耗`, pText, pSamples >= 2 ? 'data-val' : 'badge off'));
+        listWin.appendChild(row(`近 ${min} 分钟温度`, tText, tSamples >= 2 ? 'data-val' : 'badge off'));
+      });
+    }
+    frag.appendChild(listWin);
+
+    frag.appendChild(heading('保存历史', '手动导出指定窗口的功耗与温度原始 CSV 到 /sdcard/Download，便于后续复盘。'));
+    const exportWrap = document.createElement('div');
+    exportWrap.className = 'energy-export-actions';
+    [15, 30, 60].forEach((min) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tiny-btn';
+      btn.textContent = `保存${min}分钟`;
+      btn.addEventListener('click', () => exportHistoryWindow(min, btn));
+      exportWrap.appendChild(btn);
+    });
+    frag.appendChild(exportWrap);
+
+    frag.appendChild(heading('Android batterystats', `${esc(bs.note)} Pixel/Exynos 的 mobile_radio 绝对 mAh 可能明显偏高，应优先看 ODPM、放电会话和短窗口趋势。`));
     const listBs = document.createElement('div'); listBs.className = 'data-list';
     listBs.appendChild(row('系统窗口', fmtBatterystatsWindow(bs.window_label)));
     listBs.appendChild(row('Daily stats', esc(bs.daily_label)));
@@ -2514,7 +2605,7 @@ async function openEnergyDetail() {
     listBs.appendChild(row('缓存有效期', Number.isFinite(Number(d.cache_ttl_sec)) ? `${d.cache_ttl_sec} 秒` : '—'));
     frag.appendChild(listBs);
 
-    frag.appendChild(heading('Android 功耗估算', '下面这些系统分项和 Top 应用，都来自上面的 batterystats 窗口。'));
+    frag.appendChild(heading('Android 功耗估算', '下面这些系统分项和 Top 应用来自 batterystats，不是 15/30/60 分钟短窗口。'));
     const list1 = document.createElement('div'); list1.className = 'data-list';
     list1.appendChild(row('当前电量', Number.isFinite(Number(charge.level)) ? `${charge.level}%` : '—'));
     list1.appendChild(row('电池容量', esc(d.cap) + ' mAh'));
@@ -2528,7 +2619,7 @@ async function openEnergyDetail() {
     list2.appendChild(row('屏幕', esc(d.screen)));
     list2.appendChild(row('CPU', esc(d.cpu)));
     list2.appendChild(row('蜂窝 (ODPM 实测)', d.odpm_modem && d.odpm_modem.total_mah != null ? esc(d.odpm_modem.total_mah) + ' mAh' : '无基线'));
-    list2.appendChild(row('蜂窝 (系统估算)', esc(d.cell) + ' mAh', 'badge off'));
+    list2.appendChild(row('蜂窝 (系统估算)', esc(d.cell) + ' mAh · 失真参考', 'badge off'));
     list2.appendChild(row('WiFi', esc(d.wifi)));
     list2.appendChild(row('唤醒锁', esc(d.wakelock)));
     frag.appendChild(list2);

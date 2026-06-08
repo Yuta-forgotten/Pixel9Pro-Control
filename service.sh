@@ -10,7 +10,7 @@
 #   - NR 息屏降级补齐 ap_br_wlan*/ap_br_softap* 热点桥接接口, 并从 preferred_network_mode 初始化 LTE/5G 状态。
 #   - .profile_history 兼容旧 9 列记录, 启动时追加 10 列 sched_owner baseline。
 #   - WebUI pid/lock 状态文件权限收紧。
-#   - 后台应用限制改为按包策略, 首次默认仅预置抖音 "离开后停止"。
+#   - 后台应用限制改为按包策略, 首次默认仅预置抖音 "休眠"。
 #
 # v4.4.6 变更:
 #   - WebUI token 改为每次 service 启动轮换, 缩短本机泄露后的可用窗口。

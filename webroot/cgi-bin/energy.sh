@@ -13,6 +13,7 @@ require_loopback
 json_headers
 
 POWER_HISTORY="$MODDIR/.power_history"
+THERMAL_HISTORY="$MODDIR/.thermal_history"
 POWER_SESSION_FILE="$MODDIR/.power_session"
 ENERGY_CACHE="$MODDIR/.energy_cache.json"
 ENERGY_CACHE_TS="$MODDIR/.energy_cache.ts"
@@ -64,6 +65,147 @@ write_energy_cache() {
     mv "${ENERGY_CACHE}.tmp" "$ENERGY_CACHE"
     printf '%s\n' "$_cache_now" > "${ENERGY_CACHE_TS}.tmp"
     mv "${ENERGY_CACHE_TS}.tmp" "$ENERGY_CACHE_TS"
+}
+
+build_power_window_json() {
+    _mins="$1"
+    _start=$((_now - _mins * 60))
+    if [ -s "$POWER_HISTORY" ]; then
+        awk -F, -v minutes="$_mins" -v start="$_start" -v now="$_now" -v cur_level="${_cur_level:-}" -v cur_charge="${_cur_charge:-0}" '
+        BEGIN {
+            seen = 0
+            samples = 0
+            discharge = 0
+            charge_in = 0
+            has_discharge = 0
+            has_charge = 0
+            cur_level_valid = (cur_level ~ /^-?[0-9]+$/)
+            cur_charge_valid = (cur_charge ~ /^-?[0-9]+$/ && cur_charge + 0 > 0)
+            prev_charge_valid = 0
+        }
+        $1 + 0 >= start {
+            ts = $1 + 0
+            level = $2 + 0
+            charge = $3 + 0
+            charge_valid = ($3 ~ /^-?[0-9]+$/ && charge > 0)
+            if (!seen) {
+                seen = 1
+                first_ts = ts
+                first_level = level
+                last_ts = ts
+                last_level = level
+                if (charge_valid) {
+                    prev_charge = charge
+                    prev_charge_valid = 1
+                } else {
+                    prev_charge_valid = 0
+                }
+            } else {
+                if (charge_valid && prev_charge_valid) {
+                    delta = prev_charge - charge
+                    if (delta > 0) {
+                        discharge += delta / 1000
+                        has_discharge = 1
+                    } else if (delta < 0) {
+                        charge_in += (-delta) / 1000
+                        has_charge = 1
+                    }
+                }
+                if (charge_valid) {
+                    prev_charge = charge
+                    prev_charge_valid = 1
+                } else {
+                    prev_charge_valid = 0
+                }
+                last_ts = ts
+                last_level = level
+            }
+            samples++
+        }
+        END {
+            if (!seen) {
+                printf "{\"minutes\":%s,\"start_ts\":%s,\"window_start_ts\":null,\"elapsed_sec\":0,\"samples\":0,\"level_start\":null,\"level_now\":", minutes, start
+                if (cur_level_valid) printf "%s", cur_level
+                else printf "null"
+                printf ",\"net_level_delta\":null,\"discharge_mah\":null,\"charge_mah\":null,\"avg_discharge_mah_per_h\":null,\"avg_discharge_mw\":null,\"source\":\"module_power_history\"}"
+                exit
+            }
+
+            if (cur_charge_valid && prev_charge_valid && now > last_ts) {
+                delta = prev_charge - cur_charge
+                if (delta > 0) {
+                    discharge += delta / 1000
+                    has_discharge = 1
+                } else if (delta < 0) {
+                    charge_in += (-delta) / 1000
+                    has_charge = 1
+                }
+            }
+
+            level_now = cur_level_valid ? cur_level + 0 : last_level
+            net_delta = level_now - first_level
+            elapsed = now - first_ts
+            if (elapsed < 0) elapsed = 0
+
+            printf "{\"minutes\":%s,\"start_ts\":%s,\"window_start_ts\":%s,\"elapsed_sec\":%s,\"samples\":%s,\"level_start\":%s,\"level_now\":%s,\"net_level_delta\":%s,\"discharge_mah\":", minutes, start, first_ts, elapsed, samples, first_level, level_now, net_delta
+            if (has_discharge) printf "%.1f", discharge
+            else printf "null"
+            printf ",\"charge_mah\":"
+            if (has_charge) printf "%.1f", charge_in
+            else printf "null"
+            printf ",\"avg_discharge_mah_per_h\":"
+            if (has_discharge && elapsed > 0) printf "%.1f", discharge * 3600 / elapsed
+            else printf "null"
+            printf ",\"avg_discharge_mw\":"
+            if (has_discharge && elapsed > 0) printf "%.0f", discharge * 3600 / elapsed * 3.87
+            else printf "null"
+            printf ",\"source\":\"module_power_history\"}"
+        }
+        ' "$POWER_HISTORY"
+    else
+        printf '{"minutes":%s,"start_ts":%s,"window_start_ts":null,"elapsed_sec":0,"samples":0,"level_start":null,"level_now":%s,"net_level_delta":null,"discharge_mah":null,"charge_mah":null,"avg_discharge_mah_per_h":null,"avg_discharge_mw":null,"source":"module_power_history"}' \
+            "$(json_num_or_null "$_mins")" \
+            "$(json_num_or_null "$_start")" \
+            "$(json_num_or_null "$_cur_level")"
+    fi
+}
+
+build_thermal_window_json() {
+    _mins="$1"
+    _start=$((_now - _mins * 60))
+    if [ -s "$THERMAL_HISTORY" ]; then
+        awk -F, -v minutes="$_mins" -v start="$_start" -v now="$_now" '
+        BEGIN { seen = 0; samples = 0; sum = 0 }
+        $1 + 0 >= start && $2 + 0 > 0 {
+            ts = $1 + 0
+            temp = ($2 + 0) / 1000
+            if (!seen) {
+                seen = 1
+                first_ts = ts
+                min = temp
+                max = temp
+            }
+            if (temp < min) min = temp
+            if (temp > max) max = temp
+            sum += temp
+            last_ts = ts
+            samples++
+        }
+        END {
+            if (!seen) {
+                printf "{\"minutes\":%s,\"start_ts\":%s,\"window_start_ts\":null,\"elapsed_sec\":0,\"samples\":0,\"temp_min_c\":null,\"temp_avg_c\":null,\"temp_max_c\":null,\"source\":\"module_thermal_history\"}", minutes, start
+                exit
+            }
+            elapsed = now - first_ts
+            if (elapsed < 0) elapsed = 0
+            printf "{\"minutes\":%s,\"start_ts\":%s,\"window_start_ts\":%s,\"elapsed_sec\":%s,\"samples\":%s,\"temp_min_c\":%.1f,\"temp_avg_c\":%.1f,\"temp_max_c\":%.1f,\"source\":\"module_thermal_history\"}", minutes, start, first_ts, elapsed, samples, min, sum / samples, max
+        }
+        ' "$THERMAL_HISTORY"
+    else
+        printf '{"minutes":%s,"start_ts":%s,"window_start_ts":null,"elapsed_sec":0,"samples":0,"temp_min_c":null,"temp_avg_c":null,"temp_max_c":null,"source":"module_thermal_history"}' \
+            "$(json_num_or_null "$_mins")" \
+            "$(json_num_or_null "$_start")"
+    fi
 }
 
 try_acquire_energy_lock() {
@@ -306,6 +448,16 @@ else
         "$(json_num_or_null "$_cur_level")")
 fi
 
+_history_windows_json='['
+_history_first=1
+for _hist_min in 15 30 60; do
+    _hist_power_json=$(build_power_window_json "$_hist_min")
+    _hist_thermal_json=$(build_thermal_window_json "$_hist_min")
+    [ "$_history_first" -eq 1 ] && _history_first=0 || _history_windows_json="${_history_windows_json},"
+    _history_windows_json="${_history_windows_json}{\"minutes\":$_hist_min,\"power\":$_hist_power_json,\"thermal\":$_hist_thermal_json}"
+done
+_history_windows_json="${_history_windows_json}]"
+
 _energy_lock="$LOCKDIR_BASE/energy_cache.lock"
 _have_energy_lock=0
 if try_acquire_energy_lock "$_energy_lock" "$_now"; then
@@ -420,11 +572,12 @@ _odpm_json=$(printf '{"modem_mah":%s,"rffe_mah":%s,"total_mah":%s,"source":"odpm
     "$(json_num_or_null "$_odpm_total_mah")")
 
 _final_json=$(printf '%s' "$_core_json" | sed 's/}$//')
-_final_json=$(printf '%s,"odpm_modem":%s,"scope":%s,"today":%s,"charge_state":%s,"batterystats_window":%s,"generated_at":%s,"cache_ttl_sec":%s}' \
+_final_json=$(printf '%s,"odpm_modem":%s,"scope":%s,"today":%s,"history_windows":%s,"charge_state":%s,"batterystats_window":%s,"generated_at":%s,"cache_ttl_sec":%s}' \
     "$_final_json" \
     "$_odpm_json" \
     "$_scope_json" \
     "$_today_json" \
+    "$_history_windows_json" \
     "$_charge_state_json" \
     "$_batterystats_json" \
     "$(json_num_or_null "$_now")" \

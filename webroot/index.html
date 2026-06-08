@@ -90,7 +90,7 @@
                 <div class="panel-title">内存与系统</div>
               </div>
               <div class="header-actions">
-                <button class="tiny-btn sm" id="energy-btn" type="button">功耗</button>
+                <button class="tiny-btn" id="energy-btn" type="button">功耗</button>
               </div>
             </div>
             <div class="mini-list">
@@ -193,7 +193,7 @@
 
         <article class="note-card">
           <div class="note-title">调度原理 · 模式说明</div>
-          <div class="note-body">通过 cpuset 核心分配和 sched_pixel 响应时间控制升频行为，不直接写 scaling_max_freq，不对抗 Thermal HAL。自动模式以 balanced 作为亮屏日常底座，只在热平台持续时慢切换到 battery；VIRTUAL-SKIN ≥ 40.8°C 持续约 90s 压到省电；温度回落后恢复 balanced；息屏后回到 balanced。</div>
+          <div class="note-body">通过 cpuset 核心分配和 sched_pixel 响应时间控制升频行为，不直接写 scaling_max_freq。自动模式以均衡作为亮屏日常底座，机身温度持续偏高时切到省电，温度回落后恢复均衡；性能优先是手动档，不参与自动切换。</div>
         </article>
       </div>
     </section>
@@ -365,7 +365,7 @@
             <div class="panel-copy">
               <div class="kicker">后台功耗控制</div>
               <div class="panel-title">后台应用限制</div>
-              <div class="panel-desc" id="bg-restrict-desc">按包选择后台策略。默认仅预置抖音，离开前台或锁屏后延时停止，前台使用不受影响。</div>
+              <div class="panel-desc" id="bg-restrict-desc">按包选择后台策略。默认仅预置抖音，休眠策略会在锁屏或离开前台后延时停止，前台使用不受影响。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn" id="bg-restrict-refresh-btn" type="button">刷新</button>
@@ -378,12 +378,12 @@
           <div id="bg-restrict-add-area" class="bg-add-area">
             <input class="bg-pkg-input" type="text" id="bg-restrict-pkg-input" placeholder="com.ss.android.ugc.aweme">
             <select class="bg-policy-select" id="bg-restrict-policy-select" aria-label="后台限制策略">
-              <option value="stop_after_leave" selected>离开后停止</option>
+              <option value="stop_after_leave" selected>休眠</option>
               <option value="block_all">禁止后台活动</option>
               <option value="block_services">禁止后台服务</option>
               <option value="bucket">降低后台优先级</option>
             </select>
-            <select class="bg-delay-select" id="bg-restrict-delay-select" aria-label="离开后停止延时">
+            <select class="bg-delay-select" id="bg-restrict-delay-select" aria-label="休眠延时">
               <option value="3">3分钟</option>
               <option value="5" selected>5分钟</option>
               <option value="10">10分钟</option>
@@ -392,7 +392,7 @@
           </div>
           <div class="note-card" style="margin-top:14px">
             <div class="note-title">使用说明</div>
-            <div class="note-body">将需要治理的应用包名加入列表后，可按包选择限制层级。离开后停止会在目标 App 离开前台或锁屏后等待 3/5/10 分钟再 force-stop，用于清理短视频、广告 SDK、直播与电商尾进程。前台打开时系统会临时提升，正常使用不受影响。移除包名或关闭功能会按接管前 bucket/AppOps 恢复。</div>
+            <div class="note-body">将需要治理的应用包名加入列表后，可按包选择限制层级。休眠会在目标 App 锁屏或离开前台后等待 3/5/10 分钟再 force-stop，用于清理短视频、广告 SDK、直播与电商尾进程，抖音通常可释放 1.5-2GB 工作集和 SDK 尾巴。前台打开时系统会临时提升，正常使用不受影响。移除包名或关闭功能会按接管前 bucket/AppOps 恢复。</div>
           </div>
         </article>
 
