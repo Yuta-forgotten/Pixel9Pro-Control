@@ -26,6 +26,7 @@ const API = {
 
 const STORAGE_THEME_KEY = 'pixel9pro_theme_mode';
 const STORAGE_TOKEN_KEY = 'pixel9pro_webui_token';
+const WEBUI_SESSION_START_TS = Math.floor(Date.now() / 1000);
 const TAB_ORDER = ['home', 'perf', 'thermal', 'optim'];
 const TAB_META = {
   home: '状态总览',
@@ -2469,17 +2470,20 @@ function openTempChart() {
   }, 80);
 }
 
-async function exportHistoryWindow(minutes, button) {
+async function exportHistoryWindow(scope, button) {
   const oldText = button ? button.textContent : '';
   if (button) {
     button.disabled = true;
     button.textContent = '保存中...';
   }
   try {
+    const body = scope === 'session'
+      ? { mode: 'session', start_ts: WEBUI_SESSION_START_TS }
+      : { minutes: scope };
     const data = await apiFetch(API.historyExport, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ minutes }),
+      body: JSON.stringify(body),
       timeoutMs: 10000
     });
     if (data && data.ok) {
@@ -2583,7 +2587,7 @@ async function openEnergyDetail() {
     }
     frag.appendChild(listWin);
 
-    frag.appendChild(heading('保存历史', '手动导出指定窗口的功耗与温度原始 CSV 到 /sdcard/Download，便于后续复盘。'));
+    frag.appendChild(heading('保存历史', '手动导出指定窗口的功耗与温度原始 CSV 到 /sdcard/Download，便于后续复盘。“本次窗口”从当前 WebUI 页面打开时间开始计算。'));
     const exportWrap = document.createElement('div');
     exportWrap.className = 'energy-export-actions';
     [15, 30, 60].forEach((min) => {
@@ -2594,6 +2598,12 @@ async function openEnergyDetail() {
       btn.addEventListener('click', () => exportHistoryWindow(min, btn));
       exportWrap.appendChild(btn);
     });
+    const sessionBtn = document.createElement('button');
+    sessionBtn.type = 'button';
+    sessionBtn.className = 'tiny-btn';
+    sessionBtn.textContent = '保存本次窗口';
+    sessionBtn.addEventListener('click', () => exportHistoryWindow('session', sessionBtn));
+    exportWrap.appendChild(sessionBtn);
     frag.appendChild(exportWrap);
 
     frag.appendChild(heading('Android batterystats', `${esc(bs.note)} Pixel/Exynos 的 mobile_radio 绝对 mAh 可能明显偏高，应优先看 ODPM、放电会话和短窗口趋势。`));
