@@ -902,7 +902,7 @@ function getSchedulerExternalDesc() {
     const owner = isUperfEnabled() ? `CPU 调度交给 ${name}` : `检测到 ${name} (${getUperfStateText()})`;
     return `${owner}；本模块保留温控、待机与系统优化，不写 CPU 调度节点。`;
   }
-  return '未检测到 Uperf Game Turbo；本模块已做一次 balanced 安全底座清理，但不会继续周期性写 CPU 调度节点。';
+  return '未检测到 UGT；本模块已执行一次均衡安全底座清理，不再周期性写 CPU 调度节点。';
 }
 
 function getSchedulerPixelDesc() {
@@ -947,8 +947,8 @@ function syncProfileUi() {
   refs.perfCurrentName.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
   refs.perfCurrentDesc.textContent = isAuto ? `${profile.desc} · ${describeAutoReason(state.autoReason)}` : profile.desc;
   const pixelPolicyDesc = isAuto
-    ? `自动模式已启用：当前按“${describeAutoReason(state.autoReason)}”运行，手动点卡片会退出自动。`
-    : `手动模式：当前固定为”${profile.name}”。切到自动后，系统仅在温度过高时收口到省电模式。`;
+    ? `自动模式：按“${describeAutoReason(state.autoReason)}”在均衡与省电间切换；点击模式卡片转为手动。`
+    : `手动模式：固定为「${profile.name}」；切换为自动后，仅在温度持续偏高时收口至省电。`;
   refs.perfPolicyDesc.textContent = state.uperfDetected ? `${pixelPolicyDesc} ${getSchedulerPixelDesc()}` : pixelPolicyDesc;
   refs.profilePolicyManualBtn.className = `tiny-btn${!isAuto ? ' primary' : ''}`;
   refs.profilePolicyAutoBtn.className = `tiny-btn${isAuto ? ' primary' : ''}`;

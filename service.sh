@@ -7,7 +7,7 @@
 #
 # v4.4.11 变更:
 #   - WebUI 写操作 token 改为静默自动填充 (auth.sh loopback), 取消首写确认弹窗 (auth.sh 失败才回退手输)。
-#   - CPU 调度面板收敛为 balanced/battery 两档; performance/default 退出 WebUI, 仅作内部基线, 更强性能由 UPG 接管。
+#   - CPU 调度面板收敛为 balanced/battery 两档; performance/default 退出 WebUI, 仅作内部基线, 更强性能由 UGT 接管。
 #   - 版本治理: 引入 versions.prop 组件分版, banner/安装横幅动态读 module.prop, 打包脚本自动戳 webroot ?v=。
 #
 # v4.4.10 变更:

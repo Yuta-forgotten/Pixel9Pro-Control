@@ -48,41 +48,63 @@ chooseport() {
     done
 }
 
-choose_sched_owner() {
+choose_cpu_scheduling() {
+    _sch_step="$1"
     detect_uperf_module 2>/dev/null
-    ui_print "  $1 CPU 调度接管:"
-    if [ "$UPERF_DETECTED" = "yes" ]; then
-        _up_name="${UPERF_MODULE_NAME:-Uperf Game Turbo}"
-        _up_id="${UPERF_MODULE_ID:-uperf}"
-        ui_print "    检测到 Uperf Game Turbo: $_up_name ($_up_id)"
-        case "$UPERF_MODULE_STATE" in
-            disabled)       ui_print "    状态: 已禁用" ;;
-            pending_update) ui_print "    状态: 待重启更新生效" ;;
-            pending_remove) ui_print "    状态: 待重启移除" ;;
-            *)              ui_print "    状态: 已安装" ;;
-        esac
-        ui_print "    [音量+] = 本模块覆盖接管  [音量-] = 不覆盖"
-        if chooseport; then
-            echo "pixel" > "$SCHED_OWNER_FILE"
-            ui_print "    ✓ 本模块覆盖接管 CPU 调度"
-        else
-            echo "external" > "$SCHED_OWNER_FILE"
-            echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
-            ui_print "    ✓ 不覆盖, CPU 调度交给 Uperf/外部模块"
-        fi
-    else
-        ui_print "    未检测到 Uperf Game Turbo"
-        ui_print "    此项只决定本模块是否写 CPU 调度节点, 不会安装外部模块"
-        ui_print "    [音量+] = 启用本模块调度  [音量-] = 不启用"
-        if chooseport; then
-            echo "pixel" > "$SCHED_OWNER_FILE"
-            ui_print "    ✓ 启用本模块 CPU 调度"
-        else
-            echo "external" > "$SCHED_OWNER_FILE"
-            echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
-            ui_print "    ✓ 不启用本模块 CPU 调度, 保留系统/外部调度现状"
-        fi
+    if [ "$UPERF_DETECTED" = "yes" ] && [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
+        # 检测到启用中的 UGT (Uperf Game Turbo): 默认交其接管, 不打断安装。
+        echo "external" > "$SCHED_OWNER_FILE"
+        echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
+        ui_print "  $_sch_step CPU 调度: 检测到 ${UPERF_MODULE_NAME:-Uperf Game Turbo}, 默认交其接管"
+        ui_print "    本模块不写 CPU 调度节点; 如需改回本模块接管, 在 WebUI 切换"
+        ui_print ""
+        return
     fi
+
+    # 未检测到 UGT: 四选一 (不接管 / 均衡 / 省电 / 自动)。
+    ui_print "  $_sch_step CPU 调度 (未检测到 UGT 外部调度):"
+    _SCH_VALS="external balanced battery auto"
+    _SCH_LABEL_external="不接管 (本模块不写 CPU 调度, 交系统/外部)"
+    _SCH_LABEL_balanced="均衡 (本模块, 日常推荐)"
+    _SCH_LABEL_battery="省电 (本模块)"
+    _SCH_LABEL_auto="自动 (均衡↔省电, 按温度切换)"
+    _sch_idx=1
+    _sch_total=4
+    while true; do
+        _i=0; _sch_cur=""
+        for _v in $_SCH_VALS; do
+            if [ "$_i" -eq "$_sch_idx" ]; then _sch_cur=$_v; break; fi
+            _i=$((_i + 1))
+        done
+        eval "_sch_label=\"\$_SCH_LABEL_${_sch_cur}\""
+        ui_print "    > $_sch_label"
+        if chooseport; then
+            _sch_idx=$(( (_sch_idx + 1) % _sch_total ))
+        else
+            break
+        fi
+    done
+    case "$_sch_cur" in
+        external)
+            echo "external" > "$SCHED_OWNER_FILE"
+            echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
+            ;;
+        auto)
+            echo "pixel" > "$SCHED_OWNER_FILE"
+            echo "balanced" > "$PROFILE_FILE"
+            echo "balanced" > "$PROFILE_MANUAL_FILE"
+            echo "auto" > "$PROFILE_POLICY_FILE"
+            echo "auto_install" > "$MODPATH/.profile_auto_reason"
+            ;;
+        *)
+            echo "pixel" > "$SCHED_OWNER_FILE"
+            echo "$_sch_cur" > "$PROFILE_FILE"
+            echo "$_sch_cur" > "$PROFILE_MANUAL_FILE"
+            echo "manual" > "$PROFILE_POLICY_FILE"
+            echo "manual_install" > "$MODPATH/.profile_auto_reason"
+            ;;
+    esac
+    ui_print "    ✓ $_sch_label"
     ui_print ""
 }
 
@@ -164,7 +186,7 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     # v4.3.22: light 已删除, 映射到 balanced
     # v4.4.11: WebUI 调度收敛为 balanced/battery 两档。
     #   旧 light/responsive/performance/default 一律并入 balanced;
-    #   更强性能改由 UPG (Uperf Game Turbo) 外部调度接管 (.cpu_sched_owner=external)。
+    #   更强性能改由 UGT (Uperf Game Turbo) 外部调度接管 (.cpu_sched_owner=external)。
     _profile_migrated=0
     for _mf in "$MODPATH/.current_profile" "$MODPATH/.profile_manual"; do
         [ -f "$_mf" ] || continue
@@ -175,7 +197,7 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
                 ;;
         esac
     done
-    [ "$_profile_migrated" -eq 1 ] && ui_print "  ✓ 旧性能/默认档已并入均衡 (更强性能请用 UPG 接管)"
+    [ "$_profile_migrated" -eq 1 ] && ui_print "  ✓ 旧性能/默认档已并入均衡 (更强性能请用 UGT 接管)"
     # v4.4.8: only migrate the untouched old QQ/QQMusic default list.
     _bg_list="$MODPATH/.bg_restrict_list"
     if [ -f "$_bg_list" ]; then
@@ -228,47 +250,20 @@ if [ "$_is_upgrade" -eq 0 ]; then
     ui_print "    ✓ $_ofs_label"
     ui_print ""
 
-    # --- CPU 调度 (WebUI 两档: 均衡 / 省电; 更强性能由 UPG 外部调度接管) ---
-    ui_print "  ② CPU 调度:"
-    _CPU_VALS="battery balanced"
-    _CPU_LABEL_battery="省电"
-    _CPU_LABEL_balanced="均衡模式 (日常推荐)"
-    _cpu_idx=1
-    _cpu_total=2
-    while true; do
-        _i=0; _cpu_cur=""
-        for _v in $_CPU_VALS; do
-            if [ "$_i" -eq "$_cpu_idx" ]; then _cpu_cur=$_v; break; fi
-            _i=$((_i + 1))
-        done
-        eval "_cpu_label=\"\$_CPU_LABEL_${_cpu_cur}\""
-        ui_print "    > $_cpu_label"
-        if chooseport; then
-            _cpu_idx=$(( (_cpu_idx + 1) % _cpu_total ))
-        else
-            break
-        fi
-    done
-    echo "$_cpu_cur" > "$PROFILE_FILE"
-    echo "$_cpu_cur" > "$PROFILE_MANUAL_FILE"
-    echo "manual" > "$PROFILE_POLICY_FILE"
-    echo "manual_install" > "$MODPATH/.profile_auto_reason"
-    ui_print "    ✓ $_cpu_label"
-    ui_print ""
+    # --- CPU 调度 (UGT 接管 / 本模块均衡·省电 / 自动) ---
+    choose_cpu_scheduling "②"
 
-    # --- CPU 调度接管 / Uperf 外部调度 ---
-    choose_sched_owner "③"
 
     # --- UECap 网络能力 ---
     if [ "$IS_MAGISK_NO_BASEBAND" -eq 1 ]; then
-        ui_print "  ④ 网络能力配置: 跳过 (Magisk 不含基带覆盖)"
+        ui_print "  ③ 网络能力配置: 跳过 (Magisk 不含基带覆盖)"
         echo "disabled" > "$MODPATH/.uecap_manual_mode"
         echo "disabled" > "$MODPATH/.uecap_mode"
         echo "disabled" > "$MODPATH/.uecap_policy"
         echo "magisk_no_baseband" > "$MODPATH/.uecap_reason"
         ui_print ""
     else
-    ui_print "  ④ 网络能力配置:"
+    ui_print "  ③ 网络能力配置:"
     _UE_VALS="balanced special universal"
     _UE_LABEL_balanced="国内频段 (推荐)"
     _UE_LABEL_special="全面增强"
@@ -297,7 +292,7 @@ if [ "$_is_upgrade" -eq 0 ]; then
     fi
 
     # --- NR 息屏降级 ---
-    ui_print "  ⑤ NR 息屏降级 (息屏自动切 LTE 省电):"
+    ui_print "  ④ NR 息屏降级 (息屏自动切 LTE 省电):"
     ui_print "    [音量+] = 关闭  [音量-] = 开启"
     if chooseport; then
         echo "off" > "$MODPATH/.nr_screen_switch"
@@ -309,7 +304,7 @@ if [ "$_is_upgrade" -eq 0 ]; then
     ui_print ""
 
     # --- NTP ---
-    ui_print "  ⑥ NTP 服务器:"
+    ui_print "  ⑤ NTP 服务器:"
     _NTP_VALS="ntp.aliyun.com ntp1.xiaomi.com ntp.myhuaweicloud.com time.android.com"
     _NTP_LABEL_0="阿里云 (推荐)"
     _NTP_LABEL_1="小米"
@@ -350,8 +345,15 @@ else
     [ -f "$PROFILE_MANUAL_FILE" ] || cp "$PROFILE_FILE" "$PROFILE_MANUAL_FILE" 2>/dev/null || echo 'balanced' > "$PROFILE_MANUAL_FILE"
     [ -f "$PROFILE_POLICY_FILE" ] || echo 'manual' > "$PROFILE_POLICY_FILE"
     if [ ! -f "$SCHED_OWNER_FILE" ]; then
-        ui_print "  新增设置 — CPU 调度接管"
-        choose_sched_owner "③"
+        detect_uperf_module 2>/dev/null
+        if [ "$UPERF_DETECTED" = "yes" ] && [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
+            echo "external" > "$SCHED_OWNER_FILE"
+            echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
+            ui_print "  新增设置: 检测到 UGT, CPU 调度默认交其接管"
+        else
+            echo "pixel" > "$SCHED_OWNER_FILE"
+            ui_print "  新增设置: CPU 调度默认本模块 (可在 WebUI 调整)"
+        fi
     else
         _sched_owner=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
         case "$_sched_owner" in

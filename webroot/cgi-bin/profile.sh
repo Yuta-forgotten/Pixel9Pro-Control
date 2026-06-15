@@ -134,7 +134,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     case "$newprof" in
         ''|balanced|battery) ;;
-        performance|default) json_error '400 Bad Request' 'profile retired: use balanced/battery, or hand CPU scheduling to UPG (sched_owner=external)' ;;
+        performance|default) json_error '400 Bad Request' 'profile retired: use balanced/battery, or hand CPU scheduling to UGT (sched_owner=external)' ;;
         *) json_error '400 Bad Request' 'invalid profile' ;;
     esac
     case "$newpolicy" in

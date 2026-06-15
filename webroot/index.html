@@ -193,7 +193,7 @@
 
         <article class="note-card">
           <div class="note-title">调度原理 · 模式说明</div>
-          <div class="note-body">通过 cpuset 核心分配和 sched_pixel 响应时间控制升频行为，不直接写 scaling_max_freq。本模块自带调度收敛为均衡与省电两档：均衡是亮屏日常底座，机身温度持续偏高时自动切到省电，温度回落后恢复均衡。需要更强性能时，请在上方「调度接管」切换到 UPG（Uperf Game Turbo）外部调度接管。</div>
+          <div class="note-body">基于 cpuset 核心分配与 sched_pixel 响应时间调节升频，不写 scaling_max_freq。本模块提供均衡、省电两档；自动模式以均衡为日常底座，温度持续偏高时收口至省电，回落后恢复。需要更强性能时，在「调度接管」切换至 UGT 外部调度。</div>
         </article>
       </div>
     </section>

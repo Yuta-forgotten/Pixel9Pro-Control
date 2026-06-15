@@ -85,7 +85,7 @@ fi
 case "$PROFILE" in
 
     performance)
-        # [v4.4.11] 已退出 WebUI 用户档: 面板仅余 balanced/battery, 更强性能改由 UPG 外部调度接管。
+        # [v4.4.11] 已退出 WebUI 用户档: 面板仅余 balanced/battery, 更强性能改由 UGT 外部调度接管。
         #   本段保留仅作 force/CLI 内部基线, 自动策略永不进入。
         # ── 性能优先 (顺内核还闸) ─────────────────────────────
         # 核心: sched_util_clamp_min 0→1024, 还 Google 出厂 uclamp.min 上限,
