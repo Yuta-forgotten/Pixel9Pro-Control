@@ -82,13 +82,13 @@ const PROFILES = {
     detail: '<b>省电模式</b><br><br><b>cpuset</b>: top-app → cpu0-6，background → cpu0-3<br><b>response_time</b>: 小核 32ms / 中核 96ms / 大核 200ms<br><br>放慢小核和中核升频，并把 X4 排除在前台常规调度之外。适合长时间亮屏、低发热和续航优先的场景。'
   },
   default: {
-    name: '默认模式',
-    summary: '恢复接近 Google 默认的 cpuset 与 sched_pixel 响应参数，作为对照和回退。',
-    desc: '前台: cpu0-7 · 小核 16ms · 中核 64ms · 大核 200ms',
+    name: 'Google 默认',
+    summary: '回写内核原厂 sched_pixel 节奏，最接近无干预；三档里响应最快，适合不刷 UGT 又想要较强性能。',
+    desc: '前台: cpu0-7 · 内核原厂 response (本机约 9/52/165ms)',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     modeClass: 'mode-stock',
-    detail: '<b>默认模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，foreground → cpu0-6<br><b>response_time</b>: 小核 16ms / 中核 64ms / 大核 200ms<br><br>这是接近 Pixel 系统默认的 sched_pixel 参数。它不是性能优化档，主要用于回退、对照和排查自动策略效果。'
+    detail: '<b>Google 默认（原厂节奏）</b><br><br><b>cpuset</b>: top-app → cpu0-7，foreground → cpu0-6<br><b>response_time</b>: 回写内核自报的 response_time_ms_nom（本机约小核 9ms / 中核 52ms / 大核 165ms，随内核版本自适应，非硬编码）<br><b>sched_util_clamp_min</b>: 0<br><br>这一档把升频节奏交还内核原厂值，是三档里最接近“无干预”、响应最快的一档。适合不安装 UGT 又想要较强性能的场景；想要游戏级线程调度仍建议用 UGT 接管。它不会被自动策略选中（自动只在均衡↔省电之间收口）。'
   },
   unknown: {
     name: '未选择',
@@ -1033,7 +1033,7 @@ function syncThermalUi() {
 
 function renderProfileCards() {
   refs.profileList.replaceChildren();
-  ['balanced', 'battery'].forEach((key) => {
+  ['battery', 'balanced', 'default'].forEach((key) => {
     const p = PROFILES[key];
     const card = document.createElement('article');
     card.className = 'profile-card profile-option';

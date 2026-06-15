@@ -46,6 +46,24 @@ SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 write_if_exists() { [ -f "$1" ] && echo "$2" > "$1" 2>/dev/null; }
 cpuset_write()    { [ -f "/dev/cpuset/$1/cpus" ] && echo "$2" > "/dev/cpuset/$1/cpus" 2>/dev/null; }
 
+# Google 默认档专用: 回写内核自报的 response_time_ms_nom (原厂节奏)。
+# 每簇独立读 nom 节点; 缺节点或非数值则按对应位 fallback 回退。
+# 这样"Google 默认"始终等于当前内核版本的真实出厂值, 而非硬编码猜测值。
+apply_one_nominal() {
+    # $1: cpufreq 目录   $2: fallback response_time_ms
+    _nom=$(cat "$1/sched_pixel/response_time_ms_nom" 2>/dev/null | tr -d ' \n\r\t')
+    case "$_nom" in
+        ''|*[!0-9]*) _nom="$2" ;;
+    esac
+    write_if_exists "$1/sched_pixel/response_time_ms" "$_nom"
+}
+apply_sched_pixel_nominal() {
+    # $1-3: fallback response_time_ms (小核 / 中核 / 大核), 仅在 nom 节点缺失时使用
+    apply_one_nominal "$CPU0" "$1"
+    apply_one_nominal "$CPU4" "$2"
+    apply_one_nominal "$CPU7" "$3"
+}
+
 read_sched_owner() {
     _owner=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
     case "$_owner" in
@@ -130,15 +148,20 @@ case "$PROFILE" in
         ;;
 
     default)
-        # [v4.4.11] 已退出 WebUI 用户档: 仅作开机/CLI 内部安全基线 (WebUI 与自动策略不再选用)。
-        # ── 默认模式 / 自动默认底座 ─────────────────────────
-        apply_sched_pixel 16 64 200
+        # [v4.4.12] WebUI 第三档「Google 默认」(WebUI 顺序: 省电→均衡→Google默认)。
+        # ── Google 默认 / 原厂节奏 ───────────────────────────
+        # 回写内核自报的 response_time_ms_nom (本机约小核 9 / 中核 52 / 大核 165ms),
+        #   随内核版本自适应, 是真·原厂节奏而非硬编码 16/64/200。缺 nom 节点回退 9/52/165。
+        # 三档里最接近"无干预"、响应最快的一档: 不刷 UGT 时的"高性能"选择。
+        #   想要游戏级线程调度仍建议用 UGT (sched_owner=external) 接管。
+        # cap=0, cpuset 原厂分组。自动策略永不进入此档 (auto 只在 balanced↔battery 收口)。
+        apply_sched_pixel_nominal 9 52 165
         apply_uclamp_cap 0
         cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: DEFAULT"
+        log -t pixel9pro_ctrl "CPU: DEFAULT (Google nominal response)"
         ;;
 
     status)

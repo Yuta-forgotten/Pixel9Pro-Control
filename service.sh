@@ -5,6 +5,14 @@
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
 #
+# v4.4.12 变更:
+#   - CPU 调度面板恢复三档: 省电 / 均衡 / Google默认 (WebUI 卡片顺序 省电→均衡→Google默认)。
+#     Google默认 = cpu_profile.sh 回写内核自报 response_time_ms_nom (原厂节奏, 随内核版本自适应),
+#     是三档里最接近无干预、响应最快的一档; 不刷 UGT 时的"高性能"选择, 更强性能仍荐 UGT 接管。
+#   - 修自动放电迟滞 bug (B65): 放电态 battery 在 40.4~40.8°C 死区缺粘滞句, 温度跌破 40.8°C 即弹回
+#     balanced, 使 40.4°C/60s 冷却闸形同虚设、profile 在边界抖动。补 elif active=battery 粘滞, 对齐充电态。
+#   - performance 仍退出 WebUI (仅 force/CLI 内部基线); auto 状态空间仍只 balanced↔battery, 不进 default。
+#
 # v4.4.11 变更:
 #   - WebUI 写操作 token 改为静默自动填充 (auth.sh loopback), 取消首写确认弹窗 (auth.sh 失败才回退手输)。
 #   - CPU 调度面板收敛为 balanced/battery 两档; performance/default 退出 WebUI, 仅作内部基线, 更强性能由 UGT 接管。
@@ -1416,6 +1424,12 @@ is_nr_mode_value() {
                     if [ "$_active_profile" = "battery" ] && [ "$_auto_cool_since" -gt 0 ] && [ $((_now - _auto_cool_since)) -ge "$_AUTO_BALANCED_COOL_HOLD" ]; then
                         _target_profile="balanced"
                         _target_reason="hot_cooldown"
+                    elif [ "$_active_profile" = "battery" ]; then
+                        # 死区(40.4~40.8C)粘滞: 已在 battery 时保持, 直到 <=40.4C 持续 60s 才回 balanced。
+                        # 缺这句会导致温度一旦跌破 40.8C 就立刻弹回 balanced, 冷却闸形同虚设、profile 在边界抖动。
+                        # 与充电态分支(charging_comfort_hot)的迟滞结构对齐。
+                        _target_profile="battery"
+                        _target_reason="steady_hot_guard"
                     elif [ "$_auto_hot_since" -gt 0 ] && [ $((_now - _auto_hot_since)) -ge "$_AUTO_BATTERY_HOLD" ]; then
                         _target_profile="battery"
                         _target_reason="steady_hot_guard"

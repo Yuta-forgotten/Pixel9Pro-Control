@@ -133,8 +133,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     newowner=$(printf '%s' "$body" | sed -n 's/.*"sched_owner"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
 
     case "$newprof" in
-        ''|balanced|battery) ;;
-        performance|default) json_error '400 Bad Request' 'profile retired: use balanced/battery, or hand CPU scheduling to UGT (sched_owner=external)' ;;
+        ''|balanced|battery|default) ;;
+        performance) json_error '400 Bad Request' 'performance retired: use battery/balanced/default, or hand CPU scheduling to UGT (sched_owner=external)' ;;
         *) json_error '400 Bad Request' 'invalid profile' ;;
     esac
     case "$newpolicy" in
