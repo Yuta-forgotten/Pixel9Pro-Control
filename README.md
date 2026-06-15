@@ -9,24 +9,7 @@
 - Asset: `pixel9pro_control_v4.4.11.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
-- 组件版本: 见 `versions.prop` (webui / scheduler / core)
 
-### v4.4.11
-
-- WebUI token 改为**静默自动填充**：写操作首次触发时由前端从本机 loopback `auth.sh` 静默读取 token，不再弹确认框；仅当 `auth.sh` 不可达时回退手动输入。`#token=<token>` 仍可会话配对。
-- CPU 调度面板收敛为「均衡 / 省电」两档；性能优先与默认退出 WebUI（降为 force/CLI/boot 内部基线），更强性能请切到 UGT `external` 外部接管。老用户旧 `performance`/`default`/`responsive`/`light` 档安装时自动迁移到 `balanced`。
-- 版本治理：引入 `versions.prop` 组件分版（webui/scheduler/core），改哪个组件只升对应行；`index.html` 的 `?v=` 由打包脚本据 `versions.prop` 自动戳，安装/日志横幅动态读 `module.prop`，不再全局齐改版本号。
-
-### v4.4.10
-
-- 修复 `external` 调度接管时 standby worker 诊断 `active_profile` 可能沿用旧缓存的问题，确保 WebUI 待机守护诊断与 `profile.sh` 当前状态一致。
-- 保留 v4.4.9 的 token prompt 预填、待机隔离响应修正、后台限制解析修正与 CSP console error 修正。
-
-### v4.4.9
-
-- 优化 WebUI token 会话体验：首次写操作弹窗会从本机 loopback 自动读取并预填 token，`#token=<token>` 仍可直接配对。
-- 修复待机隔离模式响应被旧诊断状态覆盖，以及后台限制列表在 Android `/system/bin/sh` 下解析为空的问题。
-- 保留 v4.4.8 的 UGT `external` 安全底座、NR 热点识别、旧配置迁移、功耗/温度历史导出能力。
 
 ## 支持设备
 
@@ -44,7 +27,7 @@
 
 本模块内置 Pixel 原厂调度参数微调；如已安装 Uperf Game Turbo，可在安装向导或 WebUI 中选择 `external`，将 CPU scene / 游戏调度交由 UGT 处理。本项目不打包、不改写 UGT，只做只读探测和调度让权。
 
-**v4.4.11 起 WebUI 仅提供「均衡 / 省电」两档**；性能优先与默认降为内部基线（force/CLI/boot 兜底，不在 WebUI），需要更强性能请切到 UGT `external` 接管。下表后两档仅作内部参数参考。
+**v4.4.11 起 WebUI 仅提供「均衡 / 省电」两档**；性能优先与默认降为内部基线，需要更好的用户态调度请切到 UGT `external` 接管。下表后两档仅作内部参数参考。
 
 | 模式 | top-app | 说明 | 小核 resp | 中核 resp | 大核 resp |
 |------|---------|------|-----------|-----------|-----------|
@@ -56,7 +39,7 @@
 - 调度通过 `cpuset` 和 `sched_pixel response_time_ms` 控制；不直接写 `scaling_max_freq`
 - `foreground/cpus` 会被 framework 重置到 `0-6`，模块主要托管 `top-app/background/system-background`
 - 前台自动调度仅在 `.cpu_sched_owner=pixel` 时生效；选择 `external` 后，本模块主动让位给 UGT 或其它外部调度模块
-- 选择“不覆盖 Uperf / external”后，本模块不再周期性写 CPU 调度节点，WebUI 的 profile/auto/enforce 会暂停；若未检测到 Uperf，v4.4.8 起会先执行一次 `balanced` 安全底座清理，避免旧高 boost 残留
+- 切到 `external`（不接管）后，本模块不再周期性写 CPU 调度节点，WebUI 的 profile/auto/enforce 会暂停；若未检测到 UGT，v4.4.8 起会先执行一次 `balanced` 安全底座清理，避免旧高 boost 残留
 
 当 `.cpu_sched_owner=external` 时，本模块会跳过：
 
