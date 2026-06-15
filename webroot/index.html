@@ -193,7 +193,7 @@
 
         <article class="note-card">
           <div class="note-title">调度原理 · 模式说明</div>
-          <div class="note-body">基于 cpuset 核心分配与 sched_pixel 响应时间调节升频，不写 scaling_max_freq。本模块提供省电、均衡、Google 默认三档（Google 默认回写内核原厂响应节奏，三档里性能最高）；自动模式以均衡为日常底座，温度持续偏高时收口至省电，回落后恢复。需要游戏级用户态调度时，在「调度接管」切换至 UGT 外部调度。</div>
+          <div class="note-body">基于 cpuset 核心分配与 sched_pixel 响应时间调节升频，不写 scaling_max_freq。本模块提供省电、均衡、系统默认三档（系统默认回写内核只读节点 response_time_ms_nom 恢复出厂升频节奏，并还原出厂 cpuset 与 uclamp.min cap=1024）；自动模式以均衡为日常底座，温度持续偏高时收口至省电，回落后恢复。需要游戏级线程调度时，在「调度接管」切换至 UGT 外部调度。</div>
         </article>
       </div>
     </section>

@@ -64,31 +64,31 @@ const PROFILES = {
     detail: '<b>性能优先</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 12ms / 中核 20ms / 大核 80ms<br><b>sched_util_clamp_min</b>: 0 → 1024（恢复 Google 出厂 uclamp.min 上限，允许 ADPF/HBoost/fork/ExoPlayer 动态 boost 发挥作用）<br><br>这是手动性能档：中大核更早补位，前台峰值响应更强。代价是温升更快；自动策略只在均衡和省电之间切换，手动锁定性能优先时不会自动拉回。'
   },
   balanced: {
-    name: '均衡模式',
-    summary: '小核保持响应，中核适度补位，X4 只处理突发负载。日常主力档。',
-    desc: '前台: cpu0-7 · 小核 16ms · 中核 40ms · 大核 200ms',
+    name: '均衡',
+    summary: 'response_time_ms 16/40/200，top-app 全核，uclamp.min cap=0。',
+    desc: '前台: cpu0-7 · 小核 16ms · 中核 40ms · 大核 200ms · cap 0',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     modeClass: 'mode-balanced',
-    detail: '<b>均衡模式</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 16ms / 中核 40ms / 大核 200ms<br><br>小核保持及时响应，避免低频高占用；中核适度补位，减少视频/feed 稳态升频；X4 仅作为较晚的突发兜底。'
+    detail: '<b>均衡</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time_ms</b>: 16 / 40 / 200（小 / 中 / 大核）<br><b>sched_util_clamp_min</b>: 0（抑制 per-task boost）<br><br>中等升频速率，top-app 可用全核，X4 升频节奏最慢（200ms）。'
   },
   battery: {
-    name: '省电模式',
-    summary: '放慢小中核升频并减少 X4 参与，优先控制前台温度和耗电。',
-    desc: '前台: cpu0-6 · 小核 32ms · 中核 96ms · 大核 200ms',
+    name: '省电',
+    summary: 'response_time_ms 32/96/200，top-app 限 cpu0-6（排除 X4），cap=0。',
+    desc: '前台: cpu0-6 · 小核 32ms · 中核 96ms · 大核 200ms · cap 0',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     modeClass: 'mode-battery',
-    detail: '<b>省电模式</b><br><br><b>cpuset</b>: top-app → cpu0-6，background → cpu0-3<br><b>response_time</b>: 小核 32ms / 中核 96ms / 大核 200ms<br><br>放慢小核和中核升频，并把 X4 排除在前台常规调度之外。适合长时间亮屏、低发热和续航优先的场景。'
+    detail: '<b>省电</b><br><br><b>cpuset</b>: top-app → cpu0-6，background → cpu0-3<br><b>response_time_ms</b>: 32 / 96 / 200（小 / 中 / 大核）<br><b>sched_util_clamp_min</b>: 0（抑制 per-task boost）<br><br>升频速率最慢；top-app 限制在 cpu0-6，前台常规调度不含大核 X4。'
   },
   default: {
-    name: 'Google 默认',
-    summary: '回写内核原厂 sched_pixel 节奏，最接近无干预；三档里响应最快，适合不刷 UGT 又想要较强性能。',
-    desc: '前台: cpu0-7 · 内核原厂 response (本机约 9/52/165ms)',
+    name: '系统默认',
+    summary: '恢复内核默认 response_time_ms（nom 9/52/165）、出厂 cpuset 与 cap=1024。',
+    desc: '前台: cpu0-7 · response=内核 nom（本机 9/52/165）· cap 1024',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     modeClass: 'mode-stock',
-    detail: '<b>Google 默认（原厂节奏）</b><br><br><b>cpuset</b>: top-app → cpu0-7，foreground → cpu0-6<br><b>response_time</b>: 回写内核自报的 response_time_ms_nom（本机约小核 9ms / 中核 52ms / 大核 165ms，随内核版本自适应，非硬编码）<br><b>sched_util_clamp_min</b>: 0<br><br>这一档把升频节奏交还内核原厂值，是三档里最接近“无干预”、响应最快的一档。适合不安装 UGT 又想要较强性能的场景；想要游戏级线程调度仍建议用 UGT 接管。它不会被自动策略选中（自动只在均衡↔省电之间收口）。'
+    detail: '<b>系统默认</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3（出厂值）<br><b>response_time_ms</b>: 回写内核只读节点 response_time_ms_nom（本机实测 9 / 52 / 165，随内核版本自适应）<br><b>sched_util_clamp_min</b>: 1024（出厂上限，不压制 boost）<br><br>恢复内核出厂升频节奏与 uclamp/cpuset；balanced/battery 才把 cap 压成 0 省电，本档不压制。不进自动策略。'
   },
   unknown: {
     name: '未选择',

@@ -67,7 +67,7 @@ choose_cpu_scheduling() {
     _SCH_LABEL_external="不接管 (本模块不写 CPU 调度, 交系统/外部)"
     _SCH_LABEL_balanced="均衡 (本模块, 日常推荐)"
     _SCH_LABEL_battery="省电 (本模块)"
-    _SCH_LABEL_default="Google 默认 (本模块, 原厂节奏/三档最高性能)"
+    _SCH_LABEL_default="系统默认 (本模块, 恢复内核默认 sched_pixel + 出厂 cpuset/cap)"
     _SCH_LABEL_auto="自动 (均衡↔省电, 按温度切换)"
     _sch_idx=1
     _sch_total=5

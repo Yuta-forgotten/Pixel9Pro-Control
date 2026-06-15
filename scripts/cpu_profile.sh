@@ -81,7 +81,8 @@ apply_sched_pixel() {
 
 apply_uclamp_cap() {
     # $1: sched_util_clamp_min — uclamp.min 系统级上限(cap)。
-    #   performance=1024 还 Google 出厂上限放开动态 boost; 其它档=0。
+    #   performance/系统默认(default)=1024 (出厂上限, 放开 ADPF/HBoost/fork/ExoPlayer 动态 boost);
+    #   balanced/battery=0 (抑制走 per-task 请求路径的 boost, 省电)。出厂默认=1024。
     #   volatile, 不被 PowerHAL/Thermal 覆盖 (无需 enforce 守护)。
     write_if_exists "$UCLAMP_CAP_MIN" "$1"
 }
@@ -148,20 +149,23 @@ case "$PROFILE" in
         ;;
 
     default)
-        # [v4.4.12] WebUI 第三档「Google 默认」(WebUI 顺序: 省电→均衡→Google默认)。
-        # ── Google 默认 / 原厂节奏 ───────────────────────────
-        # 回写内核自报的 response_time_ms_nom (本机约小核 9 / 中核 52 / 大核 165ms),
-        #   随内核版本自适应, 是真·原厂节奏而非硬编码 16/64/200。缺 nom 节点回退 9/52/165。
-        # 三档里最接近"无干预"、响应最快的一档: 不刷 UGT 时的"高性能"选择。
-        #   想要游戏级线程调度仍建议用 UGT (sched_owner=external) 接管。
-        # cap=0, cpuset 原厂分组。自动策略永不进入此档 (auto 只在 balanced↔battery 收口)。
+        # [v4.4.12] WebUI 第三档「系统默认」(WebUI 顺序: 省电→均衡→系统默认)。
+        # ── 系统默认 / 恢复内核出厂调度 ───────────────────────
+        # 设备实测依据 (2026-06-16, caiman, 见 01_cpu/UGT技术说明):
+        #   - response_time_ms_nom 为只读内核常量 (-r--r--r--), 本机 9/52/165;
+        #     新切 sched_pixel 时 response_time_ms 即等于 nom, 故 nom 就是出厂升频节奏。
+        #   - 原厂 init.zumapro.soc.rc 不写 response_time_ms (停在内核默认),
+        #     cpuset 出厂值 top-app=0-7 fg=0-6 bg=0-3 sys-bg=0-3; sched_util_clamp_min 出厂=1024。
+        # 本档据此恢复出厂三件套: response=nom + cpuset=出厂值 + uclamp.min cap=1024。
+        #   (balanced/battery 才特意把 cap 压成 0 抑制 per-task boost; 本档不压制, 性能最接近原厂。)
+        # 缺 nom 节点(非 sched_pixel governor)时回退 9/52/165。自动策略不进入此档。
         apply_sched_pixel_nominal 9 52 165
-        apply_uclamp_cap 0
+        apply_uclamp_cap 1024
         cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
         cpuset_write "background"        "0-3"
         cpuset_write "system-background" "0-3"
-        log -t pixel9pro_ctrl "CPU: DEFAULT (Google nominal response)"
+        log -t pixel9pro_ctrl "CPU: DEFAULT (system stock: response=nom, cap=1024)"
         ;;
 
     status)
@@ -189,7 +193,7 @@ case "$PROFILE" in
         done
         echo ""
         echo "=== uclamp cap ==="
-        printf "sched_util_clamp_min=%s  (performance=1024 / 其它=0)\n" \
+        printf "sched_util_clamp_min=%s  (performance/默认=1024 出厂上限 / 均衡·省电=0)\n" \
             "$(cat $UCLAMP_CAP_MIN 2>/dev/null || echo N/A)"
         echo ""
         echo "=== cpuset ==="

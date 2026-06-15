@@ -6,9 +6,10 @@
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
 #
 # v4.4.12 变更:
-#   - CPU 调度面板恢复三档: 省电 / 均衡 / Google默认 (WebUI 卡片顺序 省电→均衡→Google默认)。
-#     Google默认 = cpu_profile.sh 回写内核自报 response_time_ms_nom (原厂节奏, 随内核版本自适应),
-#     是三档里最接近无干预、响应最快的一档; 不刷 UGT 时的"高性能"选择, 更强性能仍荐 UGT 接管。
+#   - CPU 调度面板恢复三档: 省电 / 均衡 / 系统默认 (WebUI 卡片顺序 省电→均衡→系统默认)。
+#     系统默认 = cpu_profile.sh 恢复出厂三件套: response_time_ms=内核只读 nom(设备实测 9/52/165)
+#     + 出厂 cpuset(top-app 0-7/fg 0-6/bg 0-3/sys-bg 0-3) + sched_util_clamp_min=1024(出厂上限,不压制 boost)。
+#     依据: 2026-06-16 设备实测 + 原厂 init.zumapro.soc.rc (不写 response_time_ms, 故 nom 即出厂节奏)。
 #   - 修自动放电迟滞 bug (B65): 放电态 battery 在 40.4~40.8°C 死区缺粘滞句, 温度跌破 40.8°C 即弹回
 #     balanced, 使 40.4°C/60s 冷却闸形同虚设、profile 在边界抖动。补 elif active=battery 粘滞, 对齐充电态。
 #   - performance 仍退出 WebUI (仅 force/CLI 内部基线); auto 状态空间仍只 balanced↔battery, 不进 default。
