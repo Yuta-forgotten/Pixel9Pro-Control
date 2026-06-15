@@ -42,6 +42,13 @@ else
     baseband_version=""
 fi
 
-printf '{"model":"%s","version":"%s","version_code":"%s","module_version":"%s","httpd_rss_kb":%s,"auth_required":true,"baseband_installed":%s,"baseband_version":"%s","mem_total_kb":%s,"mem_avail_kb":%s,"swap_total_kb":%s,"swap_free_kb":%s,"kernel":"%s","uptime_sec":%s}' \
+# 组件版本 (versions.prop, 组件级版本 SoT; 缺失时为空)
+versions_file="$moddir/versions.prop"
+webui_ver=$(grep '^webui=' "$versions_file" 2>/dev/null | cut -d= -f2 | tr -d '\r\n "\\')
+sched_ver=$(grep '^scheduler=' "$versions_file" 2>/dev/null | cut -d= -f2 | tr -d '\r\n "\\')
+core_ver=$(grep '^core=' "$versions_file" 2>/dev/null | cut -d= -f2 | tr -d '\r\n "\\')
+
+printf '{"model":"%s","version":"%s","version_code":"%s","module_version":"%s","httpd_rss_kb":%s,"auth_required":true,"baseband_installed":%s,"baseband_version":"%s","mem_total_kb":%s,"mem_avail_kb":%s,"swap_total_kb":%s,"swap_free_kb":%s,"kernel":"%s","uptime_sec":%s,"webui_version":"%s","scheduler_version":"%s","core_version":"%s"}' \
     "$(json_escape "$model")" "$(json_escape "$version")" "$vc" "$mv" "${httpd_rss:-0}" "$baseband_installed" "$(json_escape "$baseband_version")" \
-    "${mem_total:-0}" "${mem_avail:-0}" "${swap_total:-0}" "${swap_free:-0}" "$(json_escape "${kernel:-}")" "${uptime_sec:-0}"
+    "${mem_total:-0}" "${mem_avail:-0}" "${swap_total:-0}" "${swap_free:-0}" "$(json_escape "${kernel:-}")" "${uptime_sec:-0}" \
+    "$(json_escape "$webui_ver")" "$(json_escape "$sched_ver")" "$(json_escape "$core_ver")"

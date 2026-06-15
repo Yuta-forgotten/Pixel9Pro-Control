@@ -1,6 +1,6 @@
 id=pixel9pro_control
 name=Pixel 9 Pro 温控调度控制台
-version=v4.4.10
-versionCode=74
+version=v4.4.11
+versionCode=75
 author=Yuta
-description=温控阈值 · 可选 Pixel 原厂 CPU 调度/UGT 外部调度让权 · ZRAM/VM · UECap 切换 · NR 息屏降级 · SIM2 空槽管理 · WebUI
+description=温控阈值 · Pixel 均衡/省电调度 (高性能交 UGT 外部接管) · ZRAM/VM · UECap 切换 · NR 息屏降级 · SIM2 空槽管理 · WebUI

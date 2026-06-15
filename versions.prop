@@ -1,0 +1,16 @@
+# versions.prop — 组件级版本 SoT (component version source of truth)
+#
+# 用途: 哪个组件改动, 只升对应行, 不必齐改全仓 —— 加快 git 查阅。
+# 发行总版本 (version) 与 versionCode 见 module.prop, 仅在正式发版时升。
+# 顶栏 UI 版本仍由 info.sh 动态读 module.prop 的 module_version。
+#
+# 组件划分:
+#   webui      = webroot/ (app.js / app.css / index.html)
+#                打包时 build_module.py 据此自动戳 index.html 的 ?v= 缓存参数 (源文件用 __WEBUI_VER__ 占位)
+#   scheduler  = scripts/cpu_profile.sh + webroot/cgi-bin/profile.sh
+#   core       = service.sh + customize.sh + 其余 CGI / 基础设施
+#
+# 基带模块 (pixel9pro_baseband_trial) 为独立模块, 由其自身 module.prop 计版, 不在此。
+webui=4.4.11
+scheduler=4.4.11
+core=4.4.11

@@ -10,7 +10,7 @@
 <meta http-equiv="Expires" content="0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' http://127.0.0.1:6210; connect-src 'self' http://127.0.0.1:6210; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self' http://127.0.0.1:6210">
 <title>温控调度控制台</title>
-<link rel="stylesheet" href="/app.css?v=4.4.9.1">
+<link rel="stylesheet" href="/app.css?v=__WEBUI_VER__">
 </head>
 <body>
 <div class="app-shell">
@@ -193,7 +193,7 @@
 
         <article class="note-card">
           <div class="note-title">调度原理 · 模式说明</div>
-          <div class="note-body">通过 cpuset 核心分配和 sched_pixel 响应时间控制升频行为，不直接写 scaling_max_freq。自动模式以均衡作为亮屏日常底座，机身温度持续偏高时切到省电，温度回落后恢复均衡；性能优先是手动档，不参与自动切换。</div>
+          <div class="note-body">通过 cpuset 核心分配和 sched_pixel 响应时间控制升频行为，不直接写 scaling_max_freq。本模块自带调度收敛为均衡与省电两档：均衡是亮屏日常底座，机身温度持续偏高时自动切到省电，温度回落后恢复均衡。需要更强性能时，请在上方「调度接管」切换到 UPG（Uperf Game Turbo）外部调度接管。</div>
         </article>
       </div>
     </section>
@@ -536,6 +536,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=4.4.9.1"></script>
+<script src="/app.js?v=__WEBUI_VER__"></script>
 </body>
 </html>

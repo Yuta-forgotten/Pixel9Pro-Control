@@ -554,16 +554,24 @@ async function fetchWebuiTokenForPrompt() {
 
 async function ensureWebuiToken() {
   if (state.webuiToken) return true;
+  // auth.sh 经 loopback 自由提供 token（能 POST 必能 GET），读到即静默采用，不弹窗。
   const serverToken = await fetchWebuiTokenForPrompt();
-  const message = serverToken
-    ? 'WebUI token 已自动读取，请确认后继续'
-    : '请输入 WebUI token\n\n获取方式: root shell 执行\ncat /data/adb/modules/pixel9pro_control/.webui_token\n\n也可打开 http://127.0.0.1:6210/#token=<token> 完成会话配对';
-  const token = window.prompt(message, serverToken);
+  if (serverToken && setWebuiToken(serverToken)) return true;
+  // 仅当 auth.sh 取不到 token 时（token 文件缺失/服务异常）才回退手动输入。
+  const message = '无法自动读取 WebUI token，请手动输入\n\n获取方式: root shell 执行\ncat /data/adb/modules/pixel9pro_control/.webui_token\n\n也可打开 http://127.0.0.1:6210/#token=<token> 完成会话配对';
+  const token = window.prompt(message, '');
   if (!setWebuiToken(token)) {
     showToast('缺少或无效的 WebUI token');
     return false;
   }
   return true;
+}
+
+// 会话无 token 时后台静默预取（auth.sh loopback），使首个写操作零延迟、零弹窗。
+function prefetchWebuiToken() {
+  fetchWebuiTokenForPrompt()
+    .then((t) => { if (t && !state.webuiToken) setWebuiToken(t); })
+    .catch(() => {});
 }
 
 async function apiFetch(path, opts = {}) {
@@ -1025,7 +1033,7 @@ function syncThermalUi() {
 
 function renderProfileCards() {
   refs.profileList.replaceChildren();
-  ['performance', 'balanced', 'battery', 'default'].forEach((key) => {
+  ['balanced', 'battery'].forEach((key) => {
     const p = PROFILES[key];
     const card = document.createElement('article');
     card.className = 'profile-card profile-option';
@@ -3032,6 +3040,7 @@ async function init() {
   const bootAt = Date.now();
   initRefs();
   loadWebuiTokenFromSession();
+  if (!state.webuiToken) prefetchWebuiToken();
   initTheme();
   renderProfileCards();
   renderThermalCards();

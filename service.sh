@@ -1,8 +1,14 @@
 #!/system/bin/sh
 ##############################################################
-# service.sh v4.4.10 — 开机服务 (Doze 友好后台 + M3 WebUI)
+# service.sh — 开机服务 (Doze 友好后台 + M3 WebUI)
+# 版本: 发行总版本见 module.prop, 组件版本见 versions.prop (运行时 banner 动态读取, 不硬编码)
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
+#
+# v4.4.11 变更:
+#   - WebUI 写操作 token 改为静默自动填充 (auth.sh loopback), 取消首写确认弹窗 (auth.sh 失败才回退手输)。
+#   - CPU 调度面板收敛为 balanced/battery 两档; performance/default 退出 WebUI, 仅作内部基线, 更强性能由 UPG 接管。
+#   - 版本治理: 引入 versions.prop 组件分版, banner/安装横幅动态读 module.prop, 打包脚本自动戳 webroot ?v=。
 #
 # v4.4.10 变更:
 #   - 修复 standby worker 在 external 调度接管后诊断 active_profile 可能沿用旧缓存的问题。
@@ -209,6 +215,9 @@ detect_root_impl() {
 }
 
 ROOT_IMPL=$(detect_root_impl)
+# 发行总版本动态取自 module.prop (不硬编码); 组件版本见 versions.prop
+MOD_VER=$(grep '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2 | tr -d '\r\n "\\')
+[ -n "$MOD_VER" ] || MOD_VER="dev"
 
 find_webui_httpd_pid() {
     for _pid in $(pidof httpd 2>/dev/null) $(pidof busybox 2>/dev/null); do
@@ -700,7 +709,7 @@ if [ ! -f "$SIM2_AUTO_FILE" ]; then
 fi
 [ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
 
-log -t pixel9pro_ctrl "v4.4.10[$ROOT_IMPL]: applying keep-5G standby optimizations..."
+log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
 # special: global special，stock +52 组增强组合
@@ -783,7 +792,7 @@ case "$SWAP_MODE" in
         ;;
 esac
 
-log -t pixel9pro_ctrl "v4.4.10[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
 
 # ──────────────────────────────────────────────────────────
 # 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)

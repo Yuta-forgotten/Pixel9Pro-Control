@@ -85,6 +85,8 @@ fi
 case "$PROFILE" in
 
     performance)
+        # [v4.4.11] 已退出 WebUI 用户档: 面板仅余 balanced/battery, 更强性能改由 UPG 外部调度接管。
+        #   本段保留仅作 force/CLI 内部基线, 自动策略永不进入。
         # ── 性能优先 (顺内核还闸) ─────────────────────────────
         # 核心: sched_util_clamp_min 0→1024, 还 Google 出厂 uclamp.min 上限,
         #   放开 ADPF/HBoost/fork/ExoPlayer 等内核动态 boost (都走 uclamp.min 路径)。
@@ -128,6 +130,7 @@ case "$PROFILE" in
         ;;
 
     default)
+        # [v4.4.11] 已退出 WebUI 用户档: 仅作开机/CLI 内部安全基线 (WebUI 与自动策略不再选用)。
         # ── 默认模式 / 自动默认底座 ─────────────────────────
         apply_sched_pixel 16 64 200
         apply_uclamp_cap 0

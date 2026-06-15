@@ -83,7 +83,7 @@ append_profile_history() {
 }
 
 emit_profile_state() {
-    _active=$(read_valid_profile "$PROFILE_FILE" 'default')
+    _active=$(read_valid_profile "$PROFILE_FILE" 'balanced')
     _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" "$_active")
     _policy=$(read_valid_policy)
     _sched_owner=$(read_valid_sched_owner)
@@ -133,7 +133,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     newowner=$(printf '%s' "$body" | sed -n 's/.*"sched_owner"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
 
     case "$newprof" in
-        ''|performance|balanced|battery|default) ;;
+        ''|balanced|battery) ;;
+        performance|default) json_error '400 Bad Request' 'profile retired: use balanced/battery, or hand CPU scheduling to UPG (sched_owner=external)' ;;
         *) json_error '400 Bad Request' 'invalid profile' ;;
     esac
     case "$newpolicy" in
@@ -153,9 +154,9 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                 _owner_reason="external_no_scheduler_sanitized"
             fi
             printf '%s' "$_owner_reason" > "$PROFILE_AUTO_REASON_FILE"
-            append_profile_history "$(read_valid_profile "$PROFILE_FILE" 'default')" "$_owner_reason"
+            append_profile_history "$(read_valid_profile "$PROFILE_FILE" 'balanced')" "$_owner_reason"
         else
-            _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'default')
+            _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'balanced')
             printf 'pixel' > "$SCHED_OWNER_FILE"
             _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_manual" "$MODDIR" 2>/dev/null)
             [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
@@ -213,10 +214,10 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     case "$newpolicy" in
         auto)
-            _active=$(read_valid_profile "$PROFILE_FILE" 'default')
+            _active=$(read_valid_profile "$PROFILE_FILE" 'balanced')
             case "$_active" in
-                default|balanced|battery) _target="$_active" ;;
-                *) _target="default" ;;
+                balanced|battery) _target="$_active" ;;
+                *) _target="balanced" ;;
             esac
             _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_target" "$MODDIR" 2>/dev/null)
             [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
@@ -226,7 +227,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             append_profile_history "$_target" "auto_enabled"
             ;;
         manual)
-            _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'default')
+            _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'balanced')
             _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_manual" "$MODDIR" 2>/dev/null)
             [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
             printf '%s' "$_manual" > "$PROFILE_FILE"

@@ -1,6 +1,7 @@
 #!/system/bin/sh
 ##############################################################
-# customize.sh v4.4.10 — 安装时配置 (APatch / KernelSU / Magisk)
+# customize.sh — 安装时配置 (APatch / KernelSU / Magisk)
+# 版本: 发行总版本见 module.prop, 组件版本见 versions.prop (不在此硬编码)
 # 检测机型 → 迁移旧设置 → 音量键选择功能 → 温控配置
 ##############################################################
 
@@ -87,10 +88,12 @@ choose_sched_owner() {
 
 device=$(getprop ro.product.device 2>/dev/null)
 ROOT_IMPL=$(detect_root_impl)
+# 安装横幅版本动态取自 module.prop (发行总版本 SoT), 不硬编码; 组件版本见 versions.prop
+MOD_VER=$(grep '^version=' "$MODPATH/module.prop" 2>/dev/null | cut -d= -f2 | tr -d '\r\n "\\')
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Pixel 9 Pro 温控调度控制台"
-ui_print "  v4.4.10"
+ui_print "  ${MOD_VER:-(version 见 module.prop)}"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Root: $ROOT_IMPL"
 
@@ -159,11 +162,20 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     done
     ui_print "  ✓ 已迁移用户配置"
     # v4.3.22: light 已删除, 映射到 balanced
-    # v4.4.0: responsive 改名 performance (加 cap 管理), 旧值映射
+    # v4.4.11: WebUI 调度收敛为 balanced/battery 两档。
+    #   旧 light/responsive/performance/default 一律并入 balanced;
+    #   更强性能改由 UPG (Uperf Game Turbo) 外部调度接管 (.cpu_sched_owner=external)。
+    _profile_migrated=0
     for _mf in "$MODPATH/.current_profile" "$MODPATH/.profile_manual"; do
-        [ -f "$_mf" ] && grep -q '^light$' "$_mf" && printf 'balanced' > "$_mf"
-        [ -f "$_mf" ] && grep -q '^responsive$' "$_mf" && printf 'performance' > "$_mf"
+        [ -f "$_mf" ] || continue
+        case "$(cat "$_mf" 2>/dev/null | tr -d ' \n\r\t')" in
+            light|responsive|performance|default)
+                printf 'balanced' > "$_mf"
+                _profile_migrated=1
+                ;;
+        esac
     done
+    [ "$_profile_migrated" -eq 1 ] && ui_print "  ✓ 旧性能/默认档已并入均衡 (更强性能请用 UPG 接管)"
     # v4.4.8: only migrate the untouched old QQ/QQMusic default list.
     _bg_list="$MODPATH/.bg_restrict_list"
     if [ -f "$_bg_list" ]; then
@@ -216,15 +228,13 @@ if [ "$_is_upgrade" -eq 0 ]; then
     ui_print "    ✓ $_ofs_label"
     ui_print ""
 
-    # --- CPU 调度 ---
+    # --- CPU 调度 (WebUI 两档: 均衡 / 省电; 更强性能由 UPG 外部调度接管) ---
     ui_print "  ② CPU 调度:"
-    _CPU_VALS="battery balanced default performance"
+    _CPU_VALS="battery balanced"
     _CPU_LABEL_battery="省电"
-    _CPU_LABEL_balanced="均衡模式"
-    _CPU_LABEL_default="默认 (自动基线)"
-    _CPU_LABEL_performance="性能 (还闸放开 boost)"
-    _cpu_idx=2
-    _cpu_total=4
+    _CPU_LABEL_balanced="均衡模式 (日常推荐)"
+    _cpu_idx=1
+    _cpu_total=2
     while true; do
         _i=0; _cpu_cur=""
         for _v in $_CPU_VALS; do
@@ -336,8 +346,8 @@ if [ "$_is_upgrade" -eq 0 ]; then
 else
     # 升级模式: 确保必要的默认值存在
     [ -f "$OFFSET_FILE" ] || echo '4' > "$OFFSET_FILE"
-    [ -f "$PROFILE_FILE" ] || echo 'default' > "$PROFILE_FILE"
-    [ -f "$PROFILE_MANUAL_FILE" ] || cp "$PROFILE_FILE" "$PROFILE_MANUAL_FILE" 2>/dev/null || echo 'default' > "$PROFILE_MANUAL_FILE"
+    [ -f "$PROFILE_FILE" ] || echo 'balanced' > "$PROFILE_FILE"
+    [ -f "$PROFILE_MANUAL_FILE" ] || cp "$PROFILE_FILE" "$PROFILE_MANUAL_FILE" 2>/dev/null || echo 'balanced' > "$PROFILE_MANUAL_FILE"
     [ -f "$PROFILE_POLICY_FILE" ] || echo 'manual' > "$PROFILE_POLICY_FILE"
     if [ ! -f "$SCHED_OWNER_FILE" ]; then
         ui_print "  新增设置 — CPU 调度接管"
