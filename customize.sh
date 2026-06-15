@@ -61,7 +61,7 @@ choose_cpu_scheduling() {
         return
     fi
 
-    # 未检测到 UGT: 五选一 (不接管 / 均衡 / 省电 / Google默认 / 自动)。
+    # 未检测到 UGT: 五选一 (不接管 / 均衡 / 省电 / 系统默认 / 自动)。
     ui_print "  $_sch_step CPU 调度 (未检测到 UGT 外部调度):"
     _SCH_VALS="external balanced battery default auto"
     _SCH_LABEL_external="不接管 (本模块不写 CPU 调度, 交系统/外部)"
@@ -186,7 +186,7 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     ui_print "  ✓ 已迁移用户配置"
     # v4.3.22: light 已删除, 映射到 balanced
     # v4.4.11: WebUI 调度收敛为 balanced/battery 两档。
-    # v4.4.12: 重新引入「Google 默认」(default) 为 WebUI 第三档 (原厂 nominal 节奏)。
+    # v4.4.12: 重新引入「系统默认」(default) 为 WebUI 第三档 (恢复内核出厂调度: nom + 出厂 cpuset + cap=1024)。
     #   旧 light/responsive/performance 仍并入 balanced; default 不再迁移, 作为用户可选档保留。
     #   更强性能仍可改由 UGT (Uperf Game Turbo) 外部调度接管 (.cpu_sched_owner=external)。
     _profile_migrated=0
@@ -199,7 +199,7 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
                 ;;
         esac
     done
-    [ "$_profile_migrated" -eq 1 ] && ui_print "  ✓ 旧性能档已并入均衡 (省电/均衡/Google默认 三档可在 WebUI 选; 更强性能用 UGT 接管)"
+    [ "$_profile_migrated" -eq 1 ] && ui_print "  ✓ 旧性能档已并入均衡 (省电/均衡/系统默认 三档可在 WebUI 选; 更强性能用 UGT 接管)"
     # v4.4.8: only migrate the untouched old QQ/QQMusic default list.
     _bg_list="$MODPATH/.bg_restrict_list"
     if [ -f "$_bg_list" ]; then

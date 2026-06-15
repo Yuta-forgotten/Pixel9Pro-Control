@@ -46,22 +46,23 @@ SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 write_if_exists() { [ -f "$1" ] && echo "$2" > "$1" 2>/dev/null; }
 cpuset_write()    { [ -f "/dev/cpuset/$1/cpus" ] && echo "$2" > "/dev/cpuset/$1/cpus" 2>/dev/null; }
 
-# Google 默认档专用: 回写内核自报的 response_time_ms_nom (原厂节奏)。
-# 每簇独立读 nom 节点; 缺节点或非数值则按对应位 fallback 回退。
-# 这样"Google 默认"始终等于当前内核版本的真实出厂值, 而非硬编码猜测值。
+# 系统默认档专用: 回写内核只读节点 response_time_ms_nom (出厂升频节奏)。
+# 设备实测(2026-06-16 caiman): nom 为只读常量 (-r--r--r--) 9/52/165; 新切 sched_pixel 时
+#   response_time_ms 即等于 nom, 故 nom 就是出厂节奏; 原厂 init 全程不写 response_time_ms。
+# 读不到 nom(非 sched_pixel governor, 如 UGT 切 powersave)时**跳过写入** —— 此时
+#   response_time_ms 节点本就不存在、写入是 no-op, 不写任何硬编码猜测值(不再"想当然硬编码默认")。
 apply_one_nominal() {
-    # $1: cpufreq 目录   $2: fallback response_time_ms
+    # $1: cpufreq 目录
     _nom=$(cat "$1/sched_pixel/response_time_ms_nom" 2>/dev/null | tr -d ' \n\r\t')
     case "$_nom" in
-        ''|*[!0-9]*) _nom="$2" ;;
+        ''|*[!0-9]*) return 0 ;;
     esac
     write_if_exists "$1/sched_pixel/response_time_ms" "$_nom"
 }
 apply_sched_pixel_nominal() {
-    # $1-3: fallback response_time_ms (小核 / 中核 / 大核), 仅在 nom 节点缺失时使用
-    apply_one_nominal "$CPU0" "$1"
-    apply_one_nominal "$CPU4" "$2"
-    apply_one_nominal "$CPU7" "$3"
+    apply_one_nominal "$CPU0"
+    apply_one_nominal "$CPU4"
+    apply_one_nominal "$CPU7"
 }
 
 read_sched_owner() {
@@ -152,14 +153,17 @@ case "$PROFILE" in
         # [v4.4.12] WebUI 第三档「系统默认」(WebUI 顺序: 省电→均衡→系统默认)。
         # ── 系统默认 / 恢复内核出厂调度 ───────────────────────
         # 设备实测依据 (2026-06-16, caiman, 见 01_cpu/UGT技术说明):
-        #   - response_time_ms_nom 为只读内核常量 (-r--r--r--), 本机 9/52/165;
-        #     新切 sched_pixel 时 response_time_ms 即等于 nom, 故 nom 就是出厂升频节奏。
-        #   - 原厂 init.zumapro.soc.rc 不写 response_time_ms (停在内核默认),
-        #     cpuset 出厂值 top-app=0-7 fg=0-6 bg=0-3 sys-bg=0-3; sched_util_clamp_min 出厂=1024。
-        # 本档据此恢复出厂三件套: response=nom + cpuset=出厂值 + uclamp.min cap=1024。
-        #   (balanced/battery 才特意把 cap 压成 0 抑制 per-task boost; 本档不压制, 性能最接近原厂。)
-        # 缺 nom 节点(非 sched_pixel governor)时回退 9/52/165。自动策略不进入此档。
-        apply_sched_pixel_nominal 9 52 165
+        #   - response_time_ms_nom 只读内核常量 9/52/165; 新切 sched_pixel 时 response_time_ms 即等于 nom;
+        #     原厂 init.zumapro.soc.rc 不写 response_time_ms → nom 就是出厂升频节奏。
+        #   - cpuset 出厂值 top-app=0-7 fg=0-6 bg=0-3 sys-bg=0-3 (init.zumapro.soc.rc:163-168)。
+        #   - sched_util_clamp_min 出厂=1024。
+        # 恢复出厂三件套: response=回写 nom(读不到则跳过, 不硬编码) + cpuset=出厂值 + cap=1024。
+        # 关于 cap 为何硬编码 1024 而非动态读: 1024 = SCHED_CAPACITY_SCALE 内核 ABI 固定常量(非可变默认);
+        #   且 sched_util_clamp_max 会被 Thermal 下压做节流, 不能当"满刻度"动态源(会在降温时读到错值)。
+        #   故此处保留常量 1024 并显式说明, 不照搬 response 的"读 nom"做法。
+        # (balanced/battery 才特意把 cap 压成 0 抑制 per-task boost; 本档不压制, 性能最接近原厂。)
+        # 自动策略不进入此档。
+        apply_sched_pixel_nominal
         apply_uclamp_cap 1024
         cpuset_write "top-app"           "0-7"
         cpuset_write "foreground"        "0-6"
