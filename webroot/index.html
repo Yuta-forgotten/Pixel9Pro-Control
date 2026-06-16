@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#eef4f0">
+<meta name="theme-color" content="#eceeec">
 <meta name="color-scheme" content="light dark">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
@@ -40,6 +40,10 @@
   </header>
 
   <main class="tab-pages" id="tab-pages">
+    <div class="pull-ind" id="pull-ind" aria-hidden="true">
+      <span class="pull-spinner" aria-hidden="true"></span>
+      <span class="pull-text" id="pull-text">下拉刷新</span>
+    </div>
     <section class="tab-page active" id="page-home" data-tab="home">
       <div class="page-stack">
         <article class="hero-card mode-unknown" id="hero">
@@ -144,7 +148,7 @@
       </div>
     </section>
 
-    <section class="tab-page" id="page-perf" data-tab="perf">
+    <section class="tab-page" id="page-tune" data-tab="tune">
       <div class="page-stack">
         <article class="summary-card">
           <div class="kicker">当前策略</div>
@@ -195,11 +199,14 @@
           <div class="note-title">调度原理 · 模式说明</div>
           <div class="note-body">基于 cpuset 核心分配与 sched_pixel 响应时间调节升频，不写 scaling_max_freq。本模块提供省电、均衡、系统默认三档（系统默认回写内核只读节点 response_time_ms_nom 恢复出厂升频节奏，并还原出厂 cpuset 与 uclamp.min cap=1024）；自动模式以均衡为日常底座，温度持续偏高时收口至省电，回落后恢复。需要游戏级线程调度时，在「调度接管」切换至 UGT 外部调度。</div>
         </article>
-      </div>
-    </section>
 
-    <section class="tab-page" id="page-thermal" data-tab="thermal">
-      <div class="page-stack">
+        <div class="section-head" style="margin-top:6px">
+          <div class="section-copy">
+            <div class="kicker">温控</div>
+            <div class="section-title">机身温度与阈值</div>
+          </div>
+        </div>
+
         <article class="summary-card">
           <div class="kicker">当前档位</div>
           <div class="summary-title" id="thermal-current-name">日常推荐</div>
@@ -261,20 +268,8 @@
       </div>
     </section>
 
-    <section class="tab-page" id="page-optim" data-tab="optim">
+    <section class="tab-page" id="page-network" data-tab="network">
       <div class="page-stack">
-        <article class="summary-card">
-          <div class="kicker">界面与主题</div>
-          <div class="appearance-row">
-            <div class="appearance-copy">
-              <div class="summary-title" style="font-size:20px;line-height:26px">显示模式</div>
-              <div class="section-sub" id="appearance-mode-label">跟随系统</div>
-              <div class="summary-desc" id="appearance-mode-desc">WebUI 主题仅影响界面显示，不改变模块行为。</div>
-            </div>
-            <button class="tiny-btn primary" id="theme-open-btn-2" type="button">主题设置</button>
-          </div>
-        </article>
-
         <article class="surface-card">
           <div class="panel-head">
             <div class="panel-copy">
@@ -343,20 +338,25 @@
             <div class="skel" style="height:48px"></div>
           </div>
         </article>
+      </div>
+    </section>
 
+    <section class="tab-page" id="page-system" data-tab="system">
+      <div class="page-stack">
         <article class="surface-card">
           <div class="panel-head">
             <div class="panel-copy">
-              <div class="kicker">过夜排障</div>
-              <div class="panel-title">待机隔离模式</div>
-              <div class="panel-desc" id="idle-isolate-desc">仅用于 A/B 排障。开启后息屏阶段暂停模块所有待机干预（NR / SIM2 / 自动调度 / 功耗采样），验证是否为模块阻碍 deep sleep。</div>
+              <div class="kicker">内存优化</div>
+              <div class="panel-title">ZRAM / VM 参数</div>
+              <div class="panel-desc" id="swap-desc">Tensor G4 Emerald Hill 硬件压缩引擎，ZRAM 11392MB，VM 参数开机自动配置。</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn primary" id="idle-isolate-toggle-btn" type="button"><span id="idle-isolate-toggle-label">读取中…</span></button>
+              <button class="tiny-btn" id="swap-detail-btn" type="button">详情</button>
+              <button class="tiny-btn primary" id="swap-toggle-btn" type="button"><span id="swap-toggle-label">读取中…</span></button>
             </div>
           </div>
-          <div class="data-list" id="idle-isolate-rows" style="margin-top:14px">
-            <div class="skel" style="height:48px"></div>
+          <div class="data-list" id="swap-rows" style="margin-top:14px">
+            <div class="skel" style="height:140px"></div>
           </div>
         </article>
 
@@ -399,12 +399,15 @@
         <article class="surface-card">
           <div class="panel-head">
             <div class="panel-copy">
-              <div class="kicker">待机诊断</div>
-              <div class="panel-title">后台 worker 摘要</div>
-              <div class="panel-desc">后台统一工作循环的实时状态，包括当前分支、下次唤醒时间和 NR / 调度状态。</div>
+              <div class="kicker">过夜排障</div>
+              <div class="panel-title">待机隔离模式</div>
+              <div class="panel-desc" id="idle-isolate-desc">仅用于 A/B 排障。开启后息屏阶段暂停模块所有待机干预（NR / SIM2 / 自动调度 / 功耗采样），验证是否为模块阻碍 deep sleep。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn primary" id="idle-isolate-toggle-btn" type="button"><span id="idle-isolate-toggle-label">读取中…</span></button>
             </div>
           </div>
-          <div class="data-list" id="standby-diag-rows" style="margin-top:14px">
+          <div class="data-list" id="idle-isolate-rows" style="margin-top:14px">
             <div class="skel" style="height:48px"></div>
           </div>
         </article>
@@ -412,17 +415,13 @@
         <article class="surface-card">
           <div class="panel-head">
             <div class="panel-copy">
-              <div class="kicker">内存优化</div>
-              <div class="panel-title">ZRAM / VM 参数</div>
-              <div class="panel-desc" id="swap-desc">Tensor G4 Emerald Hill 硬件压缩引擎，ZRAM 11392MB，VM 参数开机自动配置。</div>
-            </div>
-            <div class="header-actions">
-              <button class="tiny-btn" id="swap-detail-btn" type="button">详情</button>
-              <button class="tiny-btn primary" id="swap-toggle-btn" type="button"><span id="swap-toggle-label">读取中…</span></button>
+              <div class="kicker">待机诊断</div>
+              <div class="panel-title">后台 worker 摘要</div>
+              <div class="panel-desc">后台统一工作循环的实时状态，包括当前分支、下次唤醒时间和 NR / 调度状态。</div>
             </div>
           </div>
-          <div class="data-list" id="swap-rows" style="margin-top:14px">
-            <div class="skel" style="height:140px"></div>
+          <div class="data-list" id="standby-diag-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
           </div>
         </article>
 
@@ -445,6 +444,18 @@
           </div>
         </article>
 
+        <article class="summary-card">
+          <div class="kicker">界面与主题</div>
+          <div class="appearance-row">
+            <div class="appearance-copy">
+              <div class="summary-title" style="font-size:20px;line-height:26px">显示模式</div>
+              <div class="section-sub" id="appearance-mode-label">跟随系统</div>
+              <div class="summary-desc" id="appearance-mode-desc">WebUI 主题仅影响界面显示，不改变模块行为。</div>
+            </div>
+            <button class="tiny-btn primary" id="theme-open-btn-2" type="button">主题设置</button>
+          </div>
+        </article>
+
         <article class="note-card">
           <div class="note-title">说明</div>
           <div class="note-body">WiFi / BLE 后台扫描、Nearby Sharing 和 multicast 屏幕感知由模块开机自动配置，无需手动操作。SIM2 空槽管理仅在副卡槽确实为空时建议开启；待机隔离模式仅用于一晚隔离测试，验证后应关闭。</div>
@@ -458,28 +469,22 @@
       <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg></span>
       <span class="ti-label">状态</span>
     </button>
-    <button class="tab-item" id="tab-perf" data-tab="perf" type="button">
-      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg></span>
-      <span class="ti-label">性能</span>
+    <button class="tab-item" id="tab-tune" data-tab="tune" type="button">
+      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg></span>
+      <span class="ti-label">性能温控</span>
     </button>
-    <button class="tab-item" id="tab-thermal" data-tab="thermal" type="button">
-      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82z"/></svg></span>
-      <span class="ti-label">温控</span>
+    <button class="tab-item" id="tab-network" data-tab="network" type="button">
+      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M2 22h20V2L2 22z"/></svg></span>
+      <span class="ti-label">网络</span>
     </button>
-    <button class="tab-item" id="tab-optim" data-tab="optim" type="button">
-      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M7.5 5.6L10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 00-1.41 0L1.29 18.96c-.39.39-.39 1.02 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.71 11.04c.39-.39.39-1.02 0-1.41l-2.34-2.34z"/></svg></span>
-      <span class="ti-label">优化</span>
+    <button class="tab-item" id="tab-system" data-tab="system" type="button">
+      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.488.488 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg></span>
+      <span class="ti-label">系统</span>
     </button>
   </nav>
 </div>
 
 <div class="toast-wrap" id="toast-wrap"></div>
-
-<div class="pull-ind" id="pull-ind" aria-hidden="true">
-  <svg viewBox="0 0 44 44" width="28" height="28">
-    <circle class="pull-arc" cx="22" cy="22" r="10" fill="none" stroke="var(--primary)" stroke-width="2.8" stroke-linecap="round" stroke-dasharray="62.83" stroke-dashoffset="62.83" transform="rotate(-90 22 22)"></circle>
-  </svg>
-</div>
 
 <div class="modal-wrap" id="modal-theme">
   <div class="modal-bg"></div>

@@ -28,12 +28,12 @@ const API = {
 const STORAGE_THEME_KEY = 'pixel9pro_theme_mode';
 const STORAGE_TOKEN_KEY = 'pixel9pro_webui_token';
 const WEBUI_SESSION_START_TS = Math.floor(Date.now() / 1000);
-const TAB_ORDER = ['home', 'perf', 'thermal', 'optim'];
+const TAB_ORDER = ['home', 'tune', 'network', 'system'];
 const TAB_META = {
   home: '状态总览',
-  perf: '性能调度',
-  thermal: '温控阈值',
-  optim: '连接与优化',
+  tune: '性能与温控',
+  network: '网络',
+  system: '系统',
 };
 const CLUSTERS = [
   { label: 'Cluster 0 (小核 · cpu0-3)', maxHz: 1950000 },
@@ -45,7 +45,6 @@ const TEMP_MIN = 25;
 const TEMP_MAX = 60;
 const THRESH_STOCK = 37;
 const THRESH_MOD_DEFAULT = 4;
-const PULL_CIRC = 62.83;
 
 const THEME_ICONS = {
   system: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M4 5h16v10H4zm0 12h16v2H4z"/></svg>',
@@ -355,7 +354,7 @@ function initRefs() {
   refs.detailBody = $('detail-body');
   refs.toastWrap = $('toast-wrap');
   refs.pullInd = $('pull-ind');
-  refs.pullArc = refs.pullInd.querySelector('.pull-arc');
+  refs.pullText = $('pull-text');
   refs.tabPages = $('tab-pages');
   refs.topbar = document.querySelector('.topbar');
 }
@@ -379,7 +378,7 @@ function getThemeLabel(mode) {
 function syncThemeUi() {
   const resolved = getResolvedTheme(state.themeMode);
   document.documentElement.dataset.theme = resolved;
-  document.querySelector('meta[name="theme-color"]').setAttribute('content', resolved === 'dark' ? '#111714' : '#eef4f0');
+  document.querySelector('meta[name="theme-color"]').setAttribute('content', resolved === 'dark' ? '#191c1b' : '#eceeec');
   setStaticHtml(refs.themeBtnIcon, THEME_ICONS[state.themeMode] || THEME_ICONS.system);
   refs.topbarThemeChip.textContent = getThemeLabel(state.themeMode);
   refs.appearanceModeLabel.textContent = getThemeLabel(state.themeMode);
@@ -497,9 +496,12 @@ function escapeHtml(value) {
   }[ch]));
 }
 
-function showToast(msg, dur = 2500) {
+function showToast(msg, dur = 2500, type = '') {
   const el = document.createElement('div');
   el.className = 'toast';
+  // 显式 type 优先; 否则对明确失败措辞自动上 err 状态色 (成功/中性保持沉稳反白)
+  if (!type && /失败|无效|错误|出错|超时/.test(msg)) type = 'err';
+  if (type) el.classList.add(type);
   el.textContent = msg;
   refs.toastWrap.appendChild(el);
   window.setTimeout(() => {
@@ -629,19 +631,19 @@ function getPollInterval(key) {
   const relaxed = isPollingRelaxed();
   switch (key) {
     case 'cpu':
-      if (state.currentTab === 'perf') return relaxed ? POLL_INTERVALS.cpu.relaxedPerf : POLL_INTERVALS.cpu.perf;
+      if (state.currentTab === 'tune') return relaxed ? POLL_INTERVALS.cpu.relaxedPerf : POLL_INTERVALS.cpu.perf;
       if (state.currentTab === 'home') return relaxed ? POLL_INTERVALS.cpu.relaxedHome : POLL_INTERVALS.cpu.home;
       return 0;
     case 'thermal':
-      if (state.currentTab === 'thermal') return relaxed ? POLL_INTERVALS.thermal.relaxedThermal : POLL_INTERVALS.thermal.thermal;
+      if (state.currentTab === 'tune') return relaxed ? POLL_INTERVALS.thermal.relaxedThermal : POLL_INTERVALS.thermal.thermal;
       if (state.currentTab === 'home') return relaxed ? POLL_INTERVALS.thermal.relaxedHome : POLL_INTERVALS.thermal.home;
       return 0;
     case 'optim':
-      if (state.currentTab === 'optim') return relaxed ? POLL_INTERVALS.optim.relaxedOptim : POLL_INTERVALS.optim.optim;
+      if (state.currentTab === 'system') return relaxed ? POLL_INTERVALS.optim.relaxedOptim : POLL_INTERVALS.optim.optim;
       if (state.currentTab === 'home') return relaxed ? POLL_INTERVALS.optim.relaxedHome : POLL_INTERVALS.optim.home;
       return 0;
     case 'slow':
-      if (state.currentTab === 'optim') return relaxed ? POLL_INTERVALS.slow.relaxedOptim : POLL_INTERVALS.slow.optim;
+      if (state.currentTab === 'network' || state.currentTab === 'system') return relaxed ? POLL_INTERVALS.slow.relaxedOptim : POLL_INTERVALS.slow.optim;
       if (state.currentTab === 'home') return relaxed ? POLL_INTERVALS.slow.relaxedHome : POLL_INTERVALS.slow.home;
       return 0;
     default:
@@ -684,7 +686,7 @@ async function runPollCycle() {
   if (shouldPollOptim() && !state.swapLoading && (now - state.poller.lastRun.optim) >= getPollInterval('optim')) {
     jobs.push({ key: 'optim', run: () => refreshSwap() });
   }
-  if (shouldPollOptim() && (now - state.poller.lastRun.slow) >= getPollInterval('slow')) {
+  if (shouldPollSlow() && (now - state.poller.lastRun.slow) >= getPollInterval('slow')) {
     jobs.push({
       key: 'slow',
       run: () => Promise.allSettled([refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp(), refreshStandbyGuard(), refreshBgRestrict(), loadInfo()])
@@ -769,16 +771,16 @@ function bindTabSwipe() {
 }
 
 function bindPullToRefresh() {
+  const TRIGGER = 90;
   const hide = () => {
-    refs.pullInd.style.transform = 'translateX(-50%) translateY(-52px)';
+    refs.pullInd.style.transform = 'translateY(-100%)';
     refs.pullInd.classList.remove('active', 'spinning');
-    refs.pullArc.style.strokeDashoffset = PULL_CIRC;
   };
-  const show = (y) => {
-    refs.pullInd.style.transform = `translateX(-50%) translateY(${Math.min(y * 0.4, 16)}px)`;
-  };
-  const setArc = (p) => {
-    refs.pullArc.style.strokeDashoffset = PULL_CIRC * (1 - p * 0.85);
+  // 顶部锚定刷新条: 按下拉距离从 -100% 滑到 0, 文字态随阈值变化 (非漂浮圆盘)
+  const show = (dy) => {
+    const p = Math.min(dy / TRIGGER, 1);
+    refs.pullInd.style.transform = `translateY(${(-100 + p * 100).toFixed(1)}%)`;
+    refs.pullText.textContent = dy >= TRIGGER ? '释放刷新' : '下拉刷新';
   };
 
   document.querySelectorAll('.tab-page').forEach((page) => {
@@ -802,7 +804,6 @@ function bindPullToRefresh() {
         state.pull.dist = dy;
         refs.pullInd.classList.add('active');
         show(dy);
-        setArc(Math.min(dy / 90, 1));
         if (evt.cancelable) evt.preventDefault();
       } else {
         state.pull.active = false;
@@ -812,12 +813,14 @@ function bindPullToRefresh() {
     page.addEventListener('touchend', async () => {
       if (!state.pull.active) return;
       state.pull.active = false;
-      if (state.pull.dist > 90 && !state.pull.busy) {
+      if (state.pull.dist > TRIGGER && !state.pull.busy) {
         state.pull.busy = true;
-        refs.pullInd.classList.add('spinning');
-        setArc(1);
-        show(40);
+        refs.pullInd.classList.add('active', 'spinning');
+        refs.pullInd.style.transform = 'translateY(0)';
+        refs.pullText.textContent = '正在刷新';
         await doFullRefresh();
+        refs.pullText.textContent = '已完成';
+        await sleep(400);
         state.pull.busy = false;
       }
       hide();
@@ -825,12 +828,20 @@ function bindPullToRefresh() {
   });
 }
 
+// 温度色阶 (单一真源): 青绿→黄→橙→红, 语义固定不交动态色 (doc 17 §11)
+const TEMP_SCALE = [
+  { max: 36, color: '#23a78c' }, // 凉爽
+  { max: 40, color: '#4aa95f' }, // 正常
+  { max: 44, color: '#bf8b16' }, // 偏热
+  { max: 48, color: '#d97c34' }, // 热
+  { color: '#c3472d' },          // 过热
+];
+
 function tempHex(t) {
-  if (t < 36) return '#23a78c';
-  if (t < 40) return '#4aa95f';
-  if (t < 44) return '#bf8b16';
-  if (t < 48) return '#d97c34';
-  return '#c3472d';
+  for (const stop of TEMP_SCALE) {
+    if (stop.max === undefined || t < stop.max) return stop.color;
+  }
+  return TEMP_SCALE[TEMP_SCALE.length - 1].color;
 }
 
 function tempStatus(t) {
@@ -1355,7 +1366,6 @@ async function refreshThermal() {
       refs.homeTempStatus.style.color = color;
       refs.tempNum.textContent = tempC.toFixed(1);
       refs.tempNum.style.color = color;
-      refs.tempNum.style.textShadow = `0 0 24px ${color}55`;
       refs.tempZone.textContent = ZONE_LABELS[skin.zone] || skin.zone;
       refs.tempStatus.textContent = tempStatus(tempC);
       refs.tempStatus.style.color = color;
@@ -2212,10 +2222,10 @@ function drawTempCanvas(container, data) {
   let maxT = realMax;
   if (maxT - minT < 2) { minT -= 1; maxT += 1; } else { minT = Math.floor(minT); maxT = Math.ceil(maxT); }
   const isDark = document.documentElement.dataset.theme === 'dark';
-  const gridColor = isDark ? 'rgba(234,243,238,0.10)' : 'rgba(20,34,28,0.10)';
-  const labelColor = isDark ? 'rgba(238,245,241,0.54)' : 'rgba(20,32,28,0.50)';
-  const strokeColor = isDark ? '#83e8ce' : '#006b57';
-  const areaColor = isDark ? 'rgba(131,232,206,0.08)' : 'rgba(0,107,87,0.06)';
+  const gridColor = isDark ? 'rgba(224,227,225,0.10)' : 'rgba(23,29,27,0.10)';
+  const labelColor = isDark ? 'rgba(224,227,225,0.55)' : 'rgba(23,29,27,0.52)';
+  const strokeColor = isDark ? '#75f8d3' : '#006b57';
+  const areaColor = isDark ? 'rgba(117,248,211,0.08)' : 'rgba(0,107,87,0.06)';
   const gridN = 4;
   ctx.strokeStyle = gridColor;
   ctx.lineWidth = 1;
@@ -2872,15 +2882,19 @@ async function doFullRefresh() {
 }
 
 function shouldPollCpu() {
-  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'perf');
+  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'tune');
 }
 
 function shouldPollThermal() {
-  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'thermal');
+  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'tune');
 }
 
 function shouldPollOptim() {
-  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'optim');
+  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'system');
+}
+
+function shouldPollSlow() {
+  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'network' || state.currentTab === 'system');
 }
 
 function refreshCurrentTabData() {
@@ -2900,26 +2914,29 @@ function refreshCurrentTabData() {
     queueNextPoll(computeNextPollDelay(now));
     return;
   }
-  if (state.currentTab === 'perf') {
-    markPollFresh(['cpu'], now);
+  if (state.currentTab === 'tune') {
+    markPollFresh(['cpu', 'thermal'], now);
     refreshCpu();
-    queueNextPoll(computeNextPollDelay(now));
-    return;
-  }
-  if (state.currentTab === 'thermal') {
-    markPollFresh(['thermal'], now);
     refreshThermal();
     queueNextPoll(computeNextPollDelay(now));
     return;
   }
-  if (state.currentTab === 'optim') {
-    markPollFresh(['optim', 'slow'], now);
-    refreshSwap();
+  if (state.currentTab === 'network') {
+    markPollFresh(['slow'], now);
     refreshNrSwitch();
     refreshUecap();
     refreshBaseband();
-    refreshNtp();
     refreshStandbyGuard();
+    loadInfo();
+    queueNextPoll(computeNextPollDelay(now));
+    return;
+  }
+  if (state.currentTab === 'system') {
+    markPollFresh(['optim', 'slow'], now);
+    refreshSwap();
+    refreshBgRestrict();
+    refreshStandbyGuard();
+    refreshNtp();
     loadInfo();
     queueNextPoll(computeNextPollDelay(now));
   }
