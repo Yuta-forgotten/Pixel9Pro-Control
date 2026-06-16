@@ -701,9 +701,19 @@ async function runPollCycle() {
   queueNextPoll(computeNextPollDelay());
 }
 
+let _topbarRafPending = false;
 function syncTopbar() {
-  const page = document.querySelector('.tab-page.active');
-  refs.topbar.classList.toggle('compact', page && page.scrollTop > 40);
+  if (_topbarRafPending) return;
+  _topbarRafPending = true;
+  requestAnimationFrame(() => {
+    _topbarRafPending = false;
+    const page = document.querySelector('.tab-page.active');
+    const top = page ? page.scrollTop : 0;
+    const compact = refs.topbar.classList.contains('compact');
+    // 滞回阈值, 避免临界反复切换; compact 仅控制浅阴影, 不再收缩高度
+    if (!compact && top > 24) refs.topbar.classList.add('compact');
+    else if (compact && top < 8) refs.topbar.classList.remove('compact');
+  });
 }
 
 function bindTopbarScroll() {
@@ -2224,8 +2234,8 @@ function drawTempCanvas(container, data) {
   const isDark = document.documentElement.dataset.theme === 'dark';
   const gridColor = isDark ? 'rgba(224,227,225,0.10)' : 'rgba(23,29,27,0.10)';
   const labelColor = isDark ? 'rgba(224,227,225,0.55)' : 'rgba(23,29,27,0.52)';
-  const strokeColor = isDark ? '#75f8d3' : '#006b57';
-  const areaColor = isDark ? 'rgba(117,248,211,0.08)' : 'rgba(0,107,87,0.06)';
+  const strokeColor = isDark ? '#84dcc5' : '#006b57';
+  const areaColor = isDark ? 'rgba(132,220,197,0.08)' : 'rgba(0,107,87,0.06)';
   const gridN = 4;
   ctx.strokeStyle = gridColor;
   ctx.lineWidth = 1;
