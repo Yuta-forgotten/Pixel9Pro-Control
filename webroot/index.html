@@ -114,9 +114,6 @@
             <div class="panel-copy">
               <div class="panel-title">CPU 实时频率</div>
             </div>
-            <div class="header-actions">
-              <button class="tiny-btn" id="refresh-cpu-btn" type="button"><span>刷新</span></button>
-            </div>
           </div>
           <div class="home-cpu-rows" id="home-cpu-rows">
             <div class="skel" style="height:16px"></div>
@@ -154,15 +151,16 @@
           <div class="kicker">当前策略</div>
           <div class="summary-title" id="perf-current-name">读取中…</div>
           <div class="summary-desc" id="perf-current-desc">正在读取当前性能模式。</div>
-          <div class="header-actions" style="margin-top:12px;justify-content:flex-start">
-            <button class="tiny-btn" id="profile-policy-manual-btn" type="button">手动</button>
-            <button class="tiny-btn" id="profile-policy-auto-btn" type="button">自动</button>
+          <div class="seg-group" id="policy-seg" role="group" aria-label="调度策略" style="margin-top:14px">
+            <button class="seg-btn" id="profile-policy-manual-btn" type="button">手动</button>
+            <button class="seg-btn" id="profile-policy-auto-btn" type="button">自动</button>
           </div>
           <div class="section-sub" id="perf-policy-desc" style="margin-top:10px">读取当前调度策略…</div>
-          <div class="data-list" style="margin-top:12px">
-            <div class="data-row"><span class="data-key">调度接管</span><span class="data-val" id="sched-owner-label">读取中</span></div>
-          </div>
-          <div class="header-actions" style="margin-top:12px;justify-content:flex-start">
+          <div class="ctrl-row" style="margin-top:14px">
+            <div class="ctrl-copy">
+              <div class="ctrl-label">调度接管</div>
+              <div class="ctrl-val" id="sched-owner-label">读取中</div>
+            </div>
             <button class="tiny-btn" id="sched-owner-toggle-btn" type="button"><span id="sched-owner-toggle-label">读取中…</span></button>
           </div>
         </article>
@@ -444,15 +442,26 @@
           </div>
         </article>
 
-        <article class="summary-card">
-          <div class="kicker">界面与主题</div>
-          <div class="appearance-row">
-            <div class="appearance-copy">
-              <div class="summary-title" style="font-size:20px;line-height:26px">显示模式</div>
-              <div class="section-sub" id="appearance-mode-label">跟随系统</div>
-              <div class="summary-desc" id="appearance-mode-desc">WebUI 主题仅影响界面显示，不改变模块行为。</div>
+        <article class="surface-card" id="palette-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">外观</div>
+              <div class="panel-title">主题与配色</div>
+              <div class="panel-desc">选择显示模式与主题色。主题色只改强调色（按钮 / 选中 / 进度），背景与状态色保持清新中性。</div>
             </div>
-            <button class="tiny-btn primary" id="theme-open-btn-2" type="button">主题设置</button>
+          </div>
+          <div class="palette-label" style="margin-top:14px">显示模式</div>
+          <div class="seg-group" id="theme-mode-seg" role="group" aria-label="显示模式">
+            <button class="seg-btn" type="button" data-seg-theme="system">跟随系统</button>
+            <button class="seg-btn" type="button" data-seg-theme="light">浅色</button>
+            <button class="seg-btn" type="button" data-seg-theme="dark">深色</button>
+          </div>
+          <div class="palette-label" style="margin-top:16px">主题色</div>
+          <div class="swatch-row" id="swatch-row"></div>
+          <div class="palette-custom">
+            <span class="swatch-preview" id="palette-custom-preview" aria-hidden="true"></span>
+            <input class="palette-hex-input" id="palette-hex-input" type="text" maxlength="7" placeholder="#3aa6c2" aria-label="自定义主题色 (十六进制)">
+            <button class="tiny-btn primary" id="palette-hex-apply" type="button">应用</button>
           </div>
         </article>
 
@@ -533,8 +542,13 @@
   <div class="modal-bg"></div>
   <div class="modal-sheet">
     <div class="sheet-handle"></div>
-    <div class="modal-sheet-body">
+    <div class="sheet-head">
       <div class="modal-s-title" id="detail-title">详情</div>
+      <button class="sheet-close-btn" id="detail-close-x" type="button" aria-label="关闭">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+    <div class="modal-sheet-body">
       <div class="detail-content" id="detail-body"></div>
       <div class="modal-actions"><button class="mbtn mbtn-ghost" id="detail-close-btn" type="button">关闭</button></div>
     </div>

@@ -27,6 +27,18 @@ const API = {
 
 const STORAGE_THEME_KEY = 'pixel9pro_theme_mode';
 const STORAGE_TOKEN_KEY = 'pixel9pro_webui_token';
+const STORAGE_PALETTE_KEY = 'pixel9pro_palette';
+const STORAGE_PALETTE_CUSTOM_KEY = 'pixel9pro_palette_custom';
+// 预设主题色种子 (清新耐看); default 不派生, 用 :root 默认清新青绿。seed 也作色板圆点色。
+const PALETTES = [
+  { name: 'default', label: '青绿', seed: '#1c8c74' },
+  { name: 'sky', label: '天青', seed: '#1f93b0' },
+  { name: 'ocean', label: '雾蓝', seed: '#4f7fcf' },
+  { name: 'lavender', label: '暮紫', seed: '#7d6bd6' },
+  { name: 'rose', label: '樱粉', seed: '#cf6188' },
+  { name: 'amber', label: '暖橙', seed: '#c47b39' },
+  { name: 'sage', label: '苔绿', seed: '#6a9442' },
+];
 const WEBUI_SESSION_START_TS = Math.floor(Date.now() / 1000);
 const TAB_ORDER = ['home', 'tune', 'network', 'system'];
 const TAB_META = {
@@ -206,6 +218,8 @@ const state = {
   currentOffset: 4,
   swapMode: 'unknown',
   themeMode: 'system',
+  paletteName: 'default',
+  paletteCustom: '#3aa6c2',
   webuiToken: '',
   cpuBusy: false,
   profilePolicyBusy: false,
@@ -232,6 +246,7 @@ const state = {
   uecapVerifyNonce: 0,
   ntpServer: 'time.android.com',
   ntpBusy: false,
+  deviceClockTimer: null,
   cpuRows: null,
   homeCpuRows: null,
   sensorRefs: null,
@@ -296,7 +311,6 @@ function initRefs() {
   refs.schedOwnerToggleLabel = $('sched-owner-toggle-label');
   refs.cpuRows = $('cpu-rows');
   refs.profileList = $('profile-list');
-  refs.refreshBtn = $('refresh-cpu-btn');
   refs.thermalCurrentName = $('thermal-current-name');
   refs.thermalCurrentDesc = $('thermal-current-desc');
   refs.thModBadge = $('th-mod-badge');
@@ -312,8 +326,6 @@ function initRefs() {
   refs.mkStockLbl = $('mk-stock-lbl');
   refs.mkMod = $('mk-mod');
   refs.mkModLbl = $('mk-mod-lbl');
-  refs.appearanceModeLabel = $('appearance-mode-label');
-  refs.appearanceModeDesc = $('appearance-mode-desc');
   refs.swapDesc = $('swap-desc');
   refs.swapToggleLabel = $('swap-toggle-label');
   refs.swapRows = $('swap-rows');
@@ -381,14 +393,11 @@ function syncThemeUi() {
   document.querySelector('meta[name="theme-color"]').setAttribute('content', resolved === 'dark' ? '#191c1b' : '#eceeec');
   setStaticHtml(refs.themeBtnIcon, THEME_ICONS[state.themeMode] || THEME_ICONS.system);
   refs.topbarThemeChip.textContent = getThemeLabel(state.themeMode);
-  refs.appearanceModeLabel.textContent = getThemeLabel(state.themeMode);
-  refs.appearanceModeDesc.textContent = state.themeMode === 'system'
-    ? '按系统或 WebView 当前配色自动切换。'
-    : state.themeMode === 'dark'
-      ? '已固定为深色模式，适合夜间和低照度环境。'
-      : '已固定为浅色模式，适合白天和强光环境。';
   refs.themeChoices.forEach((choice) => {
     choice.classList.toggle('selected', choice.dataset.themeOption === state.themeMode);
+  });
+  document.querySelectorAll('[data-seg-theme]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.segTheme === state.themeMode);
   });
 }
 
@@ -396,14 +405,135 @@ function applyTheme(mode, persist = true) {
   state.themeMode = mode;
   if (persist) localStorage.setItem(STORAGE_THEME_KEY, mode);
   syncThemeUi();
+  // 自定义/预设主题色在明暗下取色不同, 切换模式时按新明暗重新派生
+  if (state.paletteName && state.paletteName !== 'default') applyPalette(state.paletteName, false);
 }
 
 function initTheme() {
   applyTheme(localStorage.getItem(STORAGE_THEME_KEY) || 'system', false);
   const mq = window.matchMedia('(prefers-color-scheme: dark)');
-  const handle = () => { if (state.themeMode === 'system') syncThemeUi(); };
+  const handle = () => { if (state.themeMode === 'system') { syncThemeUi(); if (state.paletteName !== 'default') applyPalette(state.paletteName, false); } };
   if (mq.addEventListener) mq.addEventListener('change', handle);
   else mq.addListener(handle);
+}
+
+// ── 调色盘 (主题色) ──────────────────────────────────────────
+// 只驱动"可调强调角色" --primary 家族; 背景/语义/温度色保持中性固定 (M3: 非全局可调)。
+function hexToRgb(h) {
+  let s = String(h).trim().replace('#', '');
+  if (s.length === 3) s = s.split('').map((c) => c + c).join('');
+  const n = parseInt(s, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgbToHex(rgb) {
+  return '#' + rgb.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+}
+function mixRgb(a, b, t) { return a.map((v, i) => v + (b[i] - v) * t); }
+function relLum(rgb) {
+  const s = rgb.map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+  return 0.2126 * s[0] + 0.7152 * s[1] + 0.0722 * s[2];
+}
+function onColorFor(rgb) { return relLum(rgb) > 0.45 ? [20, 26, 24] : [255, 255, 255]; }
+
+// 由种子色派生协调的强调角色 (近似 M3 tonal): 浅色压深保证白字对比, 深色提亮; 预设与自定义共用此路径
+function deriveAccent(seedHex, isDark) {
+  const seed = hexToRgb(seedHex);
+  const W = [255, 255, 255], B = [16, 22, 20];
+  if (!isDark) {
+    let primary = seed;
+    let guard = 0;
+    while (relLum(primary) > 0.5 && guard < 6) { primary = mixRgb(primary, B, 0.18); guard++; }
+    return {
+      primary: rgbToHex(primary),
+      onPrimary: rgbToHex(onColorFor(primary)),
+      primaryContainer: rgbToHex(mixRgb(seed, W, 0.80)),
+      onPrimaryContainer: rgbToHex(mixRgb(seed, B, 0.62)),
+    };
+  }
+  const primaryD = mixRgb(seed, W, 0.42);
+  return {
+    primary: rgbToHex(primaryD),
+    onPrimary: rgbToHex(onColorFor(primaryD)),
+    primaryContainer: rgbToHex(mixRgb(seed, B, 0.55)),
+    onPrimaryContainer: rgbToHex(mixRgb(seed, W, 0.55)),
+  };
+}
+
+function isValidHex(v) { return typeof v === 'string' && /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v.trim()); }
+function normalizeHex(v) {
+  let h = String(v).trim().replace('#', '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  return '#' + h.toLowerCase();
+}
+
+function applyPalette(name, persist = true) {
+  state.paletteName = name;
+  if (persist) localStorage.setItem(STORAGE_PALETTE_KEY, name);
+  const root = document.documentElement;
+  const accentVars = ['--primary', '--on-primary', '--primary-container', '--on-primary-container'];
+  let seed = null;
+  if (name === 'custom') seed = state.paletteCustom;
+  else { const p = PALETTES.find((x) => x.name === name); if (p && p.name !== 'default') seed = p.seed; }
+  if (!seed || !isValidHex(seed)) {
+    accentVars.forEach((v) => root.style.removeProperty(v)); // 默认: 回退 :root 清新青绿
+  } else {
+    const a = deriveAccent(seed, getResolvedTheme(state.themeMode) === 'dark');
+    root.style.setProperty('--primary', a.primary);
+    root.style.setProperty('--on-primary', a.onPrimary);
+    root.style.setProperty('--primary-container', a.primaryContainer);
+    root.style.setProperty('--on-primary-container', a.onPrimaryContainer);
+  }
+  syncPaletteUi();
+}
+
+function syncPaletteUi() {
+  document.querySelectorAll('#swatch-row .swatch').forEach((b) => {
+    b.classList.toggle('active', b.dataset.palette === state.paletteName);
+  });
+  const preview = document.getElementById('palette-custom-preview');
+  if (preview) {
+    preview.style.background = state.paletteCustom;
+    preview.classList.toggle('active', state.paletteName === 'custom');
+  }
+  const input = document.getElementById('palette-hex-input');
+  if (input && document.activeElement !== input) {
+    input.value = state.paletteName === 'custom' ? state.paletteCustom : '';
+  }
+}
+
+function renderPaletteSwatches() {
+  const row = document.getElementById('swatch-row');
+  if (!row) return;
+  row.replaceChildren();
+  PALETTES.forEach((p) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'swatch';
+    btn.dataset.palette = p.name;
+    btn.style.setProperty('--swatch', p.seed);
+    btn.setAttribute('aria-label', `主题色 ${p.label}`);
+    btn.title = p.label;
+    setStaticHtml(btn, '<span class="swatch-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>');
+    row.appendChild(btn);
+  });
+}
+
+function applyCustomHex() {
+  const input = document.getElementById('palette-hex-input');
+  if (!input) return;
+  const raw = (input.value || '').trim();
+  if (!isValidHex(raw)) { showToast('请输入有效颜色，如 #3aa6c2', 2600, 'err'); return; }
+  const hex = normalizeHex(raw);
+  state.paletteCustom = hex;
+  localStorage.setItem(STORAGE_PALETTE_CUSTOM_KEY, hex);
+  applyPalette('custom', true);
+  showToast('已应用自定义主题色');
+}
+
+function initPalette() {
+  const savedCustom = localStorage.getItem(STORAGE_PALETTE_CUSTOM_KEY);
+  state.paletteCustom = isValidHex(savedCustom) ? normalizeHex(savedCustom) : '#3aa6c2';
+  applyPalette(localStorage.getItem(STORAGE_PALETTE_KEY) || 'default', false);
 }
 
 function pushModalState(name) {
@@ -947,8 +1077,8 @@ function syncProfileUi() {
     refs.perfPolicyDesc.textContent = state.uperfDetected
       ? '本模块不覆盖 CPU 调度；手动、自动和模式卡片已暂停。'
       : '未检测到 Uperf；手动、自动和模式卡片已暂停，本模块只保留一次性安全底座清理。';
-    refs.profilePolicyManualBtn.className = 'tiny-btn';
-    refs.profilePolicyAutoBtn.className = 'tiny-btn';
+    refs.profilePolicyManualBtn.className = 'seg-btn';
+    refs.profilePolicyAutoBtn.className = 'seg-btn';
     refs.profilePolicyManualBtn.disabled = true;
     refs.profilePolicyAutoBtn.disabled = true;
     refs.schedOwnerLabel.textContent = getSchedulerStatusText();
@@ -971,8 +1101,8 @@ function syncProfileUi() {
     ? `自动模式：按“${describeAutoReason(state.autoReason)}”在均衡与省电间切换；点击模式卡片转为手动。`
     : `手动模式：固定为「${profile.name}」；切换为自动后，仅在温度持续偏高时收口至省电。`;
   refs.perfPolicyDesc.textContent = state.uperfDetected ? `${pixelPolicyDesc} ${getSchedulerPixelDesc()}` : pixelPolicyDesc;
-  refs.profilePolicyManualBtn.className = `tiny-btn${!isAuto ? ' primary' : ''}`;
-  refs.profilePolicyAutoBtn.className = `tiny-btn${isAuto ? ' primary' : ''}`;
+  refs.profilePolicyManualBtn.className = `seg-btn${!isAuto ? ' active' : ''}`;
+  refs.profilePolicyAutoBtn.className = `seg-btn${isAuto ? ' active' : ''}`;
   refs.profilePolicyManualBtn.disabled = state.profilePolicyBusy;
   refs.profilePolicyAutoBtn.disabled = state.profilePolicyBusy;
   refs.schedOwnerLabel.textContent = getSchedulerStatusText();
@@ -1319,7 +1449,7 @@ async function loadThermalPreset() {
 async function refreshCpu() {
   if (state.cpuBusy) return;
   state.cpuBusy = true;
-  refs.refreshBtn.disabled = true;
+  if (refs.refreshBtn) refs.refreshBtn.disabled = true;
   try {
     const clusters = await apiFetch(API.status, { timeoutMs: 6000 });
     state.lastClusters = clusters;
@@ -1350,7 +1480,7 @@ async function refreshCpu() {
     refs.cpuRows.replaceChildren();
     refs.cpuRows.appendChild(el);
   } finally {
-    refs.refreshBtn.disabled = false;
+    if (refs.refreshBtn) refs.refreshBtn.disabled = false;
     state.cpuBusy = false;
   }
 }
@@ -2121,6 +2251,20 @@ async function refreshBaseband() {
   }
 }
 
+function startDeviceClock() {
+  if (state.deviceClockTimer) return;
+  const pad = (n) => String(n).padStart(2, '0');
+  const tick = () => {
+    const el = document.getElementById('ntp-device-time');
+    if (!el || document.hidden) return;
+    // WebView 运行在本机, new Date() 即设备实时时钟; 每秒走字, 不再依赖 CGI 快照
+    const d = new Date();
+    el.textContent = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  };
+  tick();
+  state.deviceClockTimer = window.setInterval(tick, 1000);
+}
+
 function renderNtpCard(data) {
   refs.ntpServerList.replaceChildren();
   const current = data.ntp_server || 'time.android.com';
@@ -2139,8 +2283,12 @@ function renderNtpCard(data) {
     refs.ntpServerList.appendChild(card);
   });
   refs.ntpInfoRows.replaceChildren();
-  refs.ntpInfoRows.appendChild(buildInfoRow('设备时间', data.device_time || '—', ''));
+  const deviceTimeRow = buildInfoRow('设备时间', '—', '');
+  const deviceTimeVal = deviceTimeRow.querySelector('.data-val');
+  if (deviceTimeVal) deviceTimeVal.id = 'ntp-device-time';
+  refs.ntpInfoRows.appendChild(deviceTimeRow);
   refs.ntpInfoRows.appendChild(buildInfoRow('自动同步', data.auto_time === '1' ? '已开启' : '已关闭', data.auto_time === '1' ? 'good' : 'warn'));
+  startDeviceClock();
   const ntpLabel = NTP_SERVERS.find((s) => s.id === current)?.name || current;
   refs.ntpDesc.textContent = `当前: ${ntpLabel} (${current})`;
 }
@@ -2687,7 +2835,11 @@ async function openEnergyDetail() {
     }
     refs.detailBody.replaceChildren();
     refs.detailBody.appendChild(frag);
+    refs.detailBody.style.opacity = '0';
+    void refs.detailBody.offsetWidth;
+    refs.detailBody.style.opacity = '1';
   } catch (err) {
+    refs.detailBody.style.opacity = '1';
     refs.detailBody.replaceChildren(); refs.detailBody.appendChild(errorBlock(err.message));
   }
 }
@@ -2975,10 +3127,24 @@ function bindStaticEvents() {
       showToast(`已切换为${getThemeLabel(button.dataset.themeOption)}`);
     });
   });
+  document.querySelectorAll('[data-seg-theme]').forEach((button) => {
+    button.addEventListener('click', () => {
+      applyTheme(button.dataset.segTheme, true);
+      showToast(`已切换为${getThemeLabel(button.dataset.segTheme)}`);
+    });
+  });
+  const swatchRow = $('swatch-row');
+  if (swatchRow) swatchRow.addEventListener('click', (evt) => {
+    const sw = evt.target.closest('.swatch');
+    if (!sw) return;
+    applyPalette(sw.dataset.palette, true);
+    const p = PALETTES.find((x) => x.name === sw.dataset.palette);
+    showToast(`主题色：${p ? p.label : '已应用'}`);
+  });
+  $('palette-hex-apply').addEventListener('click', applyCustomHex);
+  $('palette-hex-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') applyCustomHex(); });
   $('theme-open-btn').addEventListener('click', openThemeSheet);
-  $('theme-open-btn-2').addEventListener('click', openThemeSheet);
   $('refresh-all-btn').addEventListener('click', doFullRefresh);
-  $('refresh-cpu-btn').addEventListener('click', refreshCpu);
   $('sched-owner-toggle-btn').addEventListener('click', toggleSchedOwner);
   $('swap-toggle-btn').addEventListener('click', toggleSwapMode);
   $('swap-detail-btn').addEventListener('click', () => openDetail('内存优化详情', SWAP_DETAIL));
@@ -3001,6 +3167,7 @@ function bindStaticEvents() {
   $('log-toggle').addEventListener('click', () => refs.logCard.classList.toggle('open'));
   $('theme-close-btn').addEventListener('click', closeThemeSheet);
   $('detail-close-btn').addEventListener('click', closeDetailModal);
+  $('detail-close-x').addEventListener('click', closeDetailModal);
   $('reboot-now-btn').addEventListener('click', rebootDevice);
   $('reboot-later-btn').addEventListener('click', closeRebootModal);
   $('reboot-cancel-btn').addEventListener('click', cancelThermalChange);
@@ -3069,6 +3236,8 @@ async function init() {
   loadWebuiTokenFromSession();
   if (!state.webuiToken) prefetchWebuiToken();
   initTheme();
+  renderPaletteSwatches();
+  initPalette();
   renderProfileCards();
   renderThermalCards();
   bindStaticEvents();
