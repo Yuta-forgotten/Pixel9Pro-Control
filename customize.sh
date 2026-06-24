@@ -175,10 +175,11 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     ui_print "  检测到已有配置, 正在迁移..."
     for _sf in .thermal_offset .current_profile .profile_policy .profile_manual .profile_auto_reason .profile_history .nr_screen_switch \
                .sim2_auto_manage .idle_isolate_mode \
-               .swap_mode .ntp_server .uecap_mode .uecap_manual_mode \
+               .swap_mode .swap_custom .ntp_server .uecap_mode .uecap_manual_mode \
                .uecap_policy .uecap_reason .sim2_radio_off \
-               .nr_saved_mode .webui_token \
-               .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .cpu_sched_owner; do
+               .nr_saved_mode .webui_token .webui_theme \
+               .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .cpu_sched_owner \
+               .thermal_history .power_history .power_session .standby_diag_state; do
         if [ -f "$OLDDIR/$_sf" ]; then
             cp "$OLDDIR/$_sf" "$MODPATH/$_sf" 2>/dev/null
         fi

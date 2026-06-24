@@ -785,18 +785,62 @@ else
 fi
 
 # === Swap / 内存回收调优 (按上次用户选择恢复) ===
+OPT_SWAPPINESS=100
+OPT_MIN_FREE_KBYTES=131072
+OPT_WATERMARK_SCALE=200
+OPT_VFS_CACHE_PRESSURE=60
+STOCK_SWAPPINESS=150
+STOCK_MIN_FREE_KBYTES=27386
+STOCK_WATERMARK_SCALE=50
+STOCK_VFS_CACHE_PRESSURE=100
+SWAP_CUSTOM_FILE="$MODDIR/.swap_custom"
+
+is_uint_range() {
+    _val="$1"
+    _min="$2"
+    _max="$3"
+    case "$_val" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$_val" -ge "$_min" ] 2>/dev/null && [ "$_val" -le "$_max" ] 2>/dev/null
+}
+
+write_vm_params() {
+    echo "$1" > /proc/sys/vm/swappiness 2>/dev/null
+    echo "$2" > /proc/sys/vm/min_free_kbytes 2>/dev/null
+    echo "$3" > /proc/sys/vm/watermark_scale_factor 2>/dev/null
+    echo "$4" > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
+}
+
+read_swap_custom_param() {
+    sed -n "s/^$1=//p" "$SWAP_CUSTOM_FILE" 2>/dev/null | tail -1 | tr -d ' \n\r'
+}
+
 SWAP_MODE=$(cat "$MODDIR/.swap_mode" 2>/dev/null | tr -d ' \n\r')
 case "$SWAP_MODE" in
     stock)
-        echo 150 > /proc/sys/vm/swappiness 2>/dev/null
-        echo 27386 > /proc/sys/vm/min_free_kbytes 2>/dev/null
-        echo 100 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
+        write_vm_params "$STOCK_SWAPPINESS" "$STOCK_MIN_FREE_KBYTES" "$STOCK_WATERMARK_SCALE" "$STOCK_VFS_CACHE_PRESSURE"
         log -t pixel9pro_ctrl "Swap: restored stock VM params"
         ;;
+    custom)
+        _custom_sw=$(read_swap_custom_param swappiness)
+        _custom_mfk=$(read_swap_custom_param min_free_kbytes)
+        _custom_wsf=$(read_swap_custom_param watermark_scale_factor)
+        _custom_vcp=$(read_swap_custom_param vfs_cache_pressure)
+        if is_uint_range "$_custom_sw" 0 200 \
+            && is_uint_range "$_custom_mfk" 16384 262144 \
+            && is_uint_range "$_custom_wsf" 10 500 \
+            && is_uint_range "$_custom_vcp" 10 200; then
+            write_vm_params "$_custom_sw" "$_custom_mfk" "$_custom_wsf" "$_custom_vcp"
+            log -t pixel9pro_ctrl "Swap: restored custom VM params"
+        else
+            write_vm_params "$OPT_SWAPPINESS" "$OPT_MIN_FREE_KBYTES" "$OPT_WATERMARK_SCALE" "$OPT_VFS_CACHE_PRESSURE"
+            echo "optimized" > "$MODDIR/.swap_mode"
+            log -t pixel9pro_ctrl "Swap: invalid custom params, restored optimized VM params"
+        fi
+        ;;
     *)
-        echo 100 > /proc/sys/vm/swappiness 2>/dev/null
-        echo 65536 > /proc/sys/vm/min_free_kbytes 2>/dev/null
-        echo 60 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
+        write_vm_params "$OPT_SWAPPINESS" "$OPT_MIN_FREE_KBYTES" "$OPT_WATERMARK_SCALE" "$OPT_VFS_CACHE_PRESSURE"
         [ -s "$MODDIR/.swap_mode" ] || echo "optimized" > "$MODDIR/.swap_mode"
         ;;
 esac

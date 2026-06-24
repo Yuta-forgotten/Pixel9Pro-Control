@@ -59,7 +59,8 @@ WebUI 实时温度优先解析 `thermalservice` 的 `Current temperatures from H
 
 - 算法：`lz77eh`（Emerald Hill 硬件加速）
 - 容量：`11392MB`
-- VM 参数：`swappiness=100`、`min_free_kbytes=65536`、`vfs_cache_pressure=60`
+- VM 参数：`swappiness=100`、`min_free_kbytes=131072`、`watermark_scale_factor=200`、`vfs_cache_pressure=60`
+- WebUI 支持模块默认、原厂恢复和手动调节 VM 参数；手动值即时生效并随 custom 模式开机恢复。
 
 ### 待机与 modem 策略（以 Google 默认机制为主）
 

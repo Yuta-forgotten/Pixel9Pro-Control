@@ -151,6 +151,7 @@ button{border:none;background:none;padding:0;color:inherit}
   align-items:center;
   justify-content:flex-end;
   gap:8px;
+  flex-wrap:wrap;
   flex-shrink:0;
 }
 
@@ -573,6 +574,120 @@ button{border:none;background:none;padding:0;color:inherit}
 .bg-pkg-input:disabled{
   opacity:.55;
   cursor:not-allowed;
+}
+
+.swap-tune-note{
+  padding:10px 12px;
+  border:1px solid var(--line);
+  border-radius:var(--radius-md);
+  background:var(--surface-2);
+  color:var(--text-2);
+  font-size:13px;
+  line-height:19px;
+}
+
+.swap-tune-form{
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+  margin-top:14px;
+}
+
+.swap-field{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 96px;
+  gap:8px 12px;
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius:var(--radius-md);
+  background:var(--surface);
+}
+
+.swap-field-head{
+  grid-column:1 / -1;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  color:var(--text-2);
+  font-size:13px;
+  line-height:18px;
+}
+
+.swap-field-head b{
+  color:var(--text);
+  font-variant-numeric:tabular-nums;
+}
+
+.swap-range{
+  -webkit-appearance:none;
+  appearance:none;
+  width:100%;
+  min-width:0;
+  height:6px;
+  margin:8px 0;
+  border-radius:999px;
+  background:linear-gradient(to right,
+    var(--primary) 0%, var(--primary) var(--fill,50%),
+    var(--surface-2) var(--fill,50%), var(--surface-2) 100%);
+  outline:none;
+  cursor:pointer;
+}
+/* thumb 位置走原生即时跟手; 仅按压反馈 (放大 + 光环) 做阻尼过渡 */
+.swap-range::-webkit-slider-thumb{
+  -webkit-appearance:none;
+  appearance:none;
+  width:20px;
+  height:20px;
+  border-radius:50%;
+  background:var(--primary);
+  border:3px solid var(--surface);
+  box-shadow:0 1px 4px rgba(0,0,0,.28);
+  transition:transform .14s cubic-bezier(.2,.7,.2,1), box-shadow .14s ease;
+}
+.swap-range:hover::-webkit-slider-thumb{transform:scale(1.08)}
+.swap-range:active::-webkit-slider-thumb{
+  transform:scale(1.3);
+  box-shadow:0 0 0 9px color-mix(in srgb,var(--primary) 16%,transparent);
+}
+.swap-range::-moz-range-thumb{
+  width:20px;
+  height:20px;
+  border:3px solid var(--surface);
+  border-radius:50%;
+  background:var(--primary);
+  box-shadow:0 1px 4px rgba(0,0,0,.28);
+  transition:transform .14s cubic-bezier(.2,.7,.2,1), box-shadow .14s ease;
+}
+.swap-range:active::-moz-range-thumb{
+  transform:scale(1.3);
+  box-shadow:0 0 0 9px color-mix(in srgb,var(--primary) 16%,transparent);
+}
+.swap-range::-moz-range-track{height:6px;border-radius:999px;background:transparent}
+
+.swap-number{
+  width:100%;
+  min-height:36px;
+  padding:0 10px;
+  border:1px solid var(--line);
+  border-radius:var(--radius-sm);
+  background:var(--surface-2);
+  color:var(--text);
+  font-size:13px;
+  font-variant-numeric:tabular-nums;
+  outline:none;
+}
+
+.swap-number:focus{
+  border-color:var(--primary);
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 18%,transparent);
+}
+
+.swap-preset-actions{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+  margin-top:12px;
 }
 
 .bg-policy-row{
@@ -1282,6 +1397,12 @@ button{border:none;background:none;padding:0;color:inherit}
   }
   .bg-delay-select{
     flex:0 0 92px;
+  }
+  .swap-field{
+    grid-template-columns:1fr;
+  }
+  .swap-number{
+    max-width:160px;
   }
 }
 

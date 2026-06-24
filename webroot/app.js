@@ -13,6 +13,7 @@ const API = {
   thermalSet: '/cgi-bin/set_thermal.sh',
   reboot: '/cgi-bin/reboot.sh',
   swap: '/cgi-bin/swap.sh',
+  theme: '/cgi-bin/theme.sh',
   nrSwitch: '/cgi-bin/nr_switch.sh',
   uecap: '/cgi-bin/uecap.sh',
   thermalBurst: '/cgi-bin/thermal_burst.sh',
@@ -149,7 +150,69 @@ const THERMAL_PRESETS = {
   }
 };
 
-const SWAP_DETAIL = '<b>ZRAM 算法: lz77eh (Emerald Hill 硬件加速)</b><br>Tensor G4 内置固定功能压缩引擎，压缩和解压由专用硬件完成，CPU 几乎不参与，适合高频换页场景。<br><br><b>ZRAM 大小: 11392MB (75% RAM)</b><br>原厂默认约为 50% RAM。模块将容量扩容到 11392MB，让更多后台匿名页驻留在 ZRAM 中。<br><br><b>swappiness: 100</b><br>降低匿名页被过度换出的激进程度，减少无效 swap-in / swap-out。<br><br><b>min_free_kbytes: 65536</b><br>提前唤醒 kswapd，减少 direct reclaim 带来的主线程阻塞。<br><br><b>vfs_cache_pressure: 60</b><br>保留更多 inode / dentry 缓存，有利于文件路径查询与应用启动。';
+// 内存优化详情按 state.swapData 实时生成: 数字取自当前值, 解释随取值自适应,
+// 手动改参后重新打开即反映当前 ZRAM / VM 方案 (不再硬编码)
+function describeSwappiness(v) {
+  if (v <= 20) return '几乎不主动换出匿名页，ZRAM 基本闲置，仅在物理内存吃紧时才回收。';
+  if (v <= 60) return '偏保守换页，多数匿名页留在物理内存，偏向前台零 swap 抖动。';
+  if (v <= 110) return '平衡换页，配合硬件压缩减少无效 swap-in / swap-out，兼顾后台驻留与前台响应。';
+  if (v <= 160) return '较积极换出匿名页到 ZRAM、尽量保留文件缓存（含原厂 150 取向）。';
+  return '极度倾向换出匿名页，后台驻留能力最强，但热数据换入可能增多。';
+}
+function describeMinFree(kb) {
+  if (kb <= 32768) return '空闲底线低（接近原厂 ~27MB），可用内存最大，但突发分配更易触发 direct reclaim 卡顿。';
+  if (kb <= 65536) return '空闲底线偏低，可用内存较多，回收启动相对靠后。';
+  if (kb <= 131072) return '中高空闲底线，kswapd 较早唤醒，direct reclaim 与 allocstall 明显减少。';
+  if (kb <= 196608) return '空闲底线高，回收很早介入、突发分配几乎不卡，代价是预留内存增多。';
+  return '空闲底线很高，适合重后台实验；日常使用偏浪费内存。';
+}
+function describeWatermark(v) {
+  if (v <= 60) return '水位间距小（接近原厂 50），回收较晚触发，内存利用更满但突发峰值时更易吃紧。';
+  if (v <= 150) return '中等水位间距，回收节奏适中。';
+  if (v <= 300) return 'low/high 水位间距大，后台回收更早介入、单次回收更多，利于压制突发内存峰值，略增后台 CPU。';
+  return '水位间距很大，回收非常积极，churn 与后台 CPU 上升，仅适合重后台场景。';
+}
+function describeVfs(v) {
+  if (v <= 50) return '强烈保留 inode / dentry 缓存，文件路径查询与冷启动最快，但元数据占用内存更多。';
+  if (v <= 80) return '倾向保留较多文件缓存元数据，利于应用启动。';
+  if (v <= 120) return '常规回收力度（接近原厂 100），缓存与内存平衡。';
+  if (v <= 160) return '较积极回收文件缓存元数据，省内存但路径查询 / 启动可能变慢。';
+  return '激进回收 inode / dentry 缓存，最省内存但文件操作明显变慢。';
+}
+function swapModeIntro(mode) {
+  if (mode === 'optimized') return '<b>当前方案：模块默认</b><br>面向 Pixel 9 Pro 日常使用与 Tensor G4 低热取向的一组平衡 VM 参数。';
+  if (mode === 'stock') return '<b>当前方案：原厂</b><br>已恢复 Google 出厂 VM 参数，模块不再干预内存回收节奏。';
+  return '<b>当前方案：自定义</b><br>以下为基于你手动设定值的实时分析；应用后以 custom 模式随下次开机恢复。';
+}
+function buildSwapDetail(data) {
+  const d = data || { ...SWAP_OPTIMIZED, mode: 'optimized', zram_algo: 'lz77eh', zram_disksize: 11945377792, stock_zram_size: 0 };
+  const isEH = d.zram_algo === 'lz77eh';
+  const sizeGB = (d.zram_disksize / 1073741824).toFixed(1);
+  const totalRam = d.stock_zram_size > 0 ? d.stock_zram_size * 2 : 0;
+  const ramPct = totalRam > 0 ? ` (约 ${Math.round((d.zram_disksize / totalRam) * 100)}% RAM)` : '';
+  const wsf = d.watermark_scale_factor || 0;
+  const algoBlock = isEH
+    ? '<b>ZRAM 算法: lz77eh (Emerald Hill 硬件加速)</b><br>Tensor G4 内置固定功能压缩引擎，压缩和解压由专用硬件完成，CPU 几乎不参与，适合高频换页场景。'
+    : `<b>ZRAM 算法: ${d.zram_algo}</b><br>当前非硬件加速算法，重启后模块会自动切换为 lz77eh。`;
+  const sizeBlock = `<b>ZRAM 大小: ${sizeGB}GB${ramPct}</b><br>原厂默认约为 50% RAM；模块扩容后让更多后台匿名页驻留在 ZRAM 中。`;
+  return [
+    swapModeIntro(d.mode),
+    algoBlock,
+    sizeBlock,
+    `<b>swappiness: ${d.swappiness}</b><br>${describeSwappiness(d.swappiness)}`,
+    `<b>min_free_kbytes: ${d.min_free_kbytes}（≈${Math.round(d.min_free_kbytes / 1024)}MB）</b><br>${describeMinFree(d.min_free_kbytes)}`,
+    `<b>watermark_scale_factor: ${wsf}</b><br>${describeWatermark(wsf)}`,
+    `<b>vfs_cache_pressure: ${d.vfs_cache_pressure}</b><br>${describeVfs(d.vfs_cache_pressure)}`
+  ].join('<br><br>');
+}
+const SWAP_OPTIMIZED = { swappiness: 100, min_free_kbytes: 131072, watermark_scale_factor: 200, vfs_cache_pressure: 60 };
+const SWAP_STOCK = { swappiness: 150, min_free_kbytes: 27386, watermark_scale_factor: 50, vfs_cache_pressure: 100 };
+const SWAP_LIMITS = {
+  swappiness: { min: 0, max: 200, step: 5 },
+  min_free_kbytes: { min: 16384, max: 262144, step: 8192 },
+  watermark_scale_factor: { min: 10, max: 500, step: 10 },
+  vfs_cache_pressure: { min: 10, max: 200, step: 5 }
+};
 
 const NR_SWITCH_DETAIL = '<b>NR 息屏降级 (Screen-Off LTE Switch)</b><br><br>开启后，息屏超过 <b>300 秒</b> 时网络模式从 5G NR 切换到 LTE，降低调制解调器射频功耗。亮屏时恢复 5G/NR 模式，<b>5GA / 5G CA 能力完全保留</b>。<br><br><b>防抖机制</b><br>- 息屏后等待 300 秒再切换，快速亮屏不会触发<br>- 恢复 NR 后冷却 10 分钟，避免频繁亮灭导致来回切换<br>- 已降 LTE 后每 300 秒低频复查，减少打断 deep suspend<br><br><b>原理</b><br>NR_SA Band 41 (100MHz) 射频功耗远高于 LTE 20MHz。息屏时降级为 LTE 可使调制解调器进入更深低功耗态，预期节省 30-50% 蜂窝待机功耗。<br><br><b>注意</b><br>- 切换期间可能有 1-2 秒网络短暂中断<br>- 开启热点时自动跳过降级，保障共享连接<br>- 息屏下载或后台大流量时可关闭此功能<br>- 功能状态即时生效，无需重启';
 
@@ -227,6 +290,7 @@ const state = {
   autoReason: '',
   currentOffset: 4,
   swapMode: 'unknown',
+  swapData: null,
   themeMode: 'system',
   paletteName: 'default',
   paletteCustom: '#3aa6c2',
@@ -339,6 +403,25 @@ function initRefs() {
   refs.swapDesc = $('swap-desc');
   refs.swapToggleLabel = $('swap-toggle-label');
   refs.swapRows = $('swap-rows');
+  refs.swapTuneModal = $('modal-swap-tune');
+  refs.swapTuneInputs = {
+    swappiness: $('swap-input-swappiness'),
+    min_free_kbytes: $('swap-input-minfree'),
+    watermark_scale_factor: $('swap-input-watermark'),
+    vfs_cache_pressure: $('swap-input-vfs')
+  };
+  refs.swapTuneNumbers = {
+    swappiness: $('swap-number-swappiness'),
+    min_free_kbytes: $('swap-number-minfree'),
+    watermark_scale_factor: $('swap-number-watermark'),
+    vfs_cache_pressure: $('swap-number-vfs')
+  };
+  refs.swapTuneValues = {
+    swappiness: $('swap-value-swappiness'),
+    min_free_kbytes: $('swap-value-minfree'),
+    watermark_scale_factor: $('swap-value-watermark'),
+    vfs_cache_pressure: $('swap-value-vfs')
+  };
   refs.nrSwitchDesc = $('nr-switch-desc');
   refs.sim2AutoDesc = $('sim2-auto-desc');
   refs.sim2AutoToggleBtn = $('sim2-auto-toggle-btn');
@@ -413,7 +496,7 @@ function syncThemeUi() {
 
 function applyTheme(mode, persist = true) {
   state.themeMode = mode;
-  if (persist) localStorage.setItem(STORAGE_THEME_KEY, mode);
+  if (persist) { localStorage.setItem(STORAGE_THEME_KEY, mode); saveThemeToServer(); }
   syncThemeUi();
   // 自定义/预设主题色在明暗下取色不同, 切换模式时按新明暗重新派生
   if (state.paletteName && state.paletteName !== 'default') applyPalette(state.paletteName, false);
@@ -537,7 +620,7 @@ function normalizeHex(v) {
 
 function applyPalette(name, persist = true) {
   state.paletteName = name;
-  if (persist) localStorage.setItem(STORAGE_PALETTE_KEY, name);
+  if (persist) { localStorage.setItem(STORAGE_PALETTE_KEY, name); saveThemeToServer(); }
   const root = document.documentElement;
   let seed = null;
   if (name === 'custom') seed = state.paletteCustom;
@@ -601,6 +684,38 @@ function initPalette() {
   applyPalette(localStorage.getItem(STORAGE_PALETTE_KEY) || 'default', false);
 }
 
+// 服务端兜底: localStorage 为主存储, 此处仅在每次改主题时静默备份到 $MODDIR/.webui_theme,
+// 配合 customize.sh 迁移, 即使 WebView 清数据或模块更新也能回读 (失败静默, 不打扰用户)
+function saveThemeToServer() {
+  apiFetch(API.theme, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: state.themeMode, palette: state.paletteName, custom: state.paletteCustom }),
+    timeoutMs: 5000
+  }).catch(() => {});
+}
+
+// 仅当 localStorage 完全无主题记录 (新装 / WebView 被清) 时, 回读服务端兜底并应用
+async function restoreThemeFromServerIfNeeded() {
+  if (localStorage.getItem(STORAGE_THEME_KEY) || localStorage.getItem(STORAGE_PALETTE_KEY) || localStorage.getItem(STORAGE_PALETTE_CUSTOM_KEY)) return;
+  try {
+    const data = await apiFetch(API.theme, { timeoutMs: 5000 });
+    if (!data) return;
+    if (data.custom && isValidHex(data.custom)) {
+      state.paletteCustom = normalizeHex(data.custom);
+      localStorage.setItem(STORAGE_PALETTE_CUSTOM_KEY, state.paletteCustom);
+    }
+    if (data.mode && data.mode !== 'system') {
+      localStorage.setItem(STORAGE_THEME_KEY, data.mode);
+      applyTheme(data.mode, false);
+    }
+    if (data.palette && data.palette !== 'default') {
+      localStorage.setItem(STORAGE_PALETTE_KEY, data.palette);
+      applyPalette(data.palette, false);
+    }
+  } catch (_) {}
+}
+
 function pushModalState(name) {
   history.pushState({ modal: name }, '');
 }
@@ -648,6 +763,68 @@ function closeDetailModal(){
   stopTempChartRefresh();
   refs.detailModal.classList.remove('open');
   popModalIfTop('detail');
+  queueNextPoll(POLL_MIN_DELAY_MS);
+}
+
+// 仅夹取 [min,max] 并取整, 不吸附 step —— 预设/手输需保留 27386 等非整步原厂值;
+// step 吸附交给滑块 (<input type=range step>) 的原生行为
+function clampSwapValue(key, raw) {
+  const limit = SWAP_LIMITS[key];
+  let value = Number(raw);
+  if (!Number.isFinite(value)) value = SWAP_OPTIMIZED[key];
+  return Math.min(limit.max, Math.max(limit.min, Math.round(value)));
+}
+
+// 用滑块吸附后的实际 value 算填充百分比, 让填充轨道与 thumb 位置严格一致
+function updateSwapFill(key) {
+  const el = refs.swapTuneInputs[key];
+  const limit = SWAP_LIMITS[key];
+  const pct = ((Number(el.value) - limit.min) / (limit.max - limit.min)) * 100;
+  el.style.setProperty('--fill', `${Math.max(0, Math.min(100, pct))}%`);
+}
+
+function setSwapTuneValues(values) {
+  Object.keys(SWAP_LIMITS).forEach((key) => {
+    const value = clampSwapValue(key, values && values[key]);
+    refs.swapTuneInputs[key].value = String(value);
+    refs.swapTuneNumbers[key].value = String(value);
+    refs.swapTuneValues[key].textContent = String(value);
+    updateSwapFill(key);
+  });
+}
+
+function getSwapTuneValues() {
+  const values = {};
+  Object.keys(SWAP_LIMITS).forEach((key) => {
+    values[key] = clampSwapValue(key, refs.swapTuneNumbers[key].value);
+  });
+  return values;
+}
+
+function syncSwapTuneField(key, raw) {
+  const value = clampSwapValue(key, raw);
+  refs.swapTuneInputs[key].value = String(value);
+  refs.swapTuneNumbers[key].value = String(value);
+  refs.swapTuneValues[key].textContent = String(value);
+  updateSwapFill(key);
+}
+
+function openSwapTuneModal() {
+  const current = state.swapData || SWAP_OPTIMIZED;
+  setSwapTuneValues({
+    swappiness: current.swappiness,
+    min_free_kbytes: current.min_free_kbytes,
+    watermark_scale_factor: current.watermark_scale_factor,
+    vfs_cache_pressure: current.vfs_cache_pressure
+  });
+  refs.swapTuneModal.classList.add('open');
+  pushModalState('swapTune');
+  queueNextPoll(computeNextPollDelay());
+}
+
+function closeSwapTuneModal() {
+  refs.swapTuneModal.classList.remove('open');
+  popModalIfTop('swapTune');
   queueNextPoll(POLL_MIN_DELAY_MS);
 }
 
@@ -813,6 +990,7 @@ function noteUserActivity() {
 function isAnyModalOpen() {
   return Boolean(
     (refs.detailModal && refs.detailModal.classList.contains('open'))
+    || (refs.swapTuneModal && refs.swapTuneModal.classList.contains('open'))
     || (refs.themeModal && refs.themeModal.classList.contains('open'))
     || (refs.rebootModal && refs.rebootModal.classList.contains('open'))
   );
@@ -1348,9 +1526,10 @@ function renderSwapCard(data) {
   const rows = [
     { label: 'ZRAM 算法', value: isEH ? '硬件加速' : data.zram_algo, cls: isEH ? 'good' : 'warn' },
     { label: 'ZRAM 大小', value: `${sizeGB}GB`, cls: Math.abs(data.zram_disksize - 11945377792) < 536870912 ? 'good' : 'off' },
-    { label: 'swappiness', value: String(data.swappiness), cls: data.swappiness === 100 ? 'good' : data.swappiness === 150 ? 'warn' : 'off' },
-    { label: 'min_free_kbytes', value: String(data.min_free_kbytes), cls: data.min_free_kbytes === 65536 ? 'good' : data.min_free_kbytes === 27386 ? 'warn' : 'off' },
-    { label: 'vfs_cache_pressure', value: String(data.vfs_cache_pressure), cls: data.vfs_cache_pressure === 60 ? 'good' : data.vfs_cache_pressure === 100 ? 'warn' : 'off' }
+    { label: 'swappiness', value: String(data.swappiness), cls: data.swappiness === SWAP_OPTIMIZED.swappiness ? 'good' : data.swappiness === SWAP_STOCK.swappiness ? 'warn' : 'off' },
+    { label: 'min_free_kbytes', value: String(data.min_free_kbytes), cls: data.min_free_kbytes === SWAP_OPTIMIZED.min_free_kbytes ? 'good' : data.min_free_kbytes === SWAP_STOCK.min_free_kbytes ? 'warn' : 'off' },
+    { label: 'watermark_scale_factor', value: String(data.watermark_scale_factor || 0), cls: data.watermark_scale_factor === SWAP_OPTIMIZED.watermark_scale_factor ? 'good' : data.watermark_scale_factor === SWAP_STOCK.watermark_scale_factor ? 'warn' : 'off' },
+    { label: 'vfs_cache_pressure', value: String(data.vfs_cache_pressure), cls: data.vfs_cache_pressure === SWAP_OPTIMIZED.vfs_cache_pressure ? 'good' : data.vfs_cache_pressure === SWAP_STOCK.vfs_cache_pressure ? 'warn' : 'off' }
   ];
   rows.forEach((row) => refs.swapRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 }
@@ -1613,7 +1792,8 @@ async function refreshSwap() {
   try {
     const data = await apiFetch(API.swap, { timeoutMs: 6000 });
     state.swapMode = data.mode || 'custom';
-    refs.swapToggleLabel.textContent = state.swapMode === 'optimized' ? '恢复默认' : '应用优化';
+    state.swapData = data;
+    refs.swapToggleLabel.textContent = state.swapMode === 'optimized' ? '恢复原厂' : '应用模块默认';
     renderSwapCard(data);
     refs.rtZramUsage.textContent = `${data.zram_disksize > 0 ? ((data.zram_orig_bytes / data.zram_disksize) * 100).toFixed(0) : '0'}% (${fmtBytes(data.zram_orig_bytes)} / ${(data.zram_disksize / 1073741824).toFixed(1)}GB)`;
     refs.rtRatio.textContent = data.zram_orig_bytes > 0 ? `${((data.zram_compr_bytes / data.zram_orig_bytes) * 100).toFixed(1)}% → 实占 ${fmtBytes(data.zram_mem_used_bytes)}` : '—';
@@ -3085,15 +3265,39 @@ async function toggleSwapMode() {
   const newMode = state.swapMode === 'optimized' ? 'stock' : 'optimized';
   try {
     const data = await apiFetch(API.swap, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: newMode }), timeoutMs: 8000 });
-    if (data.ok) {
-      showToast(newMode === 'optimized' ? 'VM 参数已优化（即时生效）' : '已恢复默认 VM 参数');
-      appendLog(newMode === 'optimized' ? 'Swap 优化参数已应用' : 'Swap 已恢复默认', 'ok');
-      refreshSwap();
-    } else {
-      showToast(`操作失败：${data.error || '未知'}`);
-    }
+    state.swapMode = data.mode || newMode;
+    state.swapData = data;
+    showToast(newMode === 'optimized' ? '已应用模块默认 VM 参数' : '已恢复原厂 VM 参数');
+    appendLog(newMode === 'optimized' ? 'Swap 模块默认已应用' : 'Swap 已恢复原厂', 'ok');
+    renderSwapCard(data);
+    refreshSwap();
   } catch (_) {
     showToast('请求失败');
+  } finally {
+    state.swapBusy = false;
+  }
+}
+
+async function applySwapCustom() {
+  if (state.swapBusy) return;
+  state.swapBusy = true;
+  const values = getSwapTuneValues();
+  try {
+    const data = await apiFetch(API.swap, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'custom', ...values }),
+      timeoutMs: 8000
+    });
+    state.swapMode = data.mode || 'custom';
+    state.swapData = data;
+    showToast('自定义 VM 参数已应用');
+    appendLog('Swap 自定义参数已应用', 'ok');
+    renderSwapCard(data);
+    closeSwapTuneModal();
+    refreshSwap();
+  } catch (err) {
+    showToast(`请求失败：${err.message || '未知错误'}`);
   } finally {
     state.swapBusy = false;
   }
@@ -3212,7 +3416,23 @@ function bindStaticEvents() {
   $('refresh-all-btn').addEventListener('click', doFullRefresh);
   $('sched-owner-toggle-btn').addEventListener('click', toggleSchedOwner);
   $('swap-toggle-btn').addEventListener('click', toggleSwapMode);
-  $('swap-detail-btn').addEventListener('click', () => openDetail('内存优化详情', SWAP_DETAIL));
+  $('swap-detail-btn').addEventListener('click', () => openDetail('内存优化详情', buildSwapDetail(state.swapData)));
+  $('swap-tune-btn').addEventListener('click', openSwapTuneModal);
+  $('swap-tune-close-btn').addEventListener('click', closeSwapTuneModal);
+  $('swap-tune-close-x').addEventListener('click', closeSwapTuneModal);
+  $('swap-custom-apply-btn').addEventListener('click', applySwapCustom);
+  $('swap-preset-optimized').addEventListener('click', () => setSwapTuneValues(SWAP_OPTIMIZED));
+  $('swap-preset-stock').addEventListener('click', () => setSwapTuneValues(SWAP_STOCK));
+  Object.keys(SWAP_LIMITS).forEach((key) => {
+    refs.swapTuneInputs[key].addEventListener('input', (evt) => syncSwapTuneField(key, evt.target.value));
+    refs.swapTuneNumbers[key].addEventListener('change', (evt) => syncSwapTuneField(key, evt.target.value));
+    refs.swapTuneNumbers[key].addEventListener('keydown', (evt) => {
+      if (evt.key === 'Enter') {
+        evt.preventDefault();
+        syncSwapTuneField(key, evt.target.value);
+      }
+    });
+  });
   $('nr-switch-toggle-btn').addEventListener('click', toggleNrSwitch);
   $('sim2-auto-toggle-btn').addEventListener('click', toggleSim2AutoManage);
   $('idle-isolate-toggle-btn').addEventListener('click', toggleIdleIsolateMode);
@@ -3259,6 +3479,7 @@ function bindStaticEvents() {
     openDetail('CPU 调度参数详情', html);
   });
   refs.detailModal.querySelector('.modal-bg').addEventListener('click', closeDetailModal);
+  refs.swapTuneModal.querySelector('.modal-bg').addEventListener('click', closeSwapTuneModal);
   refs.themeModal.querySelector('.modal-bg').addEventListener('click', closeThemeSheet);
   refs.profileList.addEventListener('click', (evt) => {
     const detailBtn = evt.target.closest('[data-action="profile-detail"]');
@@ -3276,6 +3497,7 @@ function bindStaticEvents() {
   window.addEventListener('popstate', (evt) => {
     const s = evt.state;
     if (refs.detailModal.classList.contains('open')) { stopTempChartRefresh(); refs.detailModal.classList.remove('open'); return; }
+    if (refs.swapTuneModal.classList.contains('open')) { refs.swapTuneModal.classList.remove('open'); queueNextPoll(POLL_MIN_DELAY_MS); return; }
     if (refs.themeModal.classList.contains('open')) { refs.themeModal.classList.remove('open'); return; }
     if (refs.rebootModal.classList.contains('open')) { refs.rebootModal.classList.remove('open'); return; }
   });
@@ -3303,6 +3525,7 @@ async function init() {
   initTheme();
   renderPaletteSwatches();
   initPalette();
+  restoreThemeFromServerIfNeeded();
   renderProfileCards();
   renderThermalCards();
   bindStaticEvents();

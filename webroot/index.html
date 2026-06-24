@@ -350,6 +350,7 @@
             </div>
             <div class="header-actions">
               <button class="tiny-btn" id="swap-detail-btn" type="button">详情</button>
+              <button class="tiny-btn" id="swap-tune-btn" type="button">手动</button>
               <button class="tiny-btn primary" id="swap-toggle-btn" type="button"><span id="swap-toggle-label">读取中…</span></button>
             </div>
           </div>
@@ -551,6 +552,52 @@
     <div class="modal-sheet-body">
       <div class="detail-content" id="detail-body"></div>
       <div class="modal-actions"><button class="mbtn mbtn-ghost" id="detail-close-btn" type="button">关闭</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-wrap" id="modal-swap-tune">
+  <div class="modal-bg"></div>
+  <div class="modal-sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <div class="modal-s-title">ZRAM / VM 手动调节</div>
+      <button class="sheet-close-btn" id="swap-tune-close-x" type="button" aria-label="关闭">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+    <div class="modal-sheet-body">
+      <div class="swap-tune-note">ZRAM 算法与容量由开机服务管理；下方 VM 参数即时生效，应用后会以 custom 模式随下次开机恢复。</div>
+      <div class="swap-tune-form">
+        <label class="swap-field" for="swap-input-swappiness">
+          <span class="swap-field-head"><span>swappiness</span><b id="swap-value-swappiness">100</b></span>
+          <input class="swap-range" id="swap-input-swappiness" type="range" min="0" max="200" step="5" value="100">
+          <input class="swap-number" id="swap-number-swappiness" type="number" min="0" max="200" step="5" inputmode="numeric" value="100">
+        </label>
+        <label class="swap-field" for="swap-input-minfree">
+          <span class="swap-field-head"><span>min_free_kbytes</span><b><span id="swap-value-minfree">131072</span> KB</b></span>
+          <input class="swap-range" id="swap-input-minfree" type="range" min="16384" max="262144" step="8192" value="131072">
+          <input class="swap-number" id="swap-number-minfree" type="number" min="16384" max="262144" step="8192" inputmode="numeric" value="131072">
+        </label>
+        <label class="swap-field" for="swap-input-watermark">
+          <span class="swap-field-head"><span>watermark_scale_factor</span><b id="swap-value-watermark">200</b></span>
+          <input class="swap-range" id="swap-input-watermark" type="range" min="10" max="500" step="10" value="200">
+          <input class="swap-number" id="swap-number-watermark" type="number" min="10" max="500" step="10" inputmode="numeric" value="200">
+        </label>
+        <label class="swap-field" for="swap-input-vfs">
+          <span class="swap-field-head"><span>vfs_cache_pressure</span><b id="swap-value-vfs">60</b></span>
+          <input class="swap-range" id="swap-input-vfs" type="range" min="10" max="200" step="5" value="60">
+          <input class="swap-number" id="swap-number-vfs" type="number" min="10" max="200" step="5" inputmode="numeric" value="60">
+        </label>
+      </div>
+      <div class="swap-preset-actions">
+        <button class="tiny-btn" id="swap-preset-optimized" type="button">模块默认</button>
+        <button class="tiny-btn" id="swap-preset-stock" type="button">原厂</button>
+      </div>
+      <div class="modal-actions">
+        <button class="mbtn mbtn-primary" id="swap-custom-apply-btn" type="button">应用当前参数</button>
+        <button class="mbtn mbtn-ghost" id="swap-tune-close-btn" type="button">关闭</button>
+      </div>
     </div>
   </div>
 </div>
