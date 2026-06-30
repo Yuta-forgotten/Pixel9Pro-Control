@@ -11,6 +11,6 @@
 #   core       = service.sh + customize.sh + 其余 CGI / 基础设施
 #
 # 基带模块 (pixel9pro_baseband_trial) 为独立模块, 由其自身 module.prop 计版, 不在此。
-webui=4.4.17
-scheduler=4.4.12
-core=4.4.17
+webui=4.4.18
+scheduler=4.4.13
+core=4.4.18

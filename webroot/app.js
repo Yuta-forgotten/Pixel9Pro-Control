@@ -287,6 +287,27 @@ const state = {
   uperfModuleSource: '',
   uperfModuleState: '',
   uperfModuleEnabled: 'no',
+  fasRsDetected: false,
+  fasRsModuleId: '',
+  fasRsModuleName: '',
+  fasRsModulePath: '',
+  fasRsModuleSource: '',
+  fasRsModuleState: '',
+  fasRsModuleEnabled: 'no',
+  fasRsOwnerState: '',
+  fasRsMode: '',
+  fasRsProcessAlive: 'no',
+  fasRsRuntimeState: '',
+  fasRsActive: 'no',
+  externalSchedulerDetected: false,
+  externalSchedulerActive: false,
+  externalSchedulerId: '',
+  externalSchedulerName: '',
+  externalSchedulerKind: '',
+  externalSchedulerPath: '',
+  externalSchedulerSource: '',
+  externalSchedulerState: '',
+  externalSchedulerEnabled: 'no',
   autoReason: '',
   currentOffset: 4,
   swapMode: 'unknown',
@@ -1255,6 +1276,10 @@ function positionMarkers() {
   refs.mkModLbl.style.display = state.currentOffset === 0 ? 'none' : '';
 }
 
+function boolValue(value) {
+  return value === true || value === 'true' || value === 'yes' || value === 1 || value === '1';
+}
+
 function getUperfName() {
   return state.uperfModuleName || state.uperfModuleId || 'Uperf Game Turbo';
 }
@@ -1273,38 +1298,88 @@ function isUperfEnabled() {
   return state.uperfDetected && state.uperfModuleEnabled === 'yes';
 }
 
-function getSchedulerStatusText() {
-  const name = getUperfName();
-  if (state.schedOwner === 'external') {
-    if (!state.uperfDetected) return '调度停用 · 安全底座';
-    return isUperfEnabled() ? `${name} 接管 (${getUperfStateText()})` : `${name} ${getUperfStateText()}`;
+function getFasRsName() {
+  return state.fasRsModuleName || state.fasRsModuleId || 'fas-rs';
+}
+
+function getFasRsStateText() {
+  switch (state.fasRsRuntimeState || state.fasRsModuleState) {
+    case 'disabled_marker': return '已让权';
+    case 'disabled': return '已禁用';
+    case 'pending_update': return '待重启更新';
+    case 'pending_remove': return '待重启移除';
+    case 'running': return state.fasRsMode ? `运行中 · ${state.fasRsMode}` : '运行中';
+    case 'module_enabled': return '模块启用';
+    case 'runtime_present': return '运行目录存在';
+    case 'active': return '已安装';
+    default: return state.fasRsDetected ? '已检测到' : '未检测到';
   }
-  return state.uperfDetected ? `本模块覆盖 ${name}` : 'Pixel 温控模块';
+}
+
+function isFasRsEnabled() {
+  return state.fasRsDetected && (state.fasRsActive === 'yes' || state.fasRsModuleEnabled === 'yes');
+}
+
+function getExternalSchedulerName() {
+  return state.externalSchedulerName || state.externalSchedulerId || (state.fasRsDetected ? getFasRsName() : getUperfName());
+}
+
+function hasExternalScheduler() {
+  return state.externalSchedulerDetected || state.uperfDetected || state.fasRsDetected;
+}
+
+function isExternalSchedulerActive() {
+  return state.externalSchedulerActive || isUperfEnabled() || isFasRsEnabled();
+}
+
+function getExternalSchedulerStateText() {
+  if (state.externalSchedulerKind === 'fas_rs') return getFasRsStateText();
+  if (state.externalSchedulerKind === 'uperf') return getUperfStateText();
+  if (state.externalSchedulerKind === 'multiple') {
+    return isExternalSchedulerActive() ? '多个外部调度器可用' : '检测到多个外部调度器';
+  }
+  switch (state.externalSchedulerState) {
+    case 'disabled': return '已禁用';
+    case 'pending_update': return '待重启更新';
+    case 'pending_remove': return '待重启移除';
+    case 'active': return '已安装';
+    case 'running': return '运行中';
+    default: return hasExternalScheduler() ? '已检测到' : '未检测到';
+  }
+}
+
+function getSchedulerStatusText() {
+  const name = getExternalSchedulerName();
+  if (state.schedOwner === 'external') {
+    if (!hasExternalScheduler()) return '调度停用 · 安全底座';
+    return isExternalSchedulerActive() ? `${name} 接管 (${getExternalSchedulerStateText()})` : `${name} ${getExternalSchedulerStateText()}`;
+  }
+  return hasExternalScheduler() ? `本模块覆盖 ${name}` : 'Pixel 温控模块';
 }
 
 function getSchedulerToggleText() {
   if (state.schedOwnerBusy) return '切换中…';
   if (state.schedOwner === 'external') {
-    return state.uperfDetected ? '本模块覆盖接管' : '启用本模块调度';
+    return hasExternalScheduler() ? '本模块覆盖接管' : '启用本模块调度';
   }
-  return state.uperfDetected ? '不覆盖 Uperf' : '停用本模块调度';
+  return hasExternalScheduler() ? '不覆盖外部调度' : '停用本模块调度';
 }
 
 function getSchedulerExternalDesc() {
-  const name = getUperfName();
-  if (state.uperfDetected) {
-    const owner = isUperfEnabled() ? `CPU 调度交给 ${name}` : `检测到 ${name} (${getUperfStateText()})`;
+  const name = getExternalSchedulerName();
+  if (hasExternalScheduler()) {
+    const owner = isExternalSchedulerActive() ? `CPU 调度交给 ${name}` : `检测到 ${name} (${getExternalSchedulerStateText()})`;
     return `${owner}；本模块保留温控、待机与系统优化，不写 CPU 调度节点。`;
   }
-  return '未检测到 UGT；本模块已执行一次均衡安全底座清理，不再周期性写 CPU 调度节点。';
+  return '未检测到启用中的外部调度器；本模块已执行一次均衡安全底座清理，不再周期性写 CPU 调度节点。';
 }
 
 function getSchedulerPixelDesc() {
-  const name = getUperfName();
-  if (state.uperfDetected) {
+  const name = getExternalSchedulerName();
+  if (hasExternalScheduler()) {
     return `检测到 ${name}，当前由本模块覆盖接管 CPU 调度。`;
   }
-  return '未检测到 Uperf Game Turbo，当前由本模块管理 CPU 调度。';
+  return '未检测到 UGT / fas-rs 外部调度器，当前由本模块管理 CPU 调度。';
 }
 
 function syncProfileUi() {
@@ -1312,14 +1387,14 @@ function syncProfileUi() {
   const isAuto = state.profilePolicy === 'auto';
   const isExternal = state.schedOwner === 'external';
   if (isExternal) {
-    refs.topbarProfileChip.textContent = state.uperfDetected ? (isUperfEnabled() ? 'Uperf 接管' : 'Uperf 未启用') : '调度停用';
-    refs.perfCurrentName.textContent = state.uperfDetected
-      ? (isUperfEnabled() ? `${getUperfName()} 接管` : `${getUperfName()} ${getUperfStateText()}`)
+    refs.topbarProfileChip.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? '外部调度接管' : '外部调度未启用') : '调度停用';
+    refs.perfCurrentName.textContent = hasExternalScheduler()
+      ? (isExternalSchedulerActive() ? `${getExternalSchedulerName()} 接管` : `${getExternalSchedulerName()} ${getExternalSchedulerStateText()}`)
       : '本模块调度未启用';
     refs.perfCurrentDesc.textContent = getSchedulerExternalDesc();
-    refs.perfPolicyDesc.textContent = state.uperfDetected
+    refs.perfPolicyDesc.textContent = hasExternalScheduler()
       ? '本模块不覆盖 CPU 调度；手动、自动和模式卡片已暂停。'
-      : '未检测到 Uperf；手动、自动和模式卡片已暂停，本模块只保留一次性安全底座清理。';
+      : '未检测到启用中的外部调度器；手动、自动和模式卡片已暂停，本模块只保留一次性安全底座清理。';
     refs.profilePolicyManualBtn.className = 'seg-btn';
     refs.profilePolicyAutoBtn.className = 'seg-btn';
     refs.profilePolicyManualBtn.disabled = true;
@@ -1330,7 +1405,7 @@ function syncProfileUi() {
     refs.schedOwnerToggleLabel.textContent = getSchedulerToggleText();
     refs.hero.className = 'hero-card mode-game';
     setStaticHtml(refs.heroIcon, PROFILES.performance.hero);
-    refs.heroMode.textContent = state.uperfDetected ? (isUperfEnabled() ? 'Uperf 接管' : 'Uperf 未启用') : '调度停用';
+    refs.heroMode.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? '外部调度接管' : '外部调度未启用') : '调度停用';
     document.querySelectorAll('.profile-option').forEach((card) => {
       card.classList.remove('selected');
       card.classList.add('disabled');
@@ -1343,7 +1418,7 @@ function syncProfileUi() {
   const pixelPolicyDesc = isAuto
     ? `自动模式：按“${describeAutoReason(state.autoReason)}”在均衡与省电间切换；点击模式卡片转为手动。`
     : `手动模式：固定为「${profile.name}」；切换为自动后，仅在温度持续偏高时收口至省电。`;
-  refs.perfPolicyDesc.textContent = state.uperfDetected ? `${pixelPolicyDesc} ${getSchedulerPixelDesc()}` : pixelPolicyDesc;
+  refs.perfPolicyDesc.textContent = hasExternalScheduler() ? `${pixelPolicyDesc} ${getSchedulerPixelDesc()}` : pixelPolicyDesc;
   refs.profilePolicyManualBtn.className = `seg-btn${!isAuto ? ' active' : ''}`;
   refs.profilePolicyAutoBtn.className = `seg-btn${isAuto ? ' active' : ''}`;
   refs.profilePolicyManualBtn.disabled = state.profilePolicyBusy;
@@ -1386,13 +1461,34 @@ function applyProfileState(data) {
   state.manualProfile = PROFILES[data.manual_profile] ? data.manual_profile : state.currentProfile;
   state.profilePolicy = data.policy === 'auto' ? 'auto' : 'manual';
   state.schedOwner = data.sched_owner === 'external' ? 'external' : 'pixel';
-  state.uperfDetected = data.uperf_detected === true || data.uperf_detected === 'true';
+  state.uperfDetected = boolValue(data.uperf_detected);
   state.uperfModuleId = typeof data.uperf_module_id === 'string' ? data.uperf_module_id : '';
   state.uperfModuleName = typeof data.uperf_module_name === 'string' ? data.uperf_module_name : '';
   state.uperfModulePath = typeof data.uperf_module_path === 'string' ? data.uperf_module_path : '';
   state.uperfModuleSource = typeof data.uperf_module_source === 'string' ? data.uperf_module_source : '';
   state.uperfModuleState = typeof data.uperf_module_state === 'string' ? data.uperf_module_state : '';
   state.uperfModuleEnabled = typeof data.uperf_module_enabled === 'string' ? data.uperf_module_enabled : 'no';
+  state.fasRsDetected = boolValue(data.fas_rs_detected);
+  state.fasRsModuleId = typeof data.fas_rs_module_id === 'string' ? data.fas_rs_module_id : '';
+  state.fasRsModuleName = typeof data.fas_rs_module_name === 'string' ? data.fas_rs_module_name : '';
+  state.fasRsModulePath = typeof data.fas_rs_module_path === 'string' ? data.fas_rs_module_path : '';
+  state.fasRsModuleSource = typeof data.fas_rs_module_source === 'string' ? data.fas_rs_module_source : '';
+  state.fasRsModuleState = typeof data.fas_rs_module_state === 'string' ? data.fas_rs_module_state : '';
+  state.fasRsModuleEnabled = typeof data.fas_rs_module_enabled === 'string' ? data.fas_rs_module_enabled : 'no';
+  state.fasRsOwnerState = typeof data.fas_rs_owner_state === 'string' ? data.fas_rs_owner_state : '';
+  state.fasRsMode = typeof data.fas_rs_mode === 'string' ? data.fas_rs_mode : '';
+  state.fasRsProcessAlive = typeof data.fas_rs_process_alive === 'string' ? data.fas_rs_process_alive : 'no';
+  state.fasRsRuntimeState = typeof data.fas_rs_runtime_state === 'string' ? data.fas_rs_runtime_state : '';
+  state.fasRsActive = typeof data.fas_rs_active === 'string' ? data.fas_rs_active : 'no';
+  state.externalSchedulerDetected = boolValue(data.external_scheduler_detected);
+  state.externalSchedulerActive = boolValue(data.external_scheduler_active);
+  state.externalSchedulerId = typeof data.external_scheduler_id === 'string' ? data.external_scheduler_id : '';
+  state.externalSchedulerName = typeof data.external_scheduler_name === 'string' ? data.external_scheduler_name : '';
+  state.externalSchedulerKind = typeof data.external_scheduler_kind === 'string' ? data.external_scheduler_kind : '';
+  state.externalSchedulerPath = typeof data.external_scheduler_path === 'string' ? data.external_scheduler_path : '';
+  state.externalSchedulerSource = typeof data.external_scheduler_source === 'string' ? data.external_scheduler_source : '';
+  state.externalSchedulerState = typeof data.external_scheduler_state === 'string' ? data.external_scheduler_state : '';
+  state.externalSchedulerEnabled = typeof data.external_scheduler_enabled === 'string' ? data.external_scheduler_enabled : 'no';
   state.autoReason = typeof data.auto_reason === 'string' ? data.auto_reason : '';
   syncProfileUi();
   syncHeroDesc();
@@ -1402,8 +1498,8 @@ function syncHeroDesc() {
   const parts = [];
   const preset = THERMAL_PRESETS[state.currentOffset];
   if (preset) parts.push(preset.name);
-  if (state.schedOwner === 'external') parts.push(state.uperfDetected ? (isUperfEnabled() ? 'Uperf 接管' : 'Uperf 未启用') : '调度停用');
-  else if (state.uperfDetected) parts.push('覆盖 Uperf');
+  if (state.schedOwner === 'external') parts.push(hasExternalScheduler() ? (isExternalSchedulerActive() ? '外部调度接管' : '外部调度未启用') : '调度停用');
+  else if (hasExternalScheduler()) parts.push('覆盖外部调度');
   if (state.swapMode === 'optimized') parts.push('内存已优化');
   else if (state.swapMode === 'stock') parts.push('内存默认');
   refs.heroDesc.textContent = parts.join(' · ') || '正在读取配置…';
@@ -1673,6 +1769,27 @@ async function loadSavedProfile() {
     state.uperfModuleSource = '';
     state.uperfModuleState = '';
     state.uperfModuleEnabled = 'no';
+    state.fasRsDetected = false;
+    state.fasRsModuleId = '';
+    state.fasRsModuleName = '';
+    state.fasRsModulePath = '';
+    state.fasRsModuleSource = '';
+    state.fasRsModuleState = '';
+    state.fasRsModuleEnabled = 'no';
+    state.fasRsOwnerState = '';
+    state.fasRsMode = '';
+    state.fasRsProcessAlive = 'no';
+    state.fasRsRuntimeState = '';
+    state.fasRsActive = 'no';
+    state.externalSchedulerDetected = false;
+    state.externalSchedulerActive = false;
+    state.externalSchedulerId = '';
+    state.externalSchedulerName = '';
+    state.externalSchedulerKind = '';
+    state.externalSchedulerPath = '';
+    state.externalSchedulerSource = '';
+    state.externalSchedulerState = '';
+    state.externalSchedulerEnabled = 'no';
     state.autoReason = '';
     syncProfileUi();
     syncHeroDesc();
@@ -3091,8 +3208,8 @@ async function openEnergyDetail() {
 
 async function applyProfile(profile) {
   if (state.schedOwner === 'external') {
-    showToast(state.uperfDetected ? getSchedulerStatusText() : '本模块调度未启用');
-    appendLog(state.uperfDetected
+    showToast(hasExternalScheduler() ? getSchedulerStatusText() : '本模块调度未启用');
+    appendLog(hasExternalScheduler()
       ? `${getSchedulerStatusText()}，未切换本模块 profile`
       : '本模块 CPU 调度未启用，未切换 profile', 'warn');
     return;
@@ -3126,8 +3243,8 @@ async function applyProfile(profile) {
 
 async function setProfilePolicy(policy) {
   if (state.schedOwner === 'external') {
-    showToast(state.uperfDetected ? getSchedulerStatusText() : '本模块调度未启用');
-    appendLog(state.uperfDetected
+    showToast(hasExternalScheduler() ? getSchedulerStatusText() : '本模块调度未启用');
+    appendLog(hasExternalScheduler()
       ? `${getSchedulerStatusText()}，自动/手动策略暂停`
       : '本模块 CPU 调度未启用，自动/手动策略暂停', 'warn');
     return;
@@ -3170,8 +3287,8 @@ async function toggleSchedOwner() {
   state.schedOwnerBusy = true;
   syncProfileUi();
   const actionText = nextOwner === 'external'
-    ? (state.uperfDetected ? '不覆盖 Uperf，交出 CPU 调度…' : '停用本模块 CPU 调度…')
-    : (state.uperfDetected ? '本模块覆盖接管 CPU 调度…' : '启用本模块 CPU 调度…');
+    ? (hasExternalScheduler() ? '不覆盖外部调度，交出 CPU 调度…' : '停用本模块 CPU 调度…')
+    : (hasExternalScheduler() ? '本模块覆盖接管 CPU 调度…' : '启用本模块 CPU 调度…');
   appendLog(actionText, 'dim');
   refs.logCard.classList.add('open');
   try {
@@ -3184,11 +3301,11 @@ async function toggleSchedOwner() {
     if (data.ok) {
       applyProfileState(data);
       showToast(nextOwner === 'external'
-        ? (state.uperfDetected ? '已不覆盖 Uperf' : '已停用本模块调度')
-        : (state.uperfDetected ? '本模块已覆盖接管' : '已启用本模块调度'));
+        ? (hasExternalScheduler() ? '已不覆盖外部调度' : '已停用本模块调度')
+        : (hasExternalScheduler() ? '本模块已覆盖接管' : '已启用本模块调度'));
       appendLog(nextOwner === 'external'
-        ? (state.uperfDetected
-          ? '不覆盖 Uperf：本模块停止写 CPU 调度节点'
+        ? (hasExternalScheduler()
+          ? `不覆盖 ${getExternalSchedulerName()}：本模块停止写 CPU 调度节点`
           : '本模块 CPU 调度已停用：保留系统/外部调度现状')
         : `本模块调度已启用：${PROFILES[state.currentProfile].name}`, 'ok');
       refreshCpu();

@@ -50,19 +50,19 @@ chooseport() {
 
 choose_cpu_scheduling() {
     _sch_step="$1"
-    detect_uperf_module 2>/dev/null
-    if [ "$UPERF_DETECTED" = "yes" ] && [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
-        # 检测到启用中的 UGT (Uperf Game Turbo): 默认交其接管, 不打断安装。
+    detect_external_scheduler 2>/dev/null
+    if [ "$EXTERNAL_SCHEDULER_ACTIVE" = "yes" ]; then
+        # 检测到启用中的外部调度器 (UGT / fas-rs 等): 默认交其接管, 不打断安装。
         echo "external" > "$SCHED_OWNER_FILE"
         echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
-        ui_print "  $_sch_step CPU 调度: 检测到 ${UPERF_MODULE_NAME:-Uperf Game Turbo}, 默认交其接管"
+        ui_print "  $_sch_step CPU 调度: 检测到 ${EXTERNAL_SCHEDULER_NAME:-外部调度器}, 默认交其接管"
         ui_print "    本模块不写 CPU 调度节点; 如需改回本模块接管, 在 WebUI 切换"
         ui_print ""
         return
     fi
 
-    # 未检测到 UGT: 五选一 (不接管 / 均衡 / 省电 / 系统默认 / 自动)。
-    ui_print "  $_sch_step CPU 调度 (未检测到 UGT 外部调度):"
+    # 未检测到启用中的外部调度器: 五选一 (不接管 / 均衡 / 省电 / 系统默认 / 自动)。
+    ui_print "  $_sch_step CPU 调度 (未检测到启用中的 UGT / fas-rs 外部调度):"
     _SCH_VALS="external balanced battery default auto"
     _SCH_LABEL_external="不接管 (本模块不写 CPU 调度, 交系统/外部)"
     _SCH_LABEL_balanced="均衡 (本模块, 日常推荐)"
@@ -189,7 +189,7 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     # v4.4.11: WebUI 调度收敛为 balanced/battery 两档。
     # v4.4.12: 重新引入「系统默认」(default) 为 WebUI 第三档 (恢复内核出厂调度: nom + 出厂 cpuset + cap=1024)。
     #   旧 light/responsive/performance 仍并入 balanced; default 不再迁移, 作为用户可选档保留。
-    #   更强性能仍可改由 UGT (Uperf Game Turbo) 外部调度接管 (.cpu_sched_owner=external)。
+    #   更强性能仍可改由 UGT / fas-rs 等外部调度接管 (.cpu_sched_owner=external)。
     _profile_migrated=0
     for _mf in "$MODPATH/.current_profile" "$MODPATH/.profile_manual"; do
         [ -f "$_mf" ] || continue
@@ -200,7 +200,7 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
                 ;;
         esac
     done
-    [ "$_profile_migrated" -eq 1 ] && ui_print "  ✓ 旧性能档已并入均衡 (省电/均衡/系统默认 三档可在 WebUI 选; 更强性能用 UGT 接管)"
+    [ "$_profile_migrated" -eq 1 ] && ui_print "  ✓ 旧性能档已并入均衡 (省电/均衡/系统默认 三档可在 WebUI 选; 更强性能用外部调度接管)"
     # v4.4.8: only migrate the untouched old QQ/QQMusic default list.
     _bg_list="$MODPATH/.bg_restrict_list"
     if [ -f "$_bg_list" ]; then
@@ -253,7 +253,7 @@ if [ "$_is_upgrade" -eq 0 ]; then
     ui_print "    ✓ $_ofs_label"
     ui_print ""
 
-    # --- CPU 调度 (UGT 接管 / 本模块均衡·省电 / 自动) ---
+    # --- CPU 调度 (外部调度接管 / 本模块均衡·省电 / 自动) ---
     choose_cpu_scheduling "②"
 
 
@@ -348,11 +348,11 @@ else
     [ -f "$PROFILE_MANUAL_FILE" ] || cp "$PROFILE_FILE" "$PROFILE_MANUAL_FILE" 2>/dev/null || echo 'balanced' > "$PROFILE_MANUAL_FILE"
     [ -f "$PROFILE_POLICY_FILE" ] || echo 'manual' > "$PROFILE_POLICY_FILE"
     if [ ! -f "$SCHED_OWNER_FILE" ]; then
-        detect_uperf_module 2>/dev/null
-        if [ "$UPERF_DETECTED" = "yes" ] && [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
+        detect_external_scheduler 2>/dev/null
+        if [ "$EXTERNAL_SCHEDULER_ACTIVE" = "yes" ]; then
             echo "external" > "$SCHED_OWNER_FILE"
             echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
-            ui_print "  新增设置: 检测到 UGT, CPU 调度默认交其接管"
+            ui_print "  新增设置: 检测到 ${EXTERNAL_SCHEDULER_NAME:-外部调度器}, CPU 调度默认交其接管"
         else
             echo "pixel" > "$SCHED_OWNER_FILE"
             ui_print "  新增设置: CPU 调度默认本模块 (可在 WebUI 调整)"

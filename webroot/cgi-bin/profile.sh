@@ -93,22 +93,47 @@ emit_profile_state() {
         feed_warmup|feed_hold|feed_hot|nonfeed_reset) _reason="" ;;
     esac
     detect_uperf_module 2>/dev/null
+    detect_external_scheduler 2>/dev/null
     if [ "$UPERF_DETECTED" = "yes" ]; then
         _uperf_detected=true
     else
         _uperf_detected=false
     fi
+    if [ "$FAS_RS_DETECTED" = "yes" ]; then
+        _fas_rs_detected=true
+    else
+        _fas_rs_detected=false
+    fi
+    if [ "$EXTERNAL_SCHEDULER_DETECTED" = "yes" ]; then
+        _external_scheduler_detected=true
+    else
+        _external_scheduler_detected=false
+    fi
+    if [ "$EXTERNAL_SCHEDULER_ACTIVE" = "yes" ]; then
+        _external_scheduler_active=true
+    else
+        _external_scheduler_active=false
+    fi
 
-    printf '"profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","auto_reason":"%s","last_profile_change":"%s","uperf_detected":%s,"uperf_module_id":"%s","uperf_module_name":"%s","uperf_module_path":"%s","uperf_module_source":"%s","uperf_module_state":"%s","uperf_module_enabled":"%s"' \
+    printf '"profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","auto_reason":"%s","last_profile_change":"%s","uperf_detected":%s,"uperf_module_id":"%s","uperf_module_name":"%s","uperf_module_path":"%s","uperf_module_source":"%s","uperf_module_state":"%s","uperf_module_enabled":"%s","fas_rs_detected":%s,"fas_rs_module_id":"%s","fas_rs_module_name":"%s","fas_rs_module_path":"%s","fas_rs_module_source":"%s","fas_rs_module_state":"%s","fas_rs_module_enabled":"%s","fas_rs_owner_state":"%s","fas_rs_mode":"%s","fas_rs_process_alive":"%s","fas_rs_runtime_state":"%s","fas_rs_active":"%s","external_scheduler_detected":%s,"external_scheduler_active":%s,"external_scheduler_id":"%s","external_scheduler_name":"%s","external_scheduler_kind":"%s","external_scheduler_path":"%s","external_scheduler_source":"%s","external_scheduler_state":"%s","external_scheduler_enabled":"%s"' \
         "$_active" "$_manual" "$_policy" "$_sched_owner" "$(json_escape "$_reason")" "$(json_escape "$_last_profile_change")" \
         "$_uperf_detected" "$(json_escape "$UPERF_MODULE_ID")" "$(json_escape "$UPERF_MODULE_NAME")" \
         "$(json_escape "$UPERF_MODULE_PATH")" "$(json_escape "$UPERF_MODULE_SOURCE")" \
-        "$(json_escape "$UPERF_MODULE_STATE")" "$(json_escape "$UPERF_MODULE_ENABLED")"
+        "$(json_escape "$UPERF_MODULE_STATE")" "$(json_escape "$UPERF_MODULE_ENABLED")" \
+        "$_fas_rs_detected" "$(json_escape "$FAS_RS_MODULE_ID")" "$(json_escape "$FAS_RS_MODULE_NAME")" \
+        "$(json_escape "$FAS_RS_MODULE_PATH")" "$(json_escape "$FAS_RS_MODULE_SOURCE")" \
+        "$(json_escape "$FAS_RS_MODULE_STATE")" "$(json_escape "$FAS_RS_MODULE_ENABLED")" \
+        "$(json_escape "$FAS_RS_OWNER_STATE")" "$(json_escape "$FAS_RS_MODE")" \
+        "$(json_escape "$FAS_RS_PROCESS_ALIVE")" "$(json_escape "$FAS_RS_RUNTIME_STATE")" "$(json_escape "$FAS_RS_ACTIVE")" \
+        "$_external_scheduler_detected" "$_external_scheduler_active" "$(json_escape "$EXTERNAL_SCHEDULER_ID")" \
+        "$(json_escape "$EXTERNAL_SCHEDULER_NAME")" "$(json_escape "$EXTERNAL_SCHEDULER_KIND")" \
+        "$(json_escape "$EXTERNAL_SCHEDULER_PATH")" "$(json_escape "$EXTERNAL_SCHEDULER_SOURCE")" \
+        "$(json_escape "$EXTERNAL_SCHEDULER_STATE")" "$(json_escape "$EXTERNAL_SCHEDULER_ENABLED")"
 }
 
 sanitize_external_without_scheduler() {
-    detect_uperf_module 2>/dev/null
-    [ "$UPERF_DETECTED" = "yes" ] && [ "$UPERF_MODULE_ENABLED" = "yes" ] && return 1
+    detect_external_scheduler 2>/dev/null
+    [ "$EXTERNAL_SCHEDULER_ACTIVE" = "yes" ] && return 1
 
     echo 200 > /proc/vendor_sched/ug_bg_uclamp_max 2>/dev/null
     echo 100 > /proc/vendor_sched/ug_bg_group_throttle 2>/dev/null
@@ -134,7 +159,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     case "$newprof" in
         ''|balanced|battery|default) ;;
-        performance) json_error '400 Bad Request' 'performance retired: use battery/balanced/default, or hand CPU scheduling to UGT (sched_owner=external)' ;;
+        performance) json_error '400 Bad Request' 'performance retired: use battery/balanced/default, or hand CPU scheduling to an external scheduler (sched_owner=external)' ;;
         *) json_error '400 Bad Request' 'invalid profile' ;;
     esac
     case "$newpolicy" in
@@ -173,10 +198,10 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     fi
 
     if [ "$(read_valid_sched_owner)" = "external" ]; then
-        detect_uperf_module 2>/dev/null
+        detect_external_scheduler 2>/dev/null
         json_headers
-        if [ "$UPERF_DETECTED" = "yes" ]; then
-            printf '{"ok":false,"error":"CPU 调度由 Uperf/外部模块接管"}\n'
+        if [ "$EXTERNAL_SCHEDULER_DETECTED" = "yes" ]; then
+            printf '{"ok":false,"error":"CPU 调度由 %s 接管"}\n' "$(json_escape "${EXTERNAL_SCHEDULER_NAME:-外部模块}")"
         else
             printf '{"ok":false,"error":"本模块 CPU 调度未启用"}\n'
         fi

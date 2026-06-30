@@ -650,7 +650,10 @@ apply_profile_state() {
 }
 
 scheduler_external_active() {
-    if command -v detect_uperf_module >/dev/null 2>&1; then
+    if command -v detect_external_scheduler >/dev/null 2>&1; then
+        detect_external_scheduler 2>/dev/null
+        [ "$EXTERNAL_SCHEDULER_ACTIVE" = "yes" ] && return 0
+    elif command -v detect_uperf_module >/dev/null 2>&1; then
         detect_uperf_module 2>/dev/null
         [ "$UPERF_DETECTED" = "yes" ] && [ "$UPERF_MODULE_ENABLED" = "yes" ] && return 0
     fi
@@ -667,11 +670,11 @@ sanitize_external_without_scheduler() {
         printf '%s' 'balanced' > "$PROFILE_FILE"
         printf '%s' 'external_no_scheduler_sanitized' > "$PROFILE_AUTO_REASON_FILE"
         append_profile_history "balanced" "external_no_scheduler_sanitized"
-        log -t pixel9pro_ctrl "CPU external without active Uperf: sanitized to balanced baseline"
+        log -t pixel9pro_ctrl "CPU external without active external scheduler: sanitized to balanced baseline"
         return 0
     fi
 
-    log -t pixel9pro_ctrl "WARNING: CPU external without active Uperf, sanitize failed"
+    log -t pixel9pro_ctrl "WARNING: CPU external without active external scheduler, sanitize failed"
     return 1
 }
 
