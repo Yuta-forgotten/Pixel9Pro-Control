@@ -131,19 +131,6 @@ emit_profile_state() {
         "$(json_escape "$EXTERNAL_SCHEDULER_STATE")" "$(json_escape "$EXTERNAL_SCHEDULER_ENABLED")"
 }
 
-sanitize_external_without_scheduler() {
-    detect_external_scheduler 2>/dev/null
-    [ "$EXTERNAL_SCHEDULER_ACTIVE" = "yes" ] && return 1
-
-    echo 200 > /proc/vendor_sched/ug_bg_uclamp_max 2>/dev/null
-    echo 100 > /proc/vendor_sched/ug_bg_group_throttle 2>/dev/null
-    if sh "$MODDIR/scripts/cpu_profile.sh" balanced "$MODDIR" force 2>/dev/null; then
-        printf '%s' 'balanced' > "$PROFILE_FILE"
-        return 0
-    fi
-    return 1
-}
-
 require_loopback
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
@@ -174,12 +161,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     if [ -n "$newowner" ]; then
         if [ "$newowner" = "external" ]; then
             printf 'external' > "$SCHED_OWNER_FILE"
-            _owner_reason="external_scheduler"
-            if sanitize_external_without_scheduler; then
-                _owner_reason="external_no_scheduler_sanitized"
-            fi
-            printf '%s' "$_owner_reason" > "$PROFILE_AUTO_REASON_FILE"
-            append_profile_history "$(read_valid_profile "$PROFILE_FILE" 'balanced')" "$_owner_reason"
+            printf '%s' 'external_scheduler' > "$PROFILE_AUTO_REASON_FILE"
+            append_profile_history "$(read_valid_profile "$PROFILE_FILE" 'balanced')" "external_scheduler"
         else
             _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'balanced')
             printf 'pixel' > "$SCHED_OWNER_FILE"

@@ -1351,7 +1351,7 @@ function getExternalSchedulerStateText() {
 function getSchedulerStatusText() {
   const name = getExternalSchedulerName();
   if (state.schedOwner === 'external') {
-    if (!hasExternalScheduler()) return '调度停用 · 安全底座';
+    if (!hasExternalScheduler()) return '调度让权 · 等待外部调度';
     return isExternalSchedulerActive() ? `${name} 接管 (${getExternalSchedulerStateText()})` : `${name} ${getExternalSchedulerStateText()}`;
   }
   return hasExternalScheduler() ? `本模块覆盖 ${name}` : 'Pixel 温控模块';
@@ -1371,7 +1371,7 @@ function getSchedulerExternalDesc() {
     const owner = isExternalSchedulerActive() ? `CPU 调度交给 ${name}` : `检测到 ${name} (${getExternalSchedulerStateText()})`;
     return `${owner}；本模块保留温控、待机与系统优化，不写 CPU 调度节点。`;
   }
-  return '未检测到启用中的外部调度器；本模块已执行一次均衡安全底座清理，不再周期性写 CPU 调度节点。';
+  return '未检测到启用中的外部调度器；本模块保持让权状态，不再周期性写 CPU 调度节点。';
 }
 
 function getSchedulerPixelDesc() {
@@ -1387,14 +1387,14 @@ function syncProfileUi() {
   const isAuto = state.profilePolicy === 'auto';
   const isExternal = state.schedOwner === 'external';
   if (isExternal) {
-    refs.topbarProfileChip.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? '外部调度接管' : '外部调度未启用') : '调度停用';
+    refs.topbarProfileChip.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? '外部调度接管' : '外部调度未启用') : '调度让权';
     refs.perfCurrentName.textContent = hasExternalScheduler()
       ? (isExternalSchedulerActive() ? `${getExternalSchedulerName()} 接管` : `${getExternalSchedulerName()} ${getExternalSchedulerStateText()}`)
-      : '本模块调度未启用';
+      : '本模块让权中';
     refs.perfCurrentDesc.textContent = getSchedulerExternalDesc();
     refs.perfPolicyDesc.textContent = hasExternalScheduler()
       ? '本模块不覆盖 CPU 调度；手动、自动和模式卡片已暂停。'
-      : '未检测到启用中的外部调度器；手动、自动和模式卡片已暂停，本模块只保留一次性安全底座清理。';
+      : '未检测到启用中的外部调度器；手动、自动和模式卡片已暂停，本模块只保留让权状态。';
     refs.profilePolicyManualBtn.className = 'seg-btn';
     refs.profilePolicyAutoBtn.className = 'seg-btn';
     refs.profilePolicyManualBtn.disabled = true;
@@ -1450,8 +1450,8 @@ function describeAutoReason(reason) {
     case 'auto_enabled': return '已启用自动调度';
     case 'manual_policy': return '切回手动';
     case 'manual_selected': return '手动指定模式';
-    case 'external_scheduler': return '外部调度接管';
-    case 'external_no_scheduler_sanitized': return '调度停用，已清理安全底座';
+    case 'external_scheduler': return '外部调度让权';
+    case 'external_no_scheduler_sanitized': return '外部调度让权';
     default: return '自动调度运行中';
   }
 }

@@ -29,7 +29,7 @@
 #
 # v4.4.8 变更:
 #   - WebUI token 不再通过 info.sh GET 下发, 改为浏览器端手动配对, 收紧本机 App 攻击面。
-#   - external 且未检测到启用中的 Uperf 时, boot/WebUI 做一次 balanced sanitize, 避免残留 cap=1024 / vendor_sched 高 boost。
+#   - external 为 let-right 状态: 仅停止本模块 CPU 写入, 不因未检测到外部调度器而自动回写 balanced。
 #   - NR 息屏降级补齐 ap_br_wlan*/ap_br_softap* 热点桥接接口, 并从 preferred_network_mode 初始化 LTE/5G 状态。
 #   - .profile_history 兼容旧 9 列记录, 启动时追加 10 列 sched_owner baseline。
 #   - WebUI pid/lock 状态文件权限收紧。
@@ -649,35 +649,6 @@ apply_profile_state() {
     return 1
 }
 
-scheduler_external_active() {
-    if command -v detect_external_scheduler >/dev/null 2>&1; then
-        detect_external_scheduler 2>/dev/null
-        [ "$EXTERNAL_SCHEDULER_ACTIVE" = "yes" ] && return 0
-    elif command -v detect_uperf_module >/dev/null 2>&1; then
-        detect_uperf_module 2>/dev/null
-        [ "$UPERF_DETECTED" = "yes" ] && [ "$UPERF_MODULE_ENABLED" = "yes" ] && return 0
-    fi
-    return 1
-}
-
-sanitize_external_without_scheduler() {
-    [ "$(read_valid_sched_owner)" = "external" ] || return 0
-    scheduler_external_active && return 0
-
-    echo 200 > "$VENDOR_SCHED/ug_bg_uclamp_max" 2>/dev/null
-    echo 100 > "$VENDOR_SCHED/ug_bg_group_throttle" 2>/dev/null
-    if sh "$MODDIR/scripts/cpu_profile.sh" balanced "$MODDIR" force 2>/dev/null; then
-        printf '%s' 'balanced' > "$PROFILE_FILE"
-        printf '%s' 'external_no_scheduler_sanitized' > "$PROFILE_AUTO_REASON_FILE"
-        append_profile_history "balanced" "external_no_scheduler_sanitized"
-        log -t pixel9pro_ctrl "CPU external without active external scheduler: sanitized to balanced baseline"
-        return 0
-    fi
-
-    log -t pixel9pro_ctrl "WARNING: CPU external without active external scheduler, sanitize failed"
-    return 1
-}
-
 foreground_package_name() {
     _pkg=$(dumpsys activity top 2>/dev/null | grep '^  ACTIVITY ' | head -1 | sed 's/.*ACTIVITY \([^/ ][^/ ]*\)\/.*/\1/')
     if [ -z "$_pkg" ]; then
@@ -856,7 +827,6 @@ log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: keep-5G standby settings applied (r
 # ──────────────────────────────────────────────────────────
 [ -f "$POWER_PROFILE_FILE" ] || printf 'balanced' > "$POWER_PROFILE_FILE"
 [ -f "$SCHED_OWNER_FILE" ] || printf 'pixel' > "$SCHED_OWNER_FILE"
-sanitize_external_without_scheduler
 apply_l1_persistent_limits
 if [ "$(read_valid_sched_owner)" = "external" ]; then
     log -t pixel9pro_ctrl "L2: skipped, scheduler owner=external"
@@ -1209,6 +1179,8 @@ is_nr_mode_value() {
     _auto_cool_since=0
     _auto_charge_hot_since=0
     _auto_charge_cool_since=0
+    _OWNER_ARBITER_INTERVAL_ON=15
+    _owner_arbiter_last_tick=0
     _active_profile=$(read_valid_profile "$PROFILE_FILE" 'default')
     _cycle_count=0
     _idle_isolate_prev=""
@@ -1265,6 +1237,17 @@ is_nr_mode_value() {
             _just_off=0
         fi
         _prev_screen="$_screen"
+
+        # --- Phase A owner arbiter dry-run ---
+        # 只在亮屏 worker 周期采样，避免息屏时为 top-app 探测触发 activity/window IPC。
+        # owner_arbiter.sh 只写 /data/adb/fas_rs/.arbiter_state/.arbiter_history，
+        # 不改 .cpu_sched_owner、不启停 UGT/fas-rs、不写 CPU/kernel 节点。
+        if [ "$_screen" = "on" ] && [ -f "$MODDIR/scripts/owner_arbiter.sh" ]; then
+            if [ "$_owner_arbiter_last_tick" -eq 0 ] || [ $((_now - _owner_arbiter_last_tick)) -ge "$_OWNER_ARBITER_INTERVAL_ON" ] 2>/dev/null; then
+                sh "$MODDIR/scripts/owner_arbiter.sh" tick "$MODDIR" "$_screen" 2>/dev/null
+                _owner_arbiter_last_tick=$_now
+            fi
+        fi
 
         # --- SIM2 radio management (check every ~10 on-screen cycles) ---
         # 只在亮屏时检查: 息屏期间任何 telephony IPC 都会唤醒 modem 打断 kernel suspend。
