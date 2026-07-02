@@ -103,7 +103,7 @@ scheduler_module_state() {
 
 scheduler_state_enabled() {
     case "$1" in
-        active|pending_update|running|module_enabled|runtime_present) return 0 ;;
+        active|running|module_enabled|runtime_present) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -130,7 +130,7 @@ is_uperf_module_prop() {
 detect_uperf_module() {
     reset_uperf_detection
 
-    for _sd_prop in /data/adb/modules_update/*/module.prop /data/adb/modules/*/module.prop; do
+    for _sd_prop in /data/adb/modules/*/module.prop /data/adb/modules_update/*/module.prop; do
         [ -f "$_sd_prop" ] || continue
         is_uperf_module_prop "$_sd_prop" || continue
 
@@ -174,7 +174,7 @@ detect_fas_rs_scheduler() {
     reset_fas_rs_detection
     FAS_RS_RUNTIME_ROOT="/data/adb/fas_rs"
 
-    for _sd_prop in /data/adb/modules_update/*/module.prop /data/adb/modules/*/module.prop; do
+    for _sd_prop in /data/adb/modules/*/module.prop /data/adb/modules_update/*/module.prop; do
         [ -f "$_sd_prop" ] || continue
         is_fas_rs_module_prop "$_sd_prop" || continue
 

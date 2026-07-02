@@ -173,8 +173,8 @@ primary_games_toml_path() {
     for _oa_file in \
         "$FAS_ROOT/games.toml" \
         "$FAS_RS_MODULE_PATH/games.toml" \
-        /data/adb/modules_update/fas_rs/games.toml \
-        /data/adb/modules/fas_rs/games.toml; do
+        /data/adb/modules/fas_rs/games.toml \
+        /data/adb/modules_update/fas_rs/games.toml; do
         [ -s "$_oa_file" ] || continue
         printf '%s' "$_oa_file"
         return 0
@@ -377,8 +377,11 @@ normalize_uperf_instances() {
 
     killall uperf 2>/dev/null || true
     for _oa_i in 1 2 3 4 5; do
-        uperf_process_alive || return 1
         sleep 1
+        _oa_roots=$(uperf_root_instance_count)
+        if [ "$_oa_roots" -le 1 ] 2>/dev/null; then
+            return 0
+        fi
     done
     return 2
 }
@@ -422,12 +425,10 @@ resolve_fas_module_path() {
     case "$_oa_path" in
         ""|*";"*) _oa_path="/data/adb/modules/fas_rs" ;;
     esac
-    if [ ! -f "$_oa_path/fas-rs" ]; then
-        if [ -f /data/adb/modules/fas_rs/fas-rs ]; then
-            _oa_path="/data/adb/modules/fas_rs"
-        elif [ -f /data/adb/modules_update/fas_rs/fas-rs ]; then
-            _oa_path="/data/adb/modules_update/fas_rs"
-        fi
+    if [ -f /data/adb/modules/fas_rs/fas-rs ]; then
+        _oa_path="/data/adb/modules/fas_rs"
+    elif [ ! -f "$_oa_path/fas-rs" ] && [ -f /data/adb/modules_update/fas_rs/fas-rs ]; then
+        _oa_path="/data/adb/modules_update/fas_rs"
     fi
     printf '%s' "$_oa_path"
 }
@@ -437,12 +438,10 @@ resolve_uperf_module_path() {
     case "$_oa_path" in
         ""|*";"*) _oa_path="/data/adb/modules/uperf" ;;
     esac
-    if [ ! -d "$_oa_path" ]; then
-        if [ -d /data/adb/modules/uperf ]; then
-            _oa_path="/data/adb/modules/uperf"
-        elif [ -d /data/adb/modules_update/uperf ]; then
-            _oa_path="/data/adb/modules_update/uperf"
-        fi
+    if [ -d /data/adb/modules/uperf ]; then
+        _oa_path="/data/adb/modules/uperf"
+    elif [ ! -d "$_oa_path" ] && [ -d /data/adb/modules_update/uperf ]; then
+        _oa_path="/data/adb/modules_update/uperf"
     fi
     printf '%s' "$_oa_path"
 }
