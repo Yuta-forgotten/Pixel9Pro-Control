@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- Release: `v4.4.26`
-- versionCode: `90`
-- Asset: `pixel9pro_control_v4.4.26.zip`
+- Release: `v4.4.27`
+- versionCode: `91`
+- Asset: `pixel9pro_control_v4.4.27.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -119,7 +119,7 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 
 **外部调度协同说明**：Uperf Game Turbo、fas-rs 等为外部调度项目，建议从其官方渠道安装和更新。本项目不引导安装外部调度器；`external` 下本模块前台自动 CPU 调度不再生效，避免与 UGT / fas-rs 互相抢写 `cpuset`、`uclamp`、`sched_pixel` 等节点。`external` 是让权态，不会因为未检测到外部调度器而自动回落到 `balanced`。
 
-**owner arbiter**：`scripts/owner_arbiter.sh` 默认仍是 Phase A dry-run 观测，每个亮屏 worker 周期读取 top-app、fas-rs `games.toml` / `.lease_game_list`、Scene `games.xml`（仅当 fas-rs `scene_game_list=true`）、UGT/fas-rs 状态和本模块 `.cpu_sched_owner`，把建议状态写到 `/data/adb/fas_rs/.arbiter_state` 与 `.arbiter_history`；fas-rs `exclude_list` 会优先阻止 lease。创建 `/data/adb/fas_rs/.arbiter_apply` 或手动执行 `owner_arbiter.sh apply-tick` 后进入受保护 Phase B：命中游戏稳定后停止 `uperf`、启动 `fas-rs` 并保持 `.cpu_sched_owner=external`；退出 lease 后恢复原 baseline owner，若 baseline 为 UGT 则恢复 `uperf`。UGT 恢复启动带 `/sdcard` 可用性检查、`.uperf_start.lock` 互斥、启动后 5s 稳定窗口与重复实例归一，避免锁屏未解密时堆积等待脚本，或 service worker、UGT 自启动与手动 tick 并发拉起两组 `uperf`。创建 `/data/adb/fas_rs/.arbiter_disable` 可停止 arbiter 采样并记录 `ARB_DISABLED`。
+**owner arbiter**：`scripts/owner_arbiter.sh` 默认仍是 Phase A dry-run 观测，每个亮屏 worker 周期读取 top-app、fas-rs `games.toml` / `.lease_game_list`、Scene `games.xml`（仅当 fas-rs `scene_game_list=true`）、UGT/fas-rs 状态和本模块 `.cpu_sched_owner`，把建议状态写到 `/data/adb/fas_rs/.arbiter_state` 与 `.arbiter_history`；fas-rs `exclude_list` 会优先阻止 lease。创建 `/data/adb/fas_rs/.arbiter_apply` 或手动执行 `owner_arbiter.sh apply-tick` 后进入受保护 Phase B：命中游戏稳定后停止 `uperf`、启动 `fas-rs` 并保持 `.cpu_sched_owner=external`；退出 lease 后恢复原 baseline owner，若 baseline 为 UGT 则恢复 `uperf`。UGT 恢复启动带 `/sdcard` 可用性检查、`.uperf_start.lock` 互斥、启动后 5s 稳定窗口与重复实例归一，避免锁屏未解密时堆积等待脚本，或 service worker、UGT 自启动与手动 tick 并发拉起两组 `uperf`。外部调度检测区分“模块已启用”和“运行态已接管”：FAS lease 期间 UGT 模块仍显示已安装，但只要 `uperf` 进程已停止，就不会再被标记为 `multiple` active。创建 `/data/adb/fas_rs/.arbiter_disable` 可停止 arbiter 采样并记录 `ARB_DISABLED`。
 
 ### NTP 服务器选择
 

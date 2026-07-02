@@ -287,6 +287,8 @@ const state = {
   uperfModuleSource: '',
   uperfModuleState: '',
   uperfModuleEnabled: 'no',
+  uperfProcessAlive: 'no',
+  uperfActive: 'no',
   fasRsDetected: false,
   fasRsModuleId: '',
   fasRsModuleName: '',
@@ -1285,6 +1287,7 @@ function getUperfName() {
 }
 
 function getUperfStateText() {
+  if (isUperfActive()) return '运行中';
   switch (state.uperfModuleState) {
     case 'disabled': return '已禁用';
     case 'pending_update': return '待重启更新';
@@ -1296,6 +1299,10 @@ function getUperfStateText() {
 
 function isUperfEnabled() {
   return state.uperfDetected && state.uperfModuleEnabled === 'yes';
+}
+
+function isUperfActive() {
+  return state.uperfDetected && (state.uperfActive === 'yes' || state.uperfProcessAlive === 'yes');
 }
 
 function getFasRsName() {
@@ -1320,6 +1327,10 @@ function isFasRsEnabled() {
   return state.fasRsDetected && (state.fasRsActive === 'yes' || state.fasRsModuleEnabled === 'yes');
 }
 
+function isFasRsRuntimeActive() {
+  return state.fasRsDetected && (state.fasRsActive === 'yes' || state.fasRsProcessAlive === 'yes');
+}
+
 function getExternalSchedulerName() {
   return state.externalSchedulerName || state.externalSchedulerId || (state.fasRsDetected ? getFasRsName() : getUperfName());
 }
@@ -1329,7 +1340,7 @@ function hasExternalScheduler() {
 }
 
 function isExternalSchedulerActive() {
-  return state.externalSchedulerActive || isUperfEnabled() || isFasRsEnabled();
+  return state.externalSchedulerActive || isUperfActive() || isFasRsRuntimeActive();
 }
 
 function getExternalSchedulerStateText() {
@@ -1468,6 +1479,8 @@ function applyProfileState(data) {
   state.uperfModuleSource = typeof data.uperf_module_source === 'string' ? data.uperf_module_source : '';
   state.uperfModuleState = typeof data.uperf_module_state === 'string' ? data.uperf_module_state : '';
   state.uperfModuleEnabled = typeof data.uperf_module_enabled === 'string' ? data.uperf_module_enabled : 'no';
+  state.uperfProcessAlive = typeof data.uperf_process_alive === 'string' ? data.uperf_process_alive : 'no';
+  state.uperfActive = typeof data.uperf_active === 'string' ? data.uperf_active : 'no';
   state.fasRsDetected = boolValue(data.fas_rs_detected);
   state.fasRsModuleId = typeof data.fas_rs_module_id === 'string' ? data.fas_rs_module_id : '';
   state.fasRsModuleName = typeof data.fas_rs_module_name === 'string' ? data.fas_rs_module_name : '';
@@ -1769,6 +1782,8 @@ async function loadSavedProfile() {
     state.uperfModuleSource = '';
     state.uperfModuleState = '';
     state.uperfModuleEnabled = 'no';
+    state.uperfProcessAlive = 'no';
+    state.uperfActive = 'no';
     state.fasRsDetected = false;
     state.fasRsModuleId = '';
     state.fasRsModuleName = '';

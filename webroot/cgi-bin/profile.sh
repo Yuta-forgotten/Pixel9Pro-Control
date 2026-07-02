@@ -115,11 +115,12 @@ emit_profile_state() {
         _external_scheduler_active=false
     fi
 
-    printf '"profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","auto_reason":"%s","last_profile_change":"%s","uperf_detected":%s,"uperf_module_id":"%s","uperf_module_name":"%s","uperf_module_path":"%s","uperf_module_source":"%s","uperf_module_state":"%s","uperf_module_enabled":"%s","fas_rs_detected":%s,"fas_rs_module_id":"%s","fas_rs_module_name":"%s","fas_rs_module_path":"%s","fas_rs_module_source":"%s","fas_rs_module_state":"%s","fas_rs_module_enabled":"%s","fas_rs_owner_state":"%s","fas_rs_mode":"%s","fas_rs_process_alive":"%s","fas_rs_runtime_state":"%s","fas_rs_active":"%s","external_scheduler_detected":%s,"external_scheduler_active":%s,"external_scheduler_id":"%s","external_scheduler_name":"%s","external_scheduler_kind":"%s","external_scheduler_path":"%s","external_scheduler_source":"%s","external_scheduler_state":"%s","external_scheduler_enabled":"%s"' \
+    printf '"profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","auto_reason":"%s","last_profile_change":"%s","uperf_detected":%s,"uperf_module_id":"%s","uperf_module_name":"%s","uperf_module_path":"%s","uperf_module_source":"%s","uperf_module_state":"%s","uperf_module_enabled":"%s","uperf_process_alive":"%s","uperf_active":"%s","fas_rs_detected":%s,"fas_rs_module_id":"%s","fas_rs_module_name":"%s","fas_rs_module_path":"%s","fas_rs_module_source":"%s","fas_rs_module_state":"%s","fas_rs_module_enabled":"%s","fas_rs_owner_state":"%s","fas_rs_mode":"%s","fas_rs_process_alive":"%s","fas_rs_runtime_state":"%s","fas_rs_active":"%s","external_scheduler_detected":%s,"external_scheduler_active":%s,"external_scheduler_id":"%s","external_scheduler_name":"%s","external_scheduler_kind":"%s","external_scheduler_path":"%s","external_scheduler_source":"%s","external_scheduler_state":"%s","external_scheduler_enabled":"%s"' \
         "$_active" "$_manual" "$_policy" "$_sched_owner" "$(json_escape "$_reason")" "$(json_escape "$_last_profile_change")" \
         "$_uperf_detected" "$(json_escape "$UPERF_MODULE_ID")" "$(json_escape "$UPERF_MODULE_NAME")" \
         "$(json_escape "$UPERF_MODULE_PATH")" "$(json_escape "$UPERF_MODULE_SOURCE")" \
         "$(json_escape "$UPERF_MODULE_STATE")" "$(json_escape "$UPERF_MODULE_ENABLED")" \
+        "$(json_escape "$UPERF_PROCESS_ALIVE")" "$(json_escape "$UPERF_ACTIVE")" \
         "$_fas_rs_detected" "$(json_escape "$FAS_RS_MODULE_ID")" "$(json_escape "$FAS_RS_MODULE_NAME")" \
         "$(json_escape "$FAS_RS_MODULE_PATH")" "$(json_escape "$FAS_RS_MODULE_SOURCE")" \
         "$(json_escape "$FAS_RS_MODULE_STATE")" "$(json_escape "$FAS_RS_MODULE_ENABLED")" \

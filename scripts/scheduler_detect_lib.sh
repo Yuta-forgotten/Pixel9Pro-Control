@@ -10,6 +10,8 @@ UPERF_MODULE_PATH=""
 UPERF_MODULE_SOURCE=""
 UPERF_MODULE_STATE=""
 UPERF_MODULE_ENABLED="no"
+UPERF_PROCESS_ALIVE="no"
+UPERF_ACTIVE="no"
 
 FAS_RS_DETECTED="no"
 FAS_RS_MODULE_ID=""
@@ -43,6 +45,8 @@ reset_uperf_detection() {
     UPERF_MODULE_SOURCE=""
     UPERF_MODULE_STATE=""
     UPERF_MODULE_ENABLED="no"
+    UPERF_PROCESS_ALIVE="no"
+    UPERF_ACTIVE="no"
 }
 
 reset_fas_rs_detection() {
@@ -130,6 +134,7 @@ is_uperf_module_prop() {
 detect_uperf_module() {
     reset_uperf_detection
 
+    _sd_uperf_found=0
     for _sd_prop in /data/adb/modules/*/module.prop /data/adb/modules_update/*/module.prop; do
         [ -f "$_sd_prop" ] || continue
         is_uperf_module_prop "$_sd_prop" || continue
@@ -148,10 +153,26 @@ detect_uperf_module() {
         else
             UPERF_MODULE_ENABLED="no"
         fi
-        return 0
+        _sd_uperf_found=1
+        break
     done
 
-    return 1
+    if scheduler_process_alive "uperf"; then
+        UPERF_PROCESS_ALIVE="yes"
+        UPERF_ACTIVE="yes"
+        UPERF_DETECTED="yes"
+        [ -n "$UPERF_MODULE_ID" ] || UPERF_MODULE_ID="uperf"
+        [ -n "$UPERF_MODULE_NAME" ] || UPERF_MODULE_NAME="Uperf Game Turbo"
+        [ -n "$UPERF_MODULE_PATH" ] || UPERF_MODULE_PATH="runtime"
+        [ -n "$UPERF_MODULE_SOURCE" ] || UPERF_MODULE_SOURCE="runtime"
+        if [ -z "$UPERF_MODULE_STATE" ]; then
+            UPERF_MODULE_STATE="running"
+            UPERF_MODULE_ENABLED="yes"
+        fi
+    fi
+
+    [ "$_sd_uperf_found" -eq 1 ] || [ "$UPERF_PROCESS_ALIVE" = "yes" ] || return 1
+    return 0
 }
 
 is_fas_rs_module_prop() {
@@ -260,7 +281,7 @@ detect_external_scheduler() {
 
     EXTERNAL_SCHEDULER_DETECTED="yes"
 
-    if [ "$UPERF_MODULE_ENABLED" = "yes" ] && [ "$FAS_RS_ACTIVE" = "yes" ]; then
+    if [ "$UPERF_ACTIVE" = "yes" ] && [ "$FAS_RS_ACTIVE" = "yes" ]; then
         EXTERNAL_SCHEDULER_ID="multiple"
         EXTERNAL_SCHEDULER_NAME="${UPERF_MODULE_NAME:-Uperf Game Turbo} / ${FAS_RS_MODULE_NAME:-fas-rs}"
         EXTERNAL_SCHEDULER_KIND="multiple"
@@ -272,7 +293,7 @@ detect_external_scheduler() {
         return 0
     fi
 
-    if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
+    if [ "$UPERF_ACTIVE" = "yes" ]; then
         EXTERNAL_SCHEDULER_ID="${UPERF_MODULE_ID:-uperf}"
         EXTERNAL_SCHEDULER_NAME="${UPERF_MODULE_NAME:-Uperf Game Turbo}"
         EXTERNAL_SCHEDULER_KIND="uperf"
