@@ -45,6 +45,7 @@ LEASE_GAME_LIST="$FAS_ROOT/.lease_game_list"
 FAS_OWNER_FILE="$FAS_ROOT/.owner_state"
 FAS_LOG_FILE="$FAS_ROOT/fas_log.txt"
 POWERCFG_ENTRY="/data/powercfg.sh"
+SCENE_PROFILE="/data/data/com.omarea.vtools/shared_prefs/games.xml"
 UPERF_START_LOCK_DIR="$STATE_DIR/.uperf_start.lock"
 
 ENTER_DEBOUNCE_S="${ARB_ENTER_DEBOUNCE_S:-3}"
@@ -159,12 +160,16 @@ foreground_package_name() {
     printf '%s' "$_oa_pkg" | tr -d ' \r\n\t'
 }
 
-game_source_path() {
-    if [ -s "$LEASE_GAME_LIST" ]; then
-        printf '%s' "$LEASE_GAME_LIST"
-        return 0
-    fi
+game_source_kind() {
+    case "$1" in
+        "$LEASE_GAME_LIST") printf 'lease_list' ;;
+        "$SCENE_PROFILE") printf 'scene_games_xml' ;;
+        *.toml) printf 'games_toml' ;;
+        *) printf 'unknown' ;;
+    esac
+}
 
+primary_games_toml_path() {
     for _oa_file in \
         "$FAS_ROOT/games.toml" \
         "$FAS_RS_MODULE_PATH/games.toml" \
@@ -177,40 +182,120 @@ game_source_path() {
     return 1
 }
 
-game_source_kind() {
-    case "$1" in
-        "$LEASE_GAME_LIST") printf 'lease_list' ;;
-        *.toml) printf 'games_toml' ;;
-        *) printf 'unknown' ;;
-    esac
+package_in_lease_list() {
+    _oa_pkg="$1"
+    [ -n "$_oa_pkg" ] && [ -s "$LEASE_GAME_LIST" ] || return 1
+    awk -v p="$_oa_pkg" '$0 == p { found = 1 } END { exit(found ? 0 : 1) }' "$LEASE_GAME_LIST" 2>/dev/null
 }
 
-package_in_game_source() {
+package_in_games_toml() {
     _oa_pkg="$1"
     _oa_source="$2"
     [ -n "$_oa_pkg" ] && [ -s "$_oa_source" ] || return 1
 
-    case "$(game_source_kind "$_oa_source")" in
-        lease_list)
-            awk -v p="$_oa_pkg" '$0 == p { found = 1 } END { exit(found ? 0 : 1) }' "$_oa_source" 2>/dev/null
-            ;;
-        games_toml)
-            awk -v p="$_oa_pkg" '
-                /^[[:space:]]*\[game_list\][[:space:]]*$/ { in_game = 1; next }
-                /^[[:space:]]*\[/ { in_game = 0 }
-                in_game && /^[[:space:]]*"/ {
-                    line = $0
-                    sub(/^[[:space:]]*"/, "", line)
-                    sub(/".*/, "", line)
-                    if (line == p) found = 1
-                }
-                END { exit(found ? 0 : 1) }
-            ' "$_oa_source" 2>/dev/null
-            ;;
-        *)
-            return 1
-            ;;
-    esac
+    awk -v p="$_oa_pkg" '
+        /^[[:space:]]*\[game_list\][[:space:]]*$/ { in_game = 1; next }
+        /^[[:space:]]*\[/ { in_game = 0 }
+        in_game && /^[[:space:]]*"/ {
+            line = $0
+            sub(/^[[:space:]]*"/, "", line)
+            sub(/".*/, "", line)
+            if (line == p) found = 1
+        }
+        END { exit(found ? 0 : 1) }
+    ' "$_oa_source" 2>/dev/null
+}
+
+package_excluded_by_games_toml() {
+    _oa_pkg="$1"
+    _oa_source="$2"
+    [ -n "$_oa_pkg" ] && [ -s "$_oa_source" ] || return 1
+
+    awk -v p="$_oa_pkg" '
+        /^[[:space:]]*\[config\][[:space:]]*$/ { in_config = 1; next }
+        /^[[:space:]]*\[/ { in_config = 0 }
+        in_config && /^[[:space:]]*exclude_list[[:space:]]*=/ {
+            line = $0
+            sub(/^[^[]*\[/, "", line)
+            sub(/\].*$/, "", line)
+            n = split(line, items, ",")
+            for (i = 1; i <= n; i++) {
+                item = items[i]
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", item)
+                gsub(/^"|"$/, "", item)
+                if (item == p) found = 1
+            }
+        }
+        END { exit(found ? 0 : 1) }
+    ' "$_oa_source" 2>/dev/null
+}
+
+scene_game_list_enabled_by_toml() {
+    _oa_source="$1"
+    [ -s "$_oa_source" ] || return 1
+
+    awk '
+        BEGIN { seen = 0; enabled = 1 }
+        /^[[:space:]]*\[config\][[:space:]]*$/ { in_config = 1; next }
+        /^[[:space:]]*\[/ { in_config = 0 }
+        in_config && /^[[:space:]]*scene_game_list[[:space:]]*=/ {
+            seen = 1
+            line = $0
+            sub(/^[^=]*=/, "", line)
+            gsub(/[[:space:]]|"/, "", line)
+            if (line == "false") enabled = 0
+            else enabled = 1
+        }
+        END { exit(enabled ? 0 : 1) }
+    ' "$_oa_source" 2>/dev/null
+}
+
+package_in_scene_profile() {
+    _oa_pkg="$1"
+    [ -n "$_oa_pkg" ] && [ -s "$SCENE_PROFILE" ] || return 1
+
+    awk -v p="$_oa_pkg" '
+        /<boolean/ && /value="true"/ {
+            line = $0
+            sub(/^.*name="/, "", line)
+            sub(/".*$/, "", line)
+            if (line == p) found = 1
+        }
+        END { exit(found ? 0 : 1) }
+    ' "$SCENE_PROFILE" 2>/dev/null
+}
+
+package_matches_fas_target() {
+    _oa_pkg="$1"
+    GAME_SOURCE="none"
+    [ -n "$_oa_pkg" ] || return 1
+
+    _oa_toml=$(primary_games_toml_path 2>/dev/null)
+
+    if [ -n "$_oa_toml" ] && package_excluded_by_games_toml "$_oa_pkg" "$_oa_toml"; then
+        GAME_SOURCE="$(game_source_kind "$_oa_toml"):exclude_list"
+        return 1
+    fi
+
+    if package_in_lease_list "$_oa_pkg"; then
+        GAME_SOURCE="$LEASE_GAME_LIST"
+        return 0
+    fi
+
+    if [ -n "$_oa_toml" ] && package_in_games_toml "$_oa_pkg" "$_oa_toml"; then
+        GAME_SOURCE="$_oa_toml"
+        return 0
+    fi
+
+    if [ -n "$_oa_toml" ] && scene_game_list_enabled_by_toml "$_oa_toml" && package_in_scene_profile "$_oa_pkg"; then
+        GAME_SOURCE="$SCENE_PROFILE"
+        return 0
+    fi
+
+    if [ -n "$_oa_toml" ]; then
+        GAME_SOURCE="$_oa_toml"
+    fi
+    return 1
 }
 
 process_alive() {
@@ -672,9 +757,7 @@ FOCUS_PIDS=$(pkg_pids "$FOCUS_PKG")
 FOCUS_PID=$(first_word "$FOCUS_PIDS")
 [ -n "$FOCUS_PID" ] || FOCUS_PID="0"
 
-GAME_SOURCE=$(game_source_path 2>/dev/null)
-[ -n "$GAME_SOURCE" ] || GAME_SOURCE="none"
-if [ "$GAME_SOURCE" != "none" ] && package_in_game_source "$FOCUS_PKG" "$GAME_SOURCE"; then
+if package_matches_fas_target "$FOCUS_PKG"; then
     GAME_MATCH="yes"
 fi
 
