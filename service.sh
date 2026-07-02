@@ -650,9 +650,22 @@ apply_profile_state() {
 }
 
 foreground_package_name() {
-    _pkg=$(dumpsys activity top 2>/dev/null | grep '^  ACTIVITY ' | head -1 | sed 's/.*ACTIVITY \([^/ ][^/ ]*\)\/.*/\1/')
+    # Android 17 can keep Launcher as the first `dumpsys activity top` entry
+    # while the focused window belongs to the real foreground app.  Window
+    # focus is the runtime truth for scheduler ownership decisions.
+    _line=$(dumpsys window 2>/dev/null | sed -n '
+        /^[[:space:]]*mFocusedApp=/p
+        /^[[:space:]]*topResumedActivity=/p
+        /^[[:space:]]*ResumedActivity:/p
+        /^[[:space:]]*mCurrentFocus=/p
+        /^[[:space:]]*mFocusedWindow=/p
+    ' | head -n 1)
+    _pkg=$(printf '%s\n' "$_line" | sed -n 's/.*[[:space:]]u[0-9][0-9]*[[:space:]]\([^/ }][^/ }]*\)\/.*/\1/p' | head -n 1)
     if [ -z "$_pkg" ]; then
-        _pkg=$(dumpsys window 2>/dev/null | grep 'mCurrentFocus' | head -1 | sed 's/.* \([^/ ][^/ ]*\)\/.*/\1/')
+        _pkg=$(printf '%s\n' "$_line" | sed -n 's/.*[[:space:]]\([A-Za-z0-9_.$][A-Za-z0-9_.$]*\)\/.*/\1/p' | head -n 1)
+    fi
+    if [ -z "$_pkg" ]; then
+        _pkg=$(dumpsys activity top 2>/dev/null | sed -n 's/^  ACTIVITY \([^/ ][^/ ]*\)\/.*/\1/p' | head -n 1)
     fi
     printf '%s' "$_pkg" | tr -d ' \r\n'
 }
@@ -1238,10 +1251,10 @@ is_nr_mode_value() {
         fi
         _prev_screen="$_screen"
 
-        # --- Phase A owner arbiter dry-run ---
+        # --- Owner arbiter ---
         # 只在亮屏 worker 周期采样，避免息屏时为 top-app 探测触发 activity/window IPC。
-        # owner_arbiter.sh 只写 /data/adb/fas_rs/.arbiter_state/.arbiter_history，
-        # 不改 .cpu_sched_owner、不启停 UGT/fas-rs、不写 CPU/kernel 节点。
+        # 默认 dry-run，只写 /data/adb/fas_rs/.arbiter_state/.arbiter_history。
+        # 若创建 /data/adb/fas_rs/.arbiter_apply，则执行受保护的 UGT<->fas-rs 单主分时。
         if [ "$_screen" = "on" ] && [ -f "$MODDIR/scripts/owner_arbiter.sh" ]; then
             if [ "$_owner_arbiter_last_tick" -eq 0 ] || [ $((_now - _owner_arbiter_last_tick)) -ge "$_OWNER_ARBITER_INTERVAL_ON" ] 2>/dev/null; then
                 sh "$MODDIR/scripts/owner_arbiter.sh" tick "$MODDIR" "$_screen" 2>/dev/null

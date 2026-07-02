@@ -3,6 +3,7 @@
 dist/
 
 # Local project metadata / release drafts
+.code-abyss/
 .ai_changelog.yaml
 AUDIT.md
 RELEASE_v*.md

@@ -13,4 +13,4 @@
 # 基带模块 (pixel9pro_baseband_trial) 为独立模块, 由其自身 module.prop 计版, 不在此。
 webui=4.4.18
 scheduler=4.4.13
-core=4.4.18
+core=4.4.23
