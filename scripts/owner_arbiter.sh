@@ -499,7 +499,7 @@ stop_uperf() {
 
 start_uperf() {
     if ! uperf_storage_ready; then
-        return 1
+        return 3
     fi
 
     if ! acquire_uperf_start_lock; then
@@ -633,7 +633,14 @@ apply_owner_decision() {
                 fi
                 if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
                     stop_fas_rs >/dev/null 2>&1 || true
-                    if ! start_uperf; then
+                    start_uperf
+                    _oa_start_uperf_rc=$?
+                    if [ "$_oa_start_uperf_rc" -ne 0 ]; then
+                        if [ "$_oa_start_uperf_rc" -eq 3 ]; then
+                            APPLY_RESULT="deferred_start_uperf_storage_locked"
+                            printf '%s\n' "external:uperf" > "$FAS_OWNER_FILE" 2>/dev/null || true
+                            return 0
+                        fi
                         APPLY_RESULT="failed_start_uperf"
                         return 1
                     fi
