@@ -650,24 +650,29 @@ apply_profile_state() {
 }
 
 foreground_package_name() {
-    # Android 17 can keep Launcher as the first `dumpsys activity top` entry
-    # while the focused window belongs to the real foreground app.  Window
-    # focus is the runtime truth for scheduler ownership decisions.
-    _line=$(dumpsys window 2>/dev/null | sed -n '
-        /^[[:space:]]*mFocusedApp=/p
-        /^[[:space:]]*topResumedActivity=/p
-        /^[[:space:]]*ResumedActivity:/p
-        /^[[:space:]]*mCurrentFocus=/p
-        /^[[:space:]]*mFocusedWindow=/p
-    ' | head -n 1)
-    _pkg=$(printf '%s\n' "$_line" | sed -n 's/.*[[:space:]]u[0-9][0-9]*[[:space:]]\([^/ }][^/ }]*\)\/.*/\1/p' | head -n 1)
-    if [ -z "$_pkg" ]; then
-        _pkg=$(printf '%s\n' "$_line" | sed -n 's/.*[[:space:]]\([A-Za-z0-9_.$][A-Za-z0-9_.$]*\)\/.*/\1/p' | head -n 1)
-    fi
+    # Keep this parser aligned with scripts/owner_arbiter.sh.  Android 17 can
+    # print transient overlays (NotificationShade, keyguard/bouncer) before
+    # the real focused app in `dumpsys window`; scan by semantic priority and
+    # only accept lines that contain a package/activity pair.
+    _dump=$(dumpsys window 2>/dev/null)
+    _pkg=""
+    for _prefix in "mFocusedApp=" "mCurrentFocus=" "mFocusedWindow=" "topResumedActivity=" "ResumedActivity:"; do
+        _pkg=$(printf '%s\n' "$_dump" | awk -v prefix="$_prefix" '
+            {
+                line = $0
+                sub(/^[ \t]+/, "", line)
+                if (index(line, prefix) == 1) print line
+            }
+        ' | sed -n '
+            s/.*[[:space:]]u[0-9][0-9]*[[:space:]]\([^/ }][^/ }]*\)\/.*/\1/p
+            s/.*[[:space:]]\([A-Za-z0-9_.$][A-Za-z0-9_.$]*\)\/.*/\1/p
+        ' | head -n 1)
+        [ -n "$_pkg" ] && break
+    done
     if [ -z "$_pkg" ]; then
         _pkg=$(dumpsys activity top 2>/dev/null | sed -n 's/^  ACTIVITY \([^/ ][^/ ]*\)\/.*/\1/p' | head -n 1)
     fi
-    printf '%s' "$_pkg" | tr -d ' \r\n'
+    printf '%s' "$_pkg" | tr -d ' \r\n\t'
 }
 
 # ──────────────────────────────────────────────────────────
