@@ -170,15 +170,26 @@ game_source_kind() {
 }
 
 primary_games_toml_path() {
-    for _oa_file in \
-        "$FAS_ROOT/games.toml" \
-        "$FAS_RS_MODULE_PATH/games.toml" \
-        /data/adb/modules/fas_rs/games.toml \
-        /data/adb/modules_update/fas_rs/games.toml; do
+    for _oa_file in "$FAS_ROOT/games.toml"; do
         [ -s "$_oa_file" ] || continue
         printf '%s' "$_oa_file"
         return 0
     done
+
+    case "$FAS_RS_MODULE_PATH" in
+        /data/adb/modules/*)
+            if [ -s "$FAS_RS_MODULE_PATH/games.toml" ]; then
+                printf '%s' "$FAS_RS_MODULE_PATH/games.toml"
+                return 0
+            fi
+            ;;
+    esac
+
+    if [ -s /data/adb/modules/fas_rs/games.toml ]; then
+        printf '%s' /data/adb/modules/fas_rs/games.toml
+        return 0
+    fi
+
     return 1
 }
 
@@ -427,8 +438,15 @@ resolve_fas_module_path() {
     esac
     if [ -f /data/adb/modules/fas_rs/fas-rs ]; then
         _oa_path="/data/adb/modules/fas_rs"
-    elif [ ! -f "$_oa_path/fas-rs" ] && [ -f /data/adb/modules_update/fas_rs/fas-rs ]; then
-        _oa_path="/data/adb/modules_update/fas_rs"
+    else
+        case "$_oa_path" in
+            /data/adb/modules/*)
+                [ -f "$_oa_path/fas-rs" ] || _oa_path="/data/adb/modules/fas_rs"
+                ;;
+            *)
+                _oa_path="/data/adb/modules/fas_rs"
+                ;;
+        esac
     fi
     printf '%s' "$_oa_path"
 }
@@ -440,8 +458,15 @@ resolve_uperf_module_path() {
     esac
     if [ -d /data/adb/modules/uperf ]; then
         _oa_path="/data/adb/modules/uperf"
-    elif [ ! -d "$_oa_path" ] && [ -d /data/adb/modules_update/uperf ]; then
-        _oa_path="/data/adb/modules_update/uperf"
+    else
+        case "$_oa_path" in
+            /data/adb/modules/*)
+                [ -d "$_oa_path" ] || _oa_path="/data/adb/modules/uperf"
+                ;;
+            *)
+                _oa_path="/data/adb/modules/uperf"
+                ;;
+        esac
     fi
     printf '%s' "$_oa_path"
 }
@@ -557,13 +582,13 @@ start_fas_rs() {
     _oa_fas_bin="$_oa_fas_mod/fas-rs"
     [ -f "$_oa_fas_bin" ] || return 1
 
-    _oa_fas_conf="$FAS_ROOT/games.toml"
-    [ -s "$_oa_fas_conf" ] || _oa_fas_conf="$_oa_fas_mod/games.toml"
-    [ -s "$_oa_fas_conf" ] || return 1
+    _oa_fas_std_conf="$_oa_fas_mod/games.toml"
+    [ -s "$FAS_ROOT/games.toml" ] || return 1
+    [ -s "$_oa_fas_std_conf" ] || return 1
 
     mkdir -p "$FAS_ROOT" 2>/dev/null || true
     printf '%s\n' "fas-rs:starting-arbiter" > "$FAS_OWNER_FILE" 2>/dev/null || true
-    RUST_BACKTRACE=1 nohup "$_oa_fas_bin" run "$_oa_fas_conf" >>"$FAS_LOG_FILE" 2>&1 &
+    RUST_BACKTRACE=1 nohup "$_oa_fas_bin" run "$_oa_fas_std_conf" >>"$FAS_LOG_FILE" 2>&1 &
     for _oa_i in 1 2 3 4 5; do
         sleep 1
         fas_process_alive && return 0

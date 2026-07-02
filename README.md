@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- Release: `v4.4.25`
-- versionCode: `89`
-- Asset: `pixel9pro_control_v4.4.25.zip`
+- Release: `v4.4.26`
+- versionCode: `90`
+- Asset: `pixel9pro_control_v4.4.26.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
