@@ -142,19 +142,25 @@ foreground_package_name() {
     # Android 17 may list Launcher before the real foreground app in
     # `dumpsys activity top` while `dumpsys window` still reports the focused
     # game correctly.  Prefer WindowManager focus and use ActivityTaskManager
-    # only as a fallback.
+    # only as a fallback.  Some transient overlays (NotificationShade,
+    # keyguard/bouncer) can appear earlier in the window dump than mFocusedApp
+    # and do not contain a package/activity pair; scan by priority and skip
+    # unparsable lines instead of taking the first matching line globally.
     _oa_dump=$(dumpsys window 2>/dev/null)
-    _oa_line=$(printf '%s\n' "$_oa_dump" | sed -n '
-        /^[[:space:]]*mFocusedApp=/p
-        /^[[:space:]]*topResumedActivity=/p
-        /^[[:space:]]*ResumedActivity:/p
-        /^[[:space:]]*mCurrentFocus=/p
-        /^[[:space:]]*mFocusedWindow=/p
-    ' | head -n 1)
-    _oa_pkg=$(printf '%s\n' "$_oa_line" | sed -n 's/.*[[:space:]]u[0-9][0-9]*[[:space:]]\([^/ }][^/ }]*\)\/.*/\1/p' | head -n 1)
-    if [ -z "$_oa_pkg" ]; then
-        _oa_pkg=$(printf '%s\n' "$_oa_line" | sed -n 's/.*[[:space:]]\([A-Za-z0-9_.$][A-Za-z0-9_.$]*\)\/.*/\1/p' | head -n 1)
-    fi
+    _oa_pkg=""
+    for _oa_prefix in "mFocusedApp=" "mCurrentFocus=" "mFocusedWindow=" "topResumedActivity=" "ResumedActivity:"; do
+        _oa_pkg=$(printf '%s\n' "$_oa_dump" | awk -v prefix="$_oa_prefix" '
+            {
+                line = $0
+                sub(/^[ \t]+/, "", line)
+                if (index(line, prefix) == 1) print line
+            }
+        ' | sed -n '
+            s/.*[[:space:]]u[0-9][0-9]*[[:space:]]\([^/ }][^/ }]*\)\/.*/\1/p
+            s/.*[[:space:]]\([A-Za-z0-9_.$][A-Za-z0-9_.$]*\)\/.*/\1/p
+        ' | head -n 1)
+        [ -n "$_oa_pkg" ] && break
+    done
     if [ -z "$_oa_pkg" ]; then
         _oa_pkg=$(dumpsys activity top 2>/dev/null | sed -n 's/^  ACTIVITY \([^/ ][^/ ]*\)\/.*/\1/p' | head -n 1)
     fi

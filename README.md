@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- Release: `v4.4.29`
-- versionCode: `93`
-- Asset: `pixel9pro_control_v4.4.29.zip`
+- Release: `v4.4.31`
+- versionCode: `95`
+- Asset: `pixel9pro_control_v4.4.31.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -119,7 +119,7 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 
 **外部调度协同说明**：Uperf Game Turbo、fas-rs 等为外部调度项目，建议从其官方渠道安装和更新。本项目不引导安装外部调度器；`external` 下本模块前台自动 CPU 调度不再生效，避免与 UGT / fas-rs 互相抢写 `cpuset`、`uclamp`、`sched_pixel` 等节点。`external` 是让权态，不会因为未检测到外部调度器而自动回落到 `balanced`。
 
-**owner arbiter**：`scripts/owner_arbiter.sh` 默认仍是 Phase A dry-run 观测，每个亮屏 worker 周期读取 top-app、fas-rs `games.toml` / `.lease_game_list`、Scene `games.xml`（仅当 fas-rs `scene_game_list=true`）、UGT/fas-rs 状态和本模块 `.cpu_sched_owner`，把建议状态写到 `/data/adb/fas_rs/.arbiter_state` 与 `.arbiter_history`；fas-rs `exclude_list` 会优先阻止 lease。创建 `/data/adb/fas_rs/.arbiter_apply` 或手动执行 `owner_arbiter.sh apply-tick` 后进入受保护 Phase B：命中游戏稳定后停止 `uperf`、启动 `fas-rs` 并保持 `.cpu_sched_owner=external`；退出 lease 后恢复原 baseline owner，若 baseline 为 UGT 则恢复 `uperf`。UGT 恢复启动带 `/sdcard` 可用性检查、`.uperf_start.lock` 互斥、启动后 5s 稳定窗口、`pidof` + `/proc/*/status` root 实例计数与 post-apply 重复实例归一，避免锁屏未解密时堆积等待脚本，或 service worker、UGT 自启动与手动 tick 并发拉起两组 `uperf`；若刚重启仍处于 `RUNNING_LOCKED` 且 `/sdcard/Android` 未解密挂载，恢复 UGT 会记录为 `deferred_start_uperf_storage_locked`，不再误报 `failed_start_uperf`。`.arbiter_state` 会记录 `uperf_root_instances` / `uperf_normalized` 便于 ADB 监听确认是否存在双 root 实例以及本轮是否做过归一。外部调度检测区分“模块已启用”和“运行态已接管”：FAS lease 期间 UGT 模块仍显示已安装，但只要 `uperf` 进程已停止，就不会再被标记为 `multiple` active。创建 `/data/adb/fas_rs/.arbiter_disable` 可停止 arbiter 采样并记录 `ARB_DISABLED`。
+**owner arbiter**：`scripts/owner_arbiter.sh` 默认仍是 Phase A dry-run 观测，每个亮屏 worker 周期读取 top-app、fas-rs `games.toml` / `.lease_game_list`、Scene `games.xml`（仅当 fas-rs `scene_game_list=true`）、UGT/fas-rs 状态和本模块 `.cpu_sched_owner`，把建议状态写到 `/data/adb/fas_rs/.arbiter_state` 与 `.arbiter_history`；fas-rs `exclude_list` 会优先阻止 lease。创建 `/data/adb/fas_rs/.arbiter_apply` 或手动执行 `owner_arbiter.sh apply-tick` 后进入受保护 Phase B：命中游戏稳定后停止 `uperf`、启动 `fas-rs` 并保持 `.cpu_sched_owner=external`；退出 lease 后恢复原 baseline owner，若 baseline 为 UGT 则恢复 `uperf`。前台包识别按 `mFocusedApp` / `mCurrentFocus` / `mFocusedWindow` / ActivityTask fallback 的优先级扫描，并跳过 `NotificationShade`、keyguard/bouncer 等无包名 overlay，避免息屏/下拉通知栏恢复时把系统 UI 当作“无游戏前台”。UGT 恢复启动带 `/sdcard` 可用性检查、`.uperf_start.lock` 互斥、启动后 5s 稳定窗口、`pidof` + `/proc/*/status` root 实例计数与 post-apply 重复实例归一，避免锁屏未解密时堆积等待脚本，或 service worker、UGT 自启动与手动 tick 并发拉起两组 `uperf`；若刚重启仍处于 `RUNNING_LOCKED` 且 `/sdcard/Android` 未解密挂载，恢复 UGT 会记录为 `deferred_start_uperf_storage_locked`，不再误报 `failed_start_uperf`。`.arbiter_state` 会记录 `uperf_root_instances` / `uperf_normalized` 便于 ADB 监听确认是否存在双 root 实例以及本轮是否做过归一。外部调度检测区分“模块已启用/owner 标记”和“运行态已接管”：FAS active 必须有 live `fas-rs` 进程证明，UGT active 必须有 live `uperf` 进程证明；FAS lease 期间 UGT 模块仍显示已安装，但只要 `uperf` 进程已停止，就不会再被标记为 `multiple` active。创建 `/data/adb/fas_rs/.arbiter_disable` 可停止 arbiter 采样并记录 `ARB_DISABLED`。
 
 ### NTP 服务器选择
 

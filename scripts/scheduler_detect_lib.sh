@@ -115,7 +115,7 @@ scheduler_state_enabled() {
 scheduler_process_alive() {
     _sd_proc="$1"
     pidof "$_sd_proc" >/dev/null 2>&1 && return 0
-    ps -A 2>/dev/null | grep "$_sd_proc" | grep -v grep >/dev/null 2>&1
+    ps -A 2>/dev/null | grep -E "(^|[[:space:]])${_sd_proc}([[:space:]]|$)" | grep -v grep >/dev/null 2>&1
 }
 
 is_uperf_module_prop() {
@@ -247,7 +247,10 @@ detect_fas_rs_scheduler() {
             *running*|*game*|*fas-rs*)
                 FAS_RS_RUNTIME_STATE="$FAS_RS_OWNER_STATE"
                 FAS_RS_MODULE_ENABLED="yes"
-                FAS_RS_ACTIVE="yes"
+                # .owner_state is a desired/last-owner marker and can be stale
+                # after a crash, force-stop, or handoff interruption.  Only the
+                # live fas-rs process proves runtime activity.
+                FAS_RS_ACTIVE="no"
                 ;;
             *)
                 FAS_RS_RUNTIME_STATE="$FAS_RS_OWNER_STATE"
@@ -256,10 +259,10 @@ detect_fas_rs_scheduler() {
         esac
     elif [ "$FAS_RS_MODULE_ENABLED" = "yes" ]; then
         FAS_RS_RUNTIME_STATE="module_enabled"
-        FAS_RS_ACTIVE="yes"
+        FAS_RS_ACTIVE="no"
     elif [ -d "$FAS_RS_RUNTIME_ROOT" ] || [ -n "$FAS_RS_MODE" ]; then
         FAS_RS_RUNTIME_STATE="runtime_present"
-        [ -n "$FAS_RS_MODE" ] && FAS_RS_ACTIVE="yes" || FAS_RS_ACTIVE="no"
+        FAS_RS_ACTIVE="no"
     else
         [ -n "$FAS_RS_RUNTIME_STATE" ] || FAS_RS_RUNTIME_STATE="${FAS_RS_MODULE_STATE:-detected}"
         FAS_RS_ACTIVE="no"
@@ -314,16 +317,6 @@ detect_external_scheduler() {
         EXTERNAL_SCHEDULER_STATE="$FAS_RS_RUNTIME_STATE"
         EXTERNAL_SCHEDULER_ENABLED="yes"
         EXTERNAL_SCHEDULER_ACTIVE="yes"
-        return 0
-    fi
-
-    if [ "$_sd_uperf_found" -eq 1 ] && [ "$_sd_fas_found" -eq 1 ]; then
-        EXTERNAL_SCHEDULER_ID="multiple"
-        EXTERNAL_SCHEDULER_NAME="${UPERF_MODULE_NAME:-Uperf Game Turbo} / ${FAS_RS_MODULE_NAME:-fas-rs}"
-        EXTERNAL_SCHEDULER_KIND="multiple"
-        EXTERNAL_SCHEDULER_PATH="${UPERF_MODULE_PATH};${FAS_RS_MODULE_PATH}"
-        EXTERNAL_SCHEDULER_SOURCE="${UPERF_MODULE_SOURCE};${FAS_RS_MODULE_SOURCE}"
-        EXTERNAL_SCHEDULER_STATE="${UPERF_MODULE_STATE:-detected}/${FAS_RS_MODULE_STATE:-detected}"
         return 0
     fi
 
