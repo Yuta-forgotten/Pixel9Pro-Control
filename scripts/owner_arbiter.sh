@@ -55,6 +55,7 @@ EXIT_IDLE_AFTER_S="${ARB_EXIT_IDLE_AFTER_S:-90}"
 ARB_HISTORY_MAX="${ARB_HISTORY_MAX:-500}"
 APPLY_ENABLED="no"
 APPLY_RESULT="dry-run"
+UPERF_NORMALIZED="no"
 if [ "$APPLY_REQUESTED" = "yes" ]; then
     APPLY_ENABLED="yes"
 elif [ -f "$ARB_APPLY_FILE" ]; then
@@ -368,6 +369,22 @@ release_uperf_start_lock() {
 }
 
 uperf_root_instance_count() {
+    _oa_roots=0
+    _oa_seen=0
+    for _oa_pid in $(pidof uperf 2>/dev/null); do
+        case "$_oa_pid" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        _oa_seen=1
+        _oa_ppid=$(awk '/^PPid:/{print $2; exit}' "/proc/$_oa_pid/status" 2>/dev/null)
+        [ "$_oa_ppid" = "1" ] && _oa_roots=$((_oa_roots + 1))
+    done
+
+    if [ "$_oa_seen" -eq 1 ] 2>/dev/null; then
+        printf '%s' "$_oa_roots"
+        return 0
+    fi
+
     _oa_roots=$(ps -A 2>/dev/null | awk '
         NR > 1 && $NF == "uperf" {
             if ($3 == "1") roots++
@@ -386,6 +403,7 @@ normalize_uperf_instances() {
         return 0
     fi
 
+    UPERF_NORMALIZED="yes"
     killall uperf 2>/dev/null || true
     for _oa_i in 1 2 3 4 5; do
         sleep 1
@@ -505,9 +523,19 @@ start_uperf() {
     if ! acquire_uperf_start_lock; then
         for _oa_i in 1 2 3 4 5 6 7 8; do
             sleep 1
-            uperf_process_alive && return 0
+            if uperf_process_alive; then
+                _oa_roots=$(uperf_root_instance_count)
+                if [ "$_oa_roots" -le 1 ] 2>/dev/null; then
+                    uperf_single_instance_stable
+                    _oa_stable=$?
+                    [ "$_oa_stable" -eq 0 ] && return 0
+                    [ "$_oa_stable" -eq 2 ] && break
+                else
+                    break
+                fi
+            fi
         done
-        return 1
+        acquire_uperf_start_lock || return 1
     fi
 
     if uperf_process_alive; then
@@ -646,7 +674,26 @@ apply_owner_decision() {
                     fi
                     ensure_powercfg_router >/dev/null 2>&1 || true
                     printf '%s\n' "external:uperf" > "$FAS_OWNER_FILE" 2>/dev/null || true
-                    APPLY_RESULT="applied_uperf_idle"
+                    _oa_uperf_roots=$(uperf_root_instance_count)
+                    if [ "$_oa_uperf_roots" -gt 1 ] 2>/dev/null; then
+                        normalize_uperf_instances >/dev/null 2>&1 || true
+                        start_uperf >/dev/null 2>&1
+                        _oa_restart_uperf_rc=$?
+                        if [ "$_oa_restart_uperf_rc" -ne 0 ]; then
+                            APPLY_RESULT="failed_normalize_uperf_duplicates"
+                            return 1
+                        fi
+                        _oa_uperf_roots=$(uperf_root_instance_count)
+                        if [ "$_oa_uperf_roots" -gt 1 ] 2>/dev/null; then
+                            APPLY_RESULT="failed_normalize_uperf_duplicates"
+                            return 1
+                        fi
+                        APPLY_RESULT="applied_uperf_idle_normalized"
+                    elif [ "$UPERF_NORMALIZED" = "yes" ]; then
+                        APPLY_RESULT="applied_uperf_idle_normalized"
+                    else
+                        APPLY_RESULT="applied_uperf_idle"
+                    fi
                 else
                     APPLY_RESULT="applied_external_idle"
                 fi
@@ -681,6 +728,8 @@ write_state() {
         printf 'reason=%s\n' "$REASON"
         printf 'apply_enabled=%s\n' "$APPLY_ENABLED"
         printf 'apply_result=%s\n' "$APPLY_RESULT"
+        printf 'uperf_root_instances=%s\n' "$(uperf_root_instance_count)"
+        printf 'uperf_normalized=%s\n' "$UPERF_NORMALIZED"
         printf 'dry_run=%s\n' "$DRY_RUN_FLAG"
     } > "$_oa_tmp" 2>/dev/null && mv "$_oa_tmp" "$ARB_STATE_FILE" 2>/dev/null
 }
