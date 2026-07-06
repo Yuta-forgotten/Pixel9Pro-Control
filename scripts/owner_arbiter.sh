@@ -47,6 +47,7 @@ FAS_LOG_FILE="$FAS_ROOT/fas_log.txt"
 POWERCFG_ENTRY="/data/powercfg.sh"
 SCENE_PROFILE="/data/data/com.omarea.vtools/shared_prefs/games.xml"
 UPERF_START_LOCK_DIR="$STATE_DIR/.uperf_start.lock"
+CPUFREQ_ROOT="/sys/devices/system/cpu/cpufreq"
 
 ENTER_DEBOUNCE_S="${ARB_ENTER_DEBOUNCE_S:-3}"
 MIN_LEASE_S="${ARB_MIN_LEASE_S:-420}"
@@ -56,6 +57,11 @@ ARB_HISTORY_MAX="${ARB_HISTORY_MAX:-500}"
 APPLY_ENABLED="no"
 APPLY_RESULT="dry-run"
 UPERF_NORMALIZED="no"
+CPUFREQ_RESTORED="no"
+CPUFREQ_RESTORE_VERIFIED="no"
+CPUFREQ_RESTORE_FAILED="no"
+CPUFREQ_RESTORE_SKIPPED="no"
+CPUFREQ_RESTORE_LEASE="0"
 if [ "$APPLY_REQUESTED" = "yes" ]; then
     APPLY_ENABLED="yes"
 elif [ -f "$ARB_APPLY_FILE" ]; then
@@ -455,6 +461,103 @@ write_sched_owner() {
     printf '%s\n' "$_oa_target" > "$SCHED_OWNER_FILE" 2>/dev/null
 }
 
+cpufreq_read_one() {
+    [ -f "$1" ] || return 1
+    head -n 1 "$1" 2>/dev/null | tr -d ' \r\n\t'
+}
+
+cpufreq_write_one() {
+    [ -f "$1" ] || return 1
+    printf '%s\n' "$2" > "$1" 2>/dev/null
+}
+
+cpufreq_choose_base_governor() {
+    _oa_policy="$1"
+    _oa_avail=$(cpufreq_read_one "$_oa_policy/scaling_available_governors")
+    case " $_oa_avail " in
+        *" sched_pixel "*) printf 'sched_pixel'; return 0 ;;
+        *" schedutil "*) printf 'schedutil'; return 0 ;;
+    esac
+    return 1
+}
+
+restore_policy_cpufreq_floor() {
+    _oa_policy="$1"
+    [ -d "$_oa_policy" ] || return 0
+
+    _oa_gov=$(cpufreq_read_one "$_oa_policy/scaling_governor")
+    _oa_min=$(cpufreq_read_one "$_oa_policy/scaling_min_freq")
+    _oa_max=$(cpufreq_read_one "$_oa_policy/scaling_max_freq")
+    _oa_cpuinfo_max=$(cpufreq_read_one "$_oa_policy/cpuinfo_max_freq")
+    _oa_cpuinfo_min=$(cpufreq_read_one "$_oa_policy/cpuinfo_min_freq")
+
+    case "$_oa_cpuinfo_max" in ''|*[!0-9]*) return 0 ;; esac
+    case "$_oa_cpuinfo_min" in ''|*[!0-9]*) _oa_cpuinfo_min="" ;; esac
+
+    _oa_locked_low="no"
+    case "$_oa_max" in
+        ''|*[!0-9]*) ;;
+        *)
+            if [ "$_oa_max" -lt "$_oa_cpuinfo_max" ] 2>/dev/null; then
+                _oa_locked_low="yes"
+            fi
+            ;;
+    esac
+    if [ -n "$_oa_min" ] && [ -n "$_oa_max" ] && [ "$_oa_min" = "$_oa_max" ] && [ "$_oa_max" != "$_oa_cpuinfo_max" ]; then
+        _oa_locked_low="yes"
+    fi
+    [ "$_oa_gov" = "powersave" ] && _oa_locked_low="yes"
+    [ "$_oa_locked_low" = "yes" ] || return 0
+
+    _oa_base_gov=""
+    if _oa_base_gov=$(cpufreq_choose_base_governor "$_oa_policy"); then
+        cpufreq_write_one "$_oa_policy/scaling_governor" "$_oa_base_gov" || true
+    fi
+    cpufreq_write_one "$_oa_policy/scaling_max_freq" "$_oa_cpuinfo_max" || true
+    CPUFREQ_RESTORED="yes"
+
+    # Some Android 17/Pixel paths accept the write and are then overwritten by
+    # PowerHAL/Scene within the next tick.  Verify after a short settle window,
+    # and do not write scaling_min_freq here: switching away from powersave can
+    # temporarily lift min/max, while forcing min during that window may create
+    # a new inconsistent clamp.
+    sleep 1
+    _oa_new_gov=$(cpufreq_read_one "$_oa_policy/scaling_governor")
+    _oa_new_min=$(cpufreq_read_one "$_oa_policy/scaling_min_freq")
+    _oa_new_max=$(cpufreq_read_one "$_oa_policy/scaling_max_freq")
+    if [ "$_oa_new_gov" != "powersave" ] && [ "$_oa_new_max" = "$_oa_cpuinfo_max" ]; then
+        CPUFREQ_RESTORE_VERIFIED="yes"
+        log -t pixel9pro_ctrl "owner_arbiter: verified ${_oa_policy##*/} cpufreq restore from gov=$_oa_gov min=$_oa_min max=$_oa_max to gov=$_oa_new_gov min=$_oa_new_min max=$_oa_new_max for fas-rs lease"
+    else
+        CPUFREQ_RESTORE_FAILED="yes"
+        log -t pixel9pro_ctrl "owner_arbiter: cpufreq restore not effective on ${_oa_policy##*/}; before gov=$_oa_gov min=$_oa_min max=$_oa_max requested_gov=${_oa_base_gov:-unchanged} requested_max=$_oa_cpuinfo_max after gov=$_oa_new_gov min=$_oa_new_min max=$_oa_new_max"
+    fi
+}
+
+restore_fas_rs_cpufreq_floor() {
+    # UGT/Scene can leave Pixel in CpufreqWriterEpicPowersave with
+    # powersave governor and min=max low OPP after handoff.  fas-rs then owns
+    # game logic but cannot recover X4 frequency.  Only repair this residue
+    # while a fas-rs game lease is active.
+    [ "$NEW_STATE" = "FAS_LEASED_GAME" ] || [ "$NEW_STATE" = "EXIT_HOLD" ] || return 0
+    [ -n "$NEW_TARGET_PKG" ] || return 0
+
+    _oa_restore_lease=$(num_or_zero "$NEW_LEASE_START")
+    if [ "$_oa_restore_lease" -gt 0 ] 2>/dev/null && [ "$PREV_CPUFREQ_RESTORE_LEASE" = "$_oa_restore_lease" ]; then
+        CPUFREQ_RESTORE_SKIPPED="yes"
+        CPUFREQ_RESTORE_LEASE="$_oa_restore_lease"
+        return 0
+    fi
+
+    for _oa_policy in "$CPUFREQ_ROOT"/policy*; do
+        restore_policy_cpufreq_floor "$_oa_policy"
+    done
+
+    if [ "$CPUFREQ_RESTORED" = "yes" ]; then
+        CPUFREQ_RESTORE_LEASE="$_oa_restore_lease"
+    fi
+}
+
 resolve_fas_module_path() {
     _oa_path="$FAS_RS_MODULE_PATH"
     case "$_oa_path" in
@@ -657,7 +760,18 @@ apply_owner_decision() {
                 return 1
             fi
             [ -n "$NEW_TARGET_PKG" ] && printf '%s\n' "fas-rs:game:$NEW_TARGET_PKG" > "$FAS_OWNER_FILE" 2>/dev/null || true
-            APPLY_RESULT="applied_fas_rs_game"
+            restore_fas_rs_cpufreq_floor
+            if [ "$CPUFREQ_RESTORE_FAILED" = "yes" ]; then
+                APPLY_RESULT="applied_fas_rs_game_cpufreq_restore_failed"
+            elif [ "$CPUFREQ_RESTORE_VERIFIED" = "yes" ]; then
+                APPLY_RESULT="applied_fas_rs_game_cpufreq_verified"
+            elif [ "$CPUFREQ_RESTORED" = "yes" ]; then
+                APPLY_RESULT="applied_fas_rs_game_cpufreq_restored"
+            elif [ "$CPUFREQ_RESTORE_SKIPPED" = "yes" ]; then
+                APPLY_RESULT="applied_fas_rs_game_cpufreq_restore_skipped"
+            else
+                APPLY_RESULT="applied_fas_rs_game"
+            fi
             ;;
         PIXEL_NORMAL)
             if [ "$NEW_BASELINE_OWNER" = "external" ] || { [ "$CURRENT_OWNER" = "external" ] && [ "$UPERF_MODULE_ENABLED" = "yes" ]; }; then
@@ -736,16 +850,23 @@ write_state() {
         printf 'apply_result=%s\n' "$APPLY_RESULT"
         printf 'uperf_root_instances=%s\n' "$(uperf_root_instance_count)"
         printf 'uperf_normalized=%s\n' "$UPERF_NORMALIZED"
+        printf 'cpufreq_restored=%s\n' "$CPUFREQ_RESTORED"
+        printf 'cpufreq_restore_verified=%s\n' "$CPUFREQ_RESTORE_VERIFIED"
+        printf 'cpufreq_restore_failed=%s\n' "$CPUFREQ_RESTORE_FAILED"
+        printf 'cpufreq_restore_skipped=%s\n' "$CPUFREQ_RESTORE_SKIPPED"
+        printf 'cpufreq_restore_lease=%s\n' "$CPUFREQ_RESTORE_LEASE"
         printf 'dry_run=%s\n' "$DRY_RUN_FLAG"
     } > "$_oa_tmp" 2>/dev/null && mv "$_oa_tmp" "$ARB_STATE_FILE" 2>/dev/null
 }
 
 append_history() {
     if [ ! -s "$ARB_HISTORY_FILE" ]; then
-        printf '%s\n' 'epoch|screen|state|focus_pkg|focus_pid|target_pkg|target_pid|game_match|game_source|pixel_owner|proposed_owner|reason|ugt_detected|ugt_enabled|fas_detected|fas_active|fas_alive|fas_owner_state|fas_mode|external_kind|external_active|apply_enabled|apply_result|dry_run' > "$ARB_HISTORY_FILE" 2>/dev/null
+        printf '%s\n' 'epoch|screen|state|focus_pkg|focus_pid|target_pkg|target_pid|game_match|game_source|pixel_owner|proposed_owner|reason|ugt_detected|ugt_enabled|fas_detected|fas_active|fas_alive|fas_owner_state|fas_mode|external_kind|external_active|apply_enabled|apply_result|cpufreq_restored|cpufreq_restore_verified|cpufreq_restore_failed|cpufreq_restore_skipped|cpufreq_restore_lease|dry_run' > "$ARB_HISTORY_FILE" 2>/dev/null
+    elif ! head -n 1 "$ARB_HISTORY_FILE" 2>/dev/null | grep -q 'cpufreq_restore_lease'; then
+        printf '%s\n' '# schema_update: cpufreq_restore fields appended to rows after this marker' >> "$ARB_HISTORY_FILE" 2>/dev/null
     fi
 
-    printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+    printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
         "$NOW" "$(safe_field "$SCREEN_STATE")" "$(safe_field "$NEW_STATE")" \
         "$(safe_field "$FOCUS_PKG")" "$(safe_field "$FOCUS_PID")" \
         "$(safe_field "$NEW_TARGET_PKG")" "$(safe_field "$NEW_TARGET_PID")" \
@@ -754,7 +875,7 @@ append_history() {
         "$FAS_RS_DETECTED" "$FAS_RS_ACTIVE" "$FAS_RS_PROCESS_ALIVE" \
         "$(safe_field "$FAS_RS_OWNER_STATE")" "$(safe_field "$FAS_RS_MODE")" \
         "$(safe_field "$EXTERNAL_SCHEDULER_KIND")" "$EXTERNAL_SCHEDULER_ACTIVE" \
-        "$APPLY_ENABLED" "$(safe_field "$APPLY_RESULT")" "$DRY_RUN_FLAG" \
+        "$APPLY_ENABLED" "$(safe_field "$APPLY_RESULT")" "$CPUFREQ_RESTORED" "$CPUFREQ_RESTORE_VERIFIED" "$CPUFREQ_RESTORE_FAILED" "$CPUFREQ_RESTORE_SKIPPED" "$CPUFREQ_RESTORE_LEASE" "$DRY_RUN_FLAG" \
         >> "$ARB_HISTORY_FILE" 2>/dev/null
 
     _oa_lines=$(wc -l < "$ARB_HISTORY_FILE" 2>/dev/null)
@@ -782,6 +903,7 @@ PREV_LEASE_START=$(num_or_zero "$(state_get lease_start)")
 PREV_LAST_FOREGROUND=$(num_or_zero "$(state_get last_foreground)")
 PREV_PID_ABSENT_SINCE=$(num_or_zero "$(state_get pid_absent_since)")
 PREV_BASELINE_OWNER=$(state_get baseline_owner)
+PREV_CPUFREQ_RESTORE_LEASE=$(num_or_zero "$(state_get cpufreq_restore_lease)")
 case "$PREV_BASELINE_OWNER" in external|pixel) ;; *) PREV_BASELINE_OWNER="$CURRENT_OWNER" ;; esac
 
 NEW_STATE="PIXEL_NORMAL"
