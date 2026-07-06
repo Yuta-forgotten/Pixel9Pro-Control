@@ -310,6 +310,13 @@ const state = {
   externalSchedulerSource: '',
   externalSchedulerState: '',
   externalSchedulerEnabled: 'no',
+  effectiveSchedulerOwner: 'pixel',
+  effectiveSchedulerName: 'Pixel9Pro-Control',
+  effectiveSchedulerKind: 'pixel',
+  effectiveSchedulerMode: '',
+  profileSurface: 'authoritative',
+  profileSurfaceStale: false,
+  profileSurfaceNote: '',
   autoReason: '',
   currentOffset: 4,
   swapMode: 'unknown',
@@ -1282,6 +1289,11 @@ function boolValue(value) {
   return value === true || value === 'true' || value === 'yes' || value === 1 || value === '1';
 }
 
+function formatSchedValue(value, unit) {
+  if (value === null || value === undefined || value === '' || value === 'N/A' || value === 'na') return 'N/A';
+  return `${value}${unit}`;
+}
+
 function getUperfName() {
   return state.uperfModuleName || state.uperfModuleId || 'Uperf Game Turbo';
 }
@@ -1335,6 +1347,14 @@ function getExternalSchedulerName() {
   return state.externalSchedulerName || state.externalSchedulerId || (state.fasRsDetected ? getFasRsName() : getUperfName());
 }
 
+function getEffectiveSchedulerName() {
+  return state.effectiveSchedulerName || getExternalSchedulerName();
+}
+
+function getEffectiveSchedulerModeText() {
+  return state.effectiveSchedulerMode ? ` · ${state.effectiveSchedulerMode}` : '';
+}
+
 function hasExternalScheduler() {
   return state.externalSchedulerDetected || state.uperfDetected || state.fasRsDetected;
 }
@@ -1360,10 +1380,10 @@ function getExternalSchedulerStateText() {
 }
 
 function getSchedulerStatusText() {
-  const name = getExternalSchedulerName();
+  const name = getEffectiveSchedulerName();
   if (state.schedOwner === 'external') {
     if (!hasExternalScheduler()) return '调度让权 · 等待外部调度';
-    return isExternalSchedulerActive() ? `${name} 接管 (${getExternalSchedulerStateText()})` : `${name} ${getExternalSchedulerStateText()}`;
+    return isExternalSchedulerActive() ? `${name} 接管${getEffectiveSchedulerModeText()} (${getExternalSchedulerStateText()})` : `${name} ${getExternalSchedulerStateText()}`;
   }
   return hasExternalScheduler() ? `本模块覆盖 ${name}` : 'Pixel 温控模块';
 }
@@ -1377,10 +1397,10 @@ function getSchedulerToggleText() {
 }
 
 function getSchedulerExternalDesc() {
-  const name = getExternalSchedulerName();
+  const name = getEffectiveSchedulerName();
   if (hasExternalScheduler()) {
-    const owner = isExternalSchedulerActive() ? `CPU 调度交给 ${name}` : `检测到 ${name} (${getExternalSchedulerStateText()})`;
-    return `${owner}；本模块保留温控、待机与系统优化，不写 CPU 调度节点。`;
+    const owner = isExternalSchedulerActive() ? `CPU 调度交给 ${name}${getEffectiveSchedulerModeText()}` : `检测到 ${name} (${getExternalSchedulerStateText()})`;
+    return `${owner}；本模块 profile / policy 仅保留显示与让权状态，不写 CPU 调度节点。`;
   }
   return '未检测到启用中的外部调度器；本模块保持让权状态，不再周期性写 CPU 调度节点。';
 }
@@ -1397,10 +1417,11 @@ function syncProfileUi() {
   const profile = PROFILES[state.currentProfile] || PROFILES.unknown;
   const isAuto = state.profilePolicy === 'auto';
   const isExternal = state.schedOwner === 'external';
+  const effectiveName = getEffectiveSchedulerName();
   if (isExternal) {
-    refs.topbarProfileChip.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? '外部调度接管' : '外部调度未启用') : '调度让权';
+    refs.topbarProfileChip.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? `${effectiveName} 接管` : '外部调度未启用') : '调度让权';
     refs.perfCurrentName.textContent = hasExternalScheduler()
-      ? (isExternalSchedulerActive() ? `${getExternalSchedulerName()} 接管` : `${getExternalSchedulerName()} ${getExternalSchedulerStateText()}`)
+      ? (isExternalSchedulerActive() ? `${effectiveName} 接管${getEffectiveSchedulerModeText()}` : `${effectiveName} ${getExternalSchedulerStateText()}`)
       : '本模块让权中';
     refs.perfCurrentDesc.textContent = getSchedulerExternalDesc();
     refs.perfPolicyDesc.textContent = hasExternalScheduler()
@@ -1416,7 +1437,7 @@ function syncProfileUi() {
     refs.schedOwnerToggleLabel.textContent = getSchedulerToggleText();
     refs.hero.className = 'hero-card mode-game';
     setStaticHtml(refs.heroIcon, PROFILES.performance.hero);
-    refs.heroMode.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? '外部调度接管' : '外部调度未启用') : '调度停用';
+    refs.heroMode.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? `${effectiveName} 接管` : '外部调度未启用') : '调度停用';
     document.querySelectorAll('.profile-option').forEach((card) => {
       card.classList.remove('selected');
       card.classList.add('disabled');
@@ -1502,6 +1523,13 @@ function applyProfileState(data) {
   state.externalSchedulerSource = typeof data.external_scheduler_source === 'string' ? data.external_scheduler_source : '';
   state.externalSchedulerState = typeof data.external_scheduler_state === 'string' ? data.external_scheduler_state : '';
   state.externalSchedulerEnabled = typeof data.external_scheduler_enabled === 'string' ? data.external_scheduler_enabled : 'no';
+  state.effectiveSchedulerOwner = typeof data.effective_scheduler_owner === 'string' ? data.effective_scheduler_owner : 'pixel';
+  state.effectiveSchedulerName = typeof data.effective_scheduler_name === 'string' ? data.effective_scheduler_name : '';
+  state.effectiveSchedulerKind = typeof data.effective_scheduler_kind === 'string' ? data.effective_scheduler_kind : '';
+  state.effectiveSchedulerMode = typeof data.effective_scheduler_mode === 'string' ? data.effective_scheduler_mode : '';
+  state.profileSurface = typeof data.profile_surface === 'string' ? data.profile_surface : 'authoritative';
+  state.profileSurfaceStale = boolValue(data.profile_surface_stale);
+  state.profileSurfaceNote = typeof data.profile_surface_note === 'string' ? data.profile_surface_note : '';
   state.autoReason = typeof data.auto_reason === 'string' ? data.auto_reason : '';
   syncProfileUi();
   syncHeroDesc();
@@ -1805,6 +1833,13 @@ async function loadSavedProfile() {
     state.externalSchedulerSource = '';
     state.externalSchedulerState = '';
     state.externalSchedulerEnabled = 'no';
+    state.effectiveSchedulerOwner = 'pixel';
+    state.effectiveSchedulerName = 'Pixel9Pro-Control';
+    state.effectiveSchedulerKind = 'pixel';
+    state.effectiveSchedulerMode = '';
+    state.profileSurface = 'authoritative';
+    state.profileSurfaceStale = false;
+    state.profileSurfaceNote = '';
     state.autoReason = '';
     syncProfileUi();
     syncHeroDesc();
@@ -1838,7 +1873,9 @@ async function refreshCpu() {
       perf.current.textContent = !cluster.cur || Number.isNaN(cluster.cur) ? '—' : `${(cluster.cur / 1000).toFixed(0)} MHz`;
       perf.max.textContent = ` / ${(maxHz / 1000).toFixed(0)} MHz`;
       perf.fill.style.transform = `scaleX(${Math.min(cluster.cur / maxHz, 1).toFixed(3)})`;
-      perf.params.textContent = `resp=${cluster.resp_ms}ms · down=${cluster.down_us}µs · gov=${cluster.gov}`;
+      const respText = typeof cluster.resp_ms_text === 'string' ? cluster.resp_ms_text : cluster.resp_ms;
+      const downText = typeof cluster.down_us_text === 'string' ? cluster.down_us_text : cluster.down_us;
+      perf.params.textContent = `resp=${formatSchedValue(respText, 'ms')} · down=${formatSchedValue(downText, 'µs')} · gov=${cluster.gov}`;
       home.freq.textContent = !cluster.cur || Number.isNaN(cluster.cur) ? '—' : `${(cluster.cur / 1000).toFixed(0)} MHz`;
       home.fill.style.transform = `scaleX(${!cluster.cur ? 0 : Math.min(cluster.cur / maxHz, 1).toFixed(3)})`;
     });
@@ -3604,7 +3641,9 @@ function bindStaticEvents() {
         const maxHz = cluster.max > 0 ? cluster.max : (CLUSTERS[index]?.maxHz || 0);
         html += `<br><br><b>${CLUSTERS[index]?.label || `Cluster ${index}`}</b><br>`;
         html += `cur: ${cluster.cur ? `${(cluster.cur / 1000).toFixed(0)} MHz` : '—'} / max: ${maxHz ? `${(maxHz / 1000).toFixed(0)} MHz` : '—'}<br>`;
-        html += `resp_time: ${cluster.resp_ms ?? '—'}ms · down_rate: ${cluster.down_us ?? '—'}µs<br>`;
+        const respText = typeof cluster.resp_ms_text === 'string' ? cluster.resp_ms_text : cluster.resp_ms;
+        const downText = typeof cluster.down_us_text === 'string' ? cluster.down_us_text : cluster.down_us;
+        html += `resp_time: ${formatSchedValue(respText, 'ms')} · down_rate: ${formatSchedValue(downText, 'µs')}<br>`;
         html += `governor: ${cluster.gov || '—'}`;
       });
     } else html += '<br><br>暂无频率快照，请先刷新一次。';

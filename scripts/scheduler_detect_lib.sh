@@ -26,6 +26,8 @@ FAS_RS_MODE=""
 FAS_RS_PROCESS_ALIVE="no"
 FAS_RS_RUNTIME_STATE=""
 FAS_RS_ACTIVE="no"
+FAS_RS_RUNTIME_OWNER_ACTIVE="no"
+FAS_RS_RUNTIME_TARGET=""
 
 EXTERNAL_SCHEDULER_DETECTED="no"
 EXTERNAL_SCHEDULER_ID=""
@@ -63,6 +65,8 @@ reset_fas_rs_detection() {
     FAS_RS_PROCESS_ALIVE="no"
     FAS_RS_RUNTIME_STATE=""
     FAS_RS_ACTIVE="no"
+    FAS_RS_RUNTIME_OWNER_ACTIVE="no"
+    FAS_RS_RUNTIME_TARGET=""
 }
 
 reset_external_scheduler_detection() {
@@ -223,6 +227,21 @@ detect_fas_rs_scheduler() {
 
     [ -s "$FAS_RS_RUNTIME_ROOT/.owner_state" ] && FAS_RS_OWNER_STATE=$(head -n 1 "$FAS_RS_RUNTIME_ROOT/.owner_state" 2>/dev/null | tr -d '\r')
     [ -e /dev/fas_rs/mode ] && FAS_RS_MODE=$(head -n 1 /dev/fas_rs/mode 2>/dev/null | tr -d ' \r\n\t')
+    if [ -n "$FAS_RS_OWNER_STATE" ]; then
+        case "$FAS_RS_OWNER_STATE" in
+            fas-rs:game:*)
+                FAS_RS_RUNTIME_TARGET="${FAS_RS_OWNER_STATE#fas-rs:game:}"
+                if [ -n "$FAS_RS_MODE" ] || [ "$FAS_RS_PROCESS_ALIVE" = "yes" ]; then
+                    FAS_RS_RUNTIME_OWNER_ACTIVE="yes"
+                fi
+                ;;
+            *running*|*game*|*fas-rs*)
+                if [ -n "$FAS_RS_MODE" ] || [ "$FAS_RS_PROCESS_ALIVE" = "yes" ]; then
+                    FAS_RS_RUNTIME_OWNER_ACTIVE="yes"
+                fi
+                ;;
+        esac
+    fi
 
     if [ -d "$FAS_RS_RUNTIME_ROOT" ] || [ -n "$FAS_RS_OWNER_STATE" ] || [ -n "$FAS_RS_MODE" ]; then
         FAS_RS_DETECTED="yes"
@@ -315,6 +334,18 @@ detect_external_scheduler() {
         EXTERNAL_SCHEDULER_PATH="$FAS_RS_MODULE_PATH"
         EXTERNAL_SCHEDULER_SOURCE="$FAS_RS_MODULE_SOURCE"
         EXTERNAL_SCHEDULER_STATE="$FAS_RS_RUNTIME_STATE"
+        EXTERNAL_SCHEDULER_ENABLED="yes"
+        EXTERNAL_SCHEDULER_ACTIVE="yes"
+        return 0
+    fi
+
+    if [ "$FAS_RS_RUNTIME_OWNER_ACTIVE" = "yes" ]; then
+        EXTERNAL_SCHEDULER_ID="${FAS_RS_MODULE_ID:-fas_rs}"
+        EXTERNAL_SCHEDULER_NAME="${FAS_RS_MODULE_NAME:-fas-rs}"
+        EXTERNAL_SCHEDULER_KIND="fas_rs"
+        EXTERNAL_SCHEDULER_PATH="$FAS_RS_MODULE_PATH"
+        EXTERNAL_SCHEDULER_SOURCE="$FAS_RS_MODULE_SOURCE"
+        EXTERNAL_SCHEDULER_STATE="${FAS_RS_RUNTIME_STATE:-$FAS_RS_OWNER_STATE}"
         EXTERNAL_SCHEDULER_ENABLED="yes"
         EXTERNAL_SCHEDULER_ACTIVE="yes"
         return 0
