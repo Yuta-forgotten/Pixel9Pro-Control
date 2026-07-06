@@ -54,14 +54,18 @@ MIN_LEASE_S="${ARB_MIN_LEASE_S:-420}"
 PID_ABSENT_CONFIRM_S="${ARB_PID_ABSENT_CONFIRM_S:-8}"
 EXIT_IDLE_AFTER_S="${ARB_EXIT_IDLE_AFTER_S:-90}"
 ARB_HISTORY_MAX="${ARB_HISTORY_MAX:-500}"
+CPUFREQ_RESTORE_RETRY_S="${ARB_CPUFREQ_RESTORE_RETRY_S:-30}"
 APPLY_ENABLED="no"
 APPLY_RESULT="dry-run"
 UPERF_NORMALIZED="no"
+CPUFREQ_LOWFREQ_PRESENT="no"
+CPUFREQ_THERMAL_COOLING_ACTIVE="no"
 CPUFREQ_RESTORED="no"
 CPUFREQ_RESTORE_VERIFIED="no"
 CPUFREQ_RESTORE_FAILED="no"
 CPUFREQ_RESTORE_SKIPPED="no"
 CPUFREQ_RESTORE_LEASE="0"
+CPUFREQ_RESTORE_EPOCH="0"
 if [ "$APPLY_REQUESTED" = "yes" ]; then
     APPLY_ENABLED="yes"
 elif [ -f "$ARB_APPLY_FILE" ]; then
@@ -481,6 +485,51 @@ cpufreq_choose_base_governor() {
     return 1
 }
 
+policy_cpufreq_lowfreq_present() {
+    _oa_policy="$1"
+    [ -d "$_oa_policy" ] || return 1
+
+    _oa_gov=$(cpufreq_read_one "$_oa_policy/scaling_governor")
+    _oa_min=$(cpufreq_read_one "$_oa_policy/scaling_min_freq")
+    _oa_max=$(cpufreq_read_one "$_oa_policy/scaling_max_freq")
+    _oa_cpuinfo_max=$(cpufreq_read_one "$_oa_policy/cpuinfo_max_freq")
+
+    case "$_oa_cpuinfo_max" in ''|*[!0-9]*) return 1 ;; esac
+    if [ "$_oa_gov" = "powersave" ]; then
+        return 0
+    fi
+    case "$_oa_max" in
+        ''|*[!0-9]*) ;;
+        *)
+            if [ "$_oa_max" -lt "$_oa_cpuinfo_max" ] 2>/dev/null; then
+                return 0
+            fi
+            ;;
+    esac
+    if [ -n "$_oa_min" ] && [ -n "$_oa_max" ] && [ "$_oa_min" = "$_oa_max" ] && [ "$_oa_max" != "$_oa_cpuinfo_max" ]; then
+        return 0
+    fi
+    return 1
+}
+
+thermal_cpu_cooling_active() {
+    for _oa_cdev in /sys/class/thermal/cooling_device*; do
+        [ -d "$_oa_cdev" ] || continue
+        _oa_type=$(cat "$_oa_cdev/type" 2>/dev/null | tr -d '\r')
+        case "$_oa_type" in
+            thermal-cpufreq-*|thermal-uclamp-*|*cpufreq*|*uclamp*)
+                _oa_state=$(cat "$_oa_cdev/cur_state" 2>/dev/null | tr -d ' \r\n\t')
+                case "$_oa_state" in
+                    ''|*[!0-9]*) ;;
+                    0) ;;
+                    *) return 0 ;;
+                esac
+                ;;
+        esac
+    done
+    return 1
+}
+
 restore_policy_cpufreq_floor() {
     _oa_policy="$1"
     [ -d "$_oa_policy" ] || return 0
@@ -543,9 +592,35 @@ restore_fas_rs_cpufreq_floor() {
     [ -n "$NEW_TARGET_PKG" ] || return 0
 
     _oa_restore_lease=$(num_or_zero "$NEW_LEASE_START")
-    if [ "$_oa_restore_lease" -gt 0 ] 2>/dev/null && [ "$PREV_CPUFREQ_RESTORE_LEASE" = "$_oa_restore_lease" ]; then
+    _oa_lowfreq_seen="no"
+    for _oa_policy in "$CPUFREQ_ROOT"/policy*; do
+        if policy_cpufreq_lowfreq_present "$_oa_policy"; then
+            _oa_lowfreq_seen="yes"
+        fi
+    done
+    CPUFREQ_LOWFREQ_PRESENT="$_oa_lowfreq_seen"
+    [ "$_oa_lowfreq_seen" = "yes" ] || return 0
+
+    if thermal_cpu_cooling_active; then
+        CPUFREQ_THERMAL_COOLING_ACTIVE="yes"
         CPUFREQ_RESTORE_SKIPPED="yes"
         CPUFREQ_RESTORE_LEASE="$_oa_restore_lease"
+        CPUFREQ_RESTORE_EPOCH="$PREV_CPUFREQ_RESTORE_EPOCH"
+        log -t pixel9pro_ctrl "owner_arbiter: skip cpufreq restore for fas-rs lease; ThermalHAL CPU cooling active"
+        return 0
+    fi
+
+    _oa_retry_s=$(num_or_zero "$CPUFREQ_RESTORE_RETRY_S")
+    [ "$_oa_retry_s" -gt 0 ] 2>/dev/null || _oa_retry_s=30
+    if [ "$PREV_CPUFREQ_RESTORE_EPOCH" -gt 0 ] 2>/dev/null; then
+        _oa_since_restore=$((NOW - PREV_CPUFREQ_RESTORE_EPOCH))
+    else
+        _oa_since_restore=$_oa_retry_s
+    fi
+    if [ "$_oa_since_restore" -lt "$_oa_retry_s" ] 2>/dev/null; then
+        CPUFREQ_RESTORE_SKIPPED="yes"
+        CPUFREQ_RESTORE_LEASE="$_oa_restore_lease"
+        CPUFREQ_RESTORE_EPOCH="$PREV_CPUFREQ_RESTORE_EPOCH"
         return 0
     fi
 
@@ -555,6 +630,7 @@ restore_fas_rs_cpufreq_floor() {
 
     if [ "$CPUFREQ_RESTORED" = "yes" ]; then
         CPUFREQ_RESTORE_LEASE="$_oa_restore_lease"
+        CPUFREQ_RESTORE_EPOCH="$NOW"
     fi
 }
 
@@ -850,23 +926,26 @@ write_state() {
         printf 'apply_result=%s\n' "$APPLY_RESULT"
         printf 'uperf_root_instances=%s\n' "$(uperf_root_instance_count)"
         printf 'uperf_normalized=%s\n' "$UPERF_NORMALIZED"
+        printf 'cpufreq_lowfreq_present=%s\n' "$CPUFREQ_LOWFREQ_PRESENT"
+        printf 'cpufreq_thermal_cooling_active=%s\n' "$CPUFREQ_THERMAL_COOLING_ACTIVE"
         printf 'cpufreq_restored=%s\n' "$CPUFREQ_RESTORED"
         printf 'cpufreq_restore_verified=%s\n' "$CPUFREQ_RESTORE_VERIFIED"
         printf 'cpufreq_restore_failed=%s\n' "$CPUFREQ_RESTORE_FAILED"
         printf 'cpufreq_restore_skipped=%s\n' "$CPUFREQ_RESTORE_SKIPPED"
         printf 'cpufreq_restore_lease=%s\n' "$CPUFREQ_RESTORE_LEASE"
+        printf 'cpufreq_restore_epoch=%s\n' "$CPUFREQ_RESTORE_EPOCH"
         printf 'dry_run=%s\n' "$DRY_RUN_FLAG"
     } > "$_oa_tmp" 2>/dev/null && mv "$_oa_tmp" "$ARB_STATE_FILE" 2>/dev/null
 }
 
 append_history() {
     if [ ! -s "$ARB_HISTORY_FILE" ]; then
-        printf '%s\n' 'epoch|screen|state|focus_pkg|focus_pid|target_pkg|target_pid|game_match|game_source|pixel_owner|proposed_owner|reason|ugt_detected|ugt_enabled|fas_detected|fas_active|fas_alive|fas_owner_state|fas_mode|external_kind|external_active|apply_enabled|apply_result|cpufreq_restored|cpufreq_restore_verified|cpufreq_restore_failed|cpufreq_restore_skipped|cpufreq_restore_lease|dry_run' > "$ARB_HISTORY_FILE" 2>/dev/null
-    elif ! head -n 1 "$ARB_HISTORY_FILE" 2>/dev/null | grep -q 'cpufreq_restore_lease'; then
+        printf '%s\n' 'epoch|screen|state|focus_pkg|focus_pid|target_pkg|target_pid|game_match|game_source|pixel_owner|proposed_owner|reason|ugt_detected|ugt_enabled|fas_detected|fas_active|fas_alive|fas_owner_state|fas_mode|external_kind|external_active|apply_enabled|apply_result|cpufreq_lowfreq_present|cpufreq_thermal_cooling_active|cpufreq_restored|cpufreq_restore_verified|cpufreq_restore_failed|cpufreq_restore_skipped|cpufreq_restore_lease|cpufreq_restore_epoch|dry_run' > "$ARB_HISTORY_FILE" 2>/dev/null
+    elif ! head -n 1 "$ARB_HISTORY_FILE" 2>/dev/null | grep -q 'cpufreq_restore_epoch'; then
         printf '%s\n' '# schema_update: cpufreq_restore fields appended to rows after this marker' >> "$ARB_HISTORY_FILE" 2>/dev/null
     fi
 
-    printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+    printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
         "$NOW" "$(safe_field "$SCREEN_STATE")" "$(safe_field "$NEW_STATE")" \
         "$(safe_field "$FOCUS_PKG")" "$(safe_field "$FOCUS_PID")" \
         "$(safe_field "$NEW_TARGET_PKG")" "$(safe_field "$NEW_TARGET_PID")" \
@@ -875,7 +954,7 @@ append_history() {
         "$FAS_RS_DETECTED" "$FAS_RS_ACTIVE" "$FAS_RS_PROCESS_ALIVE" \
         "$(safe_field "$FAS_RS_OWNER_STATE")" "$(safe_field "$FAS_RS_MODE")" \
         "$(safe_field "$EXTERNAL_SCHEDULER_KIND")" "$EXTERNAL_SCHEDULER_ACTIVE" \
-        "$APPLY_ENABLED" "$(safe_field "$APPLY_RESULT")" "$CPUFREQ_RESTORED" "$CPUFREQ_RESTORE_VERIFIED" "$CPUFREQ_RESTORE_FAILED" "$CPUFREQ_RESTORE_SKIPPED" "$CPUFREQ_RESTORE_LEASE" "$DRY_RUN_FLAG" \
+        "$APPLY_ENABLED" "$(safe_field "$APPLY_RESULT")" "$CPUFREQ_LOWFREQ_PRESENT" "$CPUFREQ_THERMAL_COOLING_ACTIVE" "$CPUFREQ_RESTORED" "$CPUFREQ_RESTORE_VERIFIED" "$CPUFREQ_RESTORE_FAILED" "$CPUFREQ_RESTORE_SKIPPED" "$CPUFREQ_RESTORE_LEASE" "$CPUFREQ_RESTORE_EPOCH" "$DRY_RUN_FLAG" \
         >> "$ARB_HISTORY_FILE" 2>/dev/null
 
     _oa_lines=$(wc -l < "$ARB_HISTORY_FILE" 2>/dev/null)
@@ -904,6 +983,7 @@ PREV_LAST_FOREGROUND=$(num_or_zero "$(state_get last_foreground)")
 PREV_PID_ABSENT_SINCE=$(num_or_zero "$(state_get pid_absent_since)")
 PREV_BASELINE_OWNER=$(state_get baseline_owner)
 PREV_CPUFREQ_RESTORE_LEASE=$(num_or_zero "$(state_get cpufreq_restore_lease)")
+PREV_CPUFREQ_RESTORE_EPOCH=$(num_or_zero "$(state_get cpufreq_restore_epoch)")
 case "$PREV_BASELINE_OWNER" in external|pixel) ;; *) PREV_BASELINE_OWNER="$CURRENT_OWNER" ;; esac
 
 NEW_STATE="PIXEL_NORMAL"
