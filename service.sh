@@ -883,14 +883,17 @@ ensure_profile_history_baseline
     _owner_arbiter_fast_off="${OWNER_ARBITER_FAST_OFF:-15}"
     _owner_arbiter_off_grace_s="${OWNER_ARBITER_OFF_GRACE_S:-360}"
     _owner_arbiter_off_pause_s="${OWNER_ARBITER_OFF_PAUSE_S:-3600}"
+    _owner_arbiter_pause_poll_s="${OWNER_ARBITER_PAUSE_POLL_S:-30}"
     case "$_owner_arbiter_fast_on" in ''|*[!0-9]*) _owner_arbiter_fast_on=5 ;; esac
     case "$_owner_arbiter_fast_off" in ''|*[!0-9]*) _owner_arbiter_fast_off=15 ;; esac
     case "$_owner_arbiter_off_grace_s" in ''|*[!0-9]*) _owner_arbiter_off_grace_s=360 ;; esac
     case "$_owner_arbiter_off_pause_s" in ''|*[!0-9]*) _owner_arbiter_off_pause_s=3600 ;; esac
+    case "$_owner_arbiter_pause_poll_s" in ''|*[!0-9]*) _owner_arbiter_pause_poll_s=30 ;; esac
     [ "$_owner_arbiter_fast_on" -lt 3 ] 2>/dev/null && _owner_arbiter_fast_on=3
     [ "$_owner_arbiter_fast_off" -lt 10 ] 2>/dev/null && _owner_arbiter_fast_off=10
     [ "$_owner_arbiter_off_grace_s" -lt 60 ] 2>/dev/null && _owner_arbiter_off_grace_s=60
     [ "$_owner_arbiter_off_pause_s" -lt 600 ] 2>/dev/null && _owner_arbiter_off_pause_s=600
+    [ "$_owner_arbiter_pause_poll_s" -lt 10 ] 2>/dev/null && _owner_arbiter_pause_poll_s=10
     _owner_arbiter_screen_off_since=0
     _owner_arbiter_long_paused=0
 
@@ -925,7 +928,14 @@ ensure_profile_history_baseline
                     log -t pixel9pro_ctrl "Owner arbiter paused after ${_owner_arbiter_off_elapsed}s screen-off"
                     _owner_arbiter_long_paused=1
                 fi
-                sleep "$_owner_arbiter_off_pause_s"
+                _owner_arbiter_pause_until=$((_owner_arbiter_now + _owner_arbiter_off_pause_s))
+                while true; do
+                    _oa_drm_en=$(cat /sys/class/drm/card0-DSI-1/enabled 2>/dev/null)
+                    [ "$_oa_drm_en" = "enabled" ] && break
+                    _owner_arbiter_now=$(date +%s 2>/dev/null || echo 0)
+                    [ "$_owner_arbiter_now" -ge "$_owner_arbiter_pause_until" ] 2>/dev/null && break
+                    sleep "$_owner_arbiter_pause_poll_s"
+                done
                 continue
             fi
             sleep "$_owner_arbiter_fast_off"

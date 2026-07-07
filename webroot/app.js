@@ -27,6 +27,7 @@ const API = {
   checkBaseband: '/cgi-bin/check_baseband.sh',
   standbyGuard: '/cgi-bin/standby_guard.sh',
   bgRestrict: '/cgi-bin/bg_restrict.sh',
+  ownerArbiter: '/cgi-bin/owner_arbiter.sh',
 };
 
 const STORAGE_THEME_KEY = 'pixel9pro_theme_mode';
@@ -337,6 +338,7 @@ const state = {
   cpuBusy: false,
   profilePolicyBusy: false,
   schedOwnerBusy: false,
+  ownerArbiterBusy: false,
   thermalBusy: false,
   thermalBadReads: 0,
   lastSkinTempC: null,
@@ -424,6 +426,10 @@ function initRefs() {
   refs.schedOwnerLabel = $('sched-owner-label');
   refs.schedOwnerToggleBtn = $('sched-owner-toggle-btn');
   refs.schedOwnerToggleLabel = $('sched-owner-toggle-label');
+  refs.ownerArbiterRow = $('owner-arbiter-row');
+  refs.ownerArbiterLabel = $('owner-arbiter-label');
+  refs.ownerArbiterTickBtn = $('owner-arbiter-tick-btn');
+  refs.ownerArbiterTickLabel = $('owner-arbiter-tick-label');
   refs.cpuRows = $('cpu-rows');
   refs.profileList = $('profile-list');
   refs.thermalCurrentName = $('thermal-current-name');
@@ -1450,6 +1456,19 @@ function getSchedulerPixelDesc() {
   return '未检测到 UGT / fas-rs 外部调度器，当前由本模块管理 CPU 调度。';
 }
 
+function syncOwnerArbiterUi() {
+  if (!refs.ownerArbiterRow) return;
+  const available = state.fasRsDetected;
+  refs.ownerArbiterRow.hidden = !available;
+  if (!available) return;
+  const active = state.fasRsOwnerState || state.fasRsMode || getFasRsStateText();
+  refs.ownerArbiterLabel.textContent = state.ownerArbiterBusy
+    ? '正在触发 owner arbiter tick…'
+    : `检测到 fas-rs (${active || '已检测到'})，可手动唤醒 owner`;
+  refs.ownerArbiterTickBtn.disabled = state.ownerArbiterBusy;
+  refs.ownerArbiterTickLabel.textContent = state.ownerArbiterBusy ? '执行中…' : '唤醒 owner';
+}
+
 function syncProfileUi() {
   const profile = PROFILES[state.currentProfile] || PROFILES.unknown;
   const isAuto = state.profilePolicy === 'auto';
@@ -1479,6 +1498,7 @@ function syncProfileUi() {
       card.classList.remove('selected');
       card.classList.add('disabled');
     });
+    syncOwnerArbiterUi();
     return;
   }
   refs.topbarProfileChip.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
@@ -1503,6 +1523,7 @@ function syncProfileUi() {
     card.classList.remove('disabled');
     card.classList.toggle('selected', card.dataset.profile === state.currentProfile);
   });
+  syncOwnerArbiterUi();
 }
 
 function describeAutoReason(reason) {
@@ -3472,6 +3493,37 @@ async function toggleSchedOwner() {
   }
 }
 
+async function triggerOwnerArbiter() {
+  if (state.ownerArbiterBusy || !state.fasRsDetected) return;
+  state.ownerArbiterBusy = true;
+  syncOwnerArbiterUi();
+  appendLog('手动唤醒 owner arbiter…', 'dim');
+  refs.logCard.classList.add('open');
+  try {
+    const data = await apiFetch(API.ownerArbiter, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'tick' }),
+      timeoutMs: 10000
+    });
+    if (data.ok) {
+      showToast('owner arbiter 已触发');
+      appendLog('owner arbiter 手动 tick 完成', 'ok');
+      await loadSavedProfile();
+      await refreshCpu();
+    } else {
+      showToast(`唤醒失败：${data.error || '未知'}`);
+      appendLog(data.error || 'owner arbiter 唤醒失败', 'err');
+    }
+  } catch (err) {
+    showToast('请求失败，检查 WebUI 服务');
+    appendLog(String(err), 'err');
+  } finally {
+    state.ownerArbiterBusy = false;
+    syncOwnerArbiterUi();
+  }
+}
+
 async function applyThermal(offset) {
   if (offset === state.currentOffset || state.thermalApplyBusy) return;
   const prev = state.currentOffset;
@@ -3689,6 +3741,7 @@ function bindStaticEvents() {
   $('theme-open-btn').addEventListener('click', openThemeSheet);
   $('refresh-all-btn').addEventListener('click', doFullRefresh);
   $('sched-owner-toggle-btn').addEventListener('click', toggleSchedOwner);
+  $('owner-arbiter-tick-btn').addEventListener('click', triggerOwnerArbiter);
   $('swap-toggle-btn').addEventListener('click', toggleSwapMode);
   $('swap-detail-btn').addEventListener('click', () => openDetail('内存优化详情', buildSwapDetail(state.swapData)));
   $('swap-tune-btn').addEventListener('click', openSwapTuneModal);
