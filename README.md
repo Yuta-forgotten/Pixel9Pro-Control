@@ -126,7 +126,7 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 
 **B93 WZRY handoff 闭环**：v4.4.35 将 cpufreq restore 调整为完整事务：先把 `scaling_min_freq` 恢复到 `cpuinfo_min_freq`，再打开 max、切回 `sched_pixel/schedutil`，最后复写 min/max；新 fas-rs lease 不再被旧 idle-owner restore timestamp 压住。配合 Pixel 9 Pro Scheduler `v4.9.1-pixel9pro.19` 的 base governor restore 与 WZRY policy7 floor，真实 WZRY clean wireless/discharge gate 已 PASS，policy7 max 恢复到 `3105000` 且不再出现 `policy7_max_too_low` blocker。
 
-**owner arbiter worker**：`service.sh` 会启动独立 owner arbiter worker，而不是只依赖统一 standby worker。统一 worker 在息屏 deep standby 下可能睡 600 秒；独立 worker 息屏只读 DRM `enabled`，默认 15 秒低成本轮询，亮屏后默认每 5 秒执行一次 `owner_arbiter.sh tick "$MODDIR" on`。这样用户唤醒后立即进游戏时，UGT→fas-rs handoff 不会等待主 standby worker 下一次长周期醒来。可用环境变量 `OWNER_ARBITER_FAST_ON` / `OWNER_ARBITER_FAST_OFF` 调整亮屏/息屏轮询间隔，最低分别钳制为 3 秒和 10 秒。
+**owner arbiter worker**：`service.sh` 会启动独立 owner arbiter worker，而不是只依赖统一 standby worker。统一 worker 在息屏 deep standby 下可能睡 600 秒；独立 worker 亮屏后默认每 5 秒执行一次 `owner_arbiter.sh tick "$MODDIR" on`。息屏后只读 DRM `enabled` 做低成本观察，前 6 分钟默认 15 秒一次；超过 6 分钟后进入长暂停（默认 3600 秒），不再持续短周期唤醒，降低过夜 deep sleep 干扰。可用环境变量 `OWNER_ARBITER_FAST_ON` / `OWNER_ARBITER_FAST_OFF` / `OWNER_ARBITER_OFF_GRACE_S` / `OWNER_ARBITER_OFF_PAUSE_S` 调整亮屏轮询、息屏短观察、进入暂停前宽限和暂停时长。
 
 ### NTP 服务器选择
 
