@@ -55,6 +55,7 @@ PID_ABSENT_CONFIRM_S="${ARB_PID_ABSENT_CONFIRM_S:-8}"
 EXIT_IDLE_AFTER_S="${ARB_EXIT_IDLE_AFTER_S:-90}"
 ARB_HISTORY_MAX="${ARB_HISTORY_MAX:-500}"
 CPUFREQ_RESTORE_RETRY_S="${ARB_CPUFREQ_RESTORE_RETRY_S:-30}"
+CPUFREQ_RESTORE_SETTLE_S="${ARB_CPUFREQ_RESTORE_SETTLE_S:-2}"
 APPLY_ENABLED="no"
 APPLY_RESULT="dry-run"
 UPERF_NORMALIZED="no"
@@ -470,6 +471,11 @@ cpufreq_read_one() {
     head -n 1 "$1" 2>/dev/null | tr -d ' \r\n\t'
 }
 
+cpufreq_read_words() {
+    [ -f "$1" ] || return 1
+    head -n 1 "$1" 2>/dev/null | tr '\r\t' '  ' | sed 's/[[:space:]][[:space:]]*/ /g;s/^ //;s/ $//'
+}
+
 cpufreq_write_one() {
     [ -f "$1" ] || return 1
     printf '%s\n' "$2" > "$1" 2>/dev/null
@@ -477,7 +483,7 @@ cpufreq_write_one() {
 
 cpufreq_choose_base_governor() {
     _oa_policy="$1"
-    _oa_avail=$(cpufreq_read_one "$_oa_policy/scaling_available_governors")
+    _oa_avail=$(cpufreq_read_words "$_oa_policy/scaling_available_governors")
     case " $_oa_avail " in
         *" sched_pixel "*) printf 'sched_pixel'; return 0 ;;
         *" schedutil "*) printf 'schedutil'; return 0 ;;
@@ -560,17 +566,21 @@ restore_policy_cpufreq_floor() {
 
     _oa_base_gov=""
     if _oa_base_gov=$(cpufreq_choose_base_governor "$_oa_policy"); then
+        # Open the policy ceiling before and after switching governor.  UGT /
+        # Scene powersave residue often leaves min=max at a low OPP; writing
+        # governor first can be immediately neutralized while the ceiling is
+        # still clamped.
+        cpufreq_write_one "$_oa_policy/scaling_max_freq" "$_oa_cpuinfo_max" || true
         cpufreq_write_one "$_oa_policy/scaling_governor" "$_oa_base_gov" || true
     fi
     cpufreq_write_one "$_oa_policy/scaling_max_freq" "$_oa_cpuinfo_max" || true
     CPUFREQ_RESTORED="yes"
 
     # Some Android 17/Pixel paths accept the write and are then overwritten by
-    # PowerHAL/Scene within the next tick.  Verify after a short settle window,
-    # and do not write scaling_min_freq here: switching away from powersave can
-    # temporarily lift min/max, while forcing min during that window may create
-    # a new inconsistent clamp.
-    sleep 1
+    # PowerHAL/Scene within the next tick. Verify after a short settle window.
+    _oa_settle_s=$(num_or_zero "$CPUFREQ_RESTORE_SETTLE_S")
+    [ "$_oa_settle_s" -gt 0 ] 2>/dev/null || _oa_settle_s=2
+    sleep "$_oa_settle_s"
     _oa_new_gov=$(cpufreq_read_one "$_oa_policy/scaling_governor")
     _oa_new_min=$(cpufreq_read_one "$_oa_policy/scaling_min_freq")
     _oa_new_max=$(cpufreq_read_one "$_oa_policy/scaling_max_freq")
@@ -578,8 +588,25 @@ restore_policy_cpufreq_floor() {
         CPUFREQ_RESTORE_VERIFIED="yes"
         log -t pixel9pro_ctrl "owner_arbiter: verified ${_oa_policy##*/} cpufreq restore from gov=$_oa_gov min=$_oa_min max=$_oa_max to gov=$_oa_new_gov min=$_oa_new_min max=$_oa_new_max for fas-rs lease"
     else
-        CPUFREQ_RESTORE_FAILED="yes"
-        log -t pixel9pro_ctrl "owner_arbiter: cpufreq restore not effective on ${_oa_policy##*/}; before gov=$_oa_gov min=$_oa_min max=$_oa_max requested_gov=${_oa_base_gov:-unchanged} requested_max=$_oa_cpuinfo_max after gov=$_oa_new_gov min=$_oa_new_min max=$_oa_new_max"
+        # One guarded second pass catches the common case where the first max
+        # write only unlocks the policy after the governor changes.  Do not
+        # loop here; repeated overwrites are evidence of an external writer.
+        cpufreq_write_one "$_oa_policy/scaling_max_freq" "$_oa_cpuinfo_max" || true
+        if [ -n "$_oa_base_gov" ]; then
+            cpufreq_write_one "$_oa_policy/scaling_governor" "$_oa_base_gov" || true
+        fi
+        cpufreq_write_one "$_oa_policy/scaling_max_freq" "$_oa_cpuinfo_max" || true
+        sleep 1
+        _oa_retry_gov=$(cpufreq_read_one "$_oa_policy/scaling_governor")
+        _oa_retry_min=$(cpufreq_read_one "$_oa_policy/scaling_min_freq")
+        _oa_retry_max=$(cpufreq_read_one "$_oa_policy/scaling_max_freq")
+        if [ "$_oa_retry_gov" != "powersave" ] && [ "$_oa_retry_max" = "$_oa_cpuinfo_max" ]; then
+            CPUFREQ_RESTORE_VERIFIED="yes"
+            log -t pixel9pro_ctrl "owner_arbiter: verified ${_oa_policy##*/} cpufreq restore on retry from gov=$_oa_gov min=$_oa_min max=$_oa_max first_after gov=$_oa_new_gov min=$_oa_new_min max=$_oa_new_max final gov=$_oa_retry_gov min=$_oa_retry_min max=$_oa_retry_max for fas-rs lease"
+        else
+            CPUFREQ_RESTORE_FAILED="yes"
+            log -t pixel9pro_ctrl "owner_arbiter: cpufreq restore not effective on ${_oa_policy##*/}; before gov=$_oa_gov min=$_oa_min max=$_oa_max requested_gov=${_oa_base_gov:-unchanged} requested_max=$_oa_cpuinfo_max first_after gov=$_oa_new_gov min=$_oa_new_min max=$_oa_new_max retry_after gov=$_oa_retry_gov min=$_oa_retry_min max=$_oa_retry_max"
+        fi
     fi
 }
 

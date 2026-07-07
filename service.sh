@@ -875,6 +875,42 @@ else
 fi
 ensure_profile_history_baseline
 
+# Owner arbiter needs a faster wake->game reaction than the main standby
+# worker can provide after it enters the 600s deep-standby sleep.  Keep this
+# loop cheap while screen-off and only run top-app/window IPC when display is on.
+(
+    _owner_arbiter_fast_on="${OWNER_ARBITER_FAST_ON:-5}"
+    _owner_arbiter_fast_off="${OWNER_ARBITER_FAST_OFF:-15}"
+    case "$_owner_arbiter_fast_on" in ''|*[!0-9]*) _owner_arbiter_fast_on=5 ;; esac
+    case "$_owner_arbiter_fast_off" in ''|*[!0-9]*) _owner_arbiter_fast_off=15 ;; esac
+    [ "$_owner_arbiter_fast_on" -lt 3 ] 2>/dev/null && _owner_arbiter_fast_on=3
+    [ "$_owner_arbiter_fast_off" -lt 10 ] 2>/dev/null && _owner_arbiter_fast_off=10
+
+    while true; do
+        _oa_drm_en=$(cat /sys/class/drm/card0-DSI-1/enabled 2>/dev/null)
+        case "$_oa_drm_en" in
+            enabled) _oa_screen="on" ;;
+            disabled) _oa_screen="off" ;;
+            *)
+                _oa_scr=$(dumpsys display 2>/dev/null | grep "mScreenState=" | head -1 | sed 's/.*mScreenState=//' | tr -d ' ')
+                [ -z "$_oa_scr" ] && _oa_scr=$(dumpsys power 2>/dev/null | grep "mWakefulness=" | head -1 | sed 's/.*mWakefulness=//' | tr -d ' ')
+                case "$_oa_scr" in
+                    OFF|Dozing|Asleep) _oa_screen="off" ;;
+                    *) _oa_screen="on" ;;
+                esac
+                ;;
+        esac
+
+        if [ "$_oa_screen" = "on" ] && [ -f "$MODDIR/scripts/owner_arbiter.sh" ]; then
+            sh "$MODDIR/scripts/owner_arbiter.sh" tick "$MODDIR" "$_oa_screen" 2>/dev/null
+            sleep "$_owner_arbiter_fast_on"
+        else
+            sleep "$_owner_arbiter_fast_off"
+        fi
+    done
+) &
+log -t pixel9pro_ctrl "Owner arbiter worker started"
+
 # ──────────────────────────────────────────────────────────
 # 4. 统一后台工作循环 (Doze 友好)
 #    合并原 4 个独立循环为 1 个，每周期只调用 1 次 dumpsys display
@@ -1197,8 +1233,6 @@ is_nr_mode_value() {
     _auto_cool_since=0
     _auto_charge_hot_since=0
     _auto_charge_cool_since=0
-    _OWNER_ARBITER_INTERVAL_ON=15
-    _owner_arbiter_last_tick=0
     _active_profile=$(read_valid_profile "$PROFILE_FILE" 'default')
     _cycle_count=0
     _idle_isolate_prev=""
@@ -1255,17 +1289,6 @@ is_nr_mode_value() {
             _just_off=0
         fi
         _prev_screen="$_screen"
-
-        # --- Owner arbiter ---
-        # 只在亮屏 worker 周期采样，避免息屏时为 top-app 探测触发 activity/window IPC。
-        # 默认 dry-run，只写 /data/adb/fas_rs/.arbiter_state/.arbiter_history。
-        # 若创建 /data/adb/fas_rs/.arbiter_apply，则执行受保护的 UGT<->fas-rs 单主分时。
-        if [ "$_screen" = "on" ] && [ -f "$MODDIR/scripts/owner_arbiter.sh" ]; then
-            if [ "$_owner_arbiter_last_tick" -eq 0 ] || [ $((_now - _owner_arbiter_last_tick)) -ge "$_OWNER_ARBITER_INTERVAL_ON" ] 2>/dev/null; then
-                sh "$MODDIR/scripts/owner_arbiter.sh" tick "$MODDIR" "$_screen" 2>/dev/null
-                _owner_arbiter_last_tick=$_now
-            fi
-        fi
 
         # --- SIM2 radio management (check every ~10 on-screen cycles) ---
         # 只在亮屏时检查: 息屏期间任何 telephony IPC 都会唤醒 modem 打断 kernel suspend。
