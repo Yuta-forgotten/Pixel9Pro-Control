@@ -31,11 +31,13 @@ if [ -d "$baseband_module_dir" ]; then
     volte=$(getprop persist.dbg.volte_avail_ovr 2>/dev/null)
     wfc=$(getprop persist.dbg.wfc_avail_ovr 2>/dev/null)
     vt=$(getprop persist.dbg.vt_avail_ovr 2>/dev/null)
+    case "$bb_versionCode" in ''|*[!0-9]*) bb_versionCode=0 ;; esac
 
     # CarrierSettings overlay
     cs_dir="$baseband_module_dir/system/product/etc/CarrierSettings"
     if [ -d "$cs_dir" ]; then
         cs_count=$(ls "$cs_dir"/*.pb 2>/dev/null | wc -l)
+        case "$cs_count" in ''|*[!0-9]*) cs_count=0 ;; esac
         cs_installed="true"
     else
         cs_count=0
@@ -46,6 +48,7 @@ if [ -d "$baseband_module_dir" ]; then
     mcfg_dir="$baseband_module_dir/system/vendor/rfs/msm/mpss/readonly/vendor/mbn/mcfg_sw/generic/China"
     if [ -d "$mcfg_dir" ]; then
         mcfg_count=$(find "$mcfg_dir" -name 'mcfg_sw.mbn' 2>/dev/null | wc -l)
+        case "$mcfg_count" in ''|*[!0-9]*) mcfg_count=0 ;; esac
         mcfg_installed="true"
     else
         mcfg_count=0
@@ -54,9 +57,9 @@ if [ -d "$baseband_module_dir" ]; then
 
     printf '{"installed":true,"version":"%s","version_code":"%s","description":"%s","props":{"volte_avail_ovr":"%s","wfc_avail_ovr":"%s","vt_avail_ovr":"%s"},"carrier_settings":{"installed":%s,"count":%d},"mcfg":{"installed":%s,"count":%d}}' \
         "$(json_escape "$bb_version")" \
-        "$bb_versionCode" \
+        "$(json_escape "$bb_versionCode")" \
         "$(json_escape "$bb_desc")" \
-        "$volte" "$wfc" "$vt" \
+        "$(json_escape "$volte")" "$(json_escape "$wfc")" "$(json_escape "$vt")" \
         "$cs_installed" "$cs_count" \
         "$mcfg_installed" "$mcfg_count"
 else

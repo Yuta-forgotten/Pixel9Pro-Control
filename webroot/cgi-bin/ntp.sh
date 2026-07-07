@@ -10,14 +10,22 @@ require_loopback
 
 NTP_SAVE="$MODDIR/.ntp_server"
 
+normalize_ntp_server() {
+    case "$1" in
+        ntp.aliyun.com|ntp.myhuaweicloud.com|ntp1.xiaomi.com|time.android.com) printf '%s' "$1" ;;
+        *) printf 'time.android.com' ;;
+    esac
+}
+
 if [ "$REQUEST_METHOD" = "GET" ]; then
     json_headers
     server=$(settings get global ntp_server 2>/dev/null | tr -d ' \n\r')
     [ -z "$server" ] || [ "$server" = "null" ] && server="time.android.com"
+    server=$(normalize_ntp_server "$server")
     auto_time=$(settings get global auto_time 2>/dev/null | tr -d ' \n\r')
     dev_time=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
     printf '{"ntp_server":"%s","auto_time":"%s","device_time":"%s"}' \
-        "$server" "${auto_time:-1}" "$dev_time"
+        "$(json_escape "$server")" "$(json_escape "${auto_time:-1}")" "$(json_escape "$dev_time")"
 
 elif [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
@@ -45,7 +53,7 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
                 cmd network_time_update_service force_refresh >/dev/null 2>&1
                 sleep 1
                 dev_time=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
-                printf '{"ok":true,"ntp_server":"%s","device_time":"%s"}' "$server" "$dev_time"
+                printf '{"ok":true,"ntp_server":"%s","device_time":"%s"}' "$(json_escape "$server")" "$(json_escape "$dev_time")"
                 ;;
             *)
                 printf '{"ok":false,"error":"unsupported server"}'

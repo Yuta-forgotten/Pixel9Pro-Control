@@ -2569,7 +2569,7 @@ async function toggleNrSwitch() {
   if (state.nrBusy) return;
   state.nrBusy = true;
   try {
-    const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', timeoutMs: 8000 });
+    const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'toggle' }), timeoutMs: 8000 });
     if (data.ok) {
       state.nrSwitch = data.nr_switch;
       showToast(data.nr_switch === 'on' ? 'NR 息屏降级已开启' : 'NR 息屏降级已关闭');
@@ -3425,7 +3425,14 @@ async function cancelThermalChange() {
 async function rebootDevice() {
   refs.rebootModal.classList.remove('open');
   showToast('正在重启设备…');
-  try { await apiFetch(API.reboot, { method: 'POST', timeoutMs: 8000 }); } catch (_) {}
+  try {
+    await apiFetch(API.reboot, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'reboot', confirm: true }),
+      timeoutMs: 8000
+    });
+  } catch (_) {}
 }
 
 async function toggleSwapMode() {

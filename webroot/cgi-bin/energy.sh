@@ -21,7 +21,9 @@ ENERGY_CACHE_TTL=45
 RESET_RULE='连续充电 >= 10 分钟且电量回升，或充满后重新拔线后，重置为新的放电会话'
 BATTERYSTATS_NOTE='系统分项和应用排行来自 Android batterystats 当前窗口；若系统或用户执行过 batterystats reset，这个窗口可能比放电会话更短。'
 
-_tmp="/data/local/tmp/.energy_$$"
+mkdir -p "$LOCKDIR_BASE/tmp" 2>/dev/null || true
+chmod 700 "$LOCKDIR_BASE/tmp" 2>/dev/null || true
+_tmp="$LOCKDIR_BASE/tmp/energy_$$"
 trap 'rm -f "${_tmp}"_*' EXIT
 
 json_num_or_null() {
@@ -42,6 +44,12 @@ json_str_or_null() {
 
 read_battery_value() {
     tr -d ' \n\r' < "$1" 2>/dev/null
+}
+
+read_state_value() {
+    _state_file="$1"
+    _state_key="$2"
+    sed -n "s/^${_state_key}=//p" "$_state_file" 2>/dev/null | head -n 1 | tr -d '\r'
 }
 
 read_energy_cache_if_fresh() {
@@ -281,26 +289,30 @@ _odpm_modem_base=0
 _odpm_rffe_base=0
 
 if [ -s "$POWER_SESSION_FILE" ]; then
-    unset start_ts start_level start_charge_uah reset_reason odpm_modem_uws odpm_rffe_uws
-    . "$POWER_SESSION_FILE"
-    case "${start_ts:-}" in
+    start_ts=$(read_state_value "$POWER_SESSION_FILE" start_ts)
+    start_level=$(read_state_value "$POWER_SESSION_FILE" start_level)
+    start_charge_uah=$(read_state_value "$POWER_SESSION_FILE" start_charge_uah)
+    reset_reason=$(read_state_value "$POWER_SESSION_FILE" reset_reason)
+    odpm_modem_uws=$(read_state_value "$POWER_SESSION_FILE" odpm_modem_uws)
+    odpm_rffe_uws=$(read_state_value "$POWER_SESSION_FILE" odpm_rffe_uws)
+    case "$start_ts" in
         ''|*[!0-9]*) ;;
         *) _scope_start=$start_ts ;;
     esac
-    case "${start_level:-}" in
+    case "$start_level" in
         ''|*[!0-9-]*) ;;
         *) _scope_level_start=$start_level ;;
     esac
-    case "${start_charge_uah:-}" in
+    case "$start_charge_uah" in
         ''|*[!0-9-]*) ;;
         *) _scope_charge_start=$start_charge_uah ;;
     esac
-    [ -n "${reset_reason:-}" ] && _scope_reason=$reset_reason
-    case "${odpm_modem_uws:-}" in
+    [ -n "$reset_reason" ] && _scope_reason=$reset_reason
+    case "$odpm_modem_uws" in
         ''|*[!0-9]*) ;;
         *) _odpm_modem_base=$odpm_modem_uws ;;
     esac
-    case "${odpm_rffe_uws:-}" in
+    case "$odpm_rffe_uws" in
         ''|*[!0-9]*) ;;
         *) _odpm_rffe_base=$odpm_rffe_uws ;;
     esac

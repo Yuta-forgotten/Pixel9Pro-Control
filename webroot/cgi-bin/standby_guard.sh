@@ -19,6 +19,15 @@ read_onoff_file() {
     esac
 }
 
+read_state_value() {
+    _sg_file="$1"
+    _sg_key="$2"
+    _sg_default="$3"
+    _sg_value=$(sed -n "s/^${_sg_key}=//p" "$_sg_file" 2>/dev/null | head -n 1 | tr -d '\r')
+    [ -n "$_sg_value" ] || _sg_value="$_sg_default"
+    printf '%s' "$_sg_value"
+}
+
 emit_state() {
     _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" 'off')
     _idle_isolate_mode=$(read_onoff_file "$IDLE_ISOLATE_FILE" 'off')
@@ -35,17 +44,16 @@ emit_state() {
     diag_cycle_count="0"
 
     if [ -f "$STANDBY_DIAG_FILE" ]; then
-        . "$STANDBY_DIAG_FILE" 2>/dev/null
-        diag_updated_at="${updated_at:-}"
-        diag_screen="${screen:-unknown}"
-        diag_worker_mode="${worker_mode:-unknown}"
-        diag_next_sleep_secs="${next_sleep_secs:-}"
-        diag_burst_active="${burst_active:-0}"
-        diag_nr_switch="${nr_switch:-off}"
-        diag_nr_state="${nr_state:-unknown}"
-        diag_profile_policy="${profile_policy:-unknown}"
-        diag_active_profile="${active_profile:-unknown}"
-        diag_cycle_count="${cycle_count:-0}"
+        diag_updated_at=$(read_state_value "$STANDBY_DIAG_FILE" updated_at "")
+        diag_screen=$(read_state_value "$STANDBY_DIAG_FILE" screen "unknown")
+        diag_worker_mode=$(read_state_value "$STANDBY_DIAG_FILE" worker_mode "unknown")
+        diag_next_sleep_secs=$(read_state_value "$STANDBY_DIAG_FILE" next_sleep_secs "")
+        diag_burst_active=$(read_state_value "$STANDBY_DIAG_FILE" burst_active "0")
+        diag_nr_switch=$(read_state_value "$STANDBY_DIAG_FILE" nr_switch "off")
+        diag_nr_state=$(read_state_value "$STANDBY_DIAG_FILE" nr_state "unknown")
+        diag_profile_policy=$(read_state_value "$STANDBY_DIAG_FILE" profile_policy "unknown")
+        diag_active_profile=$(read_state_value "$STANDBY_DIAG_FILE" active_profile "unknown")
+        diag_cycle_count=$(read_state_value "$STANDBY_DIAG_FILE" cycle_count "0")
     fi
 
     printf '"sim2_auto_manage":"%s","idle_isolate_mode":"%s","diag_updated_at":"%s","diag_screen":"%s","diag_worker_mode":"%s","diag_next_sleep_secs":"%s","diag_burst_active":"%s","diag_nr_switch":"%s","diag_nr_state":"%s","diag_profile_policy":"%s","diag_active_profile":"%s","diag_cycle_count":"%s"' \

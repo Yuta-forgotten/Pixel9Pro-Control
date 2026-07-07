@@ -47,14 +47,17 @@ case "$REQUEST_METHOD" in
         require_json_post
         require_token
         acquire_lock "uecap_profile"
-        _len="${CONTENT_LENGTH:-256}"
-        [ "$_len" -le 0 ] 2>/dev/null && _len=256
+        _len="${CONTENT_LENGTH:-0}"
+        case "$_len" in ''|*[!0-9]*) _len=0 ;; esac
+        [ "$_len" -gt 0 ] 2>/dev/null || json_error '400 Bad Request' 'empty request body'
         [ "$_len" -gt 256 ] 2>/dev/null && _len=256
         body=$(dd bs=1 count="$_len" 2>/dev/null)
         mode=$(printf '%s' "$body" | sed -n 's/.*"mode" *: *"\([a-z]*\)".*/\1/p')
         case "$mode" in special|balanced|universal) ;; *) mode="" ;; esac
         policy=$(printf '%s' "$body" | sed -n 's/.*"policy" *: *"\([a-z]*\)".*/\1/p')
         case "$policy" in auto|manual) ;; *) policy="" ;; esac
+
+        [ -n "$mode" ] || [ -n "$policy" ] || json_error '400 Bad Request' 'missing mode or policy'
 
         if [ -n "$policy" ]; then
             uecap_set_policy "$policy"
@@ -65,7 +68,7 @@ case "$REQUEST_METHOD" in
         fi
 
         if [ "$(uecap_current_policy)" = "manual" ]; then
-            [ -n "$mode" ] || mode=$(uecap_current_manual_mode)
+            [ -n "$mode" ] || { json_headers; emit_status false; exit 0; }
             if uecap_apply_mode "$mode" "manual_locked"; then
                 uecap_set_reason manual_locked
                 json_headers

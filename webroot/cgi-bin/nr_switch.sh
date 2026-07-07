@@ -18,6 +18,30 @@ nr_slot0_val() {
     esac
 }
 
+is_nr_mode_raw() {
+    case "$1" in
+        ''|null|*[!0-9,-]*|*,*,*) return 1 ;;
+        *,*)
+            _first=${1%%,*}
+            _rest=${1#*,}
+            case "$_first" in ''|*[!0-9-]*) return 1 ;; esac
+            case "$_rest" in ''|*[!0-9,-]*) return 1 ;; esac
+            ;;
+        *) ;;
+    esac
+    return 0
+}
+
+read_saved_nr_mode() {
+    _saved=$(cat "$NR_MODE_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    if is_nr_mode_raw "$_saved"; then
+        printf '%s' "$_saved"
+    else
+        printf '33'
+        printf '%s' '33' > "$NR_MODE_FILE" 2>/dev/null || true
+    fi
+}
+
 detect_nr_key() {
     _nr_key="preferred_network_mode1"
     _current=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
@@ -36,7 +60,7 @@ read_actual_rat() {
 if [ "$REQUEST_METHOD" = "GET" ]; then
     json_headers
     enabled=$(cat "$STATE_FILE" 2>/dev/null || echo "on")
-    saved_nr=$(cat "$NR_MODE_FILE" 2>/dev/null || echo "33")
+    saved_nr=$(read_saved_nr_mode)
 
     detect_nr_key
     current="$_current"
@@ -51,22 +75,27 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
     require_token
     acquire_lock "nr_switch"
-    json_headers
-    if [ -n "$CONTENT_LENGTH" ] && [ "$CONTENT_LENGTH" -gt 0 ] 2>/dev/null && [ "$CONTENT_LENGTH" -le 256 ]; then
-        body=$(dd bs=1 count="$CONTENT_LENGTH" 2>/dev/null)
-    fi
+    _len="${CONTENT_LENGTH:-0}"
+    case "$_len" in ''|*[!0-9]*) _len=0 ;; esac
+    [ "$_len" -gt 0 ] 2>/dev/null || json_error '400 Bad Request' 'empty request body'
+    [ "$_len" -gt 256 ] 2>/dev/null && _len=256
+    body=$(dd bs=1 count="$_len" 2>/dev/null)
+    action=$(printf '%s' "$body" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
+    requested=$(printf '%s' "$body" | sed -n 's/.*"enabled"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
     current=$(cat "$STATE_FILE" 2>/dev/null || echo "on")
-    if [ "$current" = "on" ]; then
-        echo "off" > "$STATE_FILE"
-        new="off"
-        saved_nr=$(cat "$NR_MODE_FILE" 2>/dev/null | tr -d ' \n\r')
-        [ -n "$saved_nr" ] || saved_nr="33"
+    case "$current" in on|off) ;; *) current="on" ;; esac
+    case "$action" in
+        toggle) [ "$current" = "on" ] && new="off" || new="on" ;;
+        set) case "$requested" in on|off) new="$requested" ;; *) json_error '400 Bad Request' 'invalid enabled' ;; esac ;;
+        *) json_error '400 Bad Request' 'invalid action' ;;
+    esac
+    echo "$new" > "$STATE_FILE"
+    if [ "$new" = "off" ]; then
+        saved_nr=$(read_saved_nr_mode)
         detect_nr_key
         settings put global "$_nr_key" "$saved_nr" 2>/dev/null
-    else
-        echo "on" > "$STATE_FILE"
-        new="on"
     fi
+    json_headers
     printf '{"ok":true,"nr_switch":"%s"}' "$new"
 else
     json_error '405 Method Not Allowed' 'GET or POST'

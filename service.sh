@@ -955,12 +955,36 @@ is_nr_mode_value() {
     [ "$_val" -ge 23 ] 2>/dev/null
 }
 
+is_nr_mode_raw() {
+    case "$1" in
+        ''|null|*[!0-9,-]*|*,*,*) return 1 ;;
+        *,*)
+            _raw_first=${1%%,*}
+            _raw_rest=${1#*,}
+            case "$_raw_first" in ''|*[!0-9-]*) return 1 ;; esac
+            case "$_raw_rest" in ''|*[!0-9,-]*) return 1 ;; esac
+            ;;
+        *) ;;
+    esac
+    return 0
+}
+
+read_saved_nr_mode() {
+    _saved_nr_mode=$(cat "$NR_MODE_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    if is_nr_mode_raw "$_saved_nr_mode"; then
+        printf '%s' "$_saved_nr_mode"
+    else
+        printf '33'
+        printf '%s' '33' > "$NR_MODE_FILE" 2>/dev/null || true
+    fi
+}
+
 (
     . "$MODDIR/webroot/cgi-bin/_thermal_cache.sh"
 
     _cleanup_nr() {
         if [ "$_nr_state" = "lte" ] && [ -n "$_nr_key" ]; then
-            settings put global "$_nr_key" "$(cat "$NR_MODE_FILE" 2>/dev/null || echo 33)" 2>/dev/null
+            settings put global "$_nr_key" "$(read_saved_nr_mode)" 2>/dev/null
             log -t pixel9pro_ctrl "NR switch: worker exit, restored NR"
         fi
     }
@@ -1314,7 +1338,7 @@ is_nr_mode_value() {
         else
             if [ "$_nr_enabled" != "on" ]; then
                 if [ "$_nr_state" = "lte" ]; then
-                    settings put global "$_nr_key" "$(cat "$NR_MODE_FILE" 2>/dev/null || echo 33)" 2>/dev/null
+                    settings put global "$_nr_key" "$(read_saved_nr_mode)" 2>/dev/null
                     _nr_state="5g"
                     _nr_restored=$_now
                     log -t pixel9pro_ctrl "NR switch: disabled, restored NR"
@@ -1352,7 +1376,7 @@ is_nr_mode_value() {
             else
                 _nr_off_since=0
                 if [ "$_nr_state" = "lte" ]; then
-                    settings put global "$_nr_key" "$(cat "$NR_MODE_FILE" 2>/dev/null || echo 33)" 2>/dev/null
+                    settings put global "$_nr_key" "$(read_saved_nr_mode)" 2>/dev/null
                     _nr_state="5g"
                     _nr_restored=$_now
                     log -t pixel9pro_ctrl "NR switch: screen on, restored NR"

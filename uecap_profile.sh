@@ -59,6 +59,10 @@ uecap_last_switch() {
     cat "$UECAP_SWITCH_FILE" 2>/dev/null | tr -d ' \n\r'
 }
 
+uecap_json_escape() {
+    printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\r//g;s/\n/\\n/g'
+}
+
 uecap_set_mode() {
     printf '%s' "$(uecap_mode_label "$1")" > "$UECAP_MODE_FILE"
 }
@@ -175,7 +179,7 @@ uecap_print_status_json() {
     _last_switch=$(uecap_last_switch)
 
     printf '{"policy":"%s","requested_mode":"%s","manual_mode":"%s","active_mode":"%s","reason":"%s","last_switch":"%s","target_hash":"%s","special_hash":"%s","balanced_hash":"%s","universal_hash":"%s"}' \
-        "$_policy" "$_requested" "$_manual" "$_active" "${_reason:-unknown}" "${_last_switch:-0}" \
+        "$_policy" "$_requested" "$_manual" "$_active" "$(uecap_json_escape "${_reason:-unknown}")" "${_last_switch:-0}" \
         "${_target_hash:-unknown}" "${_special_hash:-unknown}" "${_balanced_hash:-unknown}" "${_universal_hash:-unknown}"
 }
 
