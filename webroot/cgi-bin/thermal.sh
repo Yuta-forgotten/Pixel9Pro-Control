@@ -1,7 +1,9 @@
 #!/system/bin/sh
 ##############################################################
 # CGI: /cgi-bin/thermal.sh
-# GET           → 返回关键热区温度 JSON (实时)
+# GET           → 返回关键热区温度 JSON (快路径优先读缓存)
+# GET ?fresh=1 → 强制重建热区缓存后返回
+# GET ?clear=1&fresh=1 → 清除可疑缓存后重建（需 WebUI token）
 # GET ?history=1 → 返回后端持久化的温度历史 CSV→JSON
 #   可选 &minutes=N (默认 30, 最大 720)
 ##############################################################
@@ -46,12 +48,34 @@ esac
 json_headers
 _cache_max_age=30
 _now=$(date +%s 2>/dev/null || echo 0)
+_fresh=0
+case "$QUERY_STRING" in *fresh=1*) _fresh=1 ;; esac
+case "$QUERY_STRING" in *clear=1*) require_token; rm -f "$THERMAL_CACHE" 2>/dev/null; _fresh=1 ;; esac
+
+cache_has_valid_skin() {
+    _file="$1"
+    awk '
+        /"zone":"VIRTUAL-SKIN"/ {
+            line = $0
+            if (match(line, /"temp":[-0-9]+/)) {
+                temp = substr(line, RSTART + 7, RLENGTH - 7) + 0
+                if (temp >= 10000 && temp <= 85000) ok = 1
+            }
+        }
+        END { exit ok ? 0 : 1 }
+    ' "$_file" 2>/dev/null
+}
+
+_cache_valid=0
 if [ -s "$THERMAL_CACHE" ]; then
     _mtime=$(stat -c %Y "$THERMAL_CACHE" 2>/dev/null)
     case "$_mtime" in
         ''|*[!0-9]*) _mtime=0 ;;
     esac
-    if [ "$_mtime" -gt 0 ] && [ $((_now - _mtime)) -le "$_cache_max_age" ] 2>/dev/null; then
+    if cache_has_valid_skin "$THERMAL_CACHE"; then
+        _cache_valid=1
+    fi
+    if [ "$_fresh" -ne 1 ] && [ "$_cache_valid" -eq 1 ]; then
         cat "$THERMAL_CACHE"
         exit 0
     fi

@@ -250,6 +250,12 @@ button{border:none;background:none;padding:0;color:inherit}
   border-color:transparent;
 }
 
+.tiny-btn.tonal{
+  background:var(--primary-container);
+  color:var(--on-primary-container);
+  border-color:transparent;
+}
+
 .status-chip,
 .badge{
   min-height:28px;
@@ -1438,6 +1444,57 @@ button{border:none;background:none;padding:0;color:inherit}
   font-variant-numeric:tabular-nums;
 }
 
+.energy-metric-grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;
+  margin-bottom:14px;
+}
+
+.energy-metric{
+  min-width:0;
+  padding:12px;
+  border-radius:var(--radius-md);
+  background:var(--surface-2);
+  border:1px solid var(--line);
+}
+
+.energy-metric.primary{
+  background:var(--primary-container);
+  color:var(--on-primary-container);
+  border-color:transparent;
+}
+
+.energy-metric.warn{
+  background:var(--warn-container);
+  color:var(--warn);
+  border-color:transparent;
+}
+
+.energy-metric-label{
+  font-size:12px;
+  line-height:16px;
+  font-weight:700;
+  color:currentColor;
+  opacity:.72;
+}
+
+.energy-metric-value{
+  margin-top:6px;
+  font-size:20px;
+  line-height:24px;
+  font-weight:750;
+  font-variant-numeric:tabular-nums;
+}
+
+.energy-metric-desc{
+  margin-top:4px;
+  font-size:12px;
+  line-height:16px;
+  color:currentColor;
+  opacity:.68;
+}
+
 .energy-export-actions{
   display:flex;
   gap:8px;
@@ -1446,6 +1503,10 @@ button{border:none;background:none;padding:0;color:inherit}
 
 .energy-export-actions .tiny-btn{
   flex:1 1 120px;
+}
+
+@media (max-width:360px){
+  .energy-metric-grid{grid-template-columns:1fr}
 }
 
 .uecap-btn-group{

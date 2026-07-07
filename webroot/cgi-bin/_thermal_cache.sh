@@ -23,21 +23,23 @@ build_thermal_json() {
     }
 
     _thermal_dump=$(dumpsys thermalservice 2>/dev/null)
-    _current_temps=$(printf '%s\n' "$_thermal_dump" | awk '
+    _hal_pairs=$(printf '%s\n' "$_thermal_dump" | awk '
         /Current temperatures from HAL:/ { in_current = 1; next }
         /Current cooling devices from HAL:/ { if (in_current) exit }
-        in_current && /Temperature\{mValue=/ { print }
+        in_current && /Temperature\{mValue=/ { print; next }
+        !in_current && /Temperature\{mValue=/ { print }
+    ' | awk '
+        {
+            name = ""; val = ""
+            if (match($0, /mName=[^,}]*/)) name = substr($0, RSTART + 6, RLENGTH - 6)
+            if (match($0, /mValue=[-0-9.]+/)) val = substr($0, RSTART + 7, RLENGTH - 7)
+            if (name != "" && val ~ /^-?[0-9.]+$/) printf "%s %d\n", name, val * 1000
+        }
     ')
-    [ -n "$_current_temps" ] || _current_temps=$(printf '%s\n' "$_thermal_dump" | grep 'Temperature{mValue=')
 
     for name in VIRTUAL-SKIN soc_therm charging_therm btmspkr_therm battery; do
-        _line=$(printf '%s\n' "$_current_temps" | grep "mName=${name}," | tail -1)
-        [ -n "$_line" ] || continue
-        _c=$(printf '%s' "$_line" | sed -n 's/.*mValue=\([-0-9.]*\).*/\1/p')
-        case "$_c" in
-            ''|*[!0-9.-]*) continue ;;
-        esac
-        _mc=$(awk -v c="$_c" 'BEGIN{printf "%d", c * 1000}')
+        _mc=$(printf '%s\n' "$_hal_pairs" | awk -v n="$name" '$1 == n { v = $2 } END { if (v != "") print v }')
+        [ -n "$_mc" ] || continue
         append_zone "$name" "$_mc"
     done
 

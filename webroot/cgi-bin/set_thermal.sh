@@ -2,7 +2,7 @@
 ##############################################################
 # CGI: /cgi-bin/set_thermal.sh
 # GET  → 返回当前温控档位 {"offset": N}
-# POST → 切换温控档位（body: {"offset": 0|2|4|6}）
+# POST → 切换温控档位（body: {"offset": -2|0|2|4|6}）
 #        1. 以 stock JSON 为基准 + offset 重写 thermal_info_config.json
 #        2. 尝试重启 thermalserviced（无需整机重启）
 #        3. 保存 offset 到 .thermal_offset
@@ -22,11 +22,11 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     len="${CONTENT_LENGTH:-0}"
     [ "$len" -gt 512 ] 2>/dev/null && len=512
     body=$(dd bs=1 count="$len" 2>/dev/null)
-    offset=$(printf '%s' "$body" | sed 's/.*"offset"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/')
+    offset=$(printf '%s' "$body" | sed 's/.*"offset"[[:space:]]*:[[:space:]]*\(-\{0,1\}[0-9]*\).*/\1/')
 
-    # 只接受 0 / 2 / 4 / 6
+    # 只接受 -2 / 0 / 2 / 4 / 6
     case "$offset" in
-        0|2|4|6) ;;
+        -2|0|2|4|6) ;;
         *)
             json_error '400 Bad Request' "invalid offset: $offset"
             ;;
@@ -124,7 +124,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 elif [ "$REQUEST_METHOD" = "GET" ]; then
     offset=$(cat "$OFFSET_FILE" 2>/dev/null | tr -d ' \n\r\t')
     case "$offset" in
-        0|2|4|6) ;;
+        -2|0|2|4|6) ;;
         *) offset="4" ;;
     esac
     json_headers

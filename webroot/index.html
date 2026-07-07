@@ -69,7 +69,7 @@
                 <div class="panel-title">机身温度</div>
               </div>
               <div class="header-actions">
-                <button class="tiny-btn sm" id="home-temp-chart-btn" type="button">历史</button>
+                <button class="tiny-btn tonal" id="home-temp-chart-btn" type="button">历史</button>
                 <span class="badge default" id="home-mod-badge">+4°C 已启用</span>
               </div>
             </div>
@@ -94,7 +94,7 @@
                 <div class="panel-title">内存与系统</div>
               </div>
               <div class="header-actions">
-                <button class="tiny-btn" id="energy-btn" type="button">功耗</button>
+                <button class="tiny-btn tonal" id="energy-btn" type="button">查看功耗</button>
               </div>
             </div>
             <div class="mini-list">
@@ -172,7 +172,7 @@
               <div class="section-title">CPU 频率状态</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn" id="open-cpu-detail-btn" type="button">参数</button>
+              <button class="tiny-btn tonal" id="open-cpu-detail-btn" type="button">参数</button>
             </div>
           </div>
           <article class="surface-card">
@@ -218,7 +218,7 @@
               <div class="section-title">温度详情</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn" id="temp-chart-btn" type="button">历史</button>
+              <button class="tiny-btn tonal" id="temp-chart-btn" type="button">历史</button>
             </div>
           </div>
           <article class="thermal-card">
@@ -276,7 +276,7 @@
               <div class="panel-desc" id="uecap-desc">选择载波组合配置，切换后自动校验是否生效。</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn" id="uecap-detail-btn" type="button">详情</button>
+              <button class="tiny-btn tonal" id="uecap-detail-btn" type="button">详情</button>
             </div>
           </div>
           <div class="uecap-btn-group" id="uecap-btn-group">
@@ -295,8 +295,8 @@
               <div class="panel-desc" id="baseband-desc">查看独立基带模块的安装状态与关键配置。</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn" id="baseband-detail-btn" type="button">详情</button>
-              <button class="tiny-btn" id="baseband-refresh-btn" type="button">刷新</button>
+              <button class="tiny-btn tonal" id="baseband-detail-btn" type="button">详情</button>
+              <button class="tiny-btn tonal" id="baseband-refresh-btn" type="button">刷新</button>
             </div>
           </div>
           <div class="data-list" id="baseband-rows" style="margin-top:14px">
@@ -312,7 +312,7 @@
               <div class="panel-desc" id="nr-switch-desc">息屏 5 分钟后将网络模式从 NR 切到 LTE，降低 modem 射频功耗。亮屏自动恢复，热点开启时跳过。</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn" id="nr-switch-detail-btn" type="button">详情</button>
+              <button class="tiny-btn tonal" id="nr-switch-detail-btn" type="button">详情</button>
               <button class="tiny-btn primary" id="nr-switch-toggle-btn" type="button"><span id="nr-switch-toggle-label">读取中…</span></button>
             </div>
           </div>
@@ -349,8 +349,8 @@
               <div class="panel-desc" id="swap-desc">Tensor G4 Emerald Hill 硬件压缩引擎，ZRAM 11392MB，VM 参数开机自动配置。</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn" id="swap-detail-btn" type="button">详情</button>
-              <button class="tiny-btn" id="swap-tune-btn" type="button">手动</button>
+              <button class="tiny-btn tonal" id="swap-detail-btn" type="button">详情</button>
+              <button class="tiny-btn tonal" id="swap-tune-btn" type="button">手动</button>
               <button class="tiny-btn primary" id="swap-toggle-btn" type="button"><span id="swap-toggle-label">读取中…</span></button>
             </div>
           </div>
@@ -367,7 +367,7 @@
               <div class="panel-desc" id="bg-restrict-desc">按包选择后台策略。默认仅预置抖音，休眠策略会在锁屏或离开前台后延时停止，前台使用不受影响。</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn" id="bg-restrict-refresh-btn" type="button">刷新</button>
+              <button class="tiny-btn tonal" id="bg-restrict-refresh-btn" type="button">刷新</button>
               <button class="tiny-btn primary" id="bg-restrict-toggle-btn" type="button"><span id="bg-restrict-toggle-label">读取中…</span></button>
             </div>
           </div>
@@ -466,10 +466,6 @@
           </div>
         </article>
 
-        <article class="note-card">
-          <div class="note-title">说明</div>
-          <div class="note-body">WiFi / BLE 后台扫描、Nearby Sharing 和 multicast 屏幕感知由模块开机自动配置，无需手动操作。SIM2 空槽管理仅在副卡槽确实为空时建议开启；待机隔离模式仅用于一晚隔离测试，验证后应关闭。</div>
-        </article>
       </div>
     </section>
   </main>

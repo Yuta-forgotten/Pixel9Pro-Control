@@ -18,6 +18,7 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
 ENERGY_CACHE="$MODDIR/.energy_cache.json"
 ENERGY_CACHE_TS="$MODDIR/.energy_cache.ts"
 ENERGY_CACHE_TTL=45
+ENERGY_CACHE_STALE_MAX=600
 RESET_RULE='连续充电 >= 10 分钟且电量回升，或充满后重新拔线后，重置为新的放电会话'
 BATTERYSTATS_NOTE='系统分项和应用排行来自 Android batterystats 当前窗口；若系统或用户执行过 batterystats reset，这个窗口可能比放电会话更短。'
 
@@ -62,6 +63,20 @@ read_energy_cache_if_fresh() {
     _cache_age=$((_cache_now - _cache_ts))
     [ "$_cache_age" -lt 0 ] && _cache_age=999999
     [ "$_cache_age" -le "$ENERGY_CACHE_TTL" ] || return 1
+    cat "$ENERGY_CACHE"
+    return 0
+}
+
+read_energy_cache_if_usable() {
+    _cache_now="$1"
+    [ -s "$ENERGY_CACHE" ] || return 1
+    _cache_ts=$(cat "$ENERGY_CACHE_TS" 2>/dev/null | tr -d ' \n\r')
+    case "$_cache_ts" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    _cache_age=$((_cache_now - _cache_ts))
+    [ "$_cache_age" -lt 0 ] && _cache_age=999999
+    [ "$_cache_age" -le "$ENERGY_CACHE_STALE_MAX" ] || return 1
     cat "$ENERGY_CACHE"
     return 0
 }
@@ -263,7 +278,12 @@ release_energy_lock() {
 }
 
 _now=$(date +%s 2>/dev/null || echo 0)
+_fast=0
+case "$QUERY_STRING" in *fast=1*) _fast=1 ;; esac
 if read_energy_cache_if_fresh "$_now"; then
+    exit 0
+fi
+if [ "$_fast" -eq 1 ] && read_energy_cache_if_usable "$_now"; then
     exit 0
 fi
 
@@ -469,6 +489,16 @@ for _hist_min in 15 30 60; do
     _history_windows_json="${_history_windows_json}{\"minutes\":$_hist_min,\"power\":$_hist_power_json,\"thermal\":$_hist_thermal_json}"
 done
 _history_windows_json="${_history_windows_json}]"
+
+if [ "$_fast" -eq 1 ]; then
+    _charge_state_json=$(printf '{"status":%s,"level":%s,"charge_uah":%s}' \
+        "$(json_str_or_null "$_cur_status")" \
+        "$(json_num_or_null "$_cur_level")" \
+        "$(json_num_or_null "$_cur_charge")")
+    printf '{"cap":0,"drain":0,"scroff":0,"scron":0,"bat_time":"","screen":0,"cpu":0,"cell":0,"wifi":0,"wakelock":0,"apps":[],"odpm_modem":{"modem_mah":null,"rffe_mah":null,"total_mah":null,"source":"odpm_iio"},"scope":%s,"today":%s,"history_windows":%s,"charge_state":%s,"batterystats_window":{"window_label":null,"daily_label":null,"time_on_battery":null,"note":"快速缓存口径；系统 batterystats 分项稍后刷新。"},"generated_at":%s,"cache_ttl_sec":%s,"fast":true}\n' \
+        "$_scope_json" "$_today_json" "$_history_windows_json" "$_charge_state_json" "$(json_num_or_null "$_now")" "$ENERGY_CACHE_TTL"
+    exit 0
+fi
 
 _energy_lock="$LOCKDIR_BASE/energy_cache.lock"
 _have_energy_lock=0

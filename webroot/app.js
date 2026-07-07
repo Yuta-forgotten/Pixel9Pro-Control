@@ -10,6 +10,8 @@ const API = {
   info: '/cgi-bin/info.sh',
   thermal: '/cgi-bin/thermal.sh',
   thermalHistory: '/cgi-bin/thermal.sh?history=1',
+  thermalFresh: '/cgi-bin/thermal.sh?fresh=1',
+  thermalClear: '/cgi-bin/thermal.sh?clear=1&fresh=1',
   thermalSet: '/cgi-bin/set_thermal.sh',
   reboot: '/cgi-bin/reboot.sh',
   swap: '/cgi-bin/swap.sh',
@@ -19,6 +21,7 @@ const API = {
   thermalBurst: '/cgi-bin/thermal_burst.sh',
   ntp: '/cgi-bin/ntp.sh',
   energy: '/cgi-bin/energy.sh',
+  energyFast: '/cgi-bin/energy.sh?fast=1',
   historyExport: '/cgi-bin/history_export.sh',
   auth: '/cgi-bin/auth.sh',
   checkBaseband: '/cgi-bin/check_baseband.sh',
@@ -124,28 +127,34 @@ const PROFILES = {
 };
 
 const THERMAL_PRESETS = {
+  [-2]: {
+    name: '睡和放宽',
+    summary: '出厂 -2°C，最早 35°C 介入。',
+    detail: '<b>睡和放宽</b><br><br>出厂 -2°C，最早 35°C 介入。<br><br>HINT 35°C / VIRTUAL-SKIN 37°C / CPU-HIGH 39°C。',
+    icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M9.37 5.51A7 7 0 0018.49 14.63 9 9 0 119.37 5.51z"/></svg>'
+  },
   0: {
-    name: '出厂阈值',
-    summary: '恢复 Google 出厂温控，最早 37°C 介入。',
-    detail: '<b>出厂阈值</b><br><br>Google 原厂温控口径。<b>HINT 37°C / VIRTUAL-SKIN 39°C / CPU-HIGH 41°C</b> 依次介入。保守但更容易在日常高温边缘频繁触发降温。',
+    name: '躺和放宽',
+    summary: '出厂 0°C，最早 37°C 介入。',
+    detail: '<b>躺和放宽</b><br><br>出厂 0°C，最早 37°C 介入。<br><br>HINT 37°C / VIRTUAL-SKIN 39°C / CPU-HIGH 41°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/></svg>'
   },
   2: {
     name: '轻度放宽',
     summary: '出厂 +2°C，最早 39°C 介入。',
-    detail: '<b>轻度放宽</b><br><br>在出厂基础上整体上移 <b>+2°C</b>。适合减少日常温度波动带来的频繁触发，同时保留较明显的安全余量。',
+    detail: '<b>轻度放宽</b><br><br>出厂 +2°C，最早 39°C 介入。<br><br>HINT 39°C / VIRTUAL-SKIN 41°C / CPU-HIGH 43°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82z"/></svg>'
   },
   4: {
-    name: '日常推荐',
-    summary: '模块默认档，出厂 +4°C，最早 41°C 介入。',
-    detail: '<b>日常推荐（模块默认）</b><br><br>在出厂基础上整体上移 <b>+4°C</b>，HINT 41°C / VIRTUAL-SKIN 43°C / CPU-HIGH 45°C 依次介入。兼顾性能表现、机身温度和日常稳定性，是模块默认档位。',
+    name: '坐和放宽',
+    summary: '出厂 +4°C，最早 41°C 介入。',
+    detail: '<b>坐和放宽（模块默认）</b><br><br>出厂 +4°C，最早 41°C 介入。<br><br>HINT 41°C / VIRTUAL-SKIN 43°C / CPU-HIGH 45°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67z"/></svg>'
   },
   6: {
-    name: '性能优先',
+    name: '站和放宽',
     summary: '出厂 +6°C，最早 43°C 介入。',
-    detail: '<b>性能优先</b><br><br>在出厂基础上整体上移 <b>+6°C</b>，显著延后系统降温介入。适合短时高负载冲刺，但机身体感温度会更快上升。',
+    detail: '<b>站和放宽</b><br><br>出厂 +6°C，最早 43°C 介入。<br><br>HINT 43°C / VIRTUAL-SKIN 45°C / CPU-HIGH 47°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>'
   }
 };
@@ -329,6 +338,8 @@ const state = {
   profilePolicyBusy: false,
   schedOwnerBusy: false,
   thermalBusy: false,
+  thermalBadReads: 0,
+  lastSkinTempC: null,
   thermalApplyBusy: false,
   swapBusy: false,
   swapLoading: false,
@@ -1258,7 +1269,7 @@ function tempHex(t) {
 }
 
 function tempStatus(t) {
-  const modThresh = THRESH_STOCK + (state.currentOffset || THRESH_MOD_DEFAULT);
+  const modThresh = THRESH_STOCK + (state.currentOffset ?? THRESH_MOD_DEFAULT);
   if (t < 36) return '凉爽';
   if (t < THRESH_STOCK) return '正常';
   if (t < modThresh) return '已高于原厂阈值，当前仍在放宽区间';
@@ -1272,7 +1283,7 @@ function barPct(t) {
 }
 
 function positionMarkers() {
-  const modThresh = THRESH_STOCK + (state.currentOffset || THRESH_MOD_DEFAULT);
+  const modThresh = THRESH_STOCK + (state.currentOffset ?? THRESH_MOD_DEFAULT);
   const stockPct = barPct(THRESH_STOCK);
   const modPct = barPct(modThresh);
   refs.mkStock.style.left = `${stockPct}%`;
@@ -1283,6 +1294,32 @@ function positionMarkers() {
   refs.mkModLbl.textContent = state.currentOffset === 0 ? '' : `${modThresh}°C 当前`;
   refs.mkMod.style.display = state.currentOffset === 0 ? 'none' : '';
   refs.mkModLbl.style.display = state.currentOffset === 0 ? 'none' : '';
+}
+
+function formatThermalOffset(offset) {
+  const value = Number(offset);
+  if (!Number.isFinite(value) || value === 0) return '出厂口径';
+  return `${value > 0 ? '+' : ''}${value}°C 已启用`;
+}
+
+function isThermalZoneValid(zone) {
+  if (!zone || typeof zone.zone !== 'string') return false;
+  const temp = Number(zone.temp);
+  return Number.isFinite(temp) && temp >= 10000 && temp <= 85000;
+}
+
+async function readThermalZones({ fresh = false, clear = false } = {}) {
+  const path = clear ? API.thermalClear : fresh ? API.thermalFresh : API.thermal;
+  const zones = await apiFetch(path, { timeoutMs: fresh || clear ? 8000 : 3500 });
+  if (!Array.isArray(zones) || !zones.length) throw new Error('未读取到热区数据');
+  const valid = zones.filter(isThermalZoneValid);
+  const skin = valid.find((zone) => zone.zone === 'VIRTUAL-SKIN') || valid.find((zone) => zone.zone === 'SKIN');
+  if (!skin) throw new Error('VIRTUAL-SKIN 未找到');
+  const tempC = skin.temp / 1000;
+  if (state.lastSkinTempC !== null && Math.abs(tempC - state.lastSkinTempC) >= 12 && !fresh && !clear) {
+    throw new Error('缓存温度跳变，准备校准');
+  }
+  return valid;
 }
 
 function boolValue(value) {
@@ -1548,10 +1585,10 @@ function syncHeroDesc() {
 
 function syncThermalUi() {
   const preset = THERMAL_PRESETS[state.currentOffset] || THERMAL_PRESETS[4];
-  refs.topbarThermalChip.textContent = state.currentOffset === 0 ? '出厂阈值' : `温控 ${preset.name}`;
+  refs.topbarThermalChip.textContent = `温控 ${preset.name}`;
   refs.thermalCurrentName.textContent = preset.name;
   refs.thermalCurrentDesc.textContent = preset.summary;
-  const label = state.currentOffset === 0 ? '出厂阈值' : `+${state.currentOffset}°C 已启用`;
+  const label = formatThermalOffset(state.currentOffset);
   [refs.homeModBadge, refs.thModBadge].forEach((el) => {
     el.textContent = label;
     el.className = `badge ${state.currentOffset === 0 ? 'off' : 'default'}`;
@@ -1598,7 +1635,7 @@ function renderProfileCards() {
 
 function renderThermalCards() {
   refs.thermalList.replaceChildren();
-  [0, 2, 4, 6].forEach((offset) => {
+  [-2, 0, 2, 4, 6].forEach((offset) => {
     const preset = THERMAL_PRESETS[offset];
     const card = document.createElement('article');
     card.className = 'profile-card thermal-option';
@@ -1902,8 +1939,16 @@ async function refreshThermal() {
   if (state.thermalBusy) return;
   state.thermalBusy = true;
   try {
-    const zones = await apiFetch(API.thermal, { timeoutMs: 6000 });
-    if (!zones || !zones.length) throw new Error('未读取到热区数据');
+    let zones;
+    try {
+      zones = await readThermalZones();
+    } catch (_) {
+      state.thermalBadReads += 1;
+      zones = await readThermalZones({ fresh: true });
+    }
+    if (state.thermalBadReads >= 2) {
+      try { zones = await readThermalZones({ clear: true }); } catch (_) {}
+    }
     const skin = zones.find((zone) => zone.zone === 'VIRTUAL-SKIN') || zones.find((zone) => zone.zone === 'SKIN');
     const secondary = zones.filter((zone) => zone !== skin && ['soc_therm', 'battery', 'charging_therm', 'btmspkr_therm'].includes(zone.zone));
     refs.homeThermalSkel.hidden = true;
@@ -1912,6 +1957,8 @@ async function refreshThermal() {
     refs.thermalContent.hidden = false;
     if (skin) {
       const tempC = skin.temp / 1000;
+      state.lastSkinTempC = tempC;
+      state.thermalBadReads = 0;
       const color = tempHex(tempC);
       refs.homeTempNum.textContent = tempC.toFixed(1);
       refs.homeTempNum.style.color = color;
@@ -2920,6 +2967,11 @@ function fmtBatterystatsWindow(label) {
 
 async function fetchEnergyDetailWithRetry() {
   let lastErr;
+  try {
+    return await apiFetch(API.energyFast, { timeoutMs: 3500 });
+  } catch (err) {
+    lastErr = err;
+  }
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       return await apiFetch(API.energy, { timeoutMs: 16000 });
@@ -2956,11 +3008,31 @@ function renderHistoryStats(statsEl, data, result) {
   rows.forEach((row) => statsEl.appendChild(buildInfoRow(row.label, row.value, row.cls || '')));
 }
 
+function thinHistoryPoints(points, maxPoints = 360) {
+  if (!Array.isArray(points) || points.length <= maxPoints) return points || [];
+  const out = [];
+  const bucketSize = Math.ceil(points.length / maxPoints);
+  for (let i = 0; i < points.length; i += bucketSize) {
+    const bucket = points.slice(i, i + bucketSize);
+    let min = bucket[0];
+    let max = bucket[0];
+    bucket.forEach((p) => {
+      if (p.temp < min.temp) min = p;
+      if (p.temp > max.temp) max = p;
+    });
+    if (min.ts <= max.ts) out.push(min, max);
+    else out.push(max, min);
+  }
+  const last = points[points.length - 1];
+  if (!out.length || out[out.length - 1].ts !== last.ts) out.push(last);
+  return out.sort((a, b) => a.ts - b.ts);
+}
+
 async function fetchTempHistory(minutes) {
   try {
     const data = await apiFetch(`${API.thermal}?history=1&minutes=${minutes}`, { timeoutMs: 6000 });
     if (!data || !data.points) return [];
-    return data.points.map((p) => ({ ts: p[0], temp: p[1] / 1000 }));
+    return thinHistoryPoints(data.points.map((p) => ({ ts: p[0], temp: p[1] / 1000 })));
   } catch (_) {
     return [];
   }
@@ -3112,7 +3184,7 @@ async function exportHistoryWindow(scope, button) {
 async function openEnergyDetail() {
   stopTempChartRefresh();
   refs.detailTitle.textContent = '功耗统计';
-  setStaticHtml(refs.detailBody, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在分析 batterystats，约需 2-3 秒…</div>');
+  setStaticHtml(refs.detailBody, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在读取功耗缓存，稍后补全系统分项…</div>');
   refs.detailModal.classList.add('open');
   try {
     const d = await fetchEnergyDetailWithRetry();
@@ -3132,11 +3204,37 @@ async function openEnergyDetail() {
       }
       return h;
     };
+    const metricGrid = (items) => {
+      const grid = document.createElement('div');
+      grid.className = 'energy-metric-grid';
+      items.forEach((item) => {
+        const card = document.createElement('div');
+        card.className = `energy-metric${item.cls ? ` ${item.cls}` : ''}`;
+        const label = document.createElement('div');
+        label.className = 'energy-metric-label';
+        label.textContent = item.label;
+        const value = document.createElement('div');
+        value.className = 'energy-metric-value';
+        value.textContent = item.value;
+        const desc = document.createElement('div');
+        desc.className = 'energy-metric-desc';
+        desc.textContent = item.desc || '';
+        card.append(label, value, desc);
+        grid.appendChild(card);
+      });
+      return grid;
+    };
     const row = (k, v, cls) => { const r = document.createElement('div'); r.className = 'data-row'; const sk = document.createElement('span'); sk.className = 'data-key'; sk.textContent = k; const sv = document.createElement('span'); sv.className = cls || 'data-val'; sv.textContent = v; r.appendChild(sk); r.appendChild(sv); return r; };
     const scope = d.scope || {};
     const today = d.today || {};
     const charge = d.charge_state || {};
     const bs = d.batterystats_window || {};
+
+    frag.appendChild(metricGrid([
+      { label: '当前会话', value: fmtMah(scope.used_mah), desc: `${fmtDuration(scope.elapsed_sec)} · ${Number(scope.level_drop || 0)}%`, cls: 'primary' },
+      { label: '当前状态', value: fmtBatteryStatus(charge.status), desc: Number.isFinite(Number(charge.level)) ? `${charge.level}%` : '电量未知', cls: /Charging|Full/.test(charge.status || '') ? 'warn' : '' },
+      { label: '今日放电', value: fmtMah(today.discharge_mah), desc: `回充 ${fmtMah(today.charge_mah)}` },
+    ]));
 
     const intro = document.createElement('div');
     intro.style.cssText = 'margin-bottom:14px;font-size:13px;line-height:20px;color:var(--text-2)';
