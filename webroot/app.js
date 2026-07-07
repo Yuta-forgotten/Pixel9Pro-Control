@@ -2975,7 +2975,7 @@ async function triggerThermalBurst(options = {}) {
     await apiFetch(API.thermalBurst, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: '{}',
+      body: JSON.stringify({ action: 'start', duration_sec: 300 }),
       timeoutMs: 4000
     });
     return true;
@@ -3083,8 +3083,8 @@ async function exportHistoryWindow(scope, button) {
   }
   try {
     const body = scope === 'session'
-      ? { mode: 'session', start_ts: WEBUI_SESSION_START_TS }
-      : { minutes: scope };
+      ? { action: 'export', mode: 'session', start_ts: WEBUI_SESSION_START_TS }
+      : { action: 'export', minutes: scope };
     const data = await apiFetch(API.historyExport, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

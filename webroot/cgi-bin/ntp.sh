@@ -31,11 +31,12 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
     require_token
     acquire_lock "ntp"
-    json_headers
     body=""
-    if [ -n "$CONTENT_LENGTH" ] && [ "$CONTENT_LENGTH" -gt 0 ] 2>/dev/null && [ "$CONTENT_LENGTH" -le 512 ]; then
-        body=$(dd bs=1 count="$CONTENT_LENGTH" 2>/dev/null)
-    fi
+    _len="${CONTENT_LENGTH:-0}"
+    case "$_len" in ''|*[!0-9]*) _len=0 ;; esac
+    [ "$_len" -gt 0 ] 2>/dev/null || json_error '400 Bad Request' 'empty request body'
+    [ "$_len" -gt 512 ] 2>/dev/null && _len=512
+    body=$(dd bs=1 count="$_len" 2>/dev/null)
 
     # Extract server value: {"server":"ntp.aliyun.com"} or {"action":"sync"}
     action=$(printf '%s' "$body" | sed -n 's/.*"action" *: *"\([^"]*\)".*/\1/p')
@@ -44,7 +45,8 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
     if [ "$action" = "sync" ]; then
         cmd network_time_update_service force_refresh >/dev/null 2>&1
         dev_time=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
-        printf '{"ok":true,"action":"sync","device_time":"%s"}' "$dev_time"
+        json_headers
+        printf '{"ok":true,"action":"sync","device_time":"%s"}' "$(json_escape "$dev_time")"
     elif [ -n "$server" ]; then
         case "$server" in
             ntp.aliyun.com|ntp.myhuaweicloud.com|ntp1.xiaomi.com|time.android.com)
@@ -53,14 +55,15 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
                 cmd network_time_update_service force_refresh >/dev/null 2>&1
                 sleep 1
                 dev_time=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
+                json_headers
                 printf '{"ok":true,"ntp_server":"%s","device_time":"%s"}' "$(json_escape "$server")" "$(json_escape "$dev_time")"
                 ;;
             *)
-                printf '{"ok":false,"error":"unsupported server"}'
+                json_error '400 Bad Request' 'unsupported server'
                 ;;
         esac
     else
-        printf '{"ok":false,"error":"missing server or action"}'
+        json_error '400 Bad Request' 'missing server or action'
     fi
 else
     json_error '405 Method Not Allowed' 'GET or POST'

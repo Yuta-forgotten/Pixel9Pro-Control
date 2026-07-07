@@ -84,6 +84,8 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
     require_token
     acquire_lock "standby_guard"
     len="${CONTENT_LENGTH:-0}"
+    case "$len" in ''|*[!0-9]*) len=0 ;; esac
+    [ "$len" -gt 0 ] 2>/dev/null || json_error '400 Bad Request' 'empty request body'
     [ "$len" -gt 512 ] 2>/dev/null && len=512
     body=$(dd bs=1 count="$len" 2>/dev/null)
 

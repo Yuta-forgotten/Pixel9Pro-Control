@@ -17,10 +17,9 @@ for cpu in 0 4 7; do
     min=$(cat "$p/scaling_min_freq"  2>/dev/null || echo 0)
     max=$(cat "$p/scaling_max_freq"  2>/dev/null || echo 0)
     gov=$(cat "$p/scaling_governor"  2>/dev/null || echo "unknown")
-    for _v in cur min max; do
-        eval "_n=\${$_v}"
-        case "$_n" in ''|*[!0-9]*) eval "$_v=0" ;; esac
-    done
+    case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+    case "$min" in ''|*[!0-9]*) min=0 ;; esac
+    case "$max" in ''|*[!0-9]*) max=0 ;; esac
     sched_dir="$p/sched_pixel"
     if [ -d "$sched_dir" ]; then
         sched_pixel_available=true

@@ -971,7 +971,7 @@ is_nr_mode_raw() {
 
 read_saved_nr_mode() {
     _saved_nr_mode=$(cat "$NR_MODE_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    if is_nr_mode_raw "$_saved_nr_mode"; then
+    if is_nr_mode_raw "$_saved_nr_mode" && is_nr_mode_value "$_saved_nr_mode"; then
         printf '%s' "$_saved_nr_mode"
     else
         printf '33'

@@ -6,13 +6,20 @@ UECAP_MANUAL_MODE_FILE="${PIXEL9PRO_UECAP_MANUAL_MODE_FILE:-$MODDIR/.uecap_manua
 UECAP_POLICY_FILE="${PIXEL9PRO_UECAP_POLICY_FILE:-$MODDIR/.uecap_policy}"
 UECAP_REASON_FILE="${PIXEL9PRO_UECAP_REASON_FILE:-$MODDIR/.uecap_reason}"
 UECAP_SWITCH_FILE="${PIXEL9PRO_UECAP_SWITCH_FILE:-$MODDIR/.uecap_last_switch}"
-UECAP_LOGFILE="${PIXEL9PRO_UECAP_LOGFILE:-/data/local/tmp/pixel9pro_uecap.log}"
+UECAP_LOGDIR="${PIXEL9PRO_UECAP_LOGDIR:-$MODDIR/.logs}"
+UECAP_LOGFILE="${PIXEL9PRO_UECAP_LOGFILE:-$UECAP_LOGDIR/pixel9pro_uecap.log}"
 UECAP_TARGET="/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.binarypb"
 UECAP_SPECIAL="$MODDIR/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.special.binarypb"
 UECAP_BALANCED="$MODDIR/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.balanced.binarypb"
 UECAP_UNIVERSAL="$MODDIR/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.universal.binarypb"
 
 uecap_log_line() {
+    case "$UECAP_LOGFILE" in
+        "$MODDIR"/*)
+            mkdir -p "${UECAP_LOGFILE%/*}" 2>/dev/null || true
+            chmod 700 "${UECAP_LOGFILE%/*}" 2>/dev/null || true
+            ;;
+    esac
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" "$1" >> "$UECAP_LOGFILE"
 }
 

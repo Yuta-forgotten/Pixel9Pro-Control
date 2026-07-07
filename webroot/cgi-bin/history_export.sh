@@ -16,13 +16,16 @@ DOWNLOAD_DIR="/sdcard/Download"
 
 len="${CONTENT_LENGTH:-0}"
 case "$len" in ''|*[!0-9]*) len=0 ;; esac
+[ "$len" -gt 0 ] 2>/dev/null || json_error '400 Bad Request' 'empty request body'
 [ "$len" -gt 1024 ] 2>/dev/null && len=1024
 body=$(dd bs=1 count="$len" 2>/dev/null)
 
 now=$(date +%s 2>/dev/null || echo 0)
+action=$(printf '%s' "$body" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([a-zA-Z0-9_]*\)".*/\1/p')
 mode=$(printf '%s' "$body" | sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([a-zA-Z0-9_]*\)".*/\1/p')
 minutes=$(printf '%s' "$body" | sed -n 's/.*"minutes"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
 start_ts=$(printf '%s' "$body" | sed -n 's/.*"start_ts"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+[ "$action" = "export" ] || json_error '400 Bad Request' 'invalid action'
 
 export_mode="minutes"
 window_label=""
@@ -41,7 +44,7 @@ case "$mode" in
     *)
         case "$minutes" in
             15|30|60) ;;
-            *) minutes=30 ;;
+            *) json_error '400 Bad Request' 'invalid minutes' ;;
         esac
         cutoff=$((now - minutes * 60))
         window_label="last_${minutes}_minutes"

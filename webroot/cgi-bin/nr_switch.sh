@@ -18,6 +18,14 @@ nr_slot0_val() {
     esac
 }
 
+is_nr_mode_value() {
+    _val=$(nr_slot0_val "$1")
+    case "$_val" in
+        ''|null|*[!0-9-]*) return 1 ;;
+    esac
+    [ "$_val" -ge 23 ] 2>/dev/null
+}
+
 is_nr_mode_raw() {
     case "$1" in
         ''|null|*[!0-9,-]*|*,*,*) return 1 ;;
@@ -34,7 +42,7 @@ is_nr_mode_raw() {
 
 read_saved_nr_mode() {
     _saved=$(cat "$NR_MODE_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    if is_nr_mode_raw "$_saved"; then
+    if is_nr_mode_raw "$_saved" && is_nr_mode_value "$_saved"; then
         printf '%s' "$_saved"
     else
         printf '33'
