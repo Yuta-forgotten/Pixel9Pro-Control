@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- Release: `v4.4.32`
-- versionCode: `96`
-- Asset: `pixel9pro_control_v4.4.32.zip`
+- Release: `v4.4.35`
+- versionCode: `99`
+- Asset: `pixel9pro_control_v4.4.35.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -122,6 +122,8 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 **owner arbiter**：`scripts/owner_arbiter.sh` 默认仍是 Phase A dry-run 观测，每个亮屏 worker 周期读取 top-app、fas-rs `games.toml` / `.lease_game_list`、Scene `games.xml`（仅当 fas-rs `scene_game_list=true`）、UGT/fas-rs 状态和本模块 `.cpu_sched_owner`，把建议状态写到 `/data/adb/fas_rs/.arbiter_state` 与 `.arbiter_history`；fas-rs `exclude_list` 会优先阻止 lease。创建 `/data/adb/fas_rs/.arbiter_apply` 或手动执行 `owner_arbiter.sh apply-tick` 后进入受保护 Phase B：命中游戏稳定后停止 `uperf`、启动 `fas-rs` 并保持 `.cpu_sched_owner=external`；退出 lease 后恢复原 baseline owner，若 baseline 为 UGT 则恢复 `uperf`。前台包识别按 `mFocusedApp` / `mCurrentFocus` / `mFocusedWindow` / ActivityTask fallback 的优先级扫描，并跳过 `NotificationShade`、keyguard/bouncer 等无包名 overlay，避免息屏/下拉通知栏恢复时把系统 UI 当作“无游戏前台”；`service.sh` 的后台限制 `stop_after_leave` 前台解析也复用同一优先级口径，避免 overlay 让后台策略误判真实前台。UGT 恢复启动带 `/sdcard` 可用性检查、`.uperf_start.lock` 互斥、启动后 5s 稳定窗口、`pidof` + `/proc/*/status` root 实例计数与 post-apply 重复实例归一，避免锁屏未解密时堆积等待脚本，或 service worker、UGT 自启动与手动 tick 并发拉起两组 `uperf`；若刚重启仍处于 `RUNNING_LOCKED` 且 `/sdcard/Android` 未解密挂载，恢复 UGT 会记录为 `deferred_start_uperf_storage_locked`，不再误报 `failed_start_uperf`。`.arbiter_state` 会记录 `uperf_root_instances` / `uperf_normalized` 便于 ADB 监听确认是否存在双 root 实例以及本轮是否做过归一；fas-rs 游戏 lease 内如发现 cpufreq governor/max 低频残留，会按 `ARB_CPUFREQ_RESTORE_RETRY_S`（默认 30s）冷却间隔持续检测并重试恢复 governor/policy max，写后复读并记录 `cpufreq_lowfreq_present` / `cpufreq_thermal_cooling_active` / `cpufreq_restored` / `cpufreq_restore_verified` / `cpufreq_restore_failed` / `cpufreq_restore_skipped` / `cpufreq_restore_lease` / `cpufreq_restore_epoch`；若 ThermalHAL 的 `thermal-cpufreq-*` 或 `thermal-uclamp-*` cooling device 已 active，则跳过恢复并记录 `cpufreq_thermal_cooling_active=yes`，避免把真实热保护误报为普通调度残留，也避免第一次被 PowerHAL/Scene 覆盖后彻底放弃。外部调度检测区分“模块已启用/owner 标记”和“运行态已接管”：FAS active 必须有 live `fas-rs` 进程证明，UGT active 必须有 live `uperf` 进程证明；FAS lease 期间 UGT 模块仍显示已安装，但只要 `uperf` 进程已停止，就不会再被标记为 `multiple` active。创建 `/data/adb/fas_rs/.arbiter_disable` 可停止 arbiter 采样并记录 `ARB_DISABLED`。
 
 **owner arbiter cpufreq 恢复边界**：低频残留恢复只在 `FAS_LEASED_GAME` / `EXIT_HOLD` 且 ThermalHAL CPU cooling 未激活时尝试。恢复时从 `scaling_available_governors` 保留空格匹配 `sched_pixel` 或 `schedutil`，再按“打开 `scaling_max_freq` 到 `cpuinfo_max_freq` → 切 governor → 再写 max → 等待 `ARB_CPUFREQ_RESTORE_SETTLE_S`（默认 2 秒）→ 复读验证”的顺序执行；首次复读失败只做一轮 guarded retry，并在日志中同时记录 `first_after` 与 `retry_after`。如果仍失败，状态会保持 `cpufreq_restore_failed=yes`，这代表存在 PowerHAL / Scene object / cpufreq QoS 等外层写入者或平台限制，不能用循环抢写 sysfs 当作修复。
+
+**B93 WZRY handoff 闭环**：v4.4.35 将 cpufreq restore 调整为完整事务：先把 `scaling_min_freq` 恢复到 `cpuinfo_min_freq`，再打开 max、切回 `sched_pixel/schedutil`，最后复写 min/max；新 fas-rs lease 不再被旧 idle-owner restore timestamp 压住。配合 Pixel 9 Pro Scheduler `v4.9.1-pixel9pro.19` 的 base governor restore 与 WZRY policy7 floor，真实 WZRY clean wireless/discharge gate 已 PASS，policy7 max 恢复到 `3105000` 且不再出现 `policy7_max_too_low` blocker。
 
 **owner arbiter worker**：`service.sh` 会启动独立 owner arbiter worker，而不是只依赖统一 standby worker。统一 worker 在息屏 deep standby 下可能睡 600 秒；独立 worker 息屏只读 DRM `enabled`，默认 15 秒低成本轮询，亮屏后默认每 5 秒执行一次 `owner_arbiter.sh tick "$MODDIR" on`。这样用户唤醒后立即进游戏时，UGT→fas-rs handoff 不会等待主 standby worker 下一次长周期醒来。可用环境变量 `OWNER_ARBITER_FAST_ON` / `OWNER_ARBITER_FAST_OFF` 调整亮屏/息屏轮询间隔，最低分别钳制为 3 秒和 10 秒。
 
