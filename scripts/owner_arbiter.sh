@@ -566,13 +566,16 @@ restore_policy_cpufreq_floor() {
 
     _oa_base_gov=""
     if _oa_base_gov=$(cpufreq_choose_base_governor "$_oa_policy"); then
-        # Open the policy ceiling before and after switching governor.  UGT /
-        # Scene powersave residue often leaves min=max at a low OPP; writing
-        # governor first can be immediately neutralized while the ceiling is
-        # still clamped.
+        # Open the policy floor/ceiling before and after switching governor.
+        # UGT / Scene powersave residue often leaves min=max at a low OPP;
+        # writing only max is not enough because the next writer can keep the
+        # policy locked at the stale floor.  Reset min first, then max, then
+        # governor, then repeat min/max as one guarded transaction.
+        [ -n "$_oa_cpuinfo_min" ] && cpufreq_write_one "$_oa_policy/scaling_min_freq" "$_oa_cpuinfo_min" || true
         cpufreq_write_one "$_oa_policy/scaling_max_freq" "$_oa_cpuinfo_max" || true
         cpufreq_write_one "$_oa_policy/scaling_governor" "$_oa_base_gov" || true
     fi
+    [ -n "$_oa_cpuinfo_min" ] && cpufreq_write_one "$_oa_policy/scaling_min_freq" "$_oa_cpuinfo_min" || true
     cpufreq_write_one "$_oa_policy/scaling_max_freq" "$_oa_cpuinfo_max" || true
     CPUFREQ_RESTORED="yes"
 
@@ -584,7 +587,7 @@ restore_policy_cpufreq_floor() {
     _oa_new_gov=$(cpufreq_read_one "$_oa_policy/scaling_governor")
     _oa_new_min=$(cpufreq_read_one "$_oa_policy/scaling_min_freq")
     _oa_new_max=$(cpufreq_read_one "$_oa_policy/scaling_max_freq")
-    if [ "$_oa_new_gov" != "powersave" ] && [ "$_oa_new_max" = "$_oa_cpuinfo_max" ]; then
+    if [ "$_oa_new_gov" != "powersave" ] && [ "$_oa_new_max" = "$_oa_cpuinfo_max" ] && { [ -z "$_oa_cpuinfo_min" ] || [ "$_oa_new_min" = "$_oa_cpuinfo_min" ] || [ "$_oa_new_min" -lt "$_oa_new_max" ] 2>/dev/null; }; then
         CPUFREQ_RESTORE_VERIFIED="yes"
         log -t pixel9pro_ctrl "owner_arbiter: verified ${_oa_policy##*/} cpufreq restore from gov=$_oa_gov min=$_oa_min max=$_oa_max to gov=$_oa_new_gov min=$_oa_new_min max=$_oa_new_max for fas-rs lease"
     else
@@ -595,12 +598,13 @@ restore_policy_cpufreq_floor() {
         if [ -n "$_oa_base_gov" ]; then
             cpufreq_write_one "$_oa_policy/scaling_governor" "$_oa_base_gov" || true
         fi
+        [ -n "$_oa_cpuinfo_min" ] && cpufreq_write_one "$_oa_policy/scaling_min_freq" "$_oa_cpuinfo_min" || true
         cpufreq_write_one "$_oa_policy/scaling_max_freq" "$_oa_cpuinfo_max" || true
         sleep 1
         _oa_retry_gov=$(cpufreq_read_one "$_oa_policy/scaling_governor")
         _oa_retry_min=$(cpufreq_read_one "$_oa_policy/scaling_min_freq")
         _oa_retry_max=$(cpufreq_read_one "$_oa_policy/scaling_max_freq")
-        if [ "$_oa_retry_gov" != "powersave" ] && [ "$_oa_retry_max" = "$_oa_cpuinfo_max" ]; then
+        if [ "$_oa_retry_gov" != "powersave" ] && [ "$_oa_retry_max" = "$_oa_cpuinfo_max" ] && { [ -z "$_oa_cpuinfo_min" ] || [ "$_oa_retry_min" = "$_oa_cpuinfo_min" ] || [ "$_oa_retry_min" -lt "$_oa_retry_max" ] 2>/dev/null; }; then
             CPUFREQ_RESTORE_VERIFIED="yes"
             log -t pixel9pro_ctrl "owner_arbiter: verified ${_oa_policy##*/} cpufreq restore on retry from gov=$_oa_gov min=$_oa_min max=$_oa_max first_after gov=$_oa_new_gov min=$_oa_new_min max=$_oa_new_max final gov=$_oa_retry_gov min=$_oa_retry_min max=$_oa_retry_max for fas-rs lease"
         else
@@ -642,6 +646,12 @@ restore_fas_rs_cpufreq_floor() {
     if [ "$PREV_CPUFREQ_RESTORE_EPOCH" -gt 0 ] 2>/dev/null; then
         _oa_since_restore=$((NOW - PREV_CPUFREQ_RESTORE_EPOCH))
     else
+        _oa_since_restore=$_oa_retry_s
+    fi
+    # A new fas-rs lease is the critical handoff window.  Do not let an old
+    # idle-owner restore timestamp suppress the first game restore attempt;
+    # otherwise UGT powersave residue can survive into WZRY and block X4.
+    if [ "$_oa_restore_lease" -gt 0 ] 2>/dev/null && [ "$_oa_restore_lease" != "$PREV_CPUFREQ_RESTORE_LEASE" ]; then
         _oa_since_restore=$_oa_retry_s
     fi
     if [ "$_oa_since_restore" -lt "$_oa_retry_s" ] 2>/dev/null; then
