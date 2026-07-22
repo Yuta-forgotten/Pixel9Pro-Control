@@ -257,7 +257,7 @@ const BG_RESTRICT_POLICY_ORDER = ['stop_after_leave', 'block_all', 'block_servic
 const BG_RESTRICT_POLICIES = {
   stop_after_leave: {
     label: '休眠',
-    desc: '锁屏或离开前台后等待 3/5/10 分钟，再 force-stop，释放进程、内存和 SDK 尾巴。'
+    desc: '离开前台后延迟 force-stop，并配合 App Standby/AppOps 限制；不是网络防火墙或永久杀死，系统/用户/推送重拉后可能出现 stopped=false。'
   },
   block_all: {
     label: '禁止后台活动',
@@ -2394,7 +2394,7 @@ function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled) {
       if (restricted || bgIgnored) return { text: '部分生效', cls: 'warn' };
       return { text: '未生效，点刷新重试', cls: 'err' };
     case 'stop_after_leave':
-      if (restricted && bgIgnored && anyIgnored) return { text: '已限制，休眠计时', cls: 'good' };
+      if (restricted && bgIgnored && anyIgnored) return { text: '已限制，等待/已执行', cls: 'good' };
       if (restricted || bgIgnored || anyIgnored) return { text: '部分生效', cls: 'warn' };
       return { text: '未生效，点刷新重试', cls: 'err' };
     case 'block_all':
@@ -2410,9 +2410,14 @@ function renderBgRestrict(data) {
   const on = state.bgRestrictEnabled === 'on';
   refs.bgRestrictToggleLabel.textContent = on ? '关闭' : '开启';
   refs.bgRestrictDesc.textContent = on
-    ? '已开启：可按包选择后台策略；默认抖音为休眠，锁屏或离开前台后延时 force-stop，前台使用不受影响。'
+    ? '已开启：按包设置 App Standby/AppOps；休眠会在离开前台后延时 force-stop，前台使用不受影响。'
     : '已关闭：列表保留，但 bucket/AppOps 已恢复，休眠倒计时已清空。';
   refs.bgRestrictRows.replaceChildren();
+  refs.bgRestrictRows.appendChild(buildInfoRow(
+    '能力边界',
+    '不是网络防火墙，不撤销 WAKE_LOCK/FGS/媒体权限；不能清除历史 batterystats、VPN、AudioMix 归因或阻止后续 stopped=false 重拉',
+    'off'
+  ));
   const packages = Array.isArray(data.packages) ? data.packages : [];
   if (packages.length === 0) {
     refs.bgRestrictRows.appendChild(buildInfoRow('限制列表', '空，已按用户配置保留，不会自动重建默认包名', 'off'));
@@ -3250,11 +3255,40 @@ async function openEnergyDetail() {
     const today = d.today || {};
     const charge = d.charge_state || {};
     const bs = d.batterystats_window || {};
+    const qualityLabel = (q) => {
+      switch (q) {
+        case 'pure_discharge': return '纯放电';
+        case 'charging_endpoint': return '当前充电中';
+        case 'mixed_charge_discharge': return '混合充放电';
+        case 'session_window_mismatch': return '窗口错位';
+        case 'insufficient_samples': return '采样不足';
+        case 'no_discharge_delta': return '无放电差值';
+        case 'no_data': return '无数据';
+        default: return q || '未知';
+      }
+    };
+    const qualityBadge = (q) => q === 'pure_discharge' ? 'badge good' : (q === 'no_data' || q === 'insufficient_samples' || q === 'no_discharge_delta' ? 'badge off' : 'badge warn');
+    const qualityMetric = (q) => q === 'pure_discharge' ? 'primary' : (q ? 'warn' : '');
+    const comparable = scope.comparable_to_batterystats === true;
+    const chargeLike = charge.is_charging_like === true || /Charging|Full|Not charging/.test(charge.status || '');
+    const radioUntrusted = /untrusted|high/i.test(String(bs.model_quality || ''));
+    const modelQualityLabel = (q) => {
+      switch (q) {
+        case 'total_ok_radio_model_untrusted': return '总账可用，radio 模型失真';
+        case 'total_ok_radio_model_reference': return '总账可用，radio 仅参考';
+        case 'fast_no_batterystats': return '快速缓存，未刷新系统分项';
+        default: return q || '未知';
+      }
+    };
+    const odpm = d.odpm_modem || {};
+    const odpmValue = odpm.total_mah != null
+      ? `${esc(odpm.total_mah)} mAh · 模块会话 delta`
+      : `无可用 delta · ${esc(odpm.quality || '无基线')}`;
 
     frag.appendChild(metricGrid([
+      { label: '数据质量', value: qualityLabel(scope.quality), desc: scope.warning || '模块会话口径', cls: qualityMetric(scope.quality) },
       { label: '当前会话', value: fmtMah(scope.used_mah), desc: `${fmtDuration(scope.elapsed_sec)} · ${Number(scope.level_drop || 0)}%`, cls: 'primary' },
-      { label: '当前状态', value: fmtBatteryStatus(charge.status), desc: Number.isFinite(Number(charge.level)) ? `${charge.level}%` : '电量未知', cls: /Charging|Full/.test(charge.status || '') ? 'warn' : '' },
-      { label: '今日放电', value: fmtMah(today.discharge_mah), desc: `回充 ${fmtMah(today.charge_mah)}` },
+      { label: '当前状态', value: fmtBatteryStatus(charge.status), desc: Number.isFinite(Number(charge.level)) ? `${charge.level}%` : '电量未知', cls: chargeLike ? 'warn' : '' },
     ]));
 
     const intro = document.createElement('div');
@@ -3265,7 +3299,10 @@ async function openEnergyDetail() {
     frag.appendChild(heading('统计范围', '当前会话由模块维护，避免把长期 batterystats 累计误当成这一次切换后的结果。'));
     const list0 = document.createElement('div'); list0.className = 'data-list';
     list0.appendChild(row('默认口径', '当前放电会话', 'badge good'));
-    list0.appendChild(row('当前状态', fmtBatteryStatus(charge.status), /Charging|Full/.test(charge.status || '') ? 'badge warn' : 'badge off'));
+    list0.appendChild(row('数据质量', qualityLabel(scope.quality), qualityBadge(scope.quality)));
+    list0.appendChild(row('当前状态', fmtBatteryStatus(charge.status), chargeLike ? 'badge warn' : 'badge off'));
+    list0.appendChild(row('充电污染', chargeLike ? '当前 endpoint 近似充电/满电/Not charging' : '未见当前充电 endpoint', chargeLike ? 'badge warn' : 'badge good'));
+    list0.appendChild(row('batterystats 对齐', comparable ? '同窗口可比较' : '不同窗口/未证实同窗口', comparable ? 'badge good' : 'badge warn'));
     list0.appendChild(row('会话开始', fmtDateTime(scope.start_ts)));
     list0.appendChild(row('已持续', fmtDuration(scope.elapsed_sec)));
     list0.appendChild(row('电量变化', Number.isFinite(Number(scope.level_start)) && Number.isFinite(Number(scope.level_now))
@@ -3274,6 +3311,7 @@ async function openEnergyDetail() {
     list0.appendChild(row('观测放电', fmtMah(scope.used_mah)));
     list0.appendChild(row('最近重置原因', fmtSessionResetReason(scope.reset_reason)));
     list0.appendChild(row('重置规则', esc(scope.reset_rule)));
+    list0.appendChild(row('口径提示', esc(scope.warning)));
     frag.appendChild(list0);
 
     frag.appendChild(heading('今日累计', '基于模块低频采样汇总，适合看今天到目前为止的大致收支。'));
@@ -3302,10 +3340,13 @@ async function openEnergyDetail() {
         const pText = pSamples >= 2
           ? `${fmtMahPerHour(p.avg_discharge_mah_per_h)} · ${fmtMilliwatt(p.avg_discharge_mw)} · ${fmtMah(p.discharge_mah)}`
           : '功耗样本不足';
+        const pWarn = p.quality === 'mixed_charge_discharge' || p.quality === 'charging_endpoint';
+        const pFinal = pWarn ? `${pText} · 混合充放电，不用于待机结论` : pText;
         const tText = tSamples >= 2
           ? `平均 ${fmtTempC(t.temp_avg_c)} / 最高 ${fmtTempC(t.temp_max_c)}`
           : '温度样本不足';
-        listWin.appendChild(row(`近 ${min} 分钟功耗`, pText, pSamples >= 2 ? 'data-val' : 'badge off'));
+        listWin.appendChild(row(`近 ${min} 分钟功耗`, pFinal, pWarn ? 'badge warn' : (pSamples >= 2 ? 'data-val' : 'badge off')));
+        listWin.appendChild(row(`近 ${min} 分钟质量`, qualityLabel(p.quality), qualityBadge(p.quality)));
         listWin.appendChild(row(`近 ${min} 分钟温度`, tText, tSamples >= 2 ? 'data-val' : 'badge off'));
       });
     }
@@ -3333,13 +3374,16 @@ async function openEnergyDetail() {
     frag.appendChild(heading('Android batterystats', `${esc(bs.note)} Pixel/Exynos 的 mobile_radio 绝对 mAh 可能明显偏高，应优先看 ODPM、放电会话和短窗口趋势。`));
     const listBs = document.createElement('div'); listBs.className = 'data-list';
     listBs.appendChild(row('系统窗口', fmtBatterystatsWindow(bs.window_label)));
+    listBs.appendChild(row('模块会话对齐', comparable ? '同窗口可比较' : '不同窗口/未证实同窗口', comparable ? 'badge good' : 'badge warn'));
+    listBs.appendChild(row('模型质量', modelQualityLabel(bs.model_quality), radioUntrusted ? 'badge warn' : 'badge off'));
+    listBs.appendChild(row('radio 提示', esc(bs.radio_note)));
     listBs.appendChild(row('Daily stats', esc(bs.daily_label)));
     listBs.appendChild(row('在电池上时长', esc(bs.time_on_battery || d.bat_time)));
     listBs.appendChild(row('快照时间', fmtDateTime(d.generated_at)));
     listBs.appendChild(row('缓存有效期', Number.isFinite(Number(d.cache_ttl_sec)) ? `${d.cache_ttl_sec} 秒` : '—'));
     frag.appendChild(listBs);
 
-    frag.appendChild(heading('Android 功耗估算', '下面这些系统分项和 Top 应用来自 batterystats，不是 15/30/60 分钟短窗口。'));
+    frag.appendChild(heading('Android 功耗估算', '下面这些系统分项和 Top 应用来自 batterystats 模型，不是硬件电表，也不是 15/30/60 分钟短窗口。'));
     const list1 = document.createElement('div'); list1.className = 'data-list';
     list1.appendChild(row('当前电量', Number.isFinite(Number(charge.level)) ? `${charge.level}%` : '—'));
     list1.appendChild(row('电池容量', esc(d.cap) + ' mAh'));
@@ -3348,17 +3392,18 @@ async function openEnergyDetail() {
     list1.appendChild(row('息屏耗电', esc(d.scroff) + ' mAh'));
     list1.appendChild(row('系统统计时长', esc(d.bat_time)));
     frag.appendChild(list1);
-    frag.appendChild(heading('系统分项 (mAh)'));
+    frag.appendChild(heading('系统分项 (mAh)', 'ODPM 为模块会话口径；Android mobile_radio 为模型估算，异常时只作失真参考。'));
     const list2 = document.createElement('div'); list2.className = 'data-list';
     list2.appendChild(row('屏幕', esc(d.screen)));
     list2.appendChild(row('CPU', esc(d.cpu)));
-    list2.appendChild(row('蜂窝 (ODPM 实测)', d.odpm_modem && d.odpm_modem.total_mah != null ? esc(d.odpm_modem.total_mah) + ' mAh' : '无基线'));
-    list2.appendChild(row('蜂窝 (系统估算)', esc(d.cell) + ' mAh · 失真参考', 'badge off'));
+    list2.appendChild(row('蜂窝 ODPM 实测（模块会话）', odpmValue, odpm.total_mah != null ? 'data-val' : 'badge off'));
+    list2.appendChild(row('ODPM 说明', esc(odpm.note || '模块 session delta，不等于 batterystats 窗口')));
+    list2.appendChild(row('蜂窝 Android 模型估算', esc(d.cell) + ' mAh · mobile_radio 失真参考', radioUntrusted ? 'badge warn' : 'badge off'));
     list2.appendChild(row('WiFi', esc(d.wifi)));
     list2.appendChild(row('唤醒锁', esc(d.wakelock)));
     frag.appendChild(list2);
     if (d.apps && d.apps.length) {
-      frag.appendChild(heading('高耗电应用 Top ' + d.apps.length));
+      frag.appendChild(heading('高耗电应用 Top ' + d.apps.length, 'UID mAh 是 batterystats 模型归因，不是硬件电表；VPN、AudioMix 或历史归账可能集中到某个 UID。'));
       const list3 = document.createElement('div'); list3.className = 'data-list';
       d.apps.forEach((app, i) => {
         const name = String(app.pkg || '').length > 30 ? String(app.pkg).slice(0, 28) + '…' : String(app.pkg || '');

@@ -21,6 +21,7 @@ ENERGY_CACHE_TTL=45
 ENERGY_CACHE_STALE_MAX=600
 RESET_RULE='连续充电 >= 10 分钟且电量回升，或充满后重新拔线后，重置为新的放电会话'
 BATTERYSTATS_NOTE='系统分项和应用排行来自 Android batterystats 当前窗口；若系统或用户执行过 batterystats reset，这个窗口可能比放电会话更短。'
+RADIO_MODEL_NOTE='Pixel/Exynos 5400 的 Android mobile_radio 是模型估算；绝对 mAh 不作为硬件电表，只能看相对方向。'
 
 mkdir -p "$LOCKDIR_BASE/tmp" 2>/dev/null || true
 chmod 700 "$LOCKDIR_BASE/tmp" 2>/dev/null || true
@@ -41,6 +42,13 @@ json_str_or_null() {
     else
         printf 'null'
     fi
+}
+
+json_bool() {
+    case "$1" in
+        1|true|TRUE|yes|on) printf 'true' ;;
+        *) printf 'false' ;;
+    esac
 }
 
 read_battery_value() {
@@ -102,6 +110,9 @@ build_power_window_json() {
             charge_in = 0
             has_discharge = 0
             has_charge = 0
+            status_changes = 0
+            saw_charging = 0
+            saw_not_charging = 0
             cur_level_valid = (cur_level ~ /^-?[0-9]+$/)
             cur_charge_valid = (cur_charge ~ /^-?[0-9]+$/ && cur_charge + 0 > 0)
             prev_charge_valid = 0
@@ -110,11 +121,16 @@ build_power_window_json() {
             ts = $1 + 0
             level = $2 + 0
             charge = $3 + 0
+            status = $4
             charge_valid = ($3 ~ /^-?[0-9]+$/ && charge > 0)
+            if (status == "Charging" || status == "Full" || status == "Not charging") saw_charging = 1
+            if (status == "Discharging") saw_not_charging = 1
             if (!seen) {
                 seen = 1
                 first_ts = ts
                 first_level = level
+                first_status = status
+                last_status = status
                 last_ts = ts
                 last_level = level
                 if (charge_valid) {
@@ -140,6 +156,8 @@ build_power_window_json() {
                 } else {
                     prev_charge_valid = 0
                 }
+                if (status != "" && last_status != "" && status != last_status) status_changes++
+                if (status != "") last_status = status
                 last_ts = ts
                 last_level = level
             }
@@ -150,7 +168,7 @@ build_power_window_json() {
                 printf "{\"minutes\":%s,\"start_ts\":%s,\"window_start_ts\":null,\"elapsed_sec\":0,\"samples\":0,\"level_start\":null,\"level_now\":", minutes, start
                 if (cur_level_valid) printf "%s", cur_level
                 else printf "null"
-                printf ",\"net_level_delta\":null,\"discharge_mah\":null,\"charge_mah\":null,\"avg_discharge_mah_per_h\":null,\"avg_discharge_mw\":null,\"source\":\"module_power_history\"}"
+                printf ",\"net_level_delta\":null,\"discharge_mah\":null,\"charge_mah\":null,\"avg_discharge_mah_per_h\":null,\"avg_discharge_mw\":null,\"status_start\":null,\"status_last\":null,\"status_changes\":0,\"quality\":\"no_data\",\"source\":\"module_power_history\"}"
                 exit
             }
 
@@ -169,6 +187,10 @@ build_power_window_json() {
             net_delta = level_now - first_level
             elapsed = now - first_ts
             if (elapsed < 0) elapsed = 0
+            quality = "pure_discharge"
+            if (samples < 2) quality = "insufficient_samples"
+            else if (has_charge || status_changes > 0 || (saw_charging && saw_not_charging)) quality = "mixed_charge_discharge"
+            else if (!has_discharge) quality = "no_discharge_delta"
 
             printf "{\"minutes\":%s,\"start_ts\":%s,\"window_start_ts\":%s,\"elapsed_sec\":%s,\"samples\":%s,\"level_start\":%s,\"level_now\":%s,\"net_level_delta\":%s,\"discharge_mah\":", minutes, start, first_ts, elapsed, samples, first_level, level_now, net_delta
             if (has_discharge) printf "%.1f", discharge
@@ -182,11 +204,13 @@ build_power_window_json() {
             printf ",\"avg_discharge_mw\":"
             if (has_discharge && elapsed > 0) printf "%.0f", discharge * 3600 / elapsed * 3.87
             else printf "null"
-            printf ",\"source\":\"module_power_history\"}"
+            gsub(/"/, "\\\"", first_status)
+            gsub(/"/, "\\\"", last_status)
+            printf ",\"status_start\":\"%s\",\"status_last\":\"%s\",\"status_changes\":%s,\"quality\":\"%s\",\"source\":\"module_power_history\"}", first_status, last_status, status_changes, quality
         }
         ' "$POWER_HISTORY"
     else
-        printf '{"minutes":%s,"start_ts":%s,"window_start_ts":null,"elapsed_sec":0,"samples":0,"level_start":null,"level_now":%s,"net_level_delta":null,"discharge_mah":null,"charge_mah":null,"avg_discharge_mah_per_h":null,"avg_discharge_mw":null,"source":"module_power_history"}' \
+        printf '{"minutes":%s,"start_ts":%s,"window_start_ts":null,"elapsed_sec":0,"samples":0,"level_start":null,"level_now":%s,"net_level_delta":null,"discharge_mah":null,"charge_mah":null,"avg_discharge_mah_per_h":null,"avg_discharge_mw":null,"status_start":null,"status_last":null,"status_changes":0,"quality":"no_data","source":"module_power_history"}' \
             "$(json_num_or_null "$_mins")" \
             "$(json_num_or_null "$_start")" \
             "$(json_num_or_null "$_cur_level")"
@@ -292,6 +316,10 @@ _cur_status=$(printf '%s' "$_cur_status" | sed 's/[[:space:]]*$//')
 [ -n "$_cur_status" ] || _cur_status="Unknown"
 _cur_level=$(read_battery_value /sys/class/power_supply/battery/capacity)
 _cur_charge=$(read_battery_value /sys/class/power_supply/battery/charge_counter)
+_is_charging_like=0
+case "$_cur_status" in
+    Charging|Full|Not\ charging) _is_charging_like=1 ;;
+esac
 
 case "$_cur_level" in
     ''|*[!0-9-]*) _cur_level='' ;;
@@ -350,27 +378,51 @@ if [ "$_scope_charge_start" -gt 0 ] 2>/dev/null && [ "$_cur_charge" -gt 0 ] 2>/d
     _scope_used=$(awk -v s="$_scope_charge_start" -v c="$_cur_charge" 'BEGIN { printf "%.1f", (s - c) / 1000 }')
 fi
 
+_scope_quality='pure_discharge'
+_scope_warning='模块会话为当前放电口径；和 Android batterystats 比较前必须核对 Start clock time / since last charge 是否同窗口。'
+_scope_comparable=0
+case "$_scope_reason" in
+    full_replug|charged_10m)
+        _scope_quality='session_window_mismatch'
+        _scope_warning='模块会话因 full_replug/charged_10m 重置；不要和旧 batterystats reset 前后的窗口混用。'
+        ;;
+esac
+if [ "$_scope_charge_start" -gt 0 ] 2>/dev/null && [ "$_cur_charge" -gt "$_scope_charge_start" ] 2>/dev/null; then
+    _scope_quality='mixed_charge_discharge'
+    _scope_warning='当前会话出现回充或 USB 末端跳变；放电值保留用于趋势，不用于待机结论或 batterystats 对账。'
+elif [ "$_is_charging_like" -eq 1 ]; then
+    _scope_quality='charging_endpoint'
+    _scope_warning='当前 endpoint 为 Charging/Full/Not charging；ADB/USB 末端状态会污染短窗口，不能直接代表历史待机窗口。'
+fi
+
 # ODPM real modem power: read current IIO values, subtract session baseline
 _odpm_modem_mah='null'
 _odpm_rffe_mah='null'
 _odpm_total_mah='null'
 _odpm_modem_now=0; _odpm_rffe_now=0
+_odpm_quality='missing_baseline'
+_odpm_note='ODPM modem/RFFE 缺少有效会话基线或 endpoint，当前不输出 rail delta。'
 _d0_now=$(cat /sys/bus/iio/devices/iio:device0/energy_value 2>/dev/null)
 _d1_now=$(cat /sys/bus/iio/devices/iio:device1/energy_value 2>/dev/null)
 _odpm_modem_now=$(printf '%s' "$_d0_now" | sed -n 's/.*VSYS_PWR_MODEM\], *\([0-9]*\).*/\1/p')
 _odpm_rffe_now=$(printf '%s' "$_d1_now" | sed -n 's/.*VSYS_PWR_RFFE\], *\([0-9]*\).*/\1/p')
 [ -z "$_odpm_modem_now" ] && _odpm_modem_now=0
 [ -z "$_odpm_rffe_now" ] && _odpm_rffe_now=0
-if [ "$_odpm_modem_base" -gt 0 ] 2>/dev/null && [ "$_odpm_modem_now" -gt "$_odpm_modem_base" ] 2>/dev/null; then
+if [ "$_odpm_modem_base" -gt 0 ] 2>/dev/null && [ "$_odpm_rffe_base" -gt 0 ] 2>/dev/null && [ "$_odpm_modem_now" -gt "$_odpm_modem_base" ] 2>/dev/null && [ "$_odpm_rffe_now" -gt "$_odpm_rffe_base" ] 2>/dev/null; then
     _odpm_modem_mah=$(awk -v m="$_odpm_modem_now" -v mb="$_odpm_modem_base" -v r="$_odpm_rffe_now" -v rb="$_odpm_rffe_base" \
         'BEGIN { v=3.87; modem=(m-mb)/1000000/3600/v*1000; rffe=(r-rb)/1000000/3600/v*1000; printf "%.1f", modem }')
     _odpm_rffe_mah=$(awk -v r="$_odpm_rffe_now" -v rb="$_odpm_rffe_base" \
         'BEGIN { v=3.87; rffe=(r-rb)/1000000/3600/v*1000; printf "%.1f", rffe }')
     _odpm_total_mah=$(awk -v m="$_odpm_modem_now" -v mb="$_odpm_modem_base" -v r="$_odpm_rffe_now" -v rb="$_odpm_rffe_base" \
         'BEGIN { v=3.87; total=((m-mb)+(r-rb))/1000000/3600/v*1000; printf "%.1f", total }')
+    _odpm_quality='session_delta'
+    _odpm_note='ODPM 为模块 .power_session 到当前 endpoint 的 modem+RFFE rail delta；不是 Android batterystats 窗口。'
+elif [ "$_odpm_modem_base" -gt 0 ] 2>/dev/null || [ "$_odpm_rffe_base" -gt 0 ] 2>/dev/null; then
+    _odpm_quality='invalid_endpoint'
+    _odpm_note='ODPM baseline 存在但 endpoint 未超过 modem/RFFE 双 rail baseline，可能是 rail 重置、采样失败或非同一会话。'
 fi
 
-_scope_json=$(printf '{"mode":"discharge_session","start_ts":%s,"elapsed_sec":%s,"level_start":%s,"level_now":%s,"level_drop":%s,"used_mah":%s,"reset_reason":%s,"reset_rule":%s,"source":"module_power_session"}' \
+_scope_json=$(printf '{"mode":"discharge_session","start_ts":%s,"elapsed_sec":%s,"level_start":%s,"level_now":%s,"level_drop":%s,"used_mah":%s,"reset_reason":%s,"reset_rule":%s,"comparable_to_batterystats":%s,"quality":%s,"warning":%s,"source":"module_power_session"}' \
     "$(json_num_or_null "$_scope_start")" \
     "$(json_num_or_null "$_scope_elapsed")" \
     "$(json_num_or_null "$_scope_level_start")" \
@@ -378,7 +430,19 @@ _scope_json=$(printf '{"mode":"discharge_session","start_ts":%s,"elapsed_sec":%s
     "$(json_num_or_null "$_scope_level_drop")" \
     "$(json_num_or_null "$_scope_used")" \
     "$(json_str_or_null "$_scope_reason")" \
-    "$(json_str_or_null "$RESET_RULE")")
+    "$(json_str_or_null "$RESET_RULE")" \
+    "$(json_bool "$_scope_comparable")" \
+    "$(json_str_or_null "$_scope_quality")" \
+    "$(json_str_or_null "$_scope_warning")")
+
+_odpm_json=$(printf '{"modem_mah":%s,"rffe_mah":%s,"total_mah":%s,"scope_start_ts":%s,"elapsed_sec":%s,"quality":%s,"note":%s,"source":"odpm_iio"}' \
+    "$(json_num_or_null "$_odpm_modem_mah")" \
+    "$(json_num_or_null "$_odpm_rffe_mah")" \
+    "$(json_num_or_null "$_odpm_total_mah")" \
+    "$(json_num_or_null "$_scope_start")" \
+    "$(json_num_or_null "$_scope_elapsed")" \
+    "$(json_str_or_null "$_odpm_quality")" \
+    "$(json_str_or_null "$_odpm_note")")
 
 _h=$(date +%H 2>/dev/null | sed 's/^0//')
 _m=$(date +%M 2>/dev/null | sed 's/^0//')
@@ -491,12 +555,13 @@ done
 _history_windows_json="${_history_windows_json}]"
 
 if [ "$_fast" -eq 1 ]; then
-    _charge_state_json=$(printf '{"status":%s,"level":%s,"charge_uah":%s}' \
+    _charge_state_json=$(printf '{"status":%s,"level":%s,"charge_uah":%s,"is_charging_like":%s}' \
         "$(json_str_or_null "$_cur_status")" \
         "$(json_num_or_null "$_cur_level")" \
-        "$(json_num_or_null "$_cur_charge")")
-    printf '{"cap":0,"drain":0,"scroff":0,"scron":0,"bat_time":"","screen":0,"cpu":0,"cell":0,"wifi":0,"wakelock":0,"apps":[],"odpm_modem":{"modem_mah":null,"rffe_mah":null,"total_mah":null,"source":"odpm_iio"},"scope":%s,"today":%s,"history_windows":%s,"charge_state":%s,"batterystats_window":{"window_label":null,"daily_label":null,"time_on_battery":null,"note":"快速缓存口径；系统 batterystats 分项稍后刷新。"},"generated_at":%s,"cache_ttl_sec":%s,"fast":true}\n' \
-        "$_scope_json" "$_today_json" "$_history_windows_json" "$_charge_state_json" "$(json_num_or_null "$_now")" "$ENERGY_CACHE_TTL"
+        "$(json_num_or_null "$_cur_charge")" \
+        "$(json_bool "$_is_charging_like")")
+    printf '{"cap":0,"drain":0,"scroff":0,"scron":0,"bat_time":"","screen":0,"cpu":0,"cell":0,"wifi":0,"wakelock":0,"apps":[],"odpm_modem":%s,"scope":%s,"today":%s,"history_windows":%s,"charge_state":%s,"batterystats_window":{"window_label":null,"daily_label":null,"time_on_battery":null,"model_quality":"fast_no_batterystats","radio_note":%s,"note":"快速缓存口径；系统 batterystats 分项稍后刷新。"},"generated_at":%s,"cache_ttl_sec":%s,"fast":true}\n' \
+        "$_odpm_json" "$_scope_json" "$_today_json" "$_history_windows_json" "$_charge_state_json" "$(json_str_or_null "$RADIO_MODEL_NOTE")" "$(json_num_or_null "$_now")" "$ENERGY_CACHE_TTL"
     exit 0
 fi
 
@@ -597,21 +662,30 @@ END {
 
 [ -n "$_core_json" ] || _core_json='{"cap":0,"drain":0,"scroff":0,"scron":0,"bat_time":"","screen":0,"cpu":0,"cell":0,"wifi":0,"wakelock":0,"apps":[]}'
 
-_batterystats_json=$(printf '{"window_label":%s,"daily_label":%s,"time_on_battery":%s,"note":%s}' \
+_core_drain=$(printf '%s' "$_core_json" | sed -n 's/.*"drain":\([0-9.][0-9.]*\).*/\1/p')
+_core_scroff=$(printf '%s' "$_core_json" | sed -n 's/.*"scroff":\([0-9.][0-9.]*\).*/\1/p')
+_core_cell=$(printf '%s' "$_core_json" | sed -n 's/.*"cell":\([0-9.][0-9.]*\).*/\1/p')
+[ -n "$_core_drain" ] || _core_drain=0
+[ -n "$_core_scroff" ] || _core_scroff=0
+[ -n "$_core_cell" ] || _core_cell=0
+_bs_model_quality='total_ok_radio_model_reference'
+if awk -v c="$_core_cell" -v d="$_core_drain" -v s="$_core_scroff" 'BEGIN { exit !((d > 0 && c > d * 0.70) || (s > 0 && c > s)) }'; then
+    _bs_model_quality='total_ok_radio_model_untrusted'
+fi
+
+_batterystats_json=$(printf '{"window_label":%s,"daily_label":%s,"time_on_battery":%s,"model_quality":%s,"radio_note":%s,"note":%s}' \
     "$(json_str_or_null "$_bs_window")" \
     "$(json_str_or_null "$_bs_daily")" \
     "$(json_str_or_null "$_bs_time")" \
+    "$(json_str_or_null "$_bs_model_quality")" \
+    "$(json_str_or_null "$RADIO_MODEL_NOTE")" \
     "$(json_str_or_null "$BATTERYSTATS_NOTE")")
 
-_charge_state_json=$(printf '{"status":%s,"level":%s,"charge_uah":%s}' \
+_charge_state_json=$(printf '{"status":%s,"level":%s,"charge_uah":%s,"is_charging_like":%s}' \
     "$(json_str_or_null "$_cur_status")" \
     "$(json_num_or_null "$_cur_level")" \
-    "$(json_num_or_null "$_cur_charge")")
-
-_odpm_json=$(printf '{"modem_mah":%s,"rffe_mah":%s,"total_mah":%s,"source":"odpm_iio"}' \
-    "$(json_num_or_null "$_odpm_modem_mah")" \
-    "$(json_num_or_null "$_odpm_rffe_mah")" \
-    "$(json_num_or_null "$_odpm_total_mah")")
+    "$(json_num_or_null "$_cur_charge")" \
+    "$(json_bool "$_is_charging_like")")
 
 _final_json=$(printf '%s' "$_core_json" | sed 's/}$//')
 _final_json=$(printf '%s,"odpm_modem":%s,"scope":%s,"today":%s,"history_windows":%s,"charge_state":%s,"batterystats_window":%s,"generated_at":%s,"cache_ttl_sec":%s}' \

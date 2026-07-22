@@ -371,7 +371,7 @@
             <div class="panel-copy">
               <div class="kicker">后台功耗控制</div>
               <div class="panel-title">后台应用限制</div>
-              <div class="panel-desc" id="bg-restrict-desc">按包选择后台策略。默认仅预置抖音，休眠策略会在锁屏或离开前台后延时停止，前台使用不受影响。</div>
+              <div class="panel-desc" id="bg-restrict-desc">按包选择后台策略。默认仅预置抖音；休眠是在离开前台后延迟 force-stop + App Standby/AppOps，不是网络防火墙或永久杀死。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn tonal" id="bg-restrict-refresh-btn" type="button">刷新</button>
@@ -398,7 +398,7 @@
           </div>
           <div class="note-card" style="margin-top:14px">
             <div class="note-title">使用说明</div>
-            <div class="note-body">将需要治理的应用包名加入列表后，可按包选择限制层级。休眠会在目标 App 锁屏或离开前台后等待 3/5/10 分钟再 force-stop，用于清理短视频、广告 SDK、直播与电商尾进程，抖音通常可释放 1.5-2GB 工作集和 SDK 尾巴。前台打开时系统会临时提升，正常使用不受影响。移除包名或关闭功能会按接管前 bucket/AppOps 恢复。</div>
+            <div class="note-body">将需要治理的应用包名加入列表后，可按包选择限制层级。休眠会在目标 App 锁屏或离开前台后等待 3/5/10 分钟再 force-stop，并配合 App Standby/AppOps 限制，用于清理短视频、广告 SDK、直播与电商尾进程；前台打开时系统会临时提升，正常使用不受影响。它不会撤销 WAKE_LOCK/FGS/媒体权限，不能阻断 VPN 归因，也不能清除历史 batterystats/AudioMix 归账；若系统、用户或推送重新拉起，可能再次出现 stopped=false。移除包名或关闭功能会按接管前 bucket/AppOps 恢复。</div>
           </div>
         </article>
 
