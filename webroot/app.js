@@ -239,6 +239,7 @@ const UECAP_VERIFY_TIMEOUT_MS = 15000;
 const WEBUI_IDLE_MS = 45000;
 const POLL_MIN_DELAY_MS = 900;
 const TEMP_CHART_REFRESH_MS = 10000;
+const ENERGY_DETAIL_REFRESH_MS = 5000;
 const POLL_INTERVALS = {
   cpu: { home: 5000, perf: 4000, relaxedHome: 12000, relaxedPerf: 9000 },
   thermal: { home: 12000, thermal: 10000, relaxedHome: 24000, relaxedThermal: 20000 },
@@ -382,6 +383,12 @@ const state = {
     draw: null,
     activeRange: 10,
     requestId: 0
+  },
+  energyDetail: {
+    timer: null,
+    requestId: 0,
+    fullData: null,
+    liveData: null
   }
 };
 
@@ -799,6 +806,7 @@ function closeRebootModal() {
 
 function openDetail(title, html) {
   stopTempChartRefresh();
+  stopEnergyDetailRefresh();
   refs.detailTitle.textContent = title;
   setStaticHtml(refs.detailBody, html);
   refs.detailModal.classList.add('open');
@@ -808,6 +816,7 @@ function openDetail(title, html) {
 
 function closeDetailModal(){
   stopTempChartRefresh();
+  stopEnergyDetailRefresh();
   refs.detailModal.classList.remove('open');
   popModalIfTop('detail');
   queueNextPoll(POLL_MIN_DELAY_MS);
@@ -882,6 +891,14 @@ function stopTempChartRefresh() {
   }
   state.tempChart.draw = null;
   state.tempChart.requestId += 1;
+}
+
+function stopEnergyDetailRefresh() {
+  if (state.energyDetail.timer) {
+    clearTimeout(state.energyDetail.timer);
+    state.energyDetail.timer = null;
+  }
+  state.energyDetail.requestId += 1;
 }
 
 function scheduleTempChartRefresh(delay = TEMP_CHART_REFRESH_MS) {
@@ -2993,11 +3010,6 @@ function fmtBatterystatsWindow(label) {
 
 async function fetchEnergyDetailWithRetry() {
   let lastErr;
-  try {
-    return await apiFetch(API.energyFast, { timeoutMs: 3500 });
-  } catch (err) {
-    lastErr = err;
-  }
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       return await apiFetch(API.energy, { timeoutMs: 16000 });
@@ -3011,7 +3023,16 @@ async function fetchEnergyDetailWithRetry() {
       break;
     }
   }
+  try {
+    return await apiFetch(API.energyFast, { timeoutMs: 3500 });
+  } catch (err) {
+    lastErr = err;
+  }
   throw lastErr;
+}
+
+async function fetchEnergyFastDetail() {
+  return await apiFetch(API.energyFast, { timeoutMs: 3500 });
 }
 
 function renderHistoryStats(statsEl, data, result) {
@@ -3084,6 +3105,7 @@ async function triggerThermalBurst(options = {}) {
 
 function openTempChart() {
   stopTempChartRefresh();
+  stopEnergyDetailRefresh();
   triggerThermalBurst({ prompt: false });
   refs.detailTitle.textContent = '温度历史';
   const ranges = [
@@ -3207,13 +3229,32 @@ async function exportHistoryWindow(scope, button) {
   }
 }
 
-async function openEnergyDetail() {
-  stopTempChartRefresh();
-  refs.detailTitle.textContent = '功耗统计';
-  setStaticHtml(refs.detailBody, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在读取功耗缓存，稍后补全系统分项…</div>');
-  refs.detailModal.classList.add('open');
+function isFullEnergyDetailData(d) {
+  if (!d || d.fast === true) return false;
+  return Number(d.cap) > 0 || Number(d.drain) > 0 || (Array.isArray(d.apps) && d.apps.length > 0);
+}
+
+function mergeEnergyDetailData(liveData, fullData) {
+  const live = liveData || {};
+  const full = fullData || {};
+  const system = Object.keys(full).length ? full : (isFullEnergyDetailData(live) ? live : {});
+  const merged = { ...full, ...live };
+  ['cap', 'drain', 'scroff', 'scron', 'bat_time', 'screen', 'cpu', 'cell', 'wifi', 'wakelock'].forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(system, key)) merged[key] = system[key];
+  });
+  if (Array.isArray(system.apps)) merged.apps = system.apps;
+  else if (!Array.isArray(merged.apps)) merged.apps = [];
+  if (system.batterystats_window) merged.batterystats_window = system.batterystats_window;
+  merged._using_fast_live = live.fast === true;
+  merged._has_full_system = Object.keys(system).length > 0;
+  merged._live_generated_at = live.generated_at || merged.generated_at || null;
+  merged._system_generated_at = system.generated_at || null;
+  return merged;
+}
+
+function renderEnergyDetail(input, options = {}) {
   try {
-    const d = await fetchEnergyDetailWithRetry();
+    const d = mergeEnergyDetailData(input, options.fullData || state.energyDetail.fullData);
     const esc = (v) => v == null || v === '' ? '—' : String(v);
     const frag = document.createDocumentFragment();
     const heading = (txt, desc = '') => {
@@ -3284,16 +3325,21 @@ async function openEnergyDetail() {
     const odpmValue = odpm.total_mah != null
       ? `${esc(odpm.total_mah)} mAh · 模块会话 delta`
       : `无可用 delta · ${esc(odpm.quality || '无基线')}`;
+    const liveGeneratedAt = d._live_generated_at || d.generated_at;
+    const systemGeneratedAt = d._system_generated_at || d.generated_at;
+    const systemSnapshot = d._has_full_system ? fmtDateTime(systemGeneratedAt) : '等待 full 系统总账';
+    const refreshMode = d._using_fast_live ? 'fast 实时刷新' : 'full 初始化';
 
     frag.appendChild(metricGrid([
       { label: '数据质量', value: qualityLabel(scope.quality), desc: scope.warning || '模块会话口径', cls: qualityMetric(scope.quality) },
       { label: '当前会话', value: fmtMah(scope.used_mah), desc: `${fmtDuration(scope.elapsed_sec)} · ${Number(scope.level_drop || 0)}%`, cls: 'primary' },
       { label: '当前状态', value: fmtBatteryStatus(charge.status), desc: Number.isFinite(Number(charge.level)) ? `${charge.level}%` : '电量未知', cls: chargeLike ? 'warn' : '' },
+      { label: '轻量刷新', value: fmtDateTime(liveGeneratedAt), desc: refreshMode },
     ]));
 
     const intro = document.createElement('div');
     intro.style.cssText = 'margin-bottom:14px;font-size:13px;line-height:20px;color:var(--text-2)';
-    intro.textContent = '默认按“当前放电会话”和模块短窗口采样看趋势；Android batterystats 分项只作为系统窗口参考。';
+    intro.textContent = '默认按“当前放电会话”和模块短窗口采样看趋势；打开弹窗后每 5 秒用 fast 路径刷新轻量字段，Android batterystats 分项保留最近 full 系统快照。';
     frag.appendChild(intro);
 
     frag.appendChild(heading('统计范围', '当前会话由模块维护，避免把长期 batterystats 累计误当成这一次切换后的结果。'));
@@ -3312,6 +3358,7 @@ async function openEnergyDetail() {
     list0.appendChild(row('最近重置原因', fmtSessionResetReason(scope.reset_reason)));
     list0.appendChild(row('重置规则', esc(scope.reset_rule)));
     list0.appendChild(row('口径提示', esc(scope.warning)));
+    list0.appendChild(row('轻量刷新时间', fmtDateTime(liveGeneratedAt), d._using_fast_live ? 'badge good' : 'badge off'));
     frag.appendChild(list0);
 
     frag.appendChild(heading('今日累计', '基于模块低频采样汇总，适合看今天到目前为止的大致收支。'));
@@ -3371,7 +3418,7 @@ async function openEnergyDetail() {
     exportWrap.appendChild(sessionBtn);
     frag.appendChild(exportWrap);
 
-    frag.appendChild(heading('Android batterystats', `${esc(bs.note)} Pixel/Exynos 的 mobile_radio 绝对 mAh 可能明显偏高，应优先看 ODPM、放电会话和短窗口趋势。`));
+    frag.appendChild(heading('Android batterystats', `${esc(bs.note)} Pixel/Exynos 的 mobile_radio 绝对 mAh 可能明显偏高；本区保留最近 full 系统快照，轻量字段单独实时刷新。`));
     const listBs = document.createElement('div'); listBs.className = 'data-list';
     listBs.appendChild(row('系统窗口', fmtBatterystatsWindow(bs.window_label)));
     listBs.appendChild(row('模块会话对齐', comparable ? '同窗口可比较' : '不同窗口/未证实同窗口', comparable ? 'badge good' : 'badge warn'));
@@ -3379,13 +3426,15 @@ async function openEnergyDetail() {
     listBs.appendChild(row('radio 提示', esc(bs.radio_note)));
     listBs.appendChild(row('Daily stats', esc(bs.daily_label)));
     listBs.appendChild(row('在电池上时长', esc(bs.time_on_battery || d.bat_time)));
-    listBs.appendChild(row('快照时间', fmtDateTime(d.generated_at)));
+    listBs.appendChild(row('系统分项快照', systemSnapshot, d._has_full_system ? 'data-val' : 'badge warn'));
+    listBs.appendChild(row('轻量刷新时间', fmtDateTime(liveGeneratedAt), d._using_fast_live ? 'badge good' : 'badge off'));
     listBs.appendChild(row('缓存有效期', Number.isFinite(Number(d.cache_ttl_sec)) ? `${d.cache_ttl_sec} 秒` : '—'));
     frag.appendChild(listBs);
 
-    frag.appendChild(heading('Android 功耗估算', '下面这些系统分项和 Top 应用来自 batterystats 模型，不是硬件电表，也不是 15/30/60 分钟短窗口。'));
+    frag.appendChild(heading('Android 功耗估算', '下面这些系统分项和 Top 应用来自最近 full batterystats 模型快照；fast 刷新不会用 0 覆盖本区。'));
     const list1 = document.createElement('div'); list1.className = 'data-list';
     list1.appendChild(row('当前电量', Number.isFinite(Number(charge.level)) ? `${charge.level}%` : '—'));
+    list1.appendChild(row('系统分项快照', systemSnapshot, d._has_full_system ? 'data-val' : 'badge warn'));
     list1.appendChild(row('电池容量', esc(d.cap) + ' mAh'));
     list1.appendChild(row('预估耗电', esc(d.drain) + ' mAh'));
     list1.appendChild(row('亮屏耗电', esc(d.scron) + ' mAh'));
@@ -3419,6 +3468,50 @@ async function openEnergyDetail() {
   } catch (err) {
     refs.detailBody.style.opacity = '1';
     refs.detailBody.replaceChildren(); refs.detailBody.appendChild(errorBlock(err.message));
+  }
+}
+
+function scheduleEnergyDetailRefresh(delay = ENERGY_DETAIL_REFRESH_MS) {
+  if (state.energyDetail.timer) clearTimeout(state.energyDetail.timer);
+  if (!refs.detailModal.classList.contains('open')) return;
+  const requestId = state.energyDetail.requestId;
+  state.energyDetail.timer = window.setTimeout(async () => {
+    state.energyDetail.timer = null;
+    if (!refs.detailModal.classList.contains('open') || requestId !== state.energyDetail.requestId) return;
+    try {
+      const live = await fetchEnergyFastDetail();
+      if (requestId !== state.energyDetail.requestId) return;
+      if (isFullEnergyDetailData(live)) state.energyDetail.fullData = live;
+      else state.energyDetail.liveData = live;
+      renderEnergyDetail(live, { fullData: state.energyDetail.fullData });
+    } catch (_) {}
+    if (refs.detailModal.classList.contains('open') && requestId === state.energyDetail.requestId) {
+      scheduleEnergyDetailRefresh();
+    }
+  }, delay);
+}
+
+async function openEnergyDetail() {
+  stopTempChartRefresh();
+  stopEnergyDetailRefresh();
+  state.energyDetail.fullData = null;
+  state.energyDetail.liveData = null;
+  const requestId = state.energyDetail.requestId;
+  refs.detailTitle.textContent = '功耗统计';
+  setStaticHtml(refs.detailBody, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在读取 full 系统快照，随后每 5 秒刷新实时字段…</div>');
+  refs.detailModal.classList.add('open');
+  queueNextPoll(computeNextPollDelay());
+  try {
+    const initial = await fetchEnergyDetailWithRetry();
+    if (requestId !== state.energyDetail.requestId) return;
+    if (isFullEnergyDetailData(initial)) state.energyDetail.fullData = initial;
+    else state.energyDetail.liveData = initial;
+    renderEnergyDetail(initial, { fullData: state.energyDetail.fullData });
+    scheduleEnergyDetailRefresh(350);
+  } catch (err) {
+    if (requestId !== state.energyDetail.requestId) return;
+    refs.detailBody.replaceChildren();
+    refs.detailBody.appendChild(errorBlock(err.message));
   }
 }
 
@@ -3870,7 +3963,7 @@ function bindStaticEvents() {
   });
   window.addEventListener('popstate', (evt) => {
     const s = evt.state;
-    if (refs.detailModal.classList.contains('open')) { stopTempChartRefresh(); refs.detailModal.classList.remove('open'); return; }
+    if (refs.detailModal.classList.contains('open')) { stopTempChartRefresh(); stopEnergyDetailRefresh(); refs.detailModal.classList.remove('open'); return; }
     if (refs.swapTuneModal.classList.contains('open')) { refs.swapTuneModal.classList.remove('open'); queueNextPoll(POLL_MIN_DELAY_MS); return; }
     if (refs.themeModal.classList.contains('open')) { refs.themeModal.classList.remove('open'); return; }
     if (refs.rebootModal.classList.contains('open')) { refs.rebootModal.classList.remove('open'); return; }

@@ -304,10 +304,7 @@ release_energy_lock() {
 _now=$(date +%s 2>/dev/null || echo 0)
 _fast=0
 case "$QUERY_STRING" in *fast=1*) _fast=1 ;; esac
-if read_energy_cache_if_fresh "$_now"; then
-    exit 0
-fi
-if [ "$_fast" -eq 1 ] && read_energy_cache_if_usable "$_now"; then
+if [ "$_fast" -ne 1 ] && read_energy_cache_if_fresh "$_now"; then
     exit 0
 fi
 
