@@ -3554,7 +3554,7 @@ function renderEnergyDetail(input, options = {}) {
       frag.appendChild(heading('高耗电应用 Top ' + d.apps.length, 'UID mAh 是 batterystats 模型归因，不是硬件电表；VPN、AudioMix 或历史归账可能集中到某个 UID。'));
       const list3 = document.createElement('div'); list3.className = 'data-list';
       d.apps.forEach((app, i) => {
-        const name = String(app.pkg || '').length > 30 ? String(app.pkg).slice(0, 28) + '…' : String(app.pkg || '');
+        const name = String(app.pkg || '');
         list3.appendChild(row((i + 1) + '. ' + name, esc(app.mah) + ' mAh', 'badge ' + (app.mah > 200 ? 'warn' : 'off')));
       });
       frag.appendChild(list3);
