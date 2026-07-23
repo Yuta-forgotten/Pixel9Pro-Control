@@ -12,6 +12,33 @@ BG_LIST_FILE="$MODDIR/.bg_restrict_list"
 BG_BASELINE_FILE="$MODDIR/.bg_restrict_baseline"
 BG_STOP_STATE_FILE="$MODDIR/.bg_restrict_stop_state"
 
+read_stop_state() {
+    _stop_since=0
+    _stop_done=0
+    [ -s "$BG_STOP_STATE_FILE" ] || return 0
+    _stop_line=$(awk -F'|' -v p="$1" '$1 == p { print; exit }' "$BG_STOP_STATE_FILE" 2>/dev/null)
+    [ -n "$_stop_line" ] || return 0
+    _old_ifs="$IFS"
+    IFS='|'
+    set -- $_stop_line
+    IFS="$_old_ifs"
+    case "$2" in
+        ''|*[!0-9]*) ;;
+        *) _stop_since="$2" ;;
+    esac
+    [ "$3" = "1" ] && _stop_done=1
+}
+
+read_package_stopped() {
+    _package_stopped=$(dumpsys package "$1" 2>/dev/null \
+        | sed -n 's/.*stopped=\([^ ]*\).*/\1/p' \
+        | head -n 1)
+    case "$_package_stopped" in
+        true|false) ;;
+        *) _package_stopped="unknown" ;;
+    esac
+}
+
 emit_pkg_status() {
     bg_parse_entry "$1"
     _pkg="$_bg_pkg"
@@ -20,8 +47,38 @@ emit_pkg_status() {
     _bucket=$(bg_read_standby_bucket "$_pkg")
     _op_bg=$(bg_read_appop_mode "$_pkg" RUN_IN_BACKGROUND)
     _op_any=$(bg_read_appop_mode "$_pkg" RUN_ANY_IN_BACKGROUND)
-    printf '{"pkg":"%s","policy":"%s","delay":"%s","bucket":"%s","appops":"%s","op_bg":"%s","op_any":"%s"}' \
-        "$(json_escape "$_pkg")" "$_policy" "$_delay" "$(json_escape "$_bucket")" "$_op_any" "$_op_bg" "$_op_any"
+    read_stop_state "$_pkg"
+    read_package_stopped "$_pkg"
+
+    _stop_state="not_applicable"
+    if [ "$_policy" = "stop_after_leave" ]; then
+        if [ "$_stop_since" -gt 0 ] 2>/dev/null; then
+            if [ "$_stop_done" -eq 1 ]; then
+                if [ "$_package_stopped" = "true" ]; then
+                    _stop_state="force_stopped"
+                else
+                    _stop_state="relaunched"
+                fi
+            else
+                _stop_state="pending"
+            fi
+        else
+            _stop_state="untracked"
+        fi
+    fi
+
+    _stop_since_json="null"
+    [ "$_stop_since" -gt 0 ] 2>/dev/null && _stop_since_json="$_stop_since"
+    _stop_done_json="false"
+    [ "$_stop_done" -eq 1 ] && _stop_done_json="true"
+    _package_stopped_json="null"
+    case "$_package_stopped" in
+        true|false) _package_stopped_json="$_package_stopped" ;;
+    esac
+
+    printf '{"pkg":"%s","policy":"%s","delay":"%s","bucket":"%s","appops":"%s","op_bg":"%s","op_any":"%s","stop_since":%s,"stop_done":%s,"package_stopped":%s,"stop_state":"%s"}' \
+        "$(json_escape "$_pkg")" "$_policy" "$_delay" "$(json_escape "$_bucket")" "$_op_any" "$_op_bg" "$_op_any" \
+        "$_stop_since_json" "$_stop_done_json" "$_package_stopped_json" "$_stop_state"
 }
 
 delete_pkg_line() {

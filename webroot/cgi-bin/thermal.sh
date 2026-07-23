@@ -67,15 +67,18 @@ cache_has_valid_skin() {
 }
 
 _cache_valid=0
+_cache_age=999999
 if [ -s "$THERMAL_CACHE" ]; then
     _mtime=$(stat -c %Y "$THERMAL_CACHE" 2>/dev/null)
     case "$_mtime" in
         ''|*[!0-9]*) _mtime=0 ;;
     esac
+    _cache_age=$((_now - _mtime))
+    [ "$_cache_age" -lt 0 ] && _cache_age=999999
     if cache_has_valid_skin "$THERMAL_CACHE"; then
         _cache_valid=1
     fi
-    if [ "$_fresh" -ne 1 ] && [ "$_cache_valid" -eq 1 ]; then
+    if [ "$_fresh" -ne 1 ] && [ "$_cache_valid" -eq 1 ] && [ "$_cache_age" -le "$_cache_max_age" ] 2>/dev/null; then
         cat "$THERMAL_CACHE"
         exit 0
     fi

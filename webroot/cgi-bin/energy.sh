@@ -15,10 +15,10 @@ json_headers
 POWER_HISTORY="$MODDIR/.power_history"
 THERMAL_HISTORY="$MODDIR/.thermal_history"
 POWER_SESSION_FILE="$MODDIR/.power_session"
-ENERGY_CACHE="$MODDIR/.energy_cache.json"
-ENERGY_CACHE_TS="$MODDIR/.energy_cache.ts"
-ENERGY_CACHE_TTL=45
-ENERGY_CACHE_STALE_MAX=600
+SYSTEM_CACHE="$MODDIR/.energy_system_cache.json"
+SYSTEM_CACHE_TS="$MODDIR/.energy_system_cache.ts"
+SYSTEM_CACHE_TTL=45
+SYSTEM_CACHE_STALE_MAX=600
 RESET_RULE='连续充电 >= 10 分钟且电量回升，或充满后重新拔线后，重置为新的放电会话'
 BATTERYSTATS_NOTE='系统分项和应用排行来自 Android batterystats 当前窗口；若系统或用户执行过 batterystats reset，这个窗口可能比放电会话更短。'
 RADIO_MODEL_NOTE='Pixel/Exynos 5400 的 Android mobile_radio 是模型估算；绝对 mAh 不作为硬件电表，只能看相对方向。'
@@ -55,47 +55,64 @@ read_battery_value() {
     tr -d ' \n\r' < "$1" 2>/dev/null
 }
 
+detect_external_power() {
+    _external_power_online=0
+    _power_source="battery"
+    for _ps in usb wireless dc mains ac; do
+        _online=$(cat "/sys/class/power_supply/${_ps}/online" 2>/dev/null | tr -d ' \n\r\t')
+        if [ "$_online" = "1" ]; then
+            _external_power_online=1
+            case "$_ps" in
+                usb) _power_source="usb" ;;
+                wireless) _power_source="wireless" ;;
+                *) _power_source="$_ps" ;;
+            esac
+            break
+        fi
+    done
+}
+
 read_state_value() {
     _state_file="$1"
     _state_key="$2"
     sed -n "s/^${_state_key}=//p" "$_state_file" 2>/dev/null | head -n 1 | tr -d '\r'
 }
 
-read_energy_cache_if_fresh() {
+read_system_cache_if_fresh() {
     _cache_now="$1"
-    [ -s "$ENERGY_CACHE" ] || return 1
-    _cache_ts=$(cat "$ENERGY_CACHE_TS" 2>/dev/null | tr -d ' \n\r')
+    [ -s "$SYSTEM_CACHE" ] || return 1
+    _cache_ts=$(cat "$SYSTEM_CACHE_TS" 2>/dev/null | tr -d ' \n\r')
     case "$_cache_ts" in
         ''|*[!0-9]*) return 1 ;;
     esac
     _cache_age=$((_cache_now - _cache_ts))
     [ "$_cache_age" -lt 0 ] && _cache_age=999999
-    [ "$_cache_age" -le "$ENERGY_CACHE_TTL" ] || return 1
-    cat "$ENERGY_CACHE"
+    [ "$_cache_age" -le "$SYSTEM_CACHE_TTL" ] || return 1
+    cat "$SYSTEM_CACHE"
     return 0
 }
 
-read_energy_cache_if_usable() {
+read_system_cache_if_usable() {
     _cache_now="$1"
-    [ -s "$ENERGY_CACHE" ] || return 1
-    _cache_ts=$(cat "$ENERGY_CACHE_TS" 2>/dev/null | tr -d ' \n\r')
+    [ -s "$SYSTEM_CACHE" ] || return 1
+    _cache_ts=$(cat "$SYSTEM_CACHE_TS" 2>/dev/null | tr -d ' \n\r')
     case "$_cache_ts" in
         ''|*[!0-9]*) return 1 ;;
     esac
     _cache_age=$((_cache_now - _cache_ts))
     [ "$_cache_age" -lt 0 ] && _cache_age=999999
-    [ "$_cache_age" -le "$ENERGY_CACHE_STALE_MAX" ] || return 1
-    cat "$ENERGY_CACHE"
+    [ "$_cache_age" -le "$SYSTEM_CACHE_STALE_MAX" ] || return 1
+    cat "$SYSTEM_CACHE"
     return 0
 }
 
-write_energy_cache() {
+write_system_cache() {
     _payload="$1"
     _cache_now="$2"
-    printf '%s\n' "$_payload" > "${ENERGY_CACHE}.tmp"
-    mv "${ENERGY_CACHE}.tmp" "$ENERGY_CACHE"
-    printf '%s\n' "$_cache_now" > "${ENERGY_CACHE_TS}.tmp"
-    mv "${ENERGY_CACHE_TS}.tmp" "$ENERGY_CACHE_TS"
+    printf '%s\n' "$_payload" > "${SYSTEM_CACHE}.tmp"
+    mv "${SYSTEM_CACHE}.tmp" "$SYSTEM_CACHE"
+    printf '%s\n' "$_cache_now" > "${SYSTEM_CACHE_TS}.tmp"
+    mv "${SYSTEM_CACHE_TS}.tmp" "$SYSTEM_CACHE_TS"
 }
 
 build_power_window_json() {
@@ -304,18 +321,17 @@ release_energy_lock() {
 _now=$(date +%s 2>/dev/null || echo 0)
 _fast=0
 case "$QUERY_STRING" in *fast=1*) _fast=1 ;; esac
-if [ "$_fast" -ne 1 ] && read_energy_cache_if_fresh "$_now"; then
-    exit 0
-fi
 
 _cur_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null | tr -d '\r')
 _cur_status=$(printf '%s' "$_cur_status" | sed 's/[[:space:]]*$//')
 [ -n "$_cur_status" ] || _cur_status="Unknown"
 _cur_level=$(read_battery_value /sys/class/power_supply/battery/capacity)
 _cur_charge=$(read_battery_value /sys/class/power_supply/battery/charge_counter)
+detect_external_power
 _is_charging_like=0
 case "$_cur_status" in
-    Charging|Full|Not\ charging) _is_charging_like=1 ;;
+    Charging|Full) _is_charging_like=1 ;;
+    Not\ charging) [ "$_external_power_online" -eq 1 ] && _is_charging_like=1 ;;
 esac
 
 case "$_cur_level" in
@@ -552,30 +568,60 @@ done
 _history_windows_json="${_history_windows_json}]"
 
 if [ "$_fast" -eq 1 ]; then
-    _charge_state_json=$(printf '{"status":%s,"level":%s,"charge_uah":%s,"is_charging_like":%s}' \
+    _charge_state_json=$(printf '{"status":%s,"level":%s,"charge_uah":%s,"is_charging_like":%s,"external_power_online":%s,"power_source":%s}' \
         "$(json_str_or_null "$_cur_status")" \
         "$(json_num_or_null "$_cur_level")" \
         "$(json_num_or_null "$_cur_charge")" \
-        "$(json_bool "$_is_charging_like")")
-    printf '{"cap":0,"drain":0,"scroff":0,"scron":0,"bat_time":"","screen":0,"cpu":0,"cell":0,"wifi":0,"wakelock":0,"apps":[],"odpm_modem":%s,"scope":%s,"today":%s,"history_windows":%s,"charge_state":%s,"batterystats_window":{"window_label":null,"daily_label":null,"time_on_battery":null,"model_quality":"fast_no_batterystats","radio_note":%s,"note":"快速缓存口径；系统 batterystats 分项稍后刷新。"},"generated_at":%s,"cache_ttl_sec":%s,"fast":true}\n' \
-        "$_odpm_json" "$_scope_json" "$_today_json" "$_history_windows_json" "$_charge_state_json" "$(json_str_or_null "$RADIO_MODEL_NOTE")" "$(json_num_or_null "$_now")" "$ENERGY_CACHE_TTL"
+        "$(json_bool "$_is_charging_like")" \
+        "$(json_bool "$_external_power_online")" \
+        "$(json_str_or_null "$_power_source")")
+    printf '{"cap":0,"drain":0,"scroff":0,"scron":0,"bat_time":"","screen":0,"cpu":0,"cell":0,"wifi":0,"wakelock":0,"apps":[],"odpm_modem":%s,"scope":%s,"today":%s,"history_windows":%s,"charge_state":%s,"batterystats_window":{"window_label":null,"daily_label":null,"time_on_battery":null,"model_quality":"fast_no_batterystats","radio_note":%s,"note":"快速缓存口径；系统 batterystats 分项稍后刷新。"},"generated_at":%s,"live_generated_at":%s,"system_generated_at":null,"system_cache_age_sec":null,"system_cache_stale":false,"cache_ttl_sec":%s,"fast":true}\n' \
+        "$_odpm_json" "$_scope_json" "$_today_json" "$_history_windows_json" "$_charge_state_json" "$(json_str_or_null "$RADIO_MODEL_NOTE")" "$(json_num_or_null "$_now")" "$(json_num_or_null "$_now")" "$SYSTEM_CACHE_TTL"
     exit 0
 fi
 
-_energy_lock="$LOCKDIR_BASE/energy_cache.lock"
-_have_energy_lock=0
-if try_acquire_energy_lock "$_energy_lock" "$_now"; then
-    _have_energy_lock=1
+_system_payload=""
+_system_generated_at=""
+_system_cache_age=""
+_system_cache_stale=0
+_build_system_snapshot=0
+_system_lock="$LOCKDIR_BASE/energy_system_cache.lock"
+_have_system_lock=0
+
+if _system_payload=$(read_system_cache_if_fresh "$_now"); then
+    _system_generated_at=$(cat "$SYSTEM_CACHE_TS" 2>/dev/null | tr -d ' \n\r')
+    case "$_system_generated_at" in
+        ''|*[!0-9]*) _system_generated_at="" ;;
+        *)
+            _system_cache_age=$((_now - _system_generated_at))
+            [ "$_system_cache_age" -lt 0 ] && _system_cache_age=999999
+            ;;
+    esac
 else
-    if [ -s "$ENERGY_CACHE" ]; then
-        cat "$ENERGY_CACHE"
-        exit 0
+    if try_acquire_energy_lock "$_system_lock" "$_now"; then
+        _have_system_lock=1
+        _build_system_snapshot=1
+    else
+        if _system_payload=$(read_system_cache_if_usable "$_now"); then
+            _system_cache_stale=1
+            _system_generated_at=$(cat "$SYSTEM_CACHE_TS" 2>/dev/null | tr -d ' \n\r')
+            case "$_system_generated_at" in
+                ''|*[!0-9]*) _system_generated_at="" ;;
+                *)
+                    _system_cache_age=$((_now - _system_generated_at))
+                    [ "$_system_cache_age" -lt 0 ] && _system_cache_age=999999
+                    ;;
+            esac
+        else
+            _build_system_snapshot=1
+        fi
     fi
 fi
 
-pm list packages -U 2>/dev/null > "${_tmp}_pkg"
+if [ "$_build_system_snapshot" -eq 1 ]; then
+    pm list packages -U 2>/dev/null > "${_tmp}_pkg"
 
-dumpsys batterystats 2>/dev/null | awk '
+    dumpsys batterystats 2>/dev/null | awk '
 /^Statistics since last charge:/ && !seen_win { print "WIN:" $0; seen_win=1 }
 /^[[:space:]]*Daily stats:/ && !seen_day { print "DAY:" $0; seen_day=1 }
 /^  Estimated power use/,/^  *\(/ { print "EST:" $0 }
@@ -585,117 +631,134 @@ dumpsys batterystats 2>/dev/null | awk '
 /Screen on discharge:/ && !seen_son { print "SON:" $0; seen_son=1 }
 ' > "${_tmp}_bs"
 
-_bs_window=$(sed -n 's/^WIN://p' "${_tmp}_bs" | head -1)
-_bs_daily=$(sed -n 's/^DAY://p' "${_tmp}_bs" | head -1)
-_bs_time=$(sed -n 's/^BAT://p' "${_tmp}_bs" | head -1 | sed 's/.*battery: //; s/ (.*//')
+    _bs_window=$(sed -n 's/^WIN://p' "${_tmp}_bs" | head -1)
+    _bs_daily=$(sed -n 's/^DAY://p' "${_tmp}_bs" | head -1)
+    _bs_time=$(sed -n 's/^BAT://p' "${_tmp}_bs" | head -1 | sed 's/.*battery: //; s/ (.*//')
 
-_core_json=$(awk -v pkgfile="${_tmp}_pkg" '
-BEGIN {
-    while ((getline line < pkgfile) > 0) {
-        sub(/^package:/, "", line)
-        split(line, p, " uid:")
-        if (p[2] + 0 > 0) pm[p[2] + 0] = p[1]
-    }
-    close(pkgfile)
-    an = 0
-}
-
-/^BAT:/ { sub(/.*battery: /, ""); sub(/ \(.*/, ""); bat_time = $0; next }
-/^SOFF:/ { match($0, /[0-9]+/); scroff = substr($0, RSTART, RLENGTH) + 0; next }
-/^SON:/ { match($0, /[0-9]+/); scron = substr($0, RSTART, RLENGTH) + 0; next }
-
-/^EST:/ {
-    line = substr($0, 5)
-    if (line ~ /Capacity:/) {
-        n = split(line, w, " ")
-        for (i = 1; i <= n; i++) {
-            if (w[i] == "Capacity:") { v = w[i + 1]; gsub(/,/, "", v); cap = v + 0 }
-            if (w[i] == "drain:" && w[i - 1] == "Computed") { v = w[i + 1]; gsub(/,/, "", v); drain = v + 0 }
+    _core_json=$(awk -v pkgfile="${_tmp}_pkg" '
+    BEGIN {
+        while ((getline line < pkgfile) > 0) {
+            sub(/^package:/, "", line)
+            split(line, p, " uid:")
+            if (p[2] + 0 > 0) pm[p[2] + 0] = p[1]
         }
+        close(pkgfile)
+        an = 0
     }
-    if (line ~ /^    screen:/ && !gs) { split(line, w); gs = w[2] + 0 }
-    if (line ~ /^    cpu:/ && !gc) { split(line, w); gc = w[2] + 0 }
-    if (line ~ /^    mobile_radio:/ && !gm) { split(line, w); gm = w[2] + 0 }
-    if (line ~ /^    wifi:/ && !gw) { split(line, w); gw = w[2] + 0 }
-    if (line ~ /^    wakelock:/ && !gk) { split(line, w); gk = w[2] + 0 }
-    next
-}
 
-/^UID:/ {
-    line = substr($0, 5)
-    split(line, w)
-    uid_s = w[2]
-    gsub(/:/, "", uid_s)
-    mah = w[3] + 0
-    if (index(uid_s, "u0a") == 1) { n = uid_s; sub(/u0a/, "", n); n = n + 10000 }
-    else { n = uid_s + 0 }
-    pk = pm[n]
-    if (pk == "") {
-        if (n == 0) pk = "android (root)"
-        else if (n == 1000) pk = "android (system)"
-        else if (n == 1001) pk = "android (radio)"
-        else pk = uid_s
+    /^BAT:/ { sub(/.*battery: /, ""); sub(/ \(.*/, ""); bat_time = $0; next }
+    /^SOFF:/ { match($0, /[0-9]+/); scroff = substr($0, RSTART, RLENGTH) + 0; next }
+    /^SON:/ { match($0, /[0-9]+/); scron = substr($0, RSTART, RLENGTH) + 0; next }
+
+    /^EST:/ {
+        line = substr($0, 5)
+        if (line ~ /Capacity:/) {
+            n = split(line, w, " ")
+            for (i = 1; i <= n; i++) {
+                if (w[i] == "Capacity:") { v = w[i + 1]; gsub(/,/, "", v); cap = v + 0 }
+                if (w[i] == "drain:" && w[i - 1] == "Computed") { v = w[i + 1]; gsub(/,/, "", v); drain = v + 0 }
+            }
+        }
+        if (line ~ /^    screen:/ && !gs) { split(line, w); gs = w[2] + 0 }
+        if (line ~ /^    cpu:/ && !gc) { split(line, w); gc = w[2] + 0 }
+        if (line ~ /^    mobile_radio:/ && !gm) { split(line, w); gm = w[2] + 0 }
+        if (line ~ /^    wifi:/ && !gw) { split(line, w); gw = w[2] + 0 }
+        if (line ~ /^    wakelock:/ && !gk) { split(line, w); gk = w[2] + 0 }
+        next
     }
-    ap[an] = pk
-    am[an] = mah
-    an++
-    next
-}
 
-END {
-    gsub(/"/, "\\\"", bat_time)
-    printf "{\"cap\":%d,\"drain\":%.0f,\"scroff\":%d,\"scron\":%d,\"bat_time\":\"%s\",", cap, drain, scroff, scron, bat_time
-    printf "\"screen\":%.0f,\"cpu\":%.0f,\"cell\":%.0f,\"wifi\":%.0f,\"wakelock\":%.0f,\"apps\":[", gs, gc, gm, gw, gk
-    top = an
-    if (top > 10) top = 10
-    for (i = 0; i < top; i++) {
-        if (i) printf ","
-        gsub(/"/, "\\\"", ap[i])
-        printf "{\"pkg\":\"%s\",\"mah\":%.0f}", ap[i], am[i]
+    /^UID:/ {
+        line = substr($0, 5)
+        split(line, w)
+        uid_s = w[2]
+        gsub(/:/, "", uid_s)
+        mah = w[3] + 0
+        if (index(uid_s, "u0a") == 1) { n = uid_s; sub(/u0a/, "", n); n = n + 10000 }
+        else { n = uid_s + 0 }
+        pk = pm[n]
+        if (pk == "") {
+            if (n == 0) pk = "android (root)"
+            else if (n == 1000) pk = "android (system)"
+            else if (n == 1001) pk = "android (radio)"
+            else pk = uid_s
+        }
+        ap[an] = pk
+        am[an] = mah
+        an++
+        next
     }
-    printf "]}"
-}
-' "${_tmp}_bs")
 
-[ -n "$_core_json" ] || _core_json='{"cap":0,"drain":0,"scroff":0,"scron":0,"bat_time":"","screen":0,"cpu":0,"cell":0,"wifi":0,"wakelock":0,"apps":[]}'
+    END {
+        gsub(/"/, "\\\"", bat_time)
+        printf "{\"cap\":%d,\"drain\":%.0f,\"scroff\":%d,\"scron\":%d,\"bat_time\":\"%s\",", cap, drain, scroff, scron, bat_time
+        printf "\"screen\":%.0f,\"cpu\":%.0f,\"cell\":%.0f,\"wifi\":%.0f,\"wakelock\":%.0f,\"apps\":[", gs, gc, gm, gw, gk
+        top = an
+        if (top > 10) top = 10
+        for (i = 0; i < top; i++) {
+            if (i) printf ","
+            gsub(/"/, "\\\"", ap[i])
+            printf "{\"pkg\":\"%s\",\"mah\":%.0f}", ap[i], am[i]
+        }
+        printf "]}"
+    }
+    ' "${_tmp}_bs")
 
-_core_drain=$(printf '%s' "$_core_json" | sed -n 's/.*"drain":\([0-9.][0-9.]*\).*/\1/p')
-_core_scroff=$(printf '%s' "$_core_json" | sed -n 's/.*"scroff":\([0-9.][0-9.]*\).*/\1/p')
-_core_cell=$(printf '%s' "$_core_json" | sed -n 's/.*"cell":\([0-9.][0-9.]*\).*/\1/p')
-[ -n "$_core_drain" ] || _core_drain=0
-[ -n "$_core_scroff" ] || _core_scroff=0
-[ -n "$_core_cell" ] || _core_cell=0
-_bs_model_quality='total_ok_radio_model_reference'
-if awk -v c="$_core_cell" -v d="$_core_drain" -v s="$_core_scroff" 'BEGIN { exit !((d > 0 && c > d * 0.70) || (s > 0 && c > s)) }'; then
-    _bs_model_quality='total_ok_radio_model_untrusted'
+    [ -n "$_core_json" ] || _core_json='{"cap":0,"drain":0,"scroff":0,"scron":0,"bat_time":"","screen":0,"cpu":0,"cell":0,"wifi":0,"wakelock":0,"apps":[]}'
+
+    _core_drain=$(printf '%s' "$_core_json" | sed -n 's/.*"drain":\([0-9.][0-9.]*\).*/\1/p')
+    _core_scroff=$(printf '%s' "$_core_json" | sed -n 's/.*"scroff":\([0-9.][0-9.]*\).*/\1/p')
+    _core_cell=$(printf '%s' "$_core_json" | sed -n 's/.*"cell":\([0-9.][0-9.]*\).*/\1/p')
+    [ -n "$_core_drain" ] || _core_drain=0
+    [ -n "$_core_scroff" ] || _core_scroff=0
+    [ -n "$_core_cell" ] || _core_cell=0
+    _bs_model_quality='total_ok_radio_model_reference'
+    if awk -v c="$_core_cell" -v d="$_core_drain" -v s="$_core_scroff" 'BEGIN { exit !((d > 0 && c > d * 0.70) || (s > 0 && c > s)) }'; then
+        _bs_model_quality='total_ok_radio_model_untrusted'
+    fi
+
+    _batterystats_json=$(printf '{"window_label":%s,"daily_label":%s,"time_on_battery":%s,"model_quality":%s,"radio_note":%s,"note":%s}' \
+        "$(json_str_or_null "$_bs_window")" \
+        "$(json_str_or_null "$_bs_daily")" \
+        "$(json_str_or_null "$_bs_time")" \
+        "$(json_str_or_null "$_bs_model_quality")" \
+        "$(json_str_or_null "$RADIO_MODEL_NOTE")" \
+        "$(json_str_or_null "$BATTERYSTATS_NOTE")")
+
+    _system_payload=$(printf '%s' "$_core_json" | sed 's/}$//')
+    _system_payload=$(printf '%s,"batterystats_window":%s}' "$_system_payload" "$_batterystats_json")
+    _system_generated_at=$_now
+    _system_cache_age=0
+    _system_cache_stale=0
+    [ "$_have_system_lock" -eq 1 ] && write_system_cache "$_system_payload" "$_system_generated_at"
 fi
 
-_batterystats_json=$(printf '{"window_label":%s,"daily_label":%s,"time_on_battery":%s,"model_quality":%s,"radio_note":%s,"note":%s}' \
-    "$(json_str_or_null "$_bs_window")" \
-    "$(json_str_or_null "$_bs_daily")" \
-    "$(json_str_or_null "$_bs_time")" \
-    "$(json_str_or_null "$_bs_model_quality")" \
-    "$(json_str_or_null "$RADIO_MODEL_NOTE")" \
-    "$(json_str_or_null "$BATTERYSTATS_NOTE")")
+[ "$_have_system_lock" -eq 1 ] && release_energy_lock "$_system_lock"
 
-_charge_state_json=$(printf '{"status":%s,"level":%s,"charge_uah":%s,"is_charging_like":%s}' \
+if [ -z "$_system_payload" ]; then
+    _batterystats_json=$(printf '{"window_label":null,"daily_label":null,"time_on_battery":null,"model_quality":"no_system_snapshot","radio_note":%s,"note":"系统 batterystats 快照不可用；实时字段仍可用。"}' "$(json_str_or_null "$RADIO_MODEL_NOTE")")
+    _system_payload=$(printf '{"cap":0,"drain":0,"scroff":0,"scron":0,"bat_time":"","screen":0,"cpu":0,"cell":0,"wifi":0,"wakelock":0,"apps":[],"batterystats_window":%s}' "$_batterystats_json")
+fi
+
+_charge_state_json=$(printf '{"status":%s,"level":%s,"charge_uah":%s,"is_charging_like":%s,"external_power_online":%s,"power_source":%s}' \
     "$(json_str_or_null "$_cur_status")" \
     "$(json_num_or_null "$_cur_level")" \
     "$(json_num_or_null "$_cur_charge")" \
-    "$(json_bool "$_is_charging_like")")
+    "$(json_bool "$_is_charging_like")" \
+    "$(json_bool "$_external_power_online")" \
+    "$(json_str_or_null "$_power_source")")
 
-_final_json=$(printf '%s' "$_core_json" | sed 's/}$//')
-_final_json=$(printf '%s,"odpm_modem":%s,"scope":%s,"today":%s,"history_windows":%s,"charge_state":%s,"batterystats_window":%s,"generated_at":%s,"cache_ttl_sec":%s}' \
+_final_json=$(printf '%s' "$_system_payload" | sed 's/}$//')
+_final_json=$(printf '%s,"odpm_modem":%s,"scope":%s,"today":%s,"history_windows":%s,"charge_state":%s,"generated_at":%s,"live_generated_at":%s,"system_generated_at":%s,"system_cache_age_sec":%s,"system_cache_stale":%s,"cache_ttl_sec":%s}' \
     "$_final_json" \
     "$_odpm_json" \
     "$_scope_json" \
     "$_today_json" \
     "$_history_windows_json" \
     "$_charge_state_json" \
-    "$_batterystats_json" \
     "$(json_num_or_null "$_now")" \
-    "$ENERGY_CACHE_TTL")
-
-[ "$_have_energy_lock" -eq 1 ] && write_energy_cache "$_final_json" "$_now"
-[ "$_have_energy_lock" -eq 1 ] && release_energy_lock "$_energy_lock"
+    "$(json_num_or_null "$_now")" \
+    "$(json_num_or_null "$_system_generated_at")" \
+    "$(json_num_or_null "$_system_cache_age")" \
+    "$(json_bool "$_system_cache_stale")" \
+    "$SYSTEM_CACHE_TTL")
 printf '%s\n' "$_final_json"

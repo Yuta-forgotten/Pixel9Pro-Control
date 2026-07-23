@@ -240,6 +240,7 @@ const WEBUI_IDLE_MS = 45000;
 const POLL_MIN_DELAY_MS = 900;
 const TEMP_CHART_REFRESH_MS = 10000;
 const ENERGY_DETAIL_REFRESH_MS = 5000;
+const ENERGY_SYSTEM_REFRESH_MS = 60000;
 const POLL_INTERVALS = {
   cpu: { home: 5000, perf: 4000, relaxedHome: 12000, relaxedPerf: 9000 },
   thermal: { home: 12000, thermal: 10000, relaxedHome: 24000, relaxedThermal: 20000 },
@@ -386,6 +387,7 @@ const state = {
   },
   energyDetail: {
     timer: null,
+    fullTimer: null,
     requestId: 0,
     fullData: null,
     liveData: null
@@ -897,6 +899,10 @@ function stopEnergyDetailRefresh() {
   if (state.energyDetail.timer) {
     clearTimeout(state.energyDetail.timer);
     state.energyDetail.timer = null;
+  }
+  if (state.energyDetail.fullTimer) {
+    clearTimeout(state.energyDetail.fullTimer);
+    state.energyDetail.fullTimer = null;
   }
   state.energyDetail.requestId += 1;
 }
@@ -2394,11 +2400,12 @@ function syncBgRestrictControls() {
   });
 }
 
-function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled) {
+function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled, runtime = {}) {
   if (!enabled) return { text: '已关闭', cls: 'off' };
   const bucketText = String(bucket || '').toLowerCase();
   const bgMode = String(opBg || '').toLowerCase();
   const anyMode = String(opAny || '').toLowerCase();
+  const stopState = String(runtime.stopState || '');
   const rareOrLower = bucketText === '40' || bucketText === 'rare' || bucketText === '45' || bucketText === 'restricted';
   const restricted = bucketText === '45' || bucketText === 'restricted';
   const bgIgnored = bgMode === 'ignore';
@@ -2411,7 +2418,19 @@ function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled) {
       if (restricted || bgIgnored) return { text: '部分生效', cls: 'warn' };
       return { text: '未生效，点刷新重试', cls: 'err' };
     case 'stop_after_leave':
-      if (restricted && bgIgnored && anyIgnored) return { text: '已限制，等待/已执行', cls: 'good' };
+      if (stopState === 'force_stopped') {
+        return restricted && bgIgnored && anyIgnored
+          ? { text: '已 force-stop', cls: 'good' }
+          : { text: '已 force-stop，限制漂移', cls: 'warn' };
+      }
+      if (stopState === 'pending') {
+        return rareOrLower && bgIgnored && anyIgnored
+          ? { text: '等待 force-stop', cls: 'good' }
+          : { text: '等待中，限制部分生效', cls: 'warn' };
+      }
+      if (stopState === 'relaunched') return { text: '已重拉，等待下次触发', cls: 'warn' };
+      if (restricted && bgIgnored && anyIgnored) return { text: '限制已生效，待触发', cls: 'good' };
+      if (rareOrLower && bgIgnored && anyIgnored) return { text: 'AppOps 生效，桶位已回升', cls: 'warn' };
       if (restricted || bgIgnored || anyIgnored) return { text: '部分生效', cls: 'warn' };
       return { text: '未生效，点刷新重试', cls: 'err' };
     case 'block_all':
@@ -2447,7 +2466,8 @@ function renderBgRestrict(data) {
     const meta = BG_RESTRICT_POLICIES[policy];
     const opBg = p.op_bg || '';
     const opAny = p.op_any || p.appops || '';
-    const st = bgRestrictStatus(p.pkg, p.bucket, opBg, opAny, policy, on);
+    const stopState = String(p.stop_state || '');
+    const st = bgRestrictStatus(p.pkg, p.bucket, opBg, opAny, policy, on, { stopState });
     const row = document.createElement('div');
     row.className = 'data-row bg-policy-row';
 
@@ -2458,8 +2478,14 @@ function renderBgRestrict(data) {
     title.textContent = p.pkg;
     const detail = document.createElement('div');
     detail.className = 'bg-policy-detail';
+    const stopStateText = {
+      pending: '倒计时进行中',
+      force_stopped: '已进入 stopped 状态',
+      relaunched: 'force-stop 后已被重新拉起',
+      untracked: '需先观察到前台使用，离开后才开始计时'
+    }[stopState] || '';
     detail.textContent = policy === 'stop_after_leave'
-      ? `${meta.label} · ${delay}分钟 · ${meta.desc}`
+      ? `${meta.label} · ${delay}分钟 · ${meta.desc}${stopStateText ? ` · ${stopStateText}` : ''}`
       : `${meta.label} · ${meta.desc}`;
     main.appendChild(title);
     main.appendChild(detail);
@@ -2982,12 +3008,26 @@ function fmtSignedPercent(value) {
   return `${num > 0 ? '+' : ''}${num}%`;
 }
 
-function fmtBatteryStatus(status) {
+function fmtPowerSource(source, externalPower = false) {
+  switch (source) {
+    case 'usb': return 'USB 接电';
+    case 'wireless': return '无线接电';
+    case 'dc': return 'DC 接电';
+    case 'mains':
+    case 'ac': return 'AC 接电';
+    case 'battery': return '未接电';
+    default: return externalPower ? `${source || '外接电源'} 在线` : '未接电';
+  }
+}
+
+function fmtBatteryStatus(status, charge = {}) {
+  const externalPower = charge.external_power_online === true;
+  const sourceLabel = fmtPowerSource(charge.power_source, externalPower);
   switch (status) {
     case 'Charging': return '充电中';
     case 'Discharging': return '放电中';
     case 'Full': return '已充满';
-    case 'Not charging': return '未充电';
+    case 'Not charging': return externalPower ? `${sourceLabel}未充电` : '未充电';
     default: return status || '未知';
   }
 }
@@ -3012,7 +3052,7 @@ async function fetchEnergyDetailWithRetry() {
   let lastErr;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      return await apiFetch(API.energy, { timeoutMs: 16000 });
+      return await fetchEnergySystemDetail();
     } catch (err) {
       lastErr = err;
       const msg = String(err?.message || err || '');
@@ -3033,6 +3073,10 @@ async function fetchEnergyDetailWithRetry() {
 
 async function fetchEnergyFastDetail() {
   return await apiFetch(API.energyFast, { timeoutMs: 3500 });
+}
+
+async function fetchEnergySystemDetail() {
+  return await apiFetch(API.energy, { timeoutMs: 16000 });
 }
 
 function renderHistoryStats(statsEl, data, result) {
@@ -3231,7 +3275,12 @@ async function exportHistoryWindow(scope, button) {
 
 function isFullEnergyDetailData(d) {
   if (!d || d.fast === true) return false;
-  return Number(d.cap) > 0 || Number(d.drain) > 0 || (Array.isArray(d.apps) && d.apps.length > 0);
+  const bs = d.batterystats_window || {};
+  return Number.isFinite(Number(d.system_generated_at))
+    || (bs && bs.model_quality && bs.model_quality !== 'fast_no_batterystats')
+    || Number(d.cap) > 0
+    || Number(d.drain) > 0
+    || (Array.isArray(d.apps) && d.apps.length > 0);
 }
 
 function mergeEnergyDetailData(liveData, fullData) {
@@ -3242,13 +3291,16 @@ function mergeEnergyDetailData(liveData, fullData) {
   ['cap', 'drain', 'scroff', 'scron', 'bat_time', 'screen', 'cpu', 'cell', 'wifi', 'wakelock'].forEach((key) => {
     if (Object.prototype.hasOwnProperty.call(system, key)) merged[key] = system[key];
   });
+  ['system_generated_at', 'system_cache_age_sec', 'system_cache_stale', 'cache_ttl_sec'].forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(system, key)) merged[key] = system[key];
+  });
   if (Array.isArray(system.apps)) merged.apps = system.apps;
   else if (!Array.isArray(merged.apps)) merged.apps = [];
   if (system.batterystats_window) merged.batterystats_window = system.batterystats_window;
   merged._using_fast_live = live.fast === true;
   merged._has_full_system = Object.keys(system).length > 0;
-  merged._live_generated_at = live.generated_at || merged.generated_at || null;
-  merged._system_generated_at = system.generated_at || null;
+  merged._live_generated_at = live.live_generated_at || live.generated_at || merged.live_generated_at || merged.generated_at || null;
+  merged._system_generated_at = system.system_generated_at || system.generated_at || null;
   return merged;
 }
 
@@ -3311,13 +3363,20 @@ function renderEnergyDetail(input, options = {}) {
     const qualityBadge = (q) => q === 'pure_discharge' ? 'badge good' : (q === 'no_data' || q === 'insufficient_samples' || q === 'no_discharge_delta' ? 'badge off' : 'badge warn');
     const qualityMetric = (q) => q === 'pure_discharge' ? 'primary' : (q ? 'warn' : '');
     const comparable = scope.comparable_to_batterystats === true;
-    const chargeLike = charge.is_charging_like === true || /Charging|Full|Not charging/.test(charge.status || '');
+    const externalPower = charge.external_power_online === true;
+    const chargeLike = charge.is_charging_like === true
+      || charge.status === 'Charging'
+      || charge.status === 'Full'
+      || (charge.status === 'Not charging' && externalPower);
+    const powerSourceLabel = fmtPowerSource(charge.power_source, externalPower);
+    const chargeStatusLabel = fmtBatteryStatus(charge.status, charge);
     const radioUntrusted = /untrusted|high/i.test(String(bs.model_quality || ''));
     const modelQualityLabel = (q) => {
       switch (q) {
         case 'total_ok_radio_model_untrusted': return '总账可用，radio 模型失真';
         case 'total_ok_radio_model_reference': return '总账可用，radio 仅参考';
         case 'fast_no_batterystats': return '快速缓存，未刷新系统分项';
+        case 'no_system_snapshot': return '系统快照不可用';
         default: return q || '未知';
       }
     };
@@ -3328,12 +3387,15 @@ function renderEnergyDetail(input, options = {}) {
     const liveGeneratedAt = d._live_generated_at || d.generated_at;
     const systemGeneratedAt = d._system_generated_at || d.generated_at;
     const systemSnapshot = d._has_full_system ? fmtDateTime(systemGeneratedAt) : '等待 full 系统总账';
-    const refreshMode = d._using_fast_live ? 'fast 实时刷新' : 'full 初始化';
+    const systemCacheAge = Number.isFinite(Number(d.system_cache_age_sec)) ? `${d.system_cache_age_sec} 秒前` : '—';
+    const systemCacheState = !d._has_full_system ? '等待 full 快照' : (d.system_cache_stale === true ? 'stale fallback' : '可用');
+    const refreshMode = d._using_fast_live ? 'fast 实时刷新' : 'full 实时字段 + 系统快照';
+    const chargeDesc = Number.isFinite(Number(charge.level)) ? `${charge.level}% · ${powerSourceLabel}` : powerSourceLabel;
 
     frag.appendChild(metricGrid([
       { label: '数据质量', value: qualityLabel(scope.quality), desc: scope.warning || '模块会话口径', cls: qualityMetric(scope.quality) },
       { label: '当前会话', value: fmtMah(scope.used_mah), desc: `${fmtDuration(scope.elapsed_sec)} · ${Number(scope.level_drop || 0)}%`, cls: 'primary' },
-      { label: '当前状态', value: fmtBatteryStatus(charge.status), desc: Number.isFinite(Number(charge.level)) ? `${charge.level}%` : '电量未知', cls: chargeLike ? 'warn' : '' },
+      { label: '当前状态', value: chargeStatusLabel, desc: chargeDesc, cls: chargeLike ? 'warn' : '' },
       { label: '轻量刷新', value: fmtDateTime(liveGeneratedAt), desc: refreshMode },
     ]));
 
@@ -3346,8 +3408,9 @@ function renderEnergyDetail(input, options = {}) {
     const list0 = document.createElement('div'); list0.className = 'data-list';
     list0.appendChild(row('默认口径', '当前放电会话', 'badge good'));
     list0.appendChild(row('数据质量', qualityLabel(scope.quality), qualityBadge(scope.quality)));
-    list0.appendChild(row('当前状态', fmtBatteryStatus(charge.status), chargeLike ? 'badge warn' : 'badge off'));
-    list0.appendChild(row('充电污染', chargeLike ? '当前 endpoint 近似充电/满电/Not charging' : '未见当前充电 endpoint', chargeLike ? 'badge warn' : 'badge good'));
+    list0.appendChild(row('当前状态', chargeStatusLabel, chargeLike ? 'badge warn' : 'badge off'));
+    list0.appendChild(row('外接电源', powerSourceLabel, externalPower ? 'badge warn' : 'badge good'));
+    list0.appendChild(row('充电污染', chargeLike ? `${powerSourceLabel} / ${chargeStatusLabel}` : '未见外接电源或充电 endpoint', chargeLike ? 'badge warn' : 'badge good'));
     list0.appendChild(row('batterystats 对齐', comparable ? '同窗口可比较' : '不同窗口/未证实同窗口', comparable ? 'badge good' : 'badge warn'));
     list0.appendChild(row('会话开始', fmtDateTime(scope.start_ts)));
     list0.appendChild(row('已持续', fmtDuration(scope.elapsed_sec)));
@@ -3427,6 +3490,8 @@ function renderEnergyDetail(input, options = {}) {
     listBs.appendChild(row('Daily stats', esc(bs.daily_label)));
     listBs.appendChild(row('在电池上时长', esc(bs.time_on_battery || d.bat_time)));
     listBs.appendChild(row('系统分项快照', systemSnapshot, d._has_full_system ? 'data-val' : 'badge warn'));
+    listBs.appendChild(row('系统快照年龄', systemCacheAge, d.system_cache_stale === true ? 'badge warn' : 'badge off'));
+    listBs.appendChild(row('系统缓存状态', systemCacheState, (!d._has_full_system || d.system_cache_stale === true) ? 'badge warn' : 'badge good'));
     listBs.appendChild(row('轻量刷新时间', fmtDateTime(liveGeneratedAt), d._using_fast_live ? 'badge good' : 'badge off'));
     listBs.appendChild(row('缓存有效期', Number.isFinite(Number(d.cache_ttl_sec)) ? `${d.cache_ttl_sec} 秒` : '—'));
     frag.appendChild(listBs);
@@ -3434,6 +3499,7 @@ function renderEnergyDetail(input, options = {}) {
     frag.appendChild(heading('Android 功耗估算', '下面这些系统分项和 Top 应用来自最近 full batterystats 模型快照；fast 刷新不会用 0 覆盖本区。'));
     const list1 = document.createElement('div'); list1.className = 'data-list';
     list1.appendChild(row('当前电量', Number.isFinite(Number(charge.level)) ? `${charge.level}%` : '—'));
+    list1.appendChild(row('当前电源', powerSourceLabel, externalPower ? 'badge warn' : 'badge good'));
     list1.appendChild(row('系统分项快照', systemSnapshot, d._has_full_system ? 'data-val' : 'badge warn'));
     list1.appendChild(row('电池容量', esc(d.cap) + ' mAh'));
     list1.appendChild(row('预估耗电', esc(d.drain) + ' mAh'));
@@ -3491,6 +3557,27 @@ function scheduleEnergyDetailRefresh(delay = ENERGY_DETAIL_REFRESH_MS) {
   }, delay);
 }
 
+function scheduleEnergySystemRefresh(delay = ENERGY_SYSTEM_REFRESH_MS) {
+  if (state.energyDetail.fullTimer) clearTimeout(state.energyDetail.fullTimer);
+  if (!refs.detailModal.classList.contains('open')) return;
+  const requestId = state.energyDetail.requestId;
+  state.energyDetail.fullTimer = window.setTimeout(async () => {
+    state.energyDetail.fullTimer = null;
+    if (!refs.detailModal.classList.contains('open') || requestId !== state.energyDetail.requestId) return;
+    try {
+      const full = await fetchEnergySystemDetail();
+      if (requestId !== state.energyDetail.requestId) return;
+      if (isFullEnergyDetailData(full)) {
+        state.energyDetail.fullData = full;
+        renderEnergyDetail(state.energyDetail.liveData || full, { fullData: state.energyDetail.fullData });
+      }
+    } catch (_) {}
+    if (refs.detailModal.classList.contains('open') && requestId === state.energyDetail.requestId) {
+      scheduleEnergySystemRefresh();
+    }
+  }, delay);
+}
+
 async function openEnergyDetail() {
   stopTempChartRefresh();
   stopEnergyDetailRefresh();
@@ -3498,20 +3585,31 @@ async function openEnergyDetail() {
   state.energyDetail.liveData = null;
   const requestId = state.energyDetail.requestId;
   refs.detailTitle.textContent = '功耗统计';
-  setStaticHtml(refs.detailBody, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在读取 full 系统快照，随后每 5 秒刷新实时字段…</div>');
+  setStaticHtml(refs.detailBody, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在读取实时字段，随后补充系统快照…</div>');
   refs.detailModal.classList.add('open');
   queueNextPoll(computeNextPollDelay());
   try {
-    const initial = await fetchEnergyDetailWithRetry();
+    const live = await fetchEnergyFastDetail();
     if (requestId !== state.energyDetail.requestId) return;
-    if (isFullEnergyDetailData(initial)) state.energyDetail.fullData = initial;
-    else state.energyDetail.liveData = initial;
-    renderEnergyDetail(initial, { fullData: state.energyDetail.fullData });
-    scheduleEnergyDetailRefresh(350);
+    state.energyDetail.liveData = live;
+    renderEnergyDetail(live, { fullData: state.energyDetail.fullData });
+    scheduleEnergyDetailRefresh();
+    scheduleEnergySystemRefresh(350);
   } catch (err) {
     if (requestId !== state.energyDetail.requestId) return;
-    refs.detailBody.replaceChildren();
-    refs.detailBody.appendChild(errorBlock(err.message));
+    try {
+      const initial = await fetchEnergyDetailWithRetry();
+      if (requestId !== state.energyDetail.requestId) return;
+      if (isFullEnergyDetailData(initial)) state.energyDetail.fullData = initial;
+      else state.energyDetail.liveData = initial;
+      renderEnergyDetail(initial, { fullData: state.energyDetail.fullData });
+      scheduleEnergyDetailRefresh(350);
+      scheduleEnergySystemRefresh(ENERGY_SYSTEM_REFRESH_MS);
+    } catch (fallbackErr) {
+      if (requestId !== state.energyDetail.requestId) return;
+      refs.detailBody.replaceChildren();
+      refs.detailBody.appendChild(errorBlock(fallbackErr.message || err.message));
+    }
   }
 }
 
