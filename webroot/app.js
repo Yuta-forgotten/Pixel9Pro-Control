@@ -240,7 +240,8 @@ const WEBUI_IDLE_MS = 45000;
 const POLL_MIN_DELAY_MS = 900;
 const TEMP_CHART_REFRESH_MS = 10000;
 const ENERGY_DETAIL_REFRESH_MS = 5000;
-const ENERGY_SYSTEM_REFRESH_MS = 60000;
+const ENERGY_SYSTEM_REFRESH_FALLBACK_MS = 60000;
+const ENERGY_SYSTEM_REFRESH_MARGIN_MS = 2000;
 const POLL_INTERVALS = {
   cpu: { home: 5000, perf: 4000, relaxedHome: 12000, relaxedPerf: 9000 },
   thermal: { home: 12000, thermal: 10000, relaxedHome: 24000, relaxedThermal: 20000 },
@@ -2970,16 +2971,18 @@ function fmtDuration(sec) {
   return `${Math.floor(value)}秒`;
 }
 
-function fmtDateTime(ts) {
+function fmtDateTime(ts, withSeconds = false) {
   const value = Number(ts);
   if (!Number.isFinite(value) || value <= 0) return '—';
-  return new Intl.DateTimeFormat('zh-CN', {
+  const options = {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
-  }).format(new Date(value * 1000)).replace(/\//g, '-');
+  };
+  if (withSeconds) options.second = '2-digit';
+  return new Intl.DateTimeFormat('zh-CN', options).format(new Date(value * 1000)).replace(/\//g, '-');
 }
 
 function fmtMah(value) {
@@ -3304,6 +3307,27 @@ function mergeEnergyDetailData(liveData, fullData) {
   return merged;
 }
 
+function getEnergySystemAgeSeconds(data, liveGeneratedAt, systemGeneratedAt) {
+  const rawBackendAge = data?.system_cache_age_sec;
+  const backendAge = rawBackendAge == null || rawBackendAge === '' ? NaN : Number(rawBackendAge);
+  const liveTs = liveGeneratedAt == null || liveGeneratedAt === '' ? NaN : Number(liveGeneratedAt);
+  const systemTs = systemGeneratedAt == null || systemGeneratedAt === '' ? NaN : Number(systemGeneratedAt);
+  const derivedAge = Number.isFinite(liveTs) && Number.isFinite(systemTs) && liveTs >= systemTs
+    ? liveTs - systemTs
+    : NaN;
+  const candidates = [backendAge, derivedAge].filter((value) => Number.isFinite(value) && value >= 0);
+  return candidates.length ? Math.max(...candidates) : null;
+}
+
+function getEnergySystemRefreshDelay(data = state.energyDetail.fullData) {
+  const ttlSec = Number(data?.cache_ttl_sec);
+  if (!Number.isFinite(ttlSec) || ttlSec <= 0) return ENERGY_SYSTEM_REFRESH_FALLBACK_MS;
+  const rawAge = data?.system_cache_age_sec;
+  const ageSec = rawAge == null || rawAge === '' ? 0 : Math.max(0, Number(rawAge) || 0);
+  const remainingSec = Math.max(0, ttlSec - ageSec);
+  return Math.max(ENERGY_DETAIL_REFRESH_MS * 2, Math.round(remainingSec * 1000) + ENERGY_SYSTEM_REFRESH_MARGIN_MS);
+}
+
 function renderEnergyDetail(input, options = {}) {
   try {
     const d = mergeEnergyDetailData(input, options.fullData || state.energyDetail.fullData);
@@ -3385,18 +3409,27 @@ function renderEnergyDetail(input, options = {}) {
       ? `${esc(odpm.total_mah)} mAh · 模块会话 delta`
       : `无可用 delta · ${esc(odpm.quality || '无基线')}`;
     const liveGeneratedAt = d._live_generated_at || d.generated_at;
-    const systemGeneratedAt = d._system_generated_at || d.generated_at;
-    const systemSnapshot = d._has_full_system ? fmtDateTime(systemGeneratedAt) : '等待 full 系统总账';
-    const systemCacheAge = Number.isFinite(Number(d.system_cache_age_sec)) ? `${d.system_cache_age_sec} 秒前` : '—';
-    const systemCacheState = !d._has_full_system ? '等待 full 快照' : (d.system_cache_stale === true ? 'stale fallback' : '可用');
+    const systemGeneratedAt = d._system_generated_at || null;
+    const liveRefreshLabel = fmtDateTime(liveGeneratedAt, true);
+    const systemSnapshot = d._has_full_system ? fmtDateTime(systemGeneratedAt, true) : '等待 full 系统总账';
+    const systemCacheAgeSec = getEnergySystemAgeSeconds(d, liveGeneratedAt, systemGeneratedAt);
+    const systemCacheAge = systemCacheAgeSec == null ? '—' : `${Math.floor(systemCacheAgeSec)} 秒前`;
+    const cacheTtlSec = Number(d.cache_ttl_sec);
+    const systemCacheExpired = Number.isFinite(cacheTtlSec) && cacheTtlSec > 0
+      && systemCacheAgeSec != null && systemCacheAgeSec > cacheTtlSec;
+    const systemCacheWarn = !d._has_full_system || d.system_cache_stale === true || systemCacheExpired;
+    const systemCacheState = !d._has_full_system
+      ? '等待 full 快照'
+      : (d.system_cache_stale === true ? 'stale fallback' : (systemCacheExpired ? 'TTL 已过，等待刷新' : '可用'));
     const refreshMode = d._using_fast_live ? 'fast 实时刷新' : 'full 实时字段 + 系统快照';
-    const chargeDesc = Number.isFinite(Number(charge.level)) ? `${charge.level}% · ${powerSourceLabel}` : powerSourceLabel;
+    const chargeDescBase = Number.isFinite(Number(charge.level)) ? `${charge.level}% · ${powerSourceLabel}` : powerSourceLabel;
+    const chargeDesc = `${chargeDescBase} · 实时 ${liveRefreshLabel}`;
 
     frag.appendChild(metricGrid([
       { label: '数据质量', value: qualityLabel(scope.quality), desc: scope.warning || '模块会话口径', cls: qualityMetric(scope.quality) },
       { label: '当前会话', value: fmtMah(scope.used_mah), desc: `${fmtDuration(scope.elapsed_sec)} · ${Number(scope.level_drop || 0)}%`, cls: 'primary' },
       { label: '当前状态', value: chargeStatusLabel, desc: chargeDesc, cls: chargeLike ? 'warn' : '' },
-      { label: '轻量刷新', value: fmtDateTime(liveGeneratedAt), desc: refreshMode },
+      { label: '轻量刷新', value: liveRefreshLabel, desc: refreshMode },
     ]));
 
     const intro = document.createElement('div');
@@ -3421,7 +3454,7 @@ function renderEnergyDetail(input, options = {}) {
     list0.appendChild(row('最近重置原因', fmtSessionResetReason(scope.reset_reason)));
     list0.appendChild(row('重置规则', esc(scope.reset_rule)));
     list0.appendChild(row('口径提示', esc(scope.warning)));
-    list0.appendChild(row('轻量刷新时间', fmtDateTime(liveGeneratedAt), d._using_fast_live ? 'badge good' : 'badge off'));
+    list0.appendChild(row('轻量刷新时间', liveRefreshLabel, d._using_fast_live ? 'badge good' : 'badge off'));
     frag.appendChild(list0);
 
     frag.appendChild(heading('今日累计', '基于模块低频采样汇总，适合看今天到目前为止的大致收支。'));
@@ -3490,9 +3523,9 @@ function renderEnergyDetail(input, options = {}) {
     listBs.appendChild(row('Daily stats', esc(bs.daily_label)));
     listBs.appendChild(row('在电池上时长', esc(bs.time_on_battery || d.bat_time)));
     listBs.appendChild(row('系统分项快照', systemSnapshot, d._has_full_system ? 'data-val' : 'badge warn'));
-    listBs.appendChild(row('系统快照年龄', systemCacheAge, d.system_cache_stale === true ? 'badge warn' : 'badge off'));
-    listBs.appendChild(row('系统缓存状态', systemCacheState, (!d._has_full_system || d.system_cache_stale === true) ? 'badge warn' : 'badge good'));
-    listBs.appendChild(row('轻量刷新时间', fmtDateTime(liveGeneratedAt), d._using_fast_live ? 'badge good' : 'badge off'));
+    listBs.appendChild(row('系统快照年龄', systemCacheAge, systemCacheWarn ? 'badge warn' : 'badge off'));
+    listBs.appendChild(row('系统缓存状态', systemCacheState, systemCacheWarn ? 'badge warn' : 'badge good'));
+    listBs.appendChild(row('轻量刷新时间', liveRefreshLabel, d._using_fast_live ? 'badge good' : 'badge off'));
     listBs.appendChild(row('缓存有效期', Number.isFinite(Number(d.cache_ttl_sec)) ? `${d.cache_ttl_sec} 秒` : '—'));
     frag.appendChild(listBs);
 
@@ -3557,7 +3590,7 @@ function scheduleEnergyDetailRefresh(delay = ENERGY_DETAIL_REFRESH_MS) {
   }, delay);
 }
 
-function scheduleEnergySystemRefresh(delay = ENERGY_SYSTEM_REFRESH_MS) {
+function scheduleEnergySystemRefresh(delay = getEnergySystemRefreshDelay()) {
   if (state.energyDetail.fullTimer) clearTimeout(state.energyDetail.fullTimer);
   if (!refs.detailModal.classList.contains('open')) return;
   const requestId = state.energyDetail.requestId;
@@ -3569,7 +3602,8 @@ function scheduleEnergySystemRefresh(delay = ENERGY_SYSTEM_REFRESH_MS) {
       if (requestId !== state.energyDetail.requestId) return;
       if (isFullEnergyDetailData(full)) {
         state.energyDetail.fullData = full;
-        renderEnergyDetail(state.energyDetail.liveData || full, { fullData: state.energyDetail.fullData });
+        state.energyDetail.liveData = full;
+        renderEnergyDetail(full, { fullData: state.energyDetail.fullData });
       }
     } catch (_) {}
     if (refs.detailModal.classList.contains('open') && requestId === state.energyDetail.requestId) {
@@ -3600,11 +3634,15 @@ async function openEnergyDetail() {
     try {
       const initial = await fetchEnergyDetailWithRetry();
       if (requestId !== state.energyDetail.requestId) return;
-      if (isFullEnergyDetailData(initial)) state.energyDetail.fullData = initial;
-      else state.energyDetail.liveData = initial;
+      if (isFullEnergyDetailData(initial)) {
+        state.energyDetail.fullData = initial;
+        state.energyDetail.liveData = initial;
+      } else {
+        state.energyDetail.liveData = initial;
+      }
       renderEnergyDetail(initial, { fullData: state.energyDetail.fullData });
       scheduleEnergyDetailRefresh(350);
-      scheduleEnergySystemRefresh(ENERGY_SYSTEM_REFRESH_MS);
+      scheduleEnergySystemRefresh();
     } catch (fallbackErr) {
       if (requestId !== state.energyDetail.requestId) return;
       refs.detailBody.replaceChildren();
