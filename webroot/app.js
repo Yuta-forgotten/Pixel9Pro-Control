@@ -391,7 +391,9 @@ const state = {
     fullTimer: null,
     requestId: 0,
     fullData: null,
-    liveData: null
+    liveData: null,
+    activeWindowMinutes: 30,
+    openSections: Object.create(null)
   }
 };
 
@@ -810,6 +812,7 @@ function closeRebootModal() {
 function openDetail(title, html) {
   stopTempChartRefresh();
   stopEnergyDetailRefresh();
+  refs.detailModal.classList.remove('energy-mode');
   refs.detailTitle.textContent = title;
   setStaticHtml(refs.detailBody, html);
   refs.detailModal.classList.add('open');
@@ -821,6 +824,7 @@ function closeDetailModal(){
   stopTempChartRefresh();
   stopEnergyDetailRefresh();
   refs.detailModal.classList.remove('open');
+  refs.detailModal.classList.remove('energy-mode');
   popModalIfTop('detail');
   queueNextPoll(POLL_MIN_DELAY_MS);
 }
@@ -3331,43 +3335,33 @@ function getEnergySystemRefreshDelay(data = state.energyDetail.fullData) {
 function renderEnergyDetail(input, options = {}) {
   try {
     const d = mergeEnergyDetailData(input, options.fullData || state.energyDetail.fullData);
-    const esc = (v) => v == null || v === '' ? '—' : String(v);
-    const frag = document.createDocumentFragment();
-    const heading = (txt, desc = '') => {
-      const h = document.createElement('div');
-      h.style.cssText = 'margin:16px 0 10px;padding-top:12px;border-top:1px solid var(--line)';
-      const b = document.createElement('b');
-      b.textContent = txt;
-      h.appendChild(b);
-      if (desc) {
-        const p = document.createElement('div');
-        p.style.cssText = 'margin-top:6px;font-size:12px;line-height:18px;color:var(--text-3)';
-        p.textContent = desc;
-        h.appendChild(p);
-      }
-      return h;
-    };
-    const metricGrid = (items) => {
-      const grid = document.createElement('div');
-      grid.className = 'energy-metric-grid';
-      items.forEach((item) => {
-        const card = document.createElement('div');
-        card.className = `energy-metric${item.cls ? ` ${item.cls}` : ''}`;
-        const label = document.createElement('div');
-        label.className = 'energy-metric-label';
-        label.textContent = item.label;
-        const value = document.createElement('div');
-        value.className = 'energy-metric-value';
-        value.textContent = item.value;
-        const desc = document.createElement('div');
-        desc.className = 'energy-metric-desc';
-        desc.textContent = item.desc || '';
-        card.append(label, value, desc);
-        grid.appendChild(card);
-      });
-      return grid;
+    const text = (v) => v == null || v === '' ? '—' : String(v);
+    const el = (tag, className = '', content = '') => {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (content !== '') node.textContent = content;
+      return node;
     };
     const row = (k, v, cls) => { const r = document.createElement('div'); r.className = 'data-row'; const sk = document.createElement('span'); sk.className = 'data-key'; sk.textContent = k; const sv = document.createElement('span'); sv.className = cls || 'data-val'; sv.textContent = v; r.appendChild(sk); r.appendChild(sv); return r; };
+    const sectionHead = (title, desc = '') => {
+      const head = el('div', 'energy-section-head');
+      head.appendChild(el('div', 'energy-section-title', title));
+      if (desc) head.appendChild(el('div', 'energy-section-desc', desc));
+      return head;
+    };
+    const disclosure = (key, title, summary, body) => {
+      const details = el('details', 'energy-disclosure');
+      details.open = state.energyDetail.openSections[key] === true;
+      const trigger = el('summary', 'energy-disclosure-summary');
+      const copy = el('span', 'energy-disclosure-copy');
+      copy.append(el('strong', '', title), el('small', '', summary));
+      trigger.append(copy, el('span', 'energy-disclosure-chevron', '›'));
+      details.append(trigger, body);
+      details.addEventListener('toggle', () => {
+        state.energyDetail.openSections[key] = details.open;
+      });
+      return details;
+    };
     const scope = d.scope || {};
     const today = d.today || {};
     const charge = d.charge_state || {};
@@ -3375,18 +3369,18 @@ function renderEnergyDetail(input, options = {}) {
     const qualityLabel = (q) => {
       switch (q) {
         case 'pure_discharge': return '纯放电';
-        case 'charging_endpoint': return '当前充电中';
+        case 'charging_endpoint': return '接电中';
         case 'mixed_charge_discharge': return '混合充放电';
-        case 'session_window_mismatch': return '窗口错位';
+        case 'session_window_mismatch': return '统计窗口不一致';
         case 'insufficient_samples': return '采样不足';
         case 'partial_window': return '覆盖不足';
-        case 'no_discharge_delta': return '无放电差值';
+        case 'no_discharge_delta': return '暂无放电变化';
         case 'no_data': return '无数据';
-        default: return q || '未知';
+        default: return '未知';
       }
     };
-    const qualityBadge = (q) => q === 'pure_discharge' ? 'badge good' : (q === 'no_data' || q === 'insufficient_samples' || q === 'no_discharge_delta' ? 'badge off' : 'badge warn');
-    const qualityMetric = (q) => q === 'pure_discharge' ? 'primary' : (q ? 'warn' : '');
+    const qualityTone = (q) => q === 'pure_discharge' ? 'good' : (q === 'no_data' || q === 'insufficient_samples' || q === 'no_discharge_delta' ? 'off' : 'warn');
+    const qualityBadge = (q) => `badge ${qualityTone(q)}`;
     const comparable = scope.comparable_to_batterystats === true;
     const externalPower = charge.external_power_online === true;
     const chargeLike = charge.is_charging_like === true
@@ -3398,21 +3392,21 @@ function renderEnergyDetail(input, options = {}) {
     const radioUntrusted = /untrusted|high/i.test(String(bs.model_quality || ''));
     const modelQualityLabel = (q) => {
       switch (q) {
-        case 'total_ok_radio_model_untrusted': return '总账可用，radio 模型失真';
-        case 'total_ok_radio_model_reference': return '总账可用，radio 仅参考';
-        case 'fast_no_batterystats': return '快速缓存，未刷新系统分项';
-        case 'no_system_snapshot': return '系统快照不可用';
-        default: return q || '未知';
+        case 'total_ok_radio_model_untrusted': return '总账可用，蜂窝估算不可信';
+        case 'total_ok_radio_model_reference': return '总账可用，蜂窝估算仅供参考';
+        case 'fast_no_batterystats': return '系统分项正在加载';
+        case 'no_system_snapshot': return '系统统计不可用';
+        default: return '未知';
       }
     };
     const odpm = d.odpm_modem || {};
     const odpmValue = odpm.total_mah != null
-      ? `${esc(odpm.total_mah)} mAh · 模块会话 delta`
-      : `无可用 delta · ${esc(odpm.quality || '无基线')}`;
+      ? `${text(odpm.total_mah)} mAh · 当前会话变化量`
+      : '暂无有效变化量';
     const liveGeneratedAt = d._live_generated_at || d.generated_at;
     const systemGeneratedAt = d._system_generated_at || null;
     const liveRefreshLabel = fmtDateTime(liveGeneratedAt, true);
-    const systemSnapshot = d._has_full_system ? fmtDateTime(systemGeneratedAt, true) : '等待 full 系统总账';
+    const systemSnapshot = d._has_full_system ? fmtDateTime(systemGeneratedAt, true) : '系统统计尚未加载';
     const systemCacheAgeSec = getEnergySystemAgeSeconds(d, liveGeneratedAt, systemGeneratedAt);
     const systemCacheAge = systemCacheAgeSec == null ? '—' : `${Math.floor(systemCacheAgeSec)} 秒前`;
     const cacheTtlSec = Number(d.cache_ttl_sec);
@@ -3420,68 +3414,14 @@ function renderEnergyDetail(input, options = {}) {
       && systemCacheAgeSec != null && systemCacheAgeSec > cacheTtlSec;
     const systemCacheWarn = !d._has_full_system || d.system_cache_stale === true || systemCacheExpired;
     const systemCacheState = !d._has_full_system
-      ? '等待 full 快照'
-      : (d.system_cache_stale === true ? 'stale fallback' : (systemCacheExpired ? 'TTL 已过，等待刷新' : '可用'));
-    const refreshMode = d._using_fast_live ? 'fast 实时刷新' : 'full 实时字段 + 系统快照';
-    const chargeDescBase = Number.isFinite(Number(charge.level)) ? `${charge.level}% · ${powerSourceLabel}` : powerSourceLabel;
-    const chargeDesc = `${chargeDescBase} · 实时 ${liveRefreshLabel}`;
-
-    frag.appendChild(metricGrid([
-      { label: '数据质量', value: qualityLabel(scope.quality), desc: scope.warning || '模块会话口径', cls: qualityMetric(scope.quality) },
-      { label: '当前会话', value: fmtMah(scope.used_mah), desc: `${fmtDuration(scope.elapsed_sec)} · ${Number(scope.level_drop || 0)}%`, cls: 'primary' },
-      { label: '当前状态', value: chargeStatusLabel, desc: chargeDesc, cls: chargeLike ? 'warn' : '' },
-      { label: '轻量刷新', value: liveRefreshLabel, desc: refreshMode },
-    ]));
-
-    const intro = document.createElement('div');
-    intro.style.cssText = 'margin-bottom:14px;font-size:13px;line-height:20px;color:var(--text-2)';
-    intro.textContent = '默认按“当前放电会话”和模块短窗口采样看趋势；打开弹窗后每 5 秒用 fast 路径刷新轻量字段，Android batterystats 分项保留最近 full 系统快照。';
-    frag.appendChild(intro);
-
-    frag.appendChild(heading('统计范围', '当前会话由模块维护，避免把长期 batterystats 累计误当成这一次切换后的结果。'));
-    const list0 = document.createElement('div'); list0.className = 'data-list';
-    list0.appendChild(row('默认口径', '当前放电会话', 'badge good'));
-    list0.appendChild(row('数据质量', qualityLabel(scope.quality), qualityBadge(scope.quality)));
-    list0.appendChild(row('当前状态', chargeStatusLabel, chargeLike ? 'badge warn' : 'badge off'));
-    list0.appendChild(row('外接电源', powerSourceLabel, externalPower ? 'badge warn' : 'badge good'));
-    list0.appendChild(row('充电污染', chargeLike ? `${powerSourceLabel} / ${chargeStatusLabel}` : '未见外接电源或充电 endpoint', chargeLike ? 'badge warn' : 'badge good'));
-    list0.appendChild(row('batterystats 对齐', comparable ? '同窗口可比较' : '不同窗口/未证实同窗口', comparable ? 'badge good' : 'badge warn'));
-    list0.appendChild(row('会话开始', fmtDateTime(scope.start_ts)));
-    list0.appendChild(row('已持续', fmtDuration(scope.elapsed_sec)));
-    list0.appendChild(row('电量变化', Number.isFinite(Number(scope.level_start)) && Number.isFinite(Number(scope.level_now))
-      ? `${scope.level_start}% → ${scope.level_now}% (消耗 ${Number(scope.level_drop || 0)}%)`
-      : '—'));
-    list0.appendChild(row('观测放电', fmtMah(scope.used_mah)));
-    list0.appendChild(row('最近重置原因', fmtSessionResetReason(scope.reset_reason)));
-    list0.appendChild(row('重置规则', esc(scope.reset_rule)));
-    list0.appendChild(row('口径提示', esc(scope.warning)));
-    list0.appendChild(row('轻量刷新时间', liveRefreshLabel, d._using_fast_live ? 'badge good' : 'badge off'));
-    frag.appendChild(list0);
-
-    frag.appendChild(heading('今日累计', '基于模块低频采样汇总，适合看今天到目前为止的大致收支。'));
-    const listToday = document.createElement('div'); listToday.className = 'data-list';
-    listToday.appendChild(row('今日起点', fmtDateTime(today.start_ts)));
-    listToday.appendChild(row('首个样本', fmtDateTime(today.window_start_ts)));
-    listToday.appendChild(row('观察时长', fmtDuration(today.elapsed_sec)));
-    listToday.appendChild(row('采样点', Number.isFinite(Number(today.samples)) ? `${today.samples} 个` : '0 个'));
-    listToday.appendChild(row('今日放电', fmtMah(today.discharge_mah)));
-    listToday.appendChild(row('今日回充', fmtMah(today.charge_mah)));
-    listToday.appendChild(row('净电量变化', fmtSignedPercent(today.net_level_delta), Number(today.net_level_delta) < 0 ? 'badge warn' : 'badge good'));
-    frag.appendChild(listToday);
-
+      ? '正在加载'
+      : (d.system_cache_stale === true ? '使用较早数据' : (systemCacheExpired ? '正在更新' : '正常'));
     const windows = Array.isArray(d.history_windows) ? d.history_windows : [];
-    frag.appendChild(heading('短窗口趋势', '每张卡会显示真实覆盖时长。混合充放电、接电 endpoint 或覆盖不足时只保留原始收支，不给出看似精确的平均功耗。'));
-    const listWin = document.createElement('div'); listWin.className = 'energy-window-grid';
-    if (!windows.length) {
-      const empty = document.createElement('div');
-      empty.className = 'energy-window-empty';
-      empty.textContent = '暂无短窗口数据';
-      listWin.appendChild(empty);
-    } else {
-      windows.forEach((win) => {
-        const min = Number(win.minutes);
-        const p = win.power || {};
-        const t = win.thermal || {};
+    const windowView = (win) => {
+      if (!win) return null;
+      const min = Number(win.minutes);
+      const p = win.power || {};
+      const t = win.thermal || {};
         const pSamples = Number(p.effective_samples ?? p.samples ?? 0);
         const tSamples = Number(t.samples || 0);
         const expectedSec = Number.isFinite(Number(p.expected_elapsed_sec))
@@ -3499,62 +3439,27 @@ function renderEnergyDetail(input, options = {}) {
         const trustedAverage = hasTrustedAverage
           ? p.trusted_for_average
           : (p.quality === 'pure_discharge' && coverageRatio >= 0.8 && pSamples >= 2);
-        const cardTone = trustedAverage ? 'good' : (p.quality === 'no_data' || p.quality === 'insufficient_samples' ? 'off' : 'warn');
-
-        const card = document.createElement('div');
-        card.className = `energy-window-card ${cardTone}`;
-
-        const head = document.createElement('div');
-        head.className = 'energy-window-head';
-        const title = document.createElement('div');
-        title.className = 'energy-window-title';
-        title.textContent = `近 ${min} 分钟`;
-        const quality = document.createElement('span');
-        quality.className = qualityBadge(p.quality);
-        quality.textContent = qualityLabel(p.quality);
-        head.append(title, quality);
-
-        const main = document.createElement('div');
-        main.className = 'energy-window-main';
-        const value = document.createElement('div');
-        value.className = 'energy-window-value';
-        const detail = document.createElement('div');
-        detail.className = 'energy-window-detail';
+        let value = '';
+        let detail = '';
         if (trustedAverage) {
-          value.textContent = fmtMilliwatt(p.avg_discharge_mw);
-          detail.textContent = `${fmtMahPerHour(p.avg_discharge_mah_per_h)} · 放电 ${fmtMah(p.discharge_mah)}`;
+          value = fmtMilliwatt(p.avg_discharge_mw);
+          detail = `${fmtMahPerHour(p.avg_discharge_mah_per_h)} · 实际放电 ${fmtMah(p.discharge_mah)}`;
         } else if (p.quality === 'mixed_charge_discharge') {
-          value.textContent = '混合充放电';
-          detail.textContent = `放电 ${fmtMah(p.discharge_mah)} · 回充 ${fmtMah(p.charge_mah)}`;
+          value = '混合收支';
+          detail = `放电 ${fmtMah(p.discharge_mah)} · 回充 ${fmtMah(p.charge_mah)}`;
         } else if (p.quality === 'charging_endpoint') {
-          value.textContent = '接电中';
-          detail.textContent = `放电 ${fmtMah(p.discharge_mah)} · 回充 ${fmtMah(p.charge_mah)}`;
+          value = '当前接电';
+          detail = `放电 ${fmtMah(p.discharge_mah)} · 回充 ${fmtMah(p.charge_mah)}`;
         } else if (p.quality === 'partial_window') {
-          value.textContent = '覆盖不足';
-          detail.textContent = '当前覆盖不足 80%，不计算可信平均功耗';
+          value = '覆盖不足';
+          detail = '覆盖未达到 80%，暂不显示平均功耗';
         } else if (p.quality === 'no_discharge_delta') {
-          value.textContent = '无放电差值';
-          detail.textContent = '电荷计未观察到可用放电变化';
+          value = '暂无变化';
+          detail = '电荷计未观察到可用放电差值';
         } else {
-          value.textContent = pSamples >= 2 ? qualityLabel(p.quality) : '采样不足';
-          detail.textContent = '等待更多有效电荷计样本';
+          value = pSamples >= 2 ? qualityLabel(p.quality) : '采样不足';
+          detail = '等待更多有效电荷计样本';
         }
-        main.append(value, detail);
-
-        const coverage = document.createElement('div');
-        coverage.className = 'energy-window-coverage';
-        const coverageText = document.createElement('div');
-        coverageText.className = 'energy-window-coverage-text';
-        coverageText.textContent = `覆盖 ${fmtDuration(coverageSec)} / ${fmtDuration(expectedSec)} · ${coveragePercent}%`;
-        const coverageBar = document.createElement('div');
-        coverageBar.className = 'energy-window-progress';
-        const coverageFill = document.createElement('span');
-        coverageFill.style.width = `${coveragePercent}%`;
-        coverageBar.appendChild(coverageFill);
-        coverage.append(coverageText, coverageBar);
-
-        const meta = document.createElement('div');
-        meta.className = 'energy-window-meta';
         const net = Number(p.net_discharge_mah);
         const netText = Number.isFinite(net)
           ? (net >= 0 ? `净放电 ${fmtMah(net)}` : `净回充 ${fmtMah(Math.abs(net))}`)
@@ -3564,87 +3469,269 @@ function renderEnergyDetail(input, options = {}) {
           && Number(p.window_start_ts) <= Number(p.start_ts);
         const baselineText = p.baseline_used === true
           ? '起点已补齐'
-          : (startsAtWindow ? '起点直接命中' : '起点 baseline 不足');
-        meta.textContent = `${netText} · ${pSamples} 个有效点 · ${baselineText}`;
-
-        const temp = document.createElement('div');
-        temp.className = 'energy-window-temp';
-        temp.textContent = tSamples >= 2
-          ? `温度 平均 ${fmtTempC(t.temp_avg_c)} · 最高 ${fmtTempC(t.temp_max_c)}`
-          : '温度样本不足';
-
-        card.append(head, main, coverage, meta, temp);
-        listWin.appendChild(card);
-      });
+          : (startsAtWindow ? '起点样本完整' : '起点样本不足');
+        return {
+          min, p, t, pSamples, tSamples, expectedSec, coverageSec, coveragePercent,
+          trustedAverage, tone: trustedAverage ? 'good' : qualityTone(p.quality), value, detail,
+          netText, baselineText
+        };
+    };
+    const views = windows.map(windowView).filter(Boolean);
+    if (!views.some((view) => view.min === state.energyDetail.activeWindowMinutes) && views.length) {
+      state.energyDetail.activeWindowMinutes = views.find((view) => view.min === 30)?.min || views[0].min;
     }
-    frag.appendChild(listWin);
+    const activeView = views.find((view) => view.min === state.energyDetail.activeWindowMinutes) || null;
+    const root = el('div', 'energy-overview');
 
-    frag.appendChild(heading('保存历史', '手动导出指定窗口的功耗与温度原始 CSV 到 /sdcard/Download，便于后续复盘。“本次窗口”从当前 WebUI 页面打开时间开始计算。'));
-    const exportWrap = document.createElement('div');
-    exportWrap.className = 'energy-export-actions';
+    const usedMah = Number(scope.used_mah);
+    const batteryLevel = Number(charge.level);
+    const hero = el('section', `energy-hero${chargeLike ? ' warn' : ''}`);
+    const heroCopy = el('div', 'energy-hero-copy');
+    const heroTop = el('div', 'energy-hero-top');
+    heroTop.append(el('span', 'energy-hero-kicker', '当前放电会话'), el('span', qualityBadge(scope.quality), qualityLabel(scope.quality)));
+    const heroValue = el('div', 'energy-hero-value');
+    heroValue.append(el('strong', '', Number.isFinite(usedMah) ? usedMah.toFixed(1) : '—'), el('span', '', 'mAh'));
+    const levelChange = Number.isFinite(Number(scope.level_start)) && Number.isFinite(Number(scope.level_now))
+      ? `${scope.level_start}% → ${scope.level_now}%`
+      : '电量变化 —';
+    heroCopy.append(heroTop, heroValue, el('div', 'energy-hero-meta', `${fmtDuration(scope.elapsed_sec)} · ${levelChange} · ${chargeStatusLabel}`));
+    const levelRing = el('div', 'energy-level-ring');
+    levelRing.style.setProperty('--energy-level', `${Math.max(0, Math.min(100, Number.isFinite(batteryLevel) ? batteryLevel : 0))}%`);
+    levelRing.append(el('strong', '', Number.isFinite(batteryLevel) ? `${batteryLevel}%` : '—'), el('small', '', powerSourceLabel));
+    hero.append(heroCopy, levelRing);
+    root.appendChild(hero);
+
+    if (activeView && activeView.p.quality !== 'pure_discharge') {
+      const warningMap = {
+        mixed_charge_discharge: '窗口内同时发生充电和放电，仅显示实际收支。',
+        charging_endpoint: `当前为${powerSourceLabel}，短窗口仅显示充放电收支。`,
+        partial_window: '窗口覆盖不足 80%，暂不显示平均功耗。',
+        insufficient_samples: '有效采样点不足，暂时只显示基础状态。',
+        no_discharge_delta: '电荷计暂未观察到放电差值，等待下一批采样。',
+        no_data: '暂未获得短窗口数据。'
+      };
+      const alert = el('div', `energy-alert ${activeView.tone}`);
+      alert.setAttribute('role', 'status');
+      alert.append(el('span', 'energy-alert-icon', '!'), el('span', '', warningMap[activeView.p.quality] || text(scope.warning)));
+      root.appendChild(alert);
+    }
+
+    const trend = el('section', 'energy-section');
+    trend.appendChild(sectionHead('最近趋势', '选择时间范围查看功耗与温度。'));
+    const rangeTabs = el('div', 'energy-range-tabs');
+    rangeTabs.setAttribute('role', 'group');
+    rangeTabs.setAttribute('aria-label', '功耗统计窗口');
+    views.forEach((view) => {
+      const button = el('button', `energy-range-btn ${view.tone}${view.min === state.energyDetail.activeWindowMinutes ? ' active' : ''}`, `${view.min} 分钟`);
+      button.type = 'button';
+      button.setAttribute('aria-pressed', view.min === state.energyDetail.activeWindowMinutes ? 'true' : 'false');
+      button.addEventListener('click', () => {
+        state.energyDetail.activeWindowMinutes = view.min;
+        renderEnergyDetail(state.energyDetail.liveData || input, { fullData: state.energyDetail.fullData });
+      });
+      rangeTabs.appendChild(button);
+    });
+    trend.appendChild(rangeTabs);
+    if (activeView) {
+      const focus = el('article', `energy-window-focus ${activeView.tone}`);
+      const focusHead = el('div', 'energy-window-focus-head');
+      const focusTitle = el('div', 'energy-window-focus-title');
+      focusTitle.append(el('span', '', activeView.trustedAverage ? '平均放电功耗' : qualityLabel(activeView.p.quality)), el('strong', '', activeView.value));
+      focusHead.append(focusTitle, el('span', qualityBadge(activeView.p.quality), qualityLabel(activeView.p.quality)));
+      focus.append(focusHead, el('div', 'energy-window-focus-desc', activeView.detail));
+      const miniGrid = el('div', 'energy-window-mini-grid');
+      [
+        ['实际放电', fmtMah(activeView.p.discharge_mah)],
+        ['回充', fmtMah(activeView.p.charge_mah)],
+        ['温度', activeView.tSamples >= 2 ? `${fmtTempC(activeView.t.temp_avg_c)} / ${fmtTempC(activeView.t.temp_max_c)}` : '—']
+      ].forEach(([label, value]) => {
+        const item = el('div', 'energy-window-mini');
+        item.append(el('span', '', label), el('strong', '', value));
+        miniGrid.appendChild(item);
+      });
+      focus.appendChild(miniGrid);
+      const coverage = el('div', 'energy-coverage');
+      const coverageCopy = el('div', 'energy-coverage-copy');
+      coverageCopy.append(el('span', '', `覆盖 ${fmtDuration(activeView.coverageSec)} / ${fmtDuration(activeView.expectedSec)}`), el('strong', '', `${activeView.coveragePercent}%`));
+      const bar = el('div', 'energy-coverage-bar');
+      const fill = el('span');
+      fill.style.width = `${activeView.coveragePercent}%`;
+      bar.appendChild(fill);
+      coverage.append(coverageCopy, bar, el('div', 'energy-window-footnote', `${activeView.netText} · ${activeView.pSamples} 个有效点 · ${activeView.baselineText}`));
+      focus.appendChild(coverage);
+      trend.appendChild(focus);
+    } else {
+      trend.appendChild(el('div', 'energy-empty', '暂无短窗口数据'));
+    }
+    root.appendChild(trend);
+
+    const daily = el('section', 'energy-section');
+    daily.appendChild(sectionHead('今日收支', `${fmtDuration(today.elapsed_sec)} · ${Number.isFinite(Number(today.samples)) ? today.samples : 0} 个采样点`));
+    const dailyGrid = el('div', 'energy-daily-grid');
+    [
+      ['放电', fmtMah(today.discharge_mah), ''],
+      ['回充', fmtMah(today.charge_mah), Number(today.charge_mah) > 0 ? 'warn' : ''],
+      ['净电量', fmtSignedPercent(today.net_level_delta), Number(today.net_level_delta) < 0 ? 'primary' : '']
+    ].forEach(([label, value, tone]) => {
+      const item = el('div', `energy-daily-item ${tone}`);
+      item.append(el('span', '', label), el('strong', '', value));
+      dailyGrid.appendChild(item);
+    });
+    daily.appendChild(dailyGrid);
+    root.appendChild(daily);
+
+    const rankList = (items, type) => {
+      const list = el('div', 'energy-rank-list');
+      const max = Math.max(...items.map((item) => Number(item.value) || 0), 1);
+      items.forEach((item, index) => {
+        const itemRow = el('div', 'energy-rank-row');
+        const marker = el('span', 'energy-rank-index', String(index + 1));
+        const copy = el('div', 'energy-rank-copy');
+        copy.append(el('strong', '', item.label), el('small', '', item.subtitle || (type === 'app' ? '系统模型估算' : '系统分项')));
+        const value = el('div', 'energy-rank-value', fmtMah(item.value));
+        const bar = el('div', 'energy-rank-bar');
+        const fill = el('span');
+        fill.style.width = `${Math.max(4, Math.min(100, ((Number(item.value) || 0) / max) * 100))}%`;
+        bar.appendChild(fill);
+        itemRow.append(marker, copy, value, bar);
+        list.appendChild(itemRow);
+      });
+      return list;
+    };
+    const packageAliases = {
+      'com.android.chrome': 'Chrome',
+      'com.google.android.apps.chrome': 'Chrome',
+      'com.google.android.apps.nexuslauncher': 'Pixel Launcher',
+      'com.android.systemui': '系统界面',
+      'com.google.android.gms': 'Google Play 服务',
+      'com.google.android.gsf': 'Google 服务框架',
+      'com.google.android.youtube': 'YouTube',
+      'com.tencent.mm': '微信',
+      'com.tencent.mobileqq': 'QQ',
+      'com.example.piliplus': 'PiliPlus',
+      'com.gtxfury.flyclash.smart': 'FlyClash',
+      'com.radolyn.ayugram': 'AyuGram',
+      'org.telegram.messenger': 'Telegram',
+      'com.instagram.android': 'Instagram',
+      'com.ss.android.ugc.aweme': '抖音',
+      'com.bilibili.app.in': '哔哩哔哩'
+    };
+    const packageLabel = (app) => {
+      const pkg = String(app.pkg || '');
+      if (app.label) return String(app.label);
+      if (pkg === 'android (root)') return 'Android 系统核心 (root)';
+      if (pkg === 'android (system)') return 'Android 系统服务 (system)';
+      if (pkg === 'android (radio)') return '电话与基带服务 (radio)';
+      if (/^u\d+[ai]\d+$/.test(pkg)) return '已卸载或未知应用';
+      if (pkg.includes(', ')) return '共享 UID 应用';
+      if (packageAliases[pkg]) return packageAliases[pkg];
+      if (!pkg) return '已卸载或未知应用';
+      if (!pkg.includes('.')) return pkg;
+      const tail = pkg.split('.').filter(Boolean).pop() || pkg;
+      return tail.replace(/[_-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+    };
+    const apps = Array.isArray(d.apps) ? d.apps.map((app) => {
+      const pkg = String(app.pkg || '');
+      const legacyUid = /^u\d+[ai]\d+$/.test(pkg) ? pkg : '';
+      const uid = String(app.uid || legacyUid || (Number.isFinite(Number(app.uid_num)) ? `UID ${app.uid_num}` : 'UID 未知'));
+      const displayPkg = legacyUid ? '' : pkg;
+      const subtitle = displayPkg ? `${displayPkg} · ${uid}` : `${uid} · 未找到当前安装包`;
+      return { label: packageLabel(app), subtitle, value: Number(app.mah) || 0 };
+    }).filter((app) => app.value > 0) : [];
+    const components = [
+      { label: '屏幕', value: Number(d.screen) || 0 },
+      { label: 'CPU', value: Number(d.cpu) || 0 },
+      { label: 'Wi-Fi', value: Number(d.wifi) || 0 },
+      { label: '唤醒锁', value: Number(d.wakelock) || 0 }
+    ].filter((item) => item.value > 0).sort((a, b) => b.value - a.value);
+    const attribution = el('section', 'energy-section');
+    attribution.appendChild(sectionHead('耗电构成', d._has_full_system ? `系统统计更新于 ${systemCacheAge}` : '正在加载系统统计'));
+    if (d._has_full_system) {
+      const groups = el('div', 'energy-attribution-grid');
+      const appGroup = el('div', 'energy-attribution-group');
+      appGroup.appendChild(el('div', 'energy-group-title', '耗电应用'));
+      appGroup.appendChild(apps.length ? rankList(apps.slice(0, 3), 'app') : el('div', 'energy-empty compact', '暂无应用归因'));
+      const systemGroup = el('div', 'energy-attribution-group');
+      systemGroup.appendChild(el('div', 'energy-group-title', '系统分项'));
+      systemGroup.appendChild(components.length ? rankList(components.slice(0, 4), 'system') : el('div', 'energy-empty compact', '暂无系统分项'));
+      groups.append(appGroup, systemGroup);
+      attribution.appendChild(groups);
+    } else {
+      attribution.appendChild(el('div', 'energy-loading-card', '正在加载系统分项和应用排行。'));
+    }
+    const modemNote = el('div', `energy-modem-note ${odpm.total_mah != null ? 'good' : 'off'}`);
+    modemNote.append(el('strong', '', '蜂窝'), el('span', '', odpm.total_mah != null ? odpmValue : '蜂窝数据暂不可用；系统模型偏差较大，已从排行中排除。'));
+    attribution.appendChild(modemNote);
+    root.appendChild(attribution);
+
+    const technical = el('section', 'energy-section energy-technical');
+    technical.appendChild(sectionHead('更多统计', '查看数据口径、系统模型和历史导出。'));
+    const scopeBody = el('div', 'energy-disclosure-body');
+    const scopeList = el('div', 'data-list');
+    scopeList.append(
+      row('默认口径', '当前放电会话', 'badge good'),
+      row('数据质量', qualityLabel(scope.quality), qualityBadge(scope.quality)),
+      row('当前状态', chargeStatusLabel, chargeLike ? 'badge warn' : 'badge off'),
+      row('外接电源', powerSourceLabel, externalPower ? 'badge warn' : 'badge good'),
+      row('会话开始', fmtDateTime(scope.start_ts)),
+      row('最近重置原因', fmtSessionResetReason(scope.reset_reason)),
+      row('重置规则', text(scope.reset_rule)),
+      row('口径提示', scope.quality === 'charging_endpoint' ? `当前为${powerSourceLabel}，不代表此前待机状态` : qualityLabel(scope.quality)),
+      row('今日起点', fmtDateTime(today.start_ts)),
+      row('今日首个样本', fmtDateTime(today.window_start_ts)),
+      row('轻量刷新时间', liveRefreshLabel, d._using_fast_live ? 'badge good' : 'badge off')
+    );
+    scopeBody.appendChild(scopeList);
+    technical.appendChild(disclosure('scope', '数据口径', `${qualityLabel(scope.quality)} · ${chargeStatusLabel}`, scopeBody));
+
+    const systemBody = el('div', 'energy-disclosure-body');
+    const systemList = el('div', 'data-list');
+    systemList.append(
+      row('系统窗口', fmtBatterystatsWindow(bs.window_label)),
+      row('统计窗口', comparable ? '一致，可比较' : '不一致或未知', comparable ? 'badge good' : 'badge warn'),
+      row('模型质量', modelQualityLabel(bs.model_quality), radioUntrusted ? 'badge warn' : 'badge off'),
+      row('系统统计时间', systemSnapshot, d._has_full_system ? 'data-val' : 'badge warn'),
+      row('数据更新时间', systemCacheAge, systemCacheWarn ? 'badge warn' : 'badge off'),
+      row('数据状态', systemCacheState, systemCacheWarn ? 'badge warn' : 'badge good'),
+      row('刷新周期', Number.isFinite(Number(d.cache_ttl_sec)) ? `${d.cache_ttl_sec} 秒` : '—'),
+      row('电池容量', `${text(d.cap)} mAh`),
+      row('预估耗电', `${text(d.drain)} mAh`),
+      row('亮屏耗电', `${text(d.scron)} mAh`),
+      row('息屏耗电', `${text(d.scroff)} mAh`),
+      row('屏幕', `${text(d.screen)} mAh`),
+      row('CPU', `${text(d.cpu)} mAh`),
+      row('Wi-Fi', `${text(d.wifi)} mAh`),
+      row('唤醒锁', `${text(d.wakelock)} mAh`),
+      row('蜂窝硬件计量 (ODPM)', odpmValue, odpm.total_mah != null ? 'data-val' : 'badge off'),
+      row('蜂窝系统估算', `${text(d.cell)} mAh · 仅供参考`, radioUntrusted ? 'badge warn' : 'badge off'),
+      row('蜂窝说明', text(bs.radio_note))
+    );
+    systemBody.appendChild(systemList);
+    if (apps.length) {
+      systemBody.appendChild(el('div', 'energy-group-title detail', `全部应用归因 Top ${apps.length}`));
+      systemBody.appendChild(rankList(apps, 'app'));
+    }
+    technical.appendChild(disclosure('system', '系统耗电估算', d._has_full_system ? `${text(d.drain)} mAh · ${systemCacheAge}` : '正在加载', systemBody));
+
+    const exportBody = el('div', 'energy-disclosure-body');
+    exportBody.appendChild(el('p', 'energy-export-note', '将指定窗口的功耗与温度原始 CSV 保存到 /sdcard/Download；“本次窗口”从打开当前页面时开始。'));
+    const exportWrap = el('div', 'energy-export-actions');
     [15, 30, 60].forEach((min) => {
-      const btn = document.createElement('button');
+      const btn = el('button', 'tiny-btn', `保存 ${min} 分钟`);
       btn.type = 'button';
-      btn.className = 'tiny-btn';
-      btn.textContent = `保存${min}分钟`;
       btn.addEventListener('click', () => exportHistoryWindow(min, btn));
       exportWrap.appendChild(btn);
     });
-    const sessionBtn = document.createElement('button');
+    const sessionBtn = el('button', 'tiny-btn', '保存本次窗口');
     sessionBtn.type = 'button';
-    sessionBtn.className = 'tiny-btn';
-    sessionBtn.textContent = '保存本次窗口';
     sessionBtn.addEventListener('click', () => exportHistoryWindow('session', sessionBtn));
     exportWrap.appendChild(sessionBtn);
-    frag.appendChild(exportWrap);
+    exportBody.appendChild(exportWrap);
+    technical.appendChild(disclosure('export', '历史与导出', '导出 15/30/60 分钟或本次窗口 CSV', exportBody));
+    root.appendChild(technical);
 
-    frag.appendChild(heading('Android batterystats', `${esc(bs.note)} Pixel/Exynos 的 mobile_radio 绝对 mAh 可能明显偏高；本区保留最近 full 系统快照，轻量字段单独实时刷新。`));
-    const listBs = document.createElement('div'); listBs.className = 'data-list';
-    listBs.appendChild(row('系统窗口', fmtBatterystatsWindow(bs.window_label)));
-    listBs.appendChild(row('模块会话对齐', comparable ? '同窗口可比较' : '不同窗口/未证实同窗口', comparable ? 'badge good' : 'badge warn'));
-    listBs.appendChild(row('模型质量', modelQualityLabel(bs.model_quality), radioUntrusted ? 'badge warn' : 'badge off'));
-    listBs.appendChild(row('radio 提示', esc(bs.radio_note)));
-    listBs.appendChild(row('Daily stats', esc(bs.daily_label)));
-    listBs.appendChild(row('在电池上时长', esc(bs.time_on_battery || d.bat_time)));
-    listBs.appendChild(row('系统分项快照', systemSnapshot, d._has_full_system ? 'data-val' : 'badge warn'));
-    listBs.appendChild(row('系统快照年龄', systemCacheAge, systemCacheWarn ? 'badge warn' : 'badge off'));
-    listBs.appendChild(row('系统缓存状态', systemCacheState, systemCacheWarn ? 'badge warn' : 'badge good'));
-    listBs.appendChild(row('轻量刷新时间', liveRefreshLabel, d._using_fast_live ? 'badge good' : 'badge off'));
-    listBs.appendChild(row('缓存有效期', Number.isFinite(Number(d.cache_ttl_sec)) ? `${d.cache_ttl_sec} 秒` : '—'));
-    frag.appendChild(listBs);
-
-    frag.appendChild(heading('Android 功耗估算', '下面这些系统分项和 Top 应用来自最近 full batterystats 模型快照；fast 刷新不会用 0 覆盖本区。'));
-    const list1 = document.createElement('div'); list1.className = 'data-list';
-    list1.appendChild(row('当前电量', Number.isFinite(Number(charge.level)) ? `${charge.level}%` : '—'));
-    list1.appendChild(row('当前电源', powerSourceLabel, externalPower ? 'badge warn' : 'badge good'));
-    list1.appendChild(row('系统分项快照', systemSnapshot, d._has_full_system ? 'data-val' : 'badge warn'));
-    list1.appendChild(row('电池容量', esc(d.cap) + ' mAh'));
-    list1.appendChild(row('预估耗电', esc(d.drain) + ' mAh'));
-    list1.appendChild(row('亮屏耗电', esc(d.scron) + ' mAh'));
-    list1.appendChild(row('息屏耗电', esc(d.scroff) + ' mAh'));
-    list1.appendChild(row('系统统计时长', esc(d.bat_time)));
-    frag.appendChild(list1);
-    frag.appendChild(heading('系统分项 (mAh)', 'ODPM 为模块会话口径；Android mobile_radio 为模型估算，异常时只作失真参考。'));
-    const list2 = document.createElement('div'); list2.className = 'data-list';
-    list2.appendChild(row('屏幕', esc(d.screen)));
-    list2.appendChild(row('CPU', esc(d.cpu)));
-    list2.appendChild(row('蜂窝 ODPM 实测（模块会话）', odpmValue, odpm.total_mah != null ? 'data-val' : 'badge off'));
-    list2.appendChild(row('ODPM 说明', esc(odpm.note || '模块 session delta，不等于 batterystats 窗口')));
-    list2.appendChild(row('蜂窝 Android 模型估算', esc(d.cell) + ' mAh · mobile_radio 失真参考', radioUntrusted ? 'badge warn' : 'badge off'));
-    list2.appendChild(row('WiFi', esc(d.wifi)));
-    list2.appendChild(row('唤醒锁', esc(d.wakelock)));
-    frag.appendChild(list2);
-    if (d.apps && d.apps.length) {
-      frag.appendChild(heading('高耗电应用 Top ' + d.apps.length, 'UID mAh 是 batterystats 模型归因，不是硬件电表；VPN、AudioMix 或历史归账可能集中到某个 UID。'));
-      const list3 = document.createElement('div'); list3.className = 'data-list';
-      d.apps.forEach((app, i) => {
-        const name = String(app.pkg || '');
-        list3.appendChild(row((i + 1) + '. ' + name, esc(app.mah) + ' mAh', 'badge ' + (app.mah > 200 ? 'warn' : 'off')));
-      });
-      frag.appendChild(list3);
-    }
     refs.detailBody.replaceChildren();
-    refs.detailBody.appendChild(frag);
+    refs.detailBody.appendChild(root);
     refs.detailBody.style.opacity = '0';
     void refs.detailBody.offsetWidth;
     refs.detailBody.style.opacity = '1';
@@ -3703,8 +3790,10 @@ async function openEnergyDetail() {
   state.energyDetail.liveData = null;
   const requestId = state.energyDetail.requestId;
   refs.detailTitle.textContent = '功耗统计';
-  setStaticHtml(refs.detailBody, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在读取实时字段，随后补充系统快照…</div>');
+  setStaticHtml(refs.detailBody, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在加载功耗数据…</div>');
+  refs.detailModal.classList.add('energy-mode');
   refs.detailModal.classList.add('open');
+  pushModalState('detail');
   queueNextPoll(computeNextPollDelay());
   try {
     const live = await fetchEnergyFastDetail();

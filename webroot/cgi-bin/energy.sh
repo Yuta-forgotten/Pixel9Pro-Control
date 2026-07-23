@@ -702,7 +702,11 @@ else
 fi
 
 if [ "$_build_system_snapshot" -eq 1 ]; then
-    pm list packages -U 2>/dev/null > "${_tmp}_pkg"
+    # 先把 PackageManager 输出规范化为 uid|package，避免 Android awk 对
+    # "package:... uid:..." 的多字符 split 在部分 toybox 版本上漏映射。
+    pm list packages -U 2>/dev/null \
+        | sed -n 's/^package:\(.*\) uid:\([0-9][0-9]*\)$/\2|\1/p' \
+        > "${_tmp}_pkg"
 
     dumpsys batterystats 2>/dev/null | awk '
 /^Statistics since last charge:/ && !seen_win { print "WIN:" $0; seen_win=1 }
@@ -721,9 +725,12 @@ if [ "$_build_system_snapshot" -eq 1 ]; then
     _core_json=$(awk -v pkgfile="${_tmp}_pkg" '
     BEGIN {
         while ((getline line < pkgfile) > 0) {
-            sub(/^package:/, "", line)
-            split(line, p, " uid:")
-            if (p[2] + 0 > 0) pm[p[2] + 0] = p[1]
+            split(line, p, "|")
+            uid = p[1] + 0
+            if (uid > 0 && p[2] != "") {
+                if (pm[uid] == "") pm[uid] = p[2]
+                else if (index("," pm[uid] ",", "," p[2] ",") == 0) pm[uid] = pm[uid] ", " p[2]
+            }
         }
         close(pkgfile)
         an = 0
@@ -756,16 +763,42 @@ if [ "$_build_system_snapshot" -eq 1 ]; then
         uid_s = w[2]
         gsub(/:/, "", uid_s)
         mah = w[3] + 0
-        if (index(uid_s, "u0a") == 1) { n = uid_s; sub(/u0a/, "", n); n = n + 10000 }
-        else { n = uid_s + 0 }
+        uid_label = ""
+        if (uid_s ~ /^u[0-9]+a[0-9]+$/) {
+            uid_part = uid_s
+            sub(/^u/, "", uid_part)
+            user_id = uid_part
+            sub(/a.*/, "", user_id)
+            app_id = uid_part
+            sub(/^[0-9]+a/, "", app_id)
+            n = (user_id + 0) * 100000 + 10000 + (app_id + 0)
+        } else if (uid_s ~ /^u[0-9]+i[0-9]+$/) {
+            uid_part = uid_s
+            sub(/^u/, "", uid_part)
+            user_id = uid_part
+            sub(/i.*/, "", user_id)
+            isolated_id = uid_part
+            sub(/^[0-9]+i/, "", isolated_id)
+            n = (user_id + 0) * 100000 + 99000 + (isolated_id + 0)
+            uid_label = "应用隔离进程"
+        } else { n = uid_s + 0 }
         pk = pm[n]
-        if (pk == "") {
-            if (n == 0) pk = "android (root)"
-            else if (n == 1000) pk = "android (system)"
-            else if (n == 1001) pk = "android (radio)"
-            else pk = uid_s
-        }
+        label = uid_label
+        if (n == 0) { pk = "android"; label = "Android 系统核心 (root)" }
+        else if (n == 1000) { pk = "android"; label = "Android 系统服务 (system)" }
+        else if (n == 1001) { pk = "android.radio"; label = "电话与基带服务 (radio)" }
+        else if (n == 1002) { pk = "android.bluetooth"; label = "蓝牙系统服务" }
+        else if (n == 1003) { pk = "android.graphics"; label = "图形系统服务" }
+        else if (n == 1006) { pk = "android.camera"; label = "相机系统服务" }
+        else if (n == 1013) { pk = "android.media"; label = "媒体系统服务" }
+        else if (n == 1019) { pk = "android.drm"; label = "DRM 系统服务" }
+        else if (n == 1027) { pk = "android.nfc"; label = "NFC 系统服务" }
+        else if (n == 2000) { pk = "android.shell"; label = "ADB / Shell" }
+        else if (pk == "" && label == "") { pk = ""; label = "已卸载或未知应用" }
         ap[an] = pk
+        al[an] = label
+        au[an] = uid_s
+        ai[an] = n
         am[an] = mah
         an++
         next
@@ -780,7 +813,15 @@ if [ "$_build_system_snapshot" -eq 1 ]; then
         for (i = 0; i < top; i++) {
             if (i) printf ","
             gsub(/"/, "\\\"", ap[i])
-            printf "{\"pkg\":\"%s\",\"mah\":%.0f}", ap[i], am[i]
+            gsub(/"/, "\\\"", al[i])
+            gsub(/"/, "\\\"", au[i])
+            printf "{\"uid\":\"%s\",\"uid_num\":%s,\"pkg\":", au[i], ai[i]
+            if (ap[i] != "") printf "\"%s\"", ap[i]
+            else printf "null"
+            printf ",\"label\":", al[i]
+            if (al[i] != "") printf "\"%s\"", al[i]
+            else printf "null"
+            printf ",\"mah\":%.0f}", am[i]
         }
         printf "]}"
     }
