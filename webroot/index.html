@@ -56,14 +56,12 @@
         </article>
 
         <div class="section-block">
-          <div class="section-head">
-            <div class="section-copy">
-              <div class="kicker">实时监控</div>
-              <div class="section-title">当前状态</div>
-            </div>
+          <div class="section-intro">
+            <div class="section-title">设备概览</div>
+            <div class="section-sub">温度、内存与功耗状态集中显示。</div>
           </div>
 
-          <article class="surface-card">
+          <article class="surface-card overview-card">
             <div class="panel-head">
               <div class="panel-copy">
                 <div class="panel-title">机身温度</div>
@@ -88,7 +86,7 @@
             </div>
           </article>
 
-          <article class="surface-card">
+          <article class="surface-card overview-card">
             <div class="panel-head">
               <div class="panel-copy">
                 <div class="panel-title">内存与系统</div>
@@ -97,19 +95,29 @@
                 <button class="tiny-btn tonal" id="energy-btn" type="button">功耗统计</button>
               </div>
             </div>
-            <div class="mini-list">
-              <div class="mini-row"><span>可用内存</span><strong id="rt-mem-avail">—</strong></div>
-              <div class="mini-row"><span>物理内存</span><strong id="rt-mem-total">—</strong></div>
-              <div class="mini-row"><span>ZRAM 占用</span><strong id="rt-zram-usage">—</strong></div>
-              <div class="mini-row"><span>压缩率 / 实占</span><strong id="rt-ratio">—</strong></div>
-              <div class="mini-row"><span>Swap 可用</span><strong id="rt-swap-free">—</strong></div>
-              <div class="mini-row"><span>运行时间</span><strong id="rt-uptime">—</strong></div>
-              <div class="mini-row"><span>WebUI 内存</span><strong id="rt-webui-mem">—</strong></div>
+            <div class="summary-grid">
+              <div class="summary-item"><span>可用内存</span><strong id="rt-mem-avail">—</strong></div>
+              <div class="summary-item"><span>ZRAM 占用</span><strong id="rt-zram-usage">—</strong></div>
+              <div class="summary-item"><span>运行时间</span><strong id="rt-uptime">—</strong></div>
             </div>
+            <details class="disclosure compact">
+              <summary class="disclosure-summary">
+                <span class="disclosure-copy"><strong>更多内存信息</strong><small>物理内存、压缩与 WebUI 占用</small></span>
+                <span class="disclosure-chevron" aria-hidden="true">›</span>
+              </summary>
+              <div class="disclosure-body">
+                <div class="mini-list">
+                  <div class="mini-row"><span>物理内存</span><strong id="rt-mem-total">—</strong></div>
+                  <div class="mini-row"><span>压缩率 / 实占</span><strong id="rt-ratio">—</strong></div>
+                  <div class="mini-row"><span>Swap 可用</span><strong id="rt-swap-free">—</strong></div>
+                  <div class="mini-row"><span>WebUI 内存</span><strong id="rt-webui-mem">—</strong></div>
+                </div>
+              </div>
+            </details>
           </article>
         </div>
 
-        <article class="surface-card">
+        <article class="surface-card overview-card">
           <div class="panel-head">
             <div class="panel-copy">
               <div class="panel-title">CPU 实时频率</div>
@@ -122,16 +130,21 @@
           </div>
         </article>
 
-        <article class="surface-card">
-          <div class="kicker">设备信息</div>
-          <div class="data-list" style="margin-top:10px">
-            <div class="data-row"><span class="data-key">设备</span><span class="data-val" id="info-model">—</span></div>
-            <div class="data-row"><span class="data-key">系统</span><span class="data-val" id="info-android">—</span></div>
-            <div class="data-row"><span class="data-key">内核</span><span class="data-val" id="info-kernel">—</span></div>
-            <div class="data-row"><span class="data-key">模块</span><span class="data-val" id="info-module">—</span></div>
-            <div class="data-row"><span class="data-key">作者</span><span class="data-val">Yuta</span></div>
+        <details class="disclosure">
+          <summary class="disclosure-summary">
+            <span class="disclosure-copy"><strong>设备信息</strong><small>系统、内核与模块版本</small></span>
+            <span class="disclosure-chevron" aria-hidden="true">›</span>
+          </summary>
+          <div class="disclosure-body">
+            <div class="data-list">
+              <div class="data-row"><span class="data-key">设备</span><span class="data-val" id="info-model">—</span></div>
+              <div class="data-row"><span class="data-key">系统</span><span class="data-val" id="info-android">—</span></div>
+              <div class="data-row"><span class="data-key">内核</span><span class="data-val" id="info-kernel">—</span></div>
+              <div class="data-row"><span class="data-key">模块</span><span class="data-val" id="info-module">—</span></div>
+              <div class="data-row"><span class="data-key">作者</span><span class="data-val">Yuta</span></div>
+            </div>
           </div>
-        </article>
+        </details>
 
         <div class="log-card" id="log-card">
           <div class="log-toggle" id="log-toggle">
@@ -147,7 +160,7 @@
 
     <section class="tab-page" id="page-tune" data-tab="tune">
       <div class="page-stack">
-        <article class="summary-card">
+        <article class="page-hero compact">
           <div class="kicker">当前策略</div>
           <div class="summary-title" id="perf-current-name">读取中…</div>
           <div class="summary-desc" id="perf-current-desc">正在读取当前性能模式。</div>
@@ -156,19 +169,21 @@
             <button class="seg-btn" id="profile-policy-auto-btn" type="button">自动</button>
           </div>
           <div class="section-sub" id="perf-policy-desc" style="margin-top:10px">读取当前调度策略…</div>
-          <div class="ctrl-row" style="margin-top:14px">
-            <div class="ctrl-copy">
-              <div class="ctrl-label">调度接管</div>
-              <div class="ctrl-val" id="sched-owner-label">读取中</div>
+          <div class="preference-group">
+            <div class="ctrl-row">
+              <div class="ctrl-copy">
+                <div class="ctrl-label">调度接管</div>
+                <div class="ctrl-val" id="sched-owner-label">读取中</div>
+              </div>
+              <button class="tiny-btn" id="sched-owner-toggle-btn" type="button"><span id="sched-owner-toggle-label">读取中…</span></button>
             </div>
-            <button class="tiny-btn" id="sched-owner-toggle-btn" type="button"><span id="sched-owner-toggle-label">读取中…</span></button>
-          </div>
-          <div class="ctrl-row" id="owner-arbiter-row" style="margin-top:10px" hidden>
-            <div class="ctrl-copy">
-              <div class="ctrl-label">owner 仲裁</div>
-              <div class="ctrl-val" id="owner-arbiter-label">检测到 fas-rs，可手动唤醒 owner</div>
+            <div class="ctrl-row" id="owner-arbiter-row" hidden>
+              <div class="ctrl-copy">
+                <div class="ctrl-label">调度协调</div>
+                <div class="ctrl-val" id="owner-arbiter-label">外部调度器可立即检查接管状态</div>
+              </div>
+              <button class="tiny-btn tonal" id="owner-arbiter-tick-btn" type="button"><span id="owner-arbiter-tick-label">立即检查</span></button>
             </div>
-            <button class="tiny-btn tonal" id="owner-arbiter-tick-btn" type="button"><span id="owner-arbiter-tick-label">唤醒 owner</span></button>
           </div>
         </article>
 
@@ -195,15 +210,18 @@
           <div class="section-copy">
             <div class="kicker">性能模式</div>
             <div class="section-title">调度策略</div>
-            <div class="section-sub">通过 cpuset 核心分配和 sched_pixel 响应时间控制升频行为，点击卡片切换。</div>
+            <div class="section-sub">选择日常性能取向。技术参数可在详情中查看。</div>
           </div>
           <div class="profile-list" id="profile-list"></div>
         </div>
 
-        <article class="note-card">
-          <div class="note-title">调度原理 · 模式说明</div>
-          <div class="note-body">基于 cpuset 核心分配与 sched_pixel 响应时间调节升频，不写 scaling_max_freq。本模块提供省电、均衡、系统默认三档（系统默认回写内核只读节点 response_time_ms_nom 恢复出厂升频节奏，并还原出厂 cpuset 与 uclamp.min cap=1024）；自动模式以均衡为日常底座，温度持续偏高时收口至省电，回落后恢复。需要游戏级线程调度时，在「调度接管」切换至 UGT / fas-rs / 外部调度。</div>
-        </article>
+        <details class="disclosure">
+          <summary class="disclosure-summary">
+            <span class="disclosure-copy"><strong>调度说明</strong><small>自动策略、系统默认与外部调度</small></span>
+            <span class="disclosure-chevron" aria-hidden="true">›</span>
+          </summary>
+          <div class="disclosure-body support-copy">省电与均衡会调整核心分配和升频节奏；系统默认恢复内核原厂设置。自动模式仅在均衡与省电之间切换。游戏级线程调度可交由 UGT、fas-rs 或其他外部调度器接管。</div>
+        </details>
 
         <div class="section-head" style="margin-top:6px">
           <div class="section-copy">
@@ -212,7 +230,7 @@
           </div>
         </div>
 
-        <article class="summary-card">
+        <article class="page-hero compact secondary">
           <div class="kicker">当前档位</div>
           <div class="summary-title" id="thermal-current-name">日常推荐</div>
           <div class="summary-desc" id="thermal-current-desc">默认采用 +4°C 阈值放宽，兼顾性能表现与机身温度。</div>
@@ -261,21 +279,22 @@
           <div class="section-copy">
             <div class="kicker">温控阈值</div>
             <div class="section-title">档位选择</div>
-            <div class="section-sub">点击卡片切换，点右侧详情按钮查看说明。</div>
+            <div class="section-sub">选择温控介入时机。数值越高，性能释放越积极。</div>
           </div>
           <div class="profile-list" id="thermal-list"></div>
         </div>
 
-        <article class="note-card">
-          <div class="note-title">安全提示</div>
-          <div class="note-body">55/59°C 安全阈值保持不变。阈值放宽越多，性能释放越积极，但机身体感温度也会更快上升。</div>
-        </article>
+        <div class="inline-alert warn"><strong>安全阈值保持不变</strong><span>放宽温控会提高机身温度，但不会修改 55/59°C 安全阈值。</span></div>
       </div>
     </section>
 
     <section class="tab-page" id="page-network" data-tab="network">
       <div class="page-stack">
-        <article class="surface-card">
+        <div class="section-intro">
+          <div class="section-title">网络设置</div>
+          <div class="section-sub">常用策略直接控制，技术状态按需查看。</div>
+        </div>
+        <article class="surface-card preference-card">
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">网络能力</div>
@@ -289,12 +308,13 @@
           <div class="uecap-btn-group" id="uecap-btn-group">
             <div class="skel" style="height:40px"></div>
           </div>
-          <div class="data-list" id="uecap-rows" style="margin-top:14px">
-            <div class="skel" style="height:48px"></div>
-          </div>
+          <details class="disclosure compact">
+            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>当前配置</strong><small>选择结果与生效校验</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
+            <div class="disclosure-body"><div class="data-list" id="uecap-rows"><div class="skel" style="height:48px"></div></div></div>
+          </details>
         </article>
 
-        <article class="surface-card" id="baseband-card">
+        <article class="surface-card preference-card" id="baseband-card">
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">基带模块</div>
@@ -306,49 +326,56 @@
               <button class="tiny-btn tonal" id="baseband-refresh-btn" type="button">刷新</button>
             </div>
           </div>
-          <div class="data-list" id="baseband-rows" style="margin-top:14px">
-            <div class="skel" style="height:48px"></div>
-          </div>
+          <details class="disclosure compact">
+            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>模块状态</strong><small>版本、通话能力与运营商配置</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
+            <div class="disclosure-body"><div class="data-list" id="baseband-rows"><div class="skel" style="height:48px"></div></div></div>
+          </details>
         </article>
 
-        <article class="surface-card">
+        <article class="surface-card preference-card">
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">蜂窝省电</div>
               <div class="panel-title">NR 息屏降级</div>
-              <div class="panel-desc" id="nr-switch-desc">息屏 5 分钟后将网络模式从 NR 切到 LTE，降低 modem 射频功耗。亮屏自动恢复，热点开启时跳过。</div>
+              <div class="panel-desc" id="nr-switch-desc">息屏 5 分钟后切换至 LTE，亮屏自动恢复。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn tonal" id="nr-switch-detail-btn" type="button">详情</button>
               <button class="tiny-btn primary" id="nr-switch-toggle-btn" type="button"><span id="nr-switch-toggle-label">读取中…</span></button>
             </div>
           </div>
-          <div class="data-list" id="nr-switch-rows" style="margin-top:14px">
-            <div class="skel" style="height:48px"></div>
-          </div>
+          <details class="disclosure compact">
+            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>运行状态</strong><small>当前网络模式与恢复设置</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
+            <div class="disclosure-body"><div class="data-list" id="nr-switch-rows"><div class="skel" style="height:48px"></div></div></div>
+          </details>
         </article>
 
-        <article class="surface-card">
+        <article class="surface-card preference-card">
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">副卡槽策略</div>
               <div class="panel-title">SIM2 空槽管理</div>
-              <div class="panel-desc" id="sim2-auto-desc">单卡用户建议开启：息屏时减少 modem 实例数，消除空槽搜网开销。双卡用户请保持关闭。</div>
+              <div class="panel-desc" id="sim2-auto-desc">单卡设备可在息屏时停用空槽实例。双卡设备请保持关闭。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn primary" id="sim2-auto-toggle-btn" type="button"><span id="sim2-auto-toggle-label">读取中…</span></button>
             </div>
           </div>
-          <div class="data-list" id="sim2-auto-rows" style="margin-top:14px">
-            <div class="skel" style="height:48px"></div>
-          </div>
+          <details class="disclosure compact">
+            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>运行状态</strong><small>适用场景与当前行为</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
+            <div class="disclosure-body"><div class="data-list" id="sim2-auto-rows"><div class="skel" style="height:48px"></div></div></div>
+          </details>
         </article>
       </div>
     </section>
 
     <section class="tab-page" id="page-system" data-tab="system">
       <div class="page-stack">
-        <article class="surface-card">
+        <div class="section-intro">
+          <div class="section-title">系统设置</div>
+          <div class="section-sub">日常功能优先显示，高级诊断集中收纳。</div>
+        </div>
+        <article class="surface-card preference-card">
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">内存优化</div>
@@ -361,17 +388,18 @@
               <button class="tiny-btn primary" id="swap-toggle-btn" type="button"><span id="swap-toggle-label">读取中…</span></button>
             </div>
           </div>
-          <div class="data-list" id="swap-rows" style="margin-top:14px">
-            <div class="skel" style="height:140px"></div>
-          </div>
+          <details class="disclosure compact">
+            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>当前参数</strong><small>ZRAM 与内存回收设置</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
+            <div class="disclosure-body"><div class="data-list" id="swap-rows"><div class="skel" style="height:140px"></div></div></div>
+          </details>
         </article>
 
-        <article class="surface-card">
+        <article class="surface-card preference-card">
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">后台功耗控制</div>
               <div class="panel-title">后台应用限制</div>
-              <div class="panel-desc" id="bg-restrict-desc">按包选择后台策略。默认仅预置抖音；休眠是在离开前台后延迟 force-stop + App Standby/AppOps，不是网络防火墙或永久杀死。</div>
+              <div class="panel-desc" id="bg-restrict-desc">离开前台后，按所选延时限制应用的后台活动。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn tonal" id="bg-restrict-refresh-btn" type="button">刷新</button>
@@ -396,42 +424,53 @@
             </select>
             <button class="tiny-btn primary" id="bg-restrict-add-btn" type="button">添加</button>
           </div>
-          <div class="note-card" style="margin-top:14px">
-            <div class="note-title">使用说明</div>
-            <div class="note-body">将需要治理的应用包名加入列表后，可按包选择限制层级。休眠会在目标 App 锁屏或离开前台后等待 3/5/10 分钟再 force-stop，并配合 App Standby/AppOps 限制，用于清理短视频、广告 SDK、直播与电商尾进程；前台打开时系统会临时提升，正常使用不受影响。它不会撤销 WAKE_LOCK/FGS/媒体权限，不能阻断 VPN 归因，也不能清除历史 batterystats/AudioMix 归账；若系统、用户或推送重新拉起，可能再次出现 stopped=false。移除包名或关闭功能会按接管前 bucket/AppOps 恢复。</div>
-          </div>
+          <details class="disclosure compact support-disclosure">
+            <summary class="disclosure-summary">
+              <span class="disclosure-copy"><strong>使用说明与限制</strong><small>工作方式、恢复行为与能力边界</small></span>
+              <span class="disclosure-chevron" aria-hidden="true">›</span>
+            </summary>
+            <div class="disclosure-body support-copy">
+              <p>“休眠”会在应用离开前台后等待 3、5 或 10 分钟，再停止其后台进程并降低后台优先级。重新打开应用时可正常恢复。</p>
+              <p>此功能不限制网络，也不撤销唤醒锁、前台服务或媒体权限。系统或推送重新拉起应用后，限制会在下次离开前台时再次执行。关闭功能或移除应用会恢复接管前的设置。</p>
+            </div>
+          </details>
         </article>
 
-        <article class="surface-card">
+        <div class="section-intro advanced-intro">
+          <div class="section-title">高级工具</div>
+          <div class="section-sub">用于排障与运行状态检查，日常无需操作。</div>
+        </div>
+
+        <article class="surface-card preference-card advanced-card">
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">过夜排障</div>
               <div class="panel-title">待机隔离模式</div>
-              <div class="panel-desc" id="idle-isolate-desc">仅用于 A/B 排障。开启后息屏阶段暂停模块所有待机干预（NR / SIM2 / 自动调度 / 功耗采样），验证是否为模块阻碍 deep sleep。</div>
+              <div class="panel-desc" id="idle-isolate-desc">暂停模块的息屏优化，用于判断待机异常是否由模块引起。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn primary" id="idle-isolate-toggle-btn" type="button"><span id="idle-isolate-toggle-label">读取中…</span></button>
             </div>
           </div>
-          <div class="data-list" id="idle-isolate-rows" style="margin-top:14px">
-            <div class="skel" style="height:48px"></div>
-          </div>
+          <details class="disclosure compact">
+            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>隔离范围</strong><small>暂停内容与使用建议</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
+            <div class="disclosure-body"><div class="data-list" id="idle-isolate-rows"><div class="skel" style="height:48px"></div></div></div>
+          </details>
         </article>
 
-        <article class="surface-card">
-          <div class="panel-head">
-            <div class="panel-copy">
-              <div class="kicker">待机诊断</div>
-              <div class="panel-title">后台 worker 摘要</div>
-              <div class="panel-desc">后台统一工作循环的实时状态，包括当前分支、下次唤醒时间和 NR / 调度状态。</div>
+        <details class="disclosure advanced-card">
+          <summary class="disclosure-summary">
+            <span class="disclosure-copy"><strong>后台任务状态</strong><small>最近运行、下次检查与待机策略</small></span>
+            <span class="disclosure-chevron" aria-hidden="true">›</span>
+          </summary>
+          <div class="disclosure-body">
+            <div class="data-list" id="standby-diag-rows">
+              <div class="skel" style="height:48px"></div>
             </div>
           </div>
-          <div class="data-list" id="standby-diag-rows" style="margin-top:14px">
-            <div class="skel" style="height:48px"></div>
-          </div>
-        </article>
+        </details>
 
-        <article class="surface-card">
+        <article class="surface-card preference-card">
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">时间同步</div>
@@ -445,12 +484,13 @@
           <div class="ntp-server-list" id="ntp-server-list" style="margin-top:14px">
             <div class="skel" style="height:48px"></div>
           </div>
-          <div class="data-list" id="ntp-info-rows" style="margin-top:10px">
-            <div class="skel" style="height:32px"></div>
-          </div>
+          <details class="disclosure compact">
+            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>同步状态</strong><small>设备时间与最近同步结果</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
+            <div class="disclosure-body"><div class="data-list" id="ntp-info-rows"><div class="skel" style="height:32px"></div></div></div>
+          </details>
         </article>
 
-        <article class="surface-card" id="palette-card">
+        <article class="surface-card preference-card" id="palette-card">
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">外观</div>

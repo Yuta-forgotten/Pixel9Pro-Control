@@ -1425,15 +1425,18 @@ read_saved_nr_mode() {
         if [ -n "$_burst_until" ] && [ "$_burst_until" -gt "$_now" ] 2>/dev/null; then
             _burst_active=1
         fi
-        _burst_effective=$_burst_active
-        [ "$_screen_off_isolate" -eq 1 ] && _burst_effective=0
+        # 高频温度记录只允许亮屏。WebUI 进入后台时会清除 burst 标记；
+        # 即使标记因进程切换未及时清除，息屏也绝不进入 5s 采样路径。
+        _burst_effective=0
+        if [ "$_screen" = "on" ] && [ "$_burst_active" -eq 1 ]; then
+            _burst_effective=1
+        fi
 
         _worker_mode="deep_standby"
         _vs_temp=""
-        if [ "$_screen" = "on" ] || [ "$_burst_effective" -eq 1 ]; then
+        if [ "$_screen" = "on" ]; then
             _worker_mode="screen_on"
-            [ "$_screen" != "on" ] && _worker_mode="thermal_burst"
-            # --- 亮屏 / burst: 执行 thermal 更新 ---
+            # --- 仅亮屏执行 thermal 更新；WebUI 历史页可临时提高采样频率 ---
             _json=$(build_thermal_json 2>/dev/null)
             if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
                 _thermal_tmp="${THERMAL_CACHE}.$$.$_now.tmp"
@@ -1597,15 +1600,17 @@ read_saved_nr_mode() {
 
         # --- Adaptive sleep ---
         if [ "$_screen" = "on" ]; then
-            _next_sleep_secs=15
+            if [ "$_burst_effective" -eq 1 ]; then
+                _next_sleep_secs=5
+            else
+                _next_sleep_secs=15
+            fi
         elif [ "$_screen_off_isolate" -eq 1 ]; then
             _just_off=0
             _next_sleep_secs=600
         elif [ "$_just_off" -eq 1 ]; then
             _just_off=0
             _next_sleep_secs=60
-        elif [ "$_burst_effective" -eq 1 ]; then
-            _next_sleep_secs=5
         elif [ "$_nr_state" = "lte" ]; then
             _next_sleep_secs=$_NR_LTE_POLL
         elif [ "$_nr_enabled" = "on" ] && [ "$_nr_off_since" -gt 0 ] 2>/dev/null; then

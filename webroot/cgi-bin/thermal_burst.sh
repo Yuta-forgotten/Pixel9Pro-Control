@@ -2,7 +2,7 @@
 ##############################################################
 # CGI: /cgi-bin/thermal_burst.sh
 # GET  -> 返回当前温度突发录制状态
-# POST -> 启动 5 分钟突发录制 (5s 间隔)
+# POST -> 启动或停止前台温度高频记录 (5s 间隔)
 ##############################################################
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
 
@@ -29,7 +29,16 @@ case "$REQUEST_METHOD" in
         _body=$(dd bs=1 count="$_len" 2>/dev/null)
         _action=$(printf '%s' "$_body" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
         _duration=$(printf '%s' "$_body" | sed -n 's/.*"duration_sec"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
-        [ "$_action" = "start" ] || json_error '400 Bad Request' 'invalid action'
+        case "$_action" in
+            stop)
+                printf '%s' '0' > "$BURST_FILE"
+                json_headers
+                printf '{"ok":true,"burst_active":false,"burst_until":"0","duration_sec":0}\n'
+                exit 0
+                ;;
+            start) ;;
+            *) json_error '400 Bad Request' 'invalid action' ;;
+        esac
         [ -n "$_duration" ] || _duration=300
         case "$_duration" in 60|120|300|600) ;; *) json_error '400 Bad Request' 'invalid duration_sec' ;; esac
         _now=$(date +%s 2>/dev/null || echo 0)

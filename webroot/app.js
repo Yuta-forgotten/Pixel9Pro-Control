@@ -63,11 +63,44 @@ const TAB_META = {
   system: '系统',
 };
 const CLUSTERS = [
-  { label: 'Cluster 0 (小核 · cpu0-3)', maxHz: 1950000 },
-  { label: 'Cluster 1 (中核 · cpu4-6)', maxHz: 2600000 },
-  { label: 'Cluster 2 (大核 · cpu7)', maxHz: 3105000 },
+  { label: '小核 · cpu0-3', maxHz: 1950000 },
+  { label: '中核 · cpu4-6', maxHz: 2600000 },
+  { label: '大核 · cpu7', maxHz: 3105000 },
 ];
 const HOME_CPU_LABELS = ['小核', '中核', '大核'];
+const PACKAGE_ALIASES = Object.freeze({
+  'com.android.chrome': 'Chrome',
+  'com.google.android.apps.chrome': 'Chrome',
+  'com.google.android.apps.nexuslauncher': 'Pixel Launcher',
+  'com.android.systemui': '系统界面',
+  'com.android.settings': '系统设置',
+  'com.android.vending': 'Google Play 商店',
+  'com.google.android.gms': 'Google Play 服务',
+  'com.google.android.gsf': 'Google 服务框架',
+  'com.google.android.googlequicksearchbox': 'Google',
+  'com.google.android.youtube': 'YouTube',
+  'com.google.android.apps.youtube.music': 'YouTube Music',
+  'com.google.android.apps.photos': 'Google 相册',
+  'com.google.android.apps.maps': 'Google 地图',
+  'com.google.android.GoogleCamera': 'Pixel 相机',
+  'com.google.android.dialer': '电话',
+  'com.google.android.apps.messaging': '信息',
+  'com.google.android.apps.wellbeing': '数字健康',
+  'com.google.android.webview': 'Android System WebView',
+  'com.tencent.mm': '微信',
+  'com.tencent.mobileqq': 'QQ',
+  'com.ss.android.ugc.aweme': '抖音',
+  'com.zhiliaoapp.musically': 'TikTok',
+  'com.bilibili.app.in': '哔哩哔哩',
+  'tv.danmaku.bili': '哔哩哔哩',
+  'org.telegram.messenger': 'Telegram',
+  'com.instagram.android': 'Instagram',
+  'com.whatsapp': 'WhatsApp',
+  'com.spotify.music': 'Spotify',
+  'com.example.piliplus': 'PiliPlus',
+  'com.gtxfury.flyclash.smart': 'FlyClash',
+  'com.radolyn.ayugram': 'AyuGram'
+});
 const TEMP_MIN = 25;
 const TEMP_MAX = 60;
 const THRESH_STOCK = 37;
@@ -83,7 +116,7 @@ const PROFILES = {
   performance: {
     name: '性能优先',
     summary: '放开内核动态 boost 上限，并让中大核更早介入的手动性能档。',
-    desc: '前台: cpu0-7 · 小核 12ms · 中核 20ms · 大核 80ms · uclamp.min→1024',
+    desc: '中大核更早介入，适合短时高负载。温升也会更快。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     modeClass: 'mode-game',
@@ -91,8 +124,8 @@ const PROFILES = {
   },
   balanced: {
     name: '均衡',
-    summary: 'response_time_ms 16/40/200，top-app 全核，uclamp.min cap=0。',
-    desc: '前台: cpu0-7 · 小核 16ms · 中核 40ms · 大核 200ms · cap 0',
+    summary: '兼顾前台响应与日常功耗，适合作为常用档位。',
+    desc: '保留全核调度能力，同时控制不必要的升频。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     modeClass: 'mode-balanced',
@@ -100,8 +133,8 @@ const PROFILES = {
   },
   battery: {
     name: '省电',
-    summary: 'response_time_ms 32/96/200，top-app 限 cpu0-6（排除 X4），cap=0。',
-    desc: '前台: cpu0-6 · 小核 32ms · 中核 96ms · 大核 200ms · cap 0',
+    summary: '减少大核参与并放缓升频，降低轻中负载功耗。',
+    desc: '优先使用小中核，适合待机与轻度使用。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     modeClass: 'mode-battery',
@@ -109,8 +142,8 @@ const PROFILES = {
   },
   default: {
     name: '系统默认',
-    summary: '恢复内核默认 response_time_ms（nom 9/52/165）、出厂 cpuset 与 cap=1024。',
-    desc: '前台: cpu0-7 · response=内核 nom（本机 9/52/165）· cap 1024',
+    summary: '恢复 Google 内核原厂调度，不再应用模块性能策略。',
+    desc: '使用系统原厂核心分配与升频节奏。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     modeClass: 'mode-stock',
@@ -118,8 +151,8 @@ const PROFILES = {
   },
   unknown: {
     name: '未选择',
-    summary: '前往“性能”页选择调度模式。',
-    desc: '前往“性能”页选择调度模式',
+    summary: '尚未读取到有效调度模式，请稍后刷新。',
+    desc: '尚未读取到有效调度模式，请稍后刷新。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M11 18h2v-2h-2v2zm1-16C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14c-2.21 0-4 1.79-4 4h2c0-1.1.9-2 2-2s2 .9 2 2c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5 0-2.21-1.79-4-4-4z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M11 18h2v-2h-2v2zm1-16C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14c-2.21 0-4 1.79-4 4h2c0-1.1.9-2 2-2s2 .9 2 2c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5 0-2.21-1.79-4-4-4z"/></svg>',
     modeClass: 'mode-unknown',
@@ -130,31 +163,31 @@ const PROFILES = {
 const THERMAL_PRESETS = {
   [-2]: {
     name: '睡和放宽',
-    summary: '出厂 -2°C，最早 35°C 介入。',
+    summary: '比原厂提前 2°C 介入，机身更凉。',
     detail: '<b>睡和放宽</b><br><br>出厂 -2°C，最早 35°C 介入。<br><br>HINT 35°C / VIRTUAL-SKIN 37°C / CPU-HIGH 39°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M9.37 5.51A7 7 0 0018.49 14.63 9 9 0 119.37 5.51z"/></svg>'
   },
   0: {
     name: '躺和放宽',
-    summary: '出厂 0°C，最早 37°C 介入。',
+    summary: '保持原厂阈值，温度控制最稳妥。',
     detail: '<b>躺和放宽</b><br><br>出厂 0°C，最早 37°C 介入。<br><br>HINT 37°C / VIRTUAL-SKIN 39°C / CPU-HIGH 41°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/></svg>'
   },
   2: {
     name: '轻度放宽',
-    summary: '出厂 +2°C，最早 39°C 介入。',
+    summary: '比原厂晚 2°C 介入，轻度释放性能。',
     detail: '<b>轻度放宽</b><br><br>出厂 +2°C，最早 39°C 介入。<br><br>HINT 39°C / VIRTUAL-SKIN 41°C / CPU-HIGH 43°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82z"/></svg>'
   },
   4: {
     name: '坐和放宽',
-    summary: '出厂 +4°C，最早 41°C 介入。',
+    summary: '比原厂晚 4°C 介入，日常推荐。',
     detail: '<b>坐和放宽（模块默认）</b><br><br>出厂 +4°C，最早 41°C 介入。<br><br>HINT 41°C / VIRTUAL-SKIN 43°C / CPU-HIGH 45°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67z"/></svg>'
   },
   6: {
     name: '站和放宽',
-    summary: '出厂 +6°C，最早 43°C 介入。',
+    summary: '比原厂晚 6°C 介入，性能更积极。',
     detail: '<b>站和放宽</b><br><br>出厂 +6°C，最早 43°C 介入。<br><br>HINT 43°C / VIRTUAL-SKIN 45°C / CPU-HIGH 47°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>'
   }
@@ -260,7 +293,7 @@ const BG_RESTRICT_POLICY_ORDER = ['stop_after_leave', 'block_all', 'block_servic
 const BG_RESTRICT_POLICIES = {
   stop_after_leave: {
     label: '休眠',
-    desc: '离开前台后延迟 force-stop，并配合 App Standby/AppOps 限制；不是网络防火墙或永久杀死，系统/用户/推送重拉后可能出现 stopped=false。'
+    desc: '离开前台后按所选延时停止后台进程，并降低后台优先级。'
   },
   block_all: {
     label: '禁止后台活动',
@@ -367,6 +400,7 @@ const state = {
   ntpServer: 'time.android.com',
   ntpBusy: false,
   deviceClockTimer: null,
+  foregroundPaused: false,
   cpuRows: null,
   homeCpuRows: null,
   sensorRefs: null,
@@ -813,6 +847,7 @@ function openDetail(title, html) {
   stopTempChartRefresh();
   stopEnergyDetailRefresh();
   refs.detailModal.classList.remove('energy-mode');
+  refs.detailModal.classList.remove('history-mode');
   refs.detailTitle.textContent = title;
   setStaticHtml(refs.detailBody, html);
   refs.detailModal.classList.add('open');
@@ -825,6 +860,7 @@ function closeDetailModal(){
   stopEnergyDetailRefresh();
   refs.detailModal.classList.remove('open');
   refs.detailModal.classList.remove('energy-mode');
+  refs.detailModal.classList.remove('history-mode');
   popModalIfTop('detail');
   queueNextPoll(POLL_MIN_DELAY_MS);
 }
@@ -892,12 +928,24 @@ function closeSwapTuneModal() {
 }
 
 function stopTempChartRefresh() {
+  const wasActive = Boolean(state.tempChart.draw);
   if (state.tempChart.timer) {
     clearTimeout(state.tempChart.timer);
     state.tempChart.timer = null;
   }
   state.tempChart.draw = null;
   state.tempChart.requestId += 1;
+  if (wasActive) stopThermalBurst();
+}
+
+function pauseTempChartRefresh() {
+  const wasActive = Boolean(state.tempChart.draw);
+  if (state.tempChart.timer) {
+    clearTimeout(state.tempChart.timer);
+    state.tempChart.timer = null;
+  }
+  state.tempChart.requestId += 1;
+  if (wasActive) stopThermalBurst();
 }
 
 function stopEnergyDetailRefresh() {
@@ -912,12 +960,24 @@ function stopEnergyDetailRefresh() {
   state.energyDetail.requestId += 1;
 }
 
+function pauseEnergyDetailRefresh() {
+  if (state.energyDetail.timer) {
+    clearTimeout(state.energyDetail.timer);
+    state.energyDetail.timer = null;
+  }
+  if (state.energyDetail.fullTimer) {
+    clearTimeout(state.energyDetail.fullTimer);
+    state.energyDetail.fullTimer = null;
+  }
+  state.energyDetail.requestId += 1;
+}
+
 function scheduleTempChartRefresh(delay = TEMP_CHART_REFRESH_MS) {
   if (state.tempChart.timer) clearTimeout(state.tempChart.timer);
-  if (!refs.detailModal.classList.contains('open') || !state.tempChart.draw) return;
+  if (!isWebUiActive() || !refs.detailModal.classList.contains('open') || !state.tempChart.draw) return;
   state.tempChart.timer = window.setTimeout(async () => {
     state.tempChart.timer = null;
-    if (!refs.detailModal.classList.contains('open') || !state.tempChart.draw) return;
+    if (!isWebUiActive() || !refs.detailModal.classList.contains('open') || !state.tempChart.draw) return;
     try {
       await state.tempChart.draw(state.tempChart.activeRange, { silent: true });
     } catch (_) {}
@@ -1059,7 +1119,11 @@ function sleep(ms) {
 
 function noteUserActivity() {
   state.poller.lastInteractionAt = Date.now();
-  if (!document.hidden && state.poller.running) queueNextPoll(POLL_MIN_DELAY_MS);
+  if (isWebUiActive() && state.poller.running) queueNextPoll(POLL_MIN_DELAY_MS);
+}
+
+function isWebUiActive() {
+  return document.visibilityState === 'visible' && !document.hidden && !state.foregroundPaused;
 }
 
 function isAnyModalOpen() {
@@ -1116,12 +1180,12 @@ function computeNextPollDelay(now = Date.now()) {
 function queueNextPoll(delayMs = POLL_MIN_DELAY_MS) {
   clearTimeout(state.poller.timer);
   state.poller.timer = null;
-  if (!state.poller.running || document.hidden) return;
+  if (!state.poller.running || !isWebUiActive()) return;
   state.poller.timer = window.setTimeout(runPollCycle, Math.max(delayMs, POLL_MIN_DELAY_MS));
 }
 
 async function runPollCycle() {
-  if (!state.poller.running || document.hidden) return;
+  if (!state.poller.running || !isWebUiActive()) return;
   const now = Date.now();
   const jobs = [];
 
@@ -1178,6 +1242,7 @@ function switchTab(tab) {
   refs.topbarSubtitle.textContent = TAB_META[tab] || '控制台';
   syncTopbar();
   noteUserActivity();
+  syncDeviceClockForTab();
   refreshCurrentTabData();
 }
 
@@ -1491,10 +1556,10 @@ function syncOwnerArbiterUi() {
   if (!available) return;
   const active = state.fasRsOwnerState || state.fasRsMode || getFasRsStateText();
   refs.ownerArbiterLabel.textContent = state.ownerArbiterBusy
-    ? '正在触发 owner arbiter tick…'
-    : `检测到 fas-rs (${active || '已检测到'})，可手动唤醒 owner`;
+    ? '正在检查调度接管状态…'
+    : `fas-rs ${active || '已检测到'}，可立即检查接管状态`;
   refs.ownerArbiterTickBtn.disabled = state.ownerArbiterBusy;
-  refs.ownerArbiterTickLabel.textContent = state.ownerArbiterBusy ? '执行中…' : '唤醒 owner';
+  refs.ownerArbiterTickLabel.textContent = state.ownerArbiterBusy ? '检查中…' : '立即检查';
 }
 
 function syncProfileUi() {
@@ -2092,8 +2157,8 @@ function renderNrSwitchRows(data) {
   rows.forEach((row) => refs.nrSwitchRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
   refs.nrSwitchToggleLabel.textContent = isOn ? '关闭' : '开启';
   refs.nrSwitchDesc.textContent = isOn
-    ? '已开启：息屏 5 分钟后切到 LTE，亮屏恢复 NR（worker 周期最多滞后 5 分钟）'
-    : '息屏 5 分钟后将网络模式从 NR 切到 LTE，降低 modem 射频功耗。亮屏自动恢复，热点开启时跳过。';
+    ? '已开启：息屏后切换至 LTE，亮屏自动恢复 5G。'
+    : '息屏 5 分钟后切换至 LTE，亮屏自动恢复。';
 }
 
 function syncStandbyGuardButtons() {
@@ -2140,8 +2205,8 @@ function renderStandbyGuard(data) {
   const sim2On = state.sim2AutoManage === 'on';
   refs.sim2AutoToggleLabel.textContent = sim2On ? '关闭' : '开启';
   refs.sim2AutoDesc.textContent = sim2On
-    ? '已开启：息屏时将 modem 实例从 2 降到 1，消除空槽搜网开销。亮屏或检测到 SIM2 插入时自动恢复。'
-    : '已关闭：modem 始终保持双实例。如果副卡槽没有插 SIM 卡，建议开启以降低待机功耗。';
+    ? '已开启：息屏时停用空槽实例，亮屏或插入 SIM2 后自动恢复。'
+    : '单卡设备可在息屏时停用空槽实例。双卡设备请保持关闭。';
   refs.sim2AutoRows.replaceChildren();
   [
     { label: '功能状态', value: sim2On ? '已开启' : '已关闭', cls: sim2On ? 'good' : 'off' },
@@ -2152,8 +2217,8 @@ function renderStandbyGuard(data) {
   const isolateOn = state.idleIsolateMode === 'on';
   refs.idleIsolateToggleLabel.textContent = isolateOn ? '关闭' : '开启';
   refs.idleIsolateDesc.textContent = isolateOn
-    ? '已开启：息屏阶段暂停 NR 降级、SIM2 管理、功耗采样、thermal burst 和自动调度，仅保留最小 worker 路径（600s 间隔）。'
-    : '仅用于 A/B 排障。开启后息屏阶段暂停模块所有待机干预，验证是否为模块阻碍 deep sleep。';
+    ? '已开启：息屏优化已暂停，仅保留最低限度的状态检查。'
+    : '暂停模块的息屏优化，用于判断待机异常是否由模块引起。';
   refs.idleIsolateRows.replaceChildren();
   [
     { label: '功能状态', value: isolateOn ? '已开启' : '已关闭', cls: isolateOn ? 'warn' : 'off' },
@@ -2347,6 +2412,23 @@ async function toggleIdleIsolateMode() {
 }
 
 // ── 后台应用限制 ─────────────────────────────────────────
+function friendlyPackageLabel(pkg, suppliedLabel = '') {
+  const name = String(suppliedLabel || '').trim();
+  const packageName = String(pkg || '').trim();
+  if (name) return name;
+  if (PACKAGE_ALIASES[packageName]) return PACKAGE_ALIASES[packageName];
+  if (packageName === 'android (root)' || packageName === 'android') return 'Android 系统核心';
+  if (packageName === 'android (system)') return 'Android 系统服务';
+  if (packageName === 'android (radio)' || packageName === 'android.radio') return '电话与基带服务';
+  if (packageName === 'android.bluetooth') return '蓝牙系统服务';
+  if (packageName === 'android.media') return '媒体系统服务';
+  if (packageName === 'android.shell') return 'ADB / Shell';
+  if (/^u\d+[ai]\d+$/.test(packageName)) return '已卸载或未知应用';
+  if (packageName.includes(', ')) return '共享 UID 应用';
+  if (!packageName) return '已卸载或未知应用';
+  return packageName;
+}
+
 function normalizeBgPolicy(policy) {
   return BG_RESTRICT_POLICIES[policy] ? policy : 'block_all';
 }
@@ -2425,17 +2507,17 @@ function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled, runtime = {
     case 'stop_after_leave':
       if (stopState === 'force_stopped') {
         return restricted && bgIgnored && anyIgnored
-          ? { text: '已 force-stop', cls: 'good' }
-          : { text: '已 force-stop，限制漂移', cls: 'warn' };
+          ? { text: '已休眠', cls: 'good' }
+          : { text: '已休眠，设置有变化', cls: 'warn' };
       }
       if (stopState === 'pending') {
         return rareOrLower && bgIgnored && anyIgnored
-          ? { text: '等待 force-stop', cls: 'good' }
-          : { text: '等待中，限制部分生效', cls: 'warn' };
+          ? { text: '等待休眠', cls: 'good' }
+          : { text: '等待中，部分生效', cls: 'warn' };
       }
-      if (stopState === 'relaunched') return { text: '已重拉，等待下次触发', cls: 'warn' };
+      if (stopState === 'relaunched') return { text: '已重新启动', cls: 'warn' };
       if (restricted && bgIgnored && anyIgnored) return { text: '限制已生效，待触发', cls: 'good' };
-      if (rareOrLower && bgIgnored && anyIgnored) return { text: 'AppOps 生效，桶位已回升', cls: 'warn' };
+      if (rareOrLower && bgIgnored && anyIgnored) return { text: '后台限制已生效', cls: 'warn' };
       if (restricted || bgIgnored || anyIgnored) return { text: '部分生效', cls: 'warn' };
       return { text: '未生效，点刷新重试', cls: 'err' };
     case 'block_all':
@@ -2451,17 +2533,12 @@ function renderBgRestrict(data) {
   const on = state.bgRestrictEnabled === 'on';
   refs.bgRestrictToggleLabel.textContent = on ? '关闭' : '开启';
   refs.bgRestrictDesc.textContent = on
-    ? '已开启：按包设置 App Standby/AppOps；休眠会在离开前台后延时 force-stop，前台使用不受影响。'
-    : '已关闭：列表保留，但 bucket/AppOps 已恢复，休眠倒计时已清空。';
+    ? '已开启：应用离开前台后，将按所选策略限制后台活动。'
+    : '已关闭：应用列表保留，后台设置已恢复。';
   refs.bgRestrictRows.replaceChildren();
-  refs.bgRestrictRows.appendChild(buildInfoRow(
-    '能力边界',
-    '不是网络防火墙，不撤销 WAKE_LOCK/FGS/媒体权限；不能清除历史 batterystats、VPN、AudioMix 归因或阻止后续 stopped=false 重拉',
-    'off'
-  ));
   const packages = Array.isArray(data.packages) ? data.packages : [];
   if (packages.length === 0) {
-    refs.bgRestrictRows.appendChild(buildInfoRow('限制列表', '空，已按用户配置保留，不会自动重建默认包名', 'off'));
+    refs.bgRestrictRows.appendChild(buildInfoRow('应用列表', '尚未添加应用', 'off'));
     syncBgRestrictControls();
     return;
   }
@@ -2480,18 +2557,20 @@ function renderBgRestrict(data) {
     main.className = 'bg-policy-main';
     const title = document.createElement('div');
     title.className = 'bg-policy-title';
-    title.textContent = p.pkg;
+    const displayName = friendlyPackageLabel(p.pkg);
+    title.textContent = displayName;
     const detail = document.createElement('div');
     detail.className = 'bg-policy-detail';
     const stopStateText = {
       pending: '倒计时进行中',
-      force_stopped: '已进入 stopped 状态',
-      relaunched: 'force-stop 后已被重新拉起',
-      untracked: '需先观察到前台使用，离开后才开始计时'
+      force_stopped: '当前已休眠',
+      relaunched: '系统已重新启动应用',
+      untracked: '首次离开前台后开始计时'
     }[stopState] || '';
+    const packagePrefix = displayName !== p.pkg ? `${p.pkg} · ` : '';
     detail.textContent = policy === 'stop_after_leave'
-      ? `${meta.label} · ${delay}分钟 · ${meta.desc}${stopStateText ? ` · ${stopStateText}` : ''}`
-      : `${meta.label} · ${meta.desc}`;
+      ? `${packagePrefix}${meta.label} · ${delay}分钟${stopStateText ? ` · ${stopStateText}` : ''}`
+      : `${packagePrefix}${meta.label}`;
     main.appendChild(title);
     main.appendChild(detail);
 
@@ -2787,17 +2866,29 @@ async function refreshBaseband() {
 }
 
 function startDeviceClock() {
+  if (!isWebUiActive() || state.currentTab !== 'system') return;
   if (state.deviceClockTimer) return;
   const pad = (n) => String(n).padStart(2, '0');
   const tick = () => {
     const el = document.getElementById('ntp-device-time');
-    if (!el || document.hidden) return;
+    if (!el || !isWebUiActive() || state.currentTab !== 'system') return;
     // WebView 运行在本机, new Date() 即设备实时时钟; 每秒走字, 不再依赖 CGI 快照
     const d = new Date();
     el.textContent = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   };
   tick();
   state.deviceClockTimer = window.setInterval(tick, 1000);
+}
+
+function stopDeviceClock() {
+  if (!state.deviceClockTimer) return;
+  clearInterval(state.deviceClockTimer);
+  state.deviceClockTimer = null;
+}
+
+function syncDeviceClockForTab() {
+  if (isWebUiActive() && state.currentTab === 'system') startDeviceClock();
+  else stopDeviceClock();
 }
 
 function renderNtpCard(data) {
@@ -2932,7 +3023,6 @@ function drawTempCanvas(container, data) {
     ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
     ctx.fillText(`${t.toFixed(0)}°`, pad.left - 4, y);
   }
-  ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   const xN = 4;
   const t0 = data[0].ts;
@@ -2942,6 +3032,7 @@ function drawTempCanvas(container, data) {
     const x = pad.left + (plotW / xN) * i;
     const ts = t0 + (timeSpan / xN) * i;
     const d = new Date(ts * 1000);
+    ctx.textAlign = i === 0 ? 'left' : i === xN ? 'right' : 'center';
     ctx.fillText(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`, x, h - pad.bottom + 6);
   }
   let plotData = data;
@@ -3086,26 +3177,6 @@ async function fetchEnergySystemDetail() {
   return await apiFetch(API.energy, { timeoutMs: 16000 });
 }
 
-function renderHistoryStats(statsEl, data, result) {
-  if (!result || !data.length) { statsEl.replaceChildren(); return; }
-  const threshold = THRESH_STOCK + state.currentOffset;
-  let highSec = 0;
-  for (let i = 1; i < data.length; i++) {
-    if (data[i - 1].temp >= threshold) highSec += data[i].ts - data[i - 1].ts;
-  }
-  const elapsed = data[data.length - 1].ts - data[0].ts;
-  statsEl.replaceChildren();
-  const rows = [
-    { label: '数据范围', value: fmtDuration(elapsed) },
-    { label: '采样点', value: `${data.length} 个` },
-    { label: '最高温度', value: `${result.max.toFixed(1)}°C`, cls: result.max >= threshold ? 'warn' : 'good' },
-    { label: '最低温度', value: `${result.min.toFixed(1)}°C`, cls: 'good' },
-    { label: '平均温度', value: `${result.avg.toFixed(1)}°C` },
-    { label: `高于阈值时长 (≥${threshold}°C)`, value: fmtDuration(highSec), cls: highSec > 60 ? 'warn' : 'good' },
-  ];
-  rows.forEach((row) => statsEl.appendChild(buildInfoRow(row.label, row.value, row.cls || '')));
-}
-
 function thinHistoryPoints(points, maxPoints = 360) {
   if (!Array.isArray(points) || points.length <= maxPoints) return points || [];
   const out = [];
@@ -3160,36 +3231,44 @@ function openTempChart() {
   triggerThermalBurst({ prompt: false });
   refs.detailTitle.textContent = '温度历史';
   const ranges = [
-    { min: 10, label: '10分钟', chart: true },
-    { min: 30, label: '30分钟', chart: true },
-    { min: 150, label: '2.5h', chart: false },
-    { min: 720, label: '12h', chart: false },
+    { min: 10, label: '10 分' },
+    { min: 30, label: '30 分' },
+    { min: 150, label: '2.5 小时' },
+    { min: 720, label: '12 小时' },
   ];
   let active = 10;
   state.tempChart.activeRange = active;
-  setStaticHtml(
-    refs.detailBody,
-    '<div class="chart-range-chips" id="chart-ranges"></div><div id="chart-area"></div>'
-  );
-  const chipsEl = document.getElementById('chart-ranges');
-  const areaEl = document.getElementById('chart-area');
+  refs.detailModal.classList.remove('energy-mode');
+  refs.detailModal.classList.add('history-mode');
+  const root = document.createElement('div');
+  root.className = 'history-overview';
+  const intro = document.createElement('div');
+  intro.className = 'section-intro';
+  setStaticHtml(intro, '<div class="section-title">温度趋势</div><div class="section-sub">查看机身温度变化、峰值与阈值持续时间。</div>');
+  const tabsEl = document.createElement('div');
+  tabsEl.className = 'range-tabs history-range-tabs';
+  const areaEl = document.createElement('div');
+  areaEl.className = 'history-content';
+  root.append(intro, tabsEl, areaEl);
+  refs.detailBody.replaceChildren(root);
   const draw = async (rangeMin, options = {}) => {
     const requestId = ++state.tempChart.requestId;
     active = rangeMin;
     state.tempChart.activeRange = rangeMin;
-    const isChart = ranges.find((r) => r.min === rangeMin)?.chart;
-    chipsEl.querySelectorAll('.chart-chip').forEach((b) => b.classList.toggle('active', Number(b.dataset.range) === rangeMin));
-    if (!options.silent) setStaticHtml(areaEl, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">加载中…</div>');
+    const rangeLabel = ranges.find((r) => r.min === rangeMin)?.label || `${rangeMin} 分钟`;
+    tabsEl.querySelectorAll('.range-btn').forEach((button) => button.classList.toggle('active', Number(button.dataset.range) === rangeMin));
+    if (!options.silent) setStaticHtml(areaEl, '<div class="energy-empty">正在读取温度记录…</div>');
     const data = await fetchTempHistory(rangeMin);
     if (requestId !== state.tempChart.requestId || state.tempChart.draw !== draw) return;
     if (!data || data.length < 2) {
-      setStaticHtml(areaEl, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">数据不足，等待短时采样继续积累</div>');
+      setStaticHtml(areaEl, '<div class="energy-empty">温度记录不足。保持页面运行一段时间后再查看。</div>');
       return;
     }
     const temps = data.map((p) => p.temp);
     const realMin = Math.min(...temps);
     const realMax = Math.max(...temps);
     const avg = temps.reduce((a, b) => a + b, 0) / temps.length;
+    const current = data[data.length - 1].temp;
     const threshold = THRESH_STOCK + state.currentOffset;
     let highSec = 0;
     for (let i = 1; i < data.length; i++) {
@@ -3197,48 +3276,72 @@ function openTempChart() {
     }
     const elapsed = data[data.length - 1].ts - data[0].ts;
     areaEl.replaceChildren();
-    if (isChart) {
-      const chartWrap = document.createElement('div');
-      chartWrap.className = 'chart-wrap';
-      areaEl.appendChild(chartWrap);
-      drawTempCanvas(chartWrap, data);
-      const summary = document.createElement('div');
-      summary.className = 'chart-stats';
-      setStaticHtml(summary, `<span>最低 ${realMin.toFixed(1)}°C</span><span>平均 ${avg.toFixed(1)}°C</span><span>最高 ${realMax.toFixed(1)}°C</span>`);
-      areaEl.appendChild(summary);
-    }
-    const statsWrap = document.createElement('div');
-    statsWrap.style.cssText = isChart ? 'margin-top:16px;padding-top:12px;border-top:1px solid var(--line)' : '';
-    const heading = document.createElement('div');
-    heading.style.cssText = 'font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px';
-    heading.textContent = isChart ? '统计' : '温度统计';
-    statsWrap.appendChild(heading);
+    const tone = current >= threshold ? 'warn' : '';
+    const hero = document.createElement('section');
+    hero.className = `history-hero ${tone}`;
+    const heroHead = document.createElement('div');
+    heroHead.className = 'history-hero-head';
+    const heroCopy = document.createElement('div');
+    heroCopy.className = 'history-hero-copy';
+    setStaticHtml(heroCopy, `<div class="history-hero-kicker">当前温度</div><div class="history-hero-value">${current.toFixed(1)}°C</div><div class="history-hero-status">${current >= threshold ? `已达到 ${threshold}°C 温控阈值` : `距离 ${threshold}°C 温控阈值 ${(threshold - current).toFixed(1)}°C`}</div>`);
+    const heroBadge = document.createElement('span');
+    heroBadge.className = 'history-hero-badge';
+    heroBadge.textContent = rangeLabel;
+    heroHead.append(heroCopy, heroBadge);
+    const summaryGrid = document.createElement('div');
+    summaryGrid.className = 'history-summary-grid';
+    [
+      ['最低', `${realMin.toFixed(1)}°C`],
+      ['平均', `${avg.toFixed(1)}°C`],
+      ['最高', `${realMax.toFixed(1)}°C`]
+    ].forEach(([label, value]) => {
+      const item = document.createElement('div');
+      item.className = 'history-summary-item';
+      setStaticHtml(item, `<span>${label}</span><strong>${value}</strong>`);
+      summaryGrid.appendChild(item);
+    });
+    hero.append(heroHead, summaryGrid);
+
+    const chartCard = document.createElement('section');
+    chartCard.className = 'history-chart-card';
+    const chartWrap = document.createElement('div');
+    chartWrap.className = 'chart-wrap';
+    chartCard.appendChild(chartWrap);
+    areaEl.append(hero, chartCard);
+    drawTempCanvas(chartWrap, data);
+
+    const details = document.createElement('details');
+    details.className = 'disclosure';
+    const detailsSummary = document.createElement('summary');
+    detailsSummary.className = 'disclosure-summary';
+    setStaticHtml(detailsSummary, `<span class="disclosure-copy"><strong>更多统计</strong><small>${data.length} 个采样点 · 覆盖 ${fmtDuration(elapsed)}</small></span><span class="disclosure-chevron" aria-hidden="true">›</span>`);
+    const detailsBody = document.createElement('div');
+    detailsBody.className = 'disclosure-body';
     const statsList = document.createElement('div');
     statsList.className = 'data-list';
     const rows = [
-      { label: '最高温度', value: `${realMax.toFixed(1)}°C`, cls: realMax >= threshold ? 'warn' : 'good' },
-      { label: '最低温度', value: `${realMin.toFixed(1)}°C`, cls: 'good' },
-      { label: '平均温度', value: `${avg.toFixed(1)}°C`, cls: avg >= threshold ? 'warn' : '' },
-      { label: `高于阈值时长 (≥${threshold}°C)`, value: fmtDuration(highSec), cls: highSec > 60 ? 'warn' : 'good' },
       { label: '数据范围', value: fmtDuration(elapsed) },
       { label: '采样点', value: `${data.length} 个` },
+      { label: `达到阈值（≥${threshold}°C）`, value: fmtDuration(highSec), cls: highSec > 60 ? 'warn' : 'good' },
     ];
     rows.forEach((row) => statsList.appendChild(buildInfoRow(row.label, row.value, row.cls || '')));
-    statsWrap.appendChild(statsList);
-    areaEl.appendChild(statsWrap);
+    detailsBody.appendChild(statsList);
+    details.append(detailsSummary, detailsBody);
+    areaEl.appendChild(details);
   };
   ranges.forEach((r) => {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = `chart-chip${r.min === active ? ' active' : ''}`;
+    btn.className = `range-btn${r.min === active ? ' active' : ''}`;
     btn.dataset.range = String(r.min);
     btn.textContent = r.label;
     btn.addEventListener('click', () => {
       draw(r.min).catch(() => {}).then(() => scheduleTempChartRefresh());
     });
-    chipsEl.appendChild(btn);
+    tabsEl.appendChild(btn);
   });
   refs.detailModal.classList.add('open');
+  pushModalState('detail');
   state.tempChart.draw = draw;
   window.setTimeout(() => {
     if (!refs.detailModal.classList.contains('open') || state.tempChart.draw !== draw) return;
@@ -3278,6 +3381,17 @@ async function exportHistoryWindow(scope, button) {
       button.textContent = oldText;
     }
   }
+}
+
+function stopThermalBurst() {
+  if (!state.webuiToken) return;
+  apiFetch(API.thermalBurst, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'stop' }),
+    timeoutMs: 2500,
+    keepalive: true
+  }).catch(() => {});
 }
 
 function isFullEnergyDetailData(d) {
@@ -3598,37 +3712,9 @@ function renderEnergyDetail(input, options = {}) {
       });
       return list;
     };
-    const packageAliases = {
-      'com.android.chrome': 'Chrome',
-      'com.google.android.apps.chrome': 'Chrome',
-      'com.google.android.apps.nexuslauncher': 'Pixel Launcher',
-      'com.android.systemui': '系统界面',
-      'com.google.android.gms': 'Google Play 服务',
-      'com.google.android.gsf': 'Google 服务框架',
-      'com.google.android.youtube': 'YouTube',
-      'com.tencent.mm': '微信',
-      'com.tencent.mobileqq': 'QQ',
-      'com.example.piliplus': 'PiliPlus',
-      'com.gtxfury.flyclash.smart': 'FlyClash',
-      'com.radolyn.ayugram': 'AyuGram',
-      'org.telegram.messenger': 'Telegram',
-      'com.instagram.android': 'Instagram',
-      'com.ss.android.ugc.aweme': '抖音',
-      'com.bilibili.app.in': '哔哩哔哩'
-    };
     const packageLabel = (app) => {
       const pkg = String(app.pkg || '');
-      if (app.label) return String(app.label);
-      if (pkg === 'android (root)') return 'Android 系统核心 (root)';
-      if (pkg === 'android (system)') return 'Android 系统服务 (system)';
-      if (pkg === 'android (radio)') return '电话与基带服务 (radio)';
-      if (/^u\d+[ai]\d+$/.test(pkg)) return '已卸载或未知应用';
-      if (pkg.includes(', ')) return '共享 UID 应用';
-      if (packageAliases[pkg]) return packageAliases[pkg];
-      if (!pkg) return '已卸载或未知应用';
-      if (!pkg.includes('.')) return pkg;
-      const tail = pkg.split('.').filter(Boolean).pop() || pkg;
-      return tail.replace(/[_-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+      return friendlyPackageLabel(pkg, app.label);
     };
     const apps = Array.isArray(d.apps) ? d.apps.map((app) => {
       const pkg = String(app.pkg || '');
@@ -3743,11 +3829,11 @@ function renderEnergyDetail(input, options = {}) {
 
 function scheduleEnergyDetailRefresh(delay = ENERGY_DETAIL_REFRESH_MS) {
   if (state.energyDetail.timer) clearTimeout(state.energyDetail.timer);
-  if (!refs.detailModal.classList.contains('open')) return;
+  if (!isWebUiActive() || !refs.detailModal.classList.contains('open')) return;
   const requestId = state.energyDetail.requestId;
   state.energyDetail.timer = window.setTimeout(async () => {
     state.energyDetail.timer = null;
-    if (!refs.detailModal.classList.contains('open') || requestId !== state.energyDetail.requestId) return;
+    if (!isWebUiActive() || !refs.detailModal.classList.contains('open') || requestId !== state.energyDetail.requestId) return;
     try {
       const live = await fetchEnergyFastDetail();
       if (requestId !== state.energyDetail.requestId) return;
@@ -3755,7 +3841,7 @@ function scheduleEnergyDetailRefresh(delay = ENERGY_DETAIL_REFRESH_MS) {
       else state.energyDetail.liveData = live;
       renderEnergyDetail(live, { fullData: state.energyDetail.fullData });
     } catch (_) {}
-    if (refs.detailModal.classList.contains('open') && requestId === state.energyDetail.requestId) {
+    if (isWebUiActive() && refs.detailModal.classList.contains('open') && requestId === state.energyDetail.requestId) {
       scheduleEnergyDetailRefresh();
     }
   }, delay);
@@ -3763,11 +3849,11 @@ function scheduleEnergyDetailRefresh(delay = ENERGY_DETAIL_REFRESH_MS) {
 
 function scheduleEnergySystemRefresh(delay = getEnergySystemRefreshDelay()) {
   if (state.energyDetail.fullTimer) clearTimeout(state.energyDetail.fullTimer);
-  if (!refs.detailModal.classList.contains('open')) return;
+  if (!isWebUiActive() || !refs.detailModal.classList.contains('open')) return;
   const requestId = state.energyDetail.requestId;
   state.energyDetail.fullTimer = window.setTimeout(async () => {
     state.energyDetail.fullTimer = null;
-    if (!refs.detailModal.classList.contains('open') || requestId !== state.energyDetail.requestId) return;
+    if (!isWebUiActive() || !refs.detailModal.classList.contains('open') || requestId !== state.energyDetail.requestId) return;
     try {
       const full = await fetchEnergySystemDetail();
       if (requestId !== state.energyDetail.requestId) return;
@@ -3777,7 +3863,7 @@ function scheduleEnergySystemRefresh(delay = getEnergySystemRefreshDelay()) {
         renderEnergyDetail(full, { fullData: state.energyDetail.fullData });
       }
     } catch (_) {}
-    if (refs.detailModal.classList.contains('open') && requestId === state.energyDetail.requestId) {
+    if (isWebUiActive() && refs.detailModal.classList.contains('open') && requestId === state.energyDetail.requestId) {
       scheduleEnergySystemRefresh();
     }
   }, delay);
@@ -3791,6 +3877,7 @@ async function openEnergyDetail() {
   const requestId = state.energyDetail.requestId;
   refs.detailTitle.textContent = '功耗统计';
   setStaticHtml(refs.detailBody, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在加载功耗数据…</div>');
+  refs.detailModal.classList.remove('history-mode');
   refs.detailModal.classList.add('energy-mode');
   refs.detailModal.classList.add('open');
   pushModalState('detail');
@@ -3944,7 +4031,7 @@ async function triggerOwnerArbiter() {
   if (state.ownerArbiterBusy || !state.fasRsDetected) return;
   state.ownerArbiterBusy = true;
   syncOwnerArbiterUi();
-  appendLog('手动唤醒 owner arbiter…', 'dim');
+  appendLog('正在检查外部调度接管状态…', 'dim');
   refs.logCard.classList.add('open');
   try {
     const data = await apiFetch(API.ownerArbiter, {
@@ -3954,13 +4041,13 @@ async function triggerOwnerArbiter() {
       timeoutMs: 10000
     });
     if (data.ok) {
-      showToast('owner arbiter 已触发');
-      appendLog('owner arbiter 手动 tick 完成', 'ok');
+      showToast('调度状态已更新');
+      appendLog('外部调度接管状态已更新', 'ok');
       await loadSavedProfile();
       await refreshCpu();
     } else {
-      showToast(`唤醒失败：${data.error || '未知'}`);
-      appendLog(data.error || 'owner arbiter 唤醒失败', 'err');
+      showToast(`检查失败：${data.error || '未知'}`);
+      appendLog(data.error || '外部调度状态检查失败', 'err');
     }
   } catch (err) {
     showToast('请求失败，检查 WebUI 服务');
@@ -4086,23 +4173,23 @@ async function doFullRefresh() {
 }
 
 function shouldPollCpu() {
-  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'tune');
+  return isWebUiActive() && (state.currentTab === 'home' || state.currentTab === 'tune');
 }
 
 function shouldPollThermal() {
-  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'tune');
+  return isWebUiActive() && (state.currentTab === 'home' || state.currentTab === 'tune');
 }
 
 function shouldPollOptim() {
-  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'system');
+  return isWebUiActive() && (state.currentTab === 'home' || state.currentTab === 'system');
 }
 
 function shouldPollSlow() {
-  return !document.hidden && (state.currentTab === 'home' || state.currentTab === 'network' || state.currentTab === 'system');
+  return isWebUiActive() && (state.currentTab === 'home' || state.currentTab === 'network' || state.currentTab === 'system');
 }
 
 function refreshCurrentTabData() {
-  if (document.hidden) return;
+  if (!isWebUiActive()) return;
   const now = Date.now();
   if (state.currentTab === 'home') {
     markPollFresh(['cpu', 'thermal', 'optim', 'slow'], now);
@@ -4156,6 +4243,34 @@ function stopPolling() {
   state.poller.running = false;
   clearTimeout(state.poller.timer);
   state.poller.timer = null;
+}
+
+function pauseForegroundWork() {
+  if (state.foregroundPaused) return;
+  state.foregroundPaused = true;
+  stopPolling();
+  pauseTempChartRefresh();
+  pauseEnergyDetailRefresh();
+  stopDeviceClock();
+}
+
+function resumeForegroundWork() {
+  if (document.visibilityState !== 'visible' || document.hidden) return;
+  const wasPaused = state.foregroundPaused;
+  state.foregroundPaused = false;
+  if (!wasPaused && state.poller.running) return;
+  state.poller.lastInteractionAt = Date.now();
+  refreshCurrentTabData();
+  startPolling();
+  syncDeviceClockForTab();
+  if (refs.detailModal?.classList.contains('history-mode') && state.tempChart.draw) {
+    triggerThermalBurst({ prompt: false });
+    scheduleTempChartRefresh(250);
+  }
+  if (refs.detailModal?.classList.contains('energy-mode')) {
+    scheduleEnergyDetailRefresh(250);
+    scheduleEnergySystemRefresh(800);
+  }
 }
 
 function bindStaticEvents() {
@@ -4272,19 +4387,24 @@ function bindStaticEvents() {
   });
   window.addEventListener('popstate', (evt) => {
     const s = evt.state;
-    if (refs.detailModal.classList.contains('open')) { stopTempChartRefresh(); stopEnergyDetailRefresh(); refs.detailModal.classList.remove('open'); return; }
+    if (refs.detailModal.classList.contains('open')) {
+      stopTempChartRefresh();
+      stopEnergyDetailRefresh();
+      refs.detailModal.classList.remove('open', 'energy-mode', 'history-mode');
+      return;
+    }
     if (refs.swapTuneModal.classList.contains('open')) { refs.swapTuneModal.classList.remove('open'); queueNextPoll(POLL_MIN_DELAY_MS); return; }
     if (refs.themeModal.classList.contains('open')) { refs.themeModal.classList.remove('open'); return; }
     if (refs.rebootModal.classList.contains('open')) { refs.rebootModal.classList.remove('open'); return; }
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) stopPolling();
-    else {
-      state.poller.lastInteractionAt = Date.now();
-      refreshCurrentTabData();
-      startPolling();
-    }
+    if (document.hidden || document.visibilityState !== 'visible') pauseForegroundWork();
+    else resumeForegroundWork();
   });
+  window.addEventListener('pagehide', pauseForegroundWork);
+  window.addEventListener('pageshow', resumeForegroundWork);
+  document.addEventListener('freeze', pauseForegroundWork);
+  document.addEventListener('resume', resumeForegroundWork);
 }
 
 async function refreshDeferredInitData() {
@@ -4308,6 +4428,7 @@ async function init() {
   bindTabSwipe();
   bindPullToRefresh();
   bindTopbarScroll();
+  state.foregroundPaused = document.hidden || document.visibilityState !== 'visible';
   refs.topbarSubtitle.textContent = TAB_META[state.currentTab];
   positionMarkers();
   state.poller.lastInteractionAt = bootAt;
@@ -4317,8 +4438,10 @@ async function init() {
   await refreshCpu();
   await refreshThermal();
   markPollFresh(['cpu', 'thermal']);
-  window.setTimeout(refreshDeferredInitData, 1000);
-  startPolling();
+  window.setTimeout(() => {
+    if (isWebUiActive()) refreshDeferredInitData();
+  }, 1000);
+  if (isWebUiActive()) startPolling();
 }
 
 window.addEventListener('DOMContentLoaded', init);
