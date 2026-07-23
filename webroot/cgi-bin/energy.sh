@@ -19,6 +19,7 @@ SYSTEM_CACHE="$MODDIR/.energy_system_cache.json"
 SYSTEM_CACHE_TS="$MODDIR/.energy_system_cache.ts"
 SYSTEM_CACHE_TTL=45
 SYSTEM_CACHE_STALE_MAX=600
+POWER_WINDOW_BASELINE_MAX_GAP=900
 RESET_RULE='连续充电 >= 10 分钟且电量回升，或充满后重新拔线后，重置为新的放电会话'
 BATTERYSTATS_NOTE='系统分项和应用排行来自 Android batterystats 当前窗口；若系统或用户执行过 batterystats reset，这个窗口可能比放电会话更短。'
 RADIO_MODEL_NOTE='Pixel/Exynos 5400 的 Android mobile_radio 是模型估算；绝对 mAh 不作为硬件电表，只能看相对方向。'
@@ -119,54 +120,93 @@ build_power_window_json() {
     _mins="$1"
     _start=$((_now - _mins * 60))
     if [ -s "$POWER_HISTORY" ]; then
-        awk -F, -v minutes="$_mins" -v start="$_start" -v now="$_now" -v cur_level="${_cur_level:-}" -v cur_charge="${_cur_charge:-0}" '
+        awk -F, -v minutes="$_mins" -v start="$_start" -v now="$_now" \
+            -v cur_level="${_cur_level:-}" -v cur_charge="${_cur_charge:-0}" \
+            -v cur_status="${_cur_status:-}" -v cur_external="${_external_power_online:-0}" \
+            -v baseline_max_gap="$POWER_WINDOW_BASELINE_MAX_GAP" '
+        function observe_status(value) {
+            if (value == "Charging" || value == "Full" || value == "Not charging") saw_charging_like = 1
+            if (value == "Discharging") saw_discharging = 1
+        }
+        function add_charge_delta(from_charge, to_charge, delta) {
+            delta = from_charge - to_charge
+            if (delta > 0) {
+                discharge += delta / 1000
+                has_discharge = 1
+            } else if (delta < 0) {
+                charge_in += (-delta) / 1000
+                has_charge = 1
+            }
+        }
         BEGIN {
             seen = 0
             samples = 0
+            effective_samples = 0
             discharge = 0
             charge_in = 0
             has_discharge = 0
             has_charge = 0
             status_changes = 0
-            saw_charging = 0
-            saw_not_charging = 0
+            saw_charging_like = 0
+            saw_discharging = 0
+            baseline_available = 0
+            baseline_used = 0
+            endpoint_included = 0
             cur_level_valid = (cur_level ~ /^-?[0-9]+$/)
             cur_charge_valid = (cur_charge ~ /^-?[0-9]+$/ && cur_charge + 0 > 0)
             prev_charge_valid = 0
+            expected_elapsed = minutes * 60
         }
-        $1 + 0 >= start {
+        $1 ~ /^[0-9]+$/ && $1 + 0 < start {
+            baseline_available = 1
+            baseline_ts = $1 + 0
+            baseline_level = $2 + 0
+            baseline_charge = $3 + 0
+            baseline_status = $4
+            baseline_charge_valid = ($3 ~ /^-?[0-9]+$/ && baseline_charge > 0)
+            next
+        }
+        $1 ~ /^[0-9]+$/ && $1 + 0 >= start && $1 + 0 <= now {
             ts = $1 + 0
             level = $2 + 0
             charge = $3 + 0
             status = $4
             charge_valid = ($3 ~ /^-?[0-9]+$/ && charge > 0)
-            if (status == "Charging" || status == "Full" || status == "Not charging") saw_charging = 1
-            if (status == "Discharging") saw_not_charging = 1
             if (!seen) {
                 seen = 1
                 first_ts = ts
                 first_level = level
                 first_status = status
+                coverage_start_ts = ts
+                level_start = level
                 last_status = status
                 last_ts = ts
                 last_level = level
-                if (charge_valid) {
+                observe_status(status)
+
+                if (baseline_available && baseline_charge_valid && charge_valid &&
+                    baseline_ts < start && ts > baseline_ts &&
+                    (ts - baseline_ts) <= baseline_max_gap) {
+                    fraction = (start - baseline_ts) / (ts - baseline_ts)
+                    if (fraction < 0) fraction = 0
+                    if (fraction > 1) fraction = 1
+                    start_charge = baseline_charge + (charge - baseline_charge) * fraction
+                    coverage_start_ts = start
+                    level_start = baseline_level
+                    baseline_used = 1
+                    observe_status(baseline_status)
+                    if (baseline_status != "" && status != "" && baseline_status != status) status_changes++
+                    add_charge_delta(start_charge, charge)
+                    prev_charge = charge
+                    prev_charge_valid = 1
+                } else if (charge_valid) {
                     prev_charge = charge
                     prev_charge_valid = 1
                 } else {
                     prev_charge_valid = 0
                 }
             } else {
-                if (charge_valid && prev_charge_valid) {
-                    delta = prev_charge - charge
-                    if (delta > 0) {
-                        discharge += delta / 1000
-                        has_discharge = 1
-                    } else if (delta < 0) {
-                        charge_in += (-delta) / 1000
-                        has_charge = 1
-                    }
-                }
+                if (charge_valid && prev_charge_valid) add_charge_delta(prev_charge, charge)
                 if (charge_valid) {
                     prev_charge = charge
                     prev_charge_valid = 1
@@ -175,6 +215,7 @@ build_power_window_json() {
                 }
                 if (status != "" && last_status != "" && status != last_status) status_changes++
                 if (status != "") last_status = status
+                observe_status(status)
                 last_ts = ts
                 last_level = level
             }
@@ -182,54 +223,96 @@ build_power_window_json() {
         }
         END {
             if (!seen) {
-                printf "{\"minutes\":%s,\"start_ts\":%s,\"window_start_ts\":null,\"elapsed_sec\":0,\"samples\":0,\"level_start\":null,\"level_now\":", minutes, start
-                if (cur_level_valid) printf "%s", cur_level
-                else printf "null"
-                printf ",\"net_level_delta\":null,\"discharge_mah\":null,\"charge_mah\":null,\"avg_discharge_mah_per_h\":null,\"avg_discharge_mw\":null,\"status_start\":null,\"status_last\":null,\"status_changes\":0,\"quality\":\"no_data\",\"source\":\"module_power_history\"}"
-                exit
-            }
-
-            if (cur_charge_valid && prev_charge_valid && now > last_ts) {
-                delta = prev_charge - cur_charge
-                if (delta > 0) {
-                    discharge += delta / 1000
-                    has_discharge = 1
-                } else if (delta < 0) {
-                    charge_in += (-delta) / 1000
-                    has_charge = 1
+                if (baseline_available && baseline_charge_valid && cur_charge_valid &&
+                    baseline_ts < start && now > baseline_ts &&
+                    (now - baseline_ts) <= baseline_max_gap) {
+                    fraction = (start - baseline_ts) / (now - baseline_ts)
+                    if (fraction < 0) fraction = 0
+                    if (fraction > 1) fraction = 1
+                    start_charge = baseline_charge + (cur_charge - baseline_charge) * fraction
+                    seen = 1
+                    first_ts = 0
+                    first_level = baseline_level
+                    first_status = baseline_status
+                    level_start = baseline_level
+                    coverage_start_ts = start
+                    last_ts = now
+                    last_level = cur_level_valid ? cur_level + 0 : baseline_level
+                    last_status = cur_status
+                    baseline_used = 1
+                    endpoint_included = 1
+                    observe_status(baseline_status)
+                    observe_status(cur_status)
+                    if (baseline_status != "" && cur_status != "" && baseline_status != cur_status) status_changes++
+                    add_charge_delta(start_charge, cur_charge)
+                } else {
+                    printf "{\"minutes\":%s,\"start_ts\":%s,\"window_start_ts\":null,\"first_sample_ts\":null,\"baseline_ts\":", minutes, start
+                    if (baseline_available) printf "%s", baseline_ts
+                    else printf "null"
+                    printf ",\"baseline_available\":%s,\"baseline_used\":false,\"endpoint_included\":false,\"expected_elapsed_sec\":%s,\"coverage_elapsed_sec\":0,\"coverage_ratio\":0,\"coverage_quality\":\"no_coverage\",\"elapsed_sec\":0,\"samples\":0,\"effective_samples\":0,\"level_start\":null,\"level_now\":", baseline_available ? "true" : "false", expected_elapsed
+                    if (cur_level_valid) printf "%s", cur_level
+                    else printf "null"
+                    printf ",\"net_level_delta\":null,\"discharge_mah\":null,\"charge_mah\":null,\"net_discharge_mah\":null,\"avg_discharge_mah_per_h\":null,\"avg_discharge_mw\":null,\"trusted_for_average\":false,\"status_start\":null,\"status_last\":null,\"status_changes\":0,\"quality\":\"no_data\",\"source\":\"module_power_history\"}"
+                    exit
                 }
             }
 
-            level_now = cur_level_valid ? cur_level + 0 : last_level
-            net_delta = level_now - first_level
-            elapsed = now - first_ts
-            if (elapsed < 0) elapsed = 0
-            quality = "pure_discharge"
-            if (samples < 2) quality = "insufficient_samples"
-            else if (has_charge || status_changes > 0 || (saw_charging && saw_not_charging)) quality = "mixed_charge_discharge"
-            else if (!has_discharge) quality = "no_discharge_delta"
+            if (!endpoint_included && cur_charge_valid && prev_charge_valid && now > last_ts) {
+                add_charge_delta(prev_charge, cur_charge)
+                endpoint_included = 1
+                observe_status(cur_status)
+                if (cur_status != "" && last_status != "" && cur_status != last_status) status_changes++
+                if (cur_status != "") last_status = cur_status
+            }
 
-            printf "{\"minutes\":%s,\"start_ts\":%s,\"window_start_ts\":%s,\"elapsed_sec\":%s,\"samples\":%s,\"level_start\":%s,\"level_now\":%s,\"net_level_delta\":%s,\"discharge_mah\":", minutes, start, first_ts, elapsed, samples, first_level, level_now, net_delta
+            level_now = cur_level_valid ? cur_level + 0 : last_level
+            net_delta = level_now - level_start
+            coverage_elapsed = now - coverage_start_ts
+            if (coverage_elapsed < 0) coverage_elapsed = 0
+            if (coverage_elapsed > expected_elapsed) coverage_elapsed = expected_elapsed
+            coverage_ratio = expected_elapsed > 0 ? coverage_elapsed / expected_elapsed : 0
+            effective_samples = samples + baseline_used + endpoint_included
+            net_discharge = discharge - charge_in
+            coverage_quality = coverage_ratio >= 0.95 ? "complete_window" : (coverage_ratio >= 0.80 ? "usable_window" : "partial_window")
+            quality = "pure_discharge"
+            if (effective_samples < 2) quality = "insufficient_samples"
+            else if (has_charge || status_changes > 0 || (saw_charging_like && saw_discharging)) quality = "mixed_charge_discharge"
+            else if (cur_external + 0 == 1 || cur_status == "Charging" || cur_status == "Full") quality = "charging_endpoint"
+            else if (coverage_ratio < 0.80) quality = "partial_window"
+            else if (!has_discharge) quality = "no_discharge_delta"
+            trusted = (quality == "pure_discharge")
+
+            printf "{\"minutes\":%s,\"start_ts\":%s,\"window_start_ts\":%s,\"first_sample_ts\":", minutes, start, coverage_start_ts
+            if (first_ts > 0) printf "%s", first_ts
+            else printf "null"
+            printf ",\"baseline_ts\":"
+            if (baseline_available) printf "%s", baseline_ts
+            else printf "null"
+            printf ",\"baseline_available\":%s,\"baseline_used\":%s,\"endpoint_included\":%s,\"expected_elapsed_sec\":%s,\"coverage_elapsed_sec\":%s,\"coverage_ratio\":%.3f,\"coverage_quality\":\"%s\",\"elapsed_sec\":%s,\"samples\":%s,\"effective_samples\":%s,\"level_start\":%s,\"level_now\":%s,\"net_level_delta\":%s,\"discharge_mah\":", baseline_available ? "true" : "false", baseline_used ? "true" : "false", endpoint_included ? "true" : "false", expected_elapsed, coverage_elapsed, coverage_ratio, coverage_quality, coverage_elapsed, samples, effective_samples, level_start, level_now, net_delta
             if (has_discharge) printf "%.1f", discharge
             else printf "null"
             printf ",\"charge_mah\":"
             if (has_charge) printf "%.1f", charge_in
             else printf "null"
+            printf ",\"net_discharge_mah\":"
+            if (has_discharge || has_charge) printf "%.1f", net_discharge
+            else printf "null"
             printf ",\"avg_discharge_mah_per_h\":"
-            if (has_discharge && elapsed > 0) printf "%.1f", discharge * 3600 / elapsed
+            if (has_discharge && coverage_elapsed > 0) printf "%.1f", discharge * 3600 / coverage_elapsed
             else printf "null"
             printf ",\"avg_discharge_mw\":"
-            if (has_discharge && elapsed > 0) printf "%.0f", discharge * 3600 / elapsed * 3.87
+            if (has_discharge && coverage_elapsed > 0) printf "%.0f", discharge * 3600 / coverage_elapsed * 3.87
             else printf "null"
             gsub(/"/, "\\\"", first_status)
             gsub(/"/, "\\\"", last_status)
-            printf ",\"status_start\":\"%s\",\"status_last\":\"%s\",\"status_changes\":%s,\"quality\":\"%s\",\"source\":\"module_power_history\"}", first_status, last_status, status_changes, quality
+            printf ",\"trusted_for_average\":%s,\"status_start\":\"%s\",\"status_last\":\"%s\",\"status_changes\":%s,\"quality\":\"%s\",\"source\":\"module_power_history\"}", trusted ? "true" : "false", first_status, last_status, status_changes, quality
         }
         ' "$POWER_HISTORY"
     else
-        printf '{"minutes":%s,"start_ts":%s,"window_start_ts":null,"elapsed_sec":0,"samples":0,"level_start":null,"level_now":%s,"net_level_delta":null,"discharge_mah":null,"charge_mah":null,"avg_discharge_mah_per_h":null,"avg_discharge_mw":null,"status_start":null,"status_last":null,"status_changes":0,"quality":"no_data","source":"module_power_history"}' \
+        printf '{"minutes":%s,"start_ts":%s,"window_start_ts":null,"first_sample_ts":null,"baseline_ts":null,"baseline_available":false,"baseline_used":false,"endpoint_included":false,"expected_elapsed_sec":%s,"coverage_elapsed_sec":0,"coverage_ratio":0,"coverage_quality":"no_coverage","elapsed_sec":0,"samples":0,"effective_samples":0,"level_start":null,"level_now":%s,"net_level_delta":null,"discharge_mah":null,"charge_mah":null,"net_discharge_mah":null,"avg_discharge_mah_per_h":null,"avg_discharge_mw":null,"trusted_for_average":false,"status_start":null,"status_last":null,"status_changes":0,"quality":"no_data","source":"module_power_history"}' \
             "$(json_num_or_null "$_mins")" \
             "$(json_num_or_null "$_start")" \
+            "$(json_num_or_null "$((_mins * 60))")" \
             "$(json_num_or_null "$_cur_level")"
     fi
 }

@@ -1572,6 +1572,119 @@ button{border:none;background:none;padding:0;color:inherit}
   flex:1 1 120px;
 }
 
+.energy-window-grid{
+  display:grid;
+  gap:10px;
+}
+
+.energy-window-card{
+  min-width:0;
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius:var(--radius-md);
+  background:var(--surface-2);
+  box-shadow:inset 3px 0 0 var(--line);
+}
+
+.energy-window-card.good{box-shadow:inset 3px 0 0 var(--primary)}
+.energy-window-card.warn{box-shadow:inset 3px 0 0 var(--warn)}
+
+.energy-window-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+
+.energy-window-title{
+  min-width:0;
+  font-size:14px;
+  line-height:20px;
+  font-weight:750;
+  color:var(--text);
+}
+
+.energy-window-head > .badge{
+  flex:0 1 auto;
+  max-width:58%;
+}
+
+.energy-window-main{
+  display:grid;
+  grid-template-columns:minmax(108px,.8fr) minmax(0,1.2fr);
+  align-items:end;
+  gap:8px 12px;
+  margin-top:10px;
+}
+
+.energy-window-value{
+  min-width:0;
+  font-size:18px;
+  line-height:22px;
+  font-weight:750;
+  color:var(--text);
+  font-variant-numeric:tabular-nums;
+  overflow-wrap:anywhere;
+}
+
+.energy-window-detail{
+  min-width:0;
+  font-size:12px;
+  line-height:17px;
+  color:var(--text-2);
+  text-align:right;
+  font-variant-numeric:tabular-nums;
+  overflow-wrap:anywhere;
+}
+
+.energy-window-coverage{margin-top:10px}
+
+.energy-window-coverage-text,
+.energy-window-meta,
+.energy-window-temp{
+  font-size:12px;
+  line-height:17px;
+  color:var(--text-3);
+  font-variant-numeric:tabular-nums;
+  overflow-wrap:anywhere;
+}
+
+.energy-window-progress{
+  height:5px;
+  margin-top:6px;
+  overflow:hidden;
+  border-radius:999px;
+  background:var(--surface-3);
+}
+
+.energy-window-progress > span{
+  display:block;
+  height:100%;
+  max-width:100%;
+  border-radius:inherit;
+  background:var(--primary);
+}
+
+.energy-window-card.warn .energy-window-progress > span{background:var(--warn)}
+.energy-window-card.off .energy-window-progress > span{background:var(--text-3)}
+
+.energy-window-meta,
+.energy-window-temp{margin-top:7px}
+
+.energy-window-temp{
+  padding-top:7px;
+  border-top:1px solid var(--line);
+  color:var(--text-2);
+}
+
+.energy-window-empty{
+  padding:14px;
+  border:1px dashed var(--line);
+  border-radius:var(--radius-md);
+  color:var(--text-3);
+  text-align:center;
+}
+
 .uecap-btn-group{
   display:flex;
   gap:8px;
@@ -1847,6 +1960,14 @@ button{border:none;background:none;padding:0;color:inherit}
   .energy-export-actions .tiny-btn{
     flex:1 1 calc(50% - 4px);
   }
+
+  .energy-window-main{
+    grid-template-columns:1fr;
+    align-items:start;
+    gap:4px;
+  }
+
+  .energy-window-detail{text-align:left}
 
   .profile-actions{
     align-self:flex-start;

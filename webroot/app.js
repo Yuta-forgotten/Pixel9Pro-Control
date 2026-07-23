@@ -3379,6 +3379,7 @@ function renderEnergyDetail(input, options = {}) {
         case 'mixed_charge_discharge': return '混合充放电';
         case 'session_window_mismatch': return '窗口错位';
         case 'insufficient_samples': return '采样不足';
+        case 'partial_window': return '覆盖不足';
         case 'no_discharge_delta': return '无放电差值';
         case 'no_data': return '无数据';
         default: return q || '未知';
@@ -3469,28 +3470,111 @@ function renderEnergyDetail(input, options = {}) {
     frag.appendChild(listToday);
 
     const windows = Array.isArray(d.history_windows) ? d.history_windows : [];
-    frag.appendChild(heading('短窗口趋势', '基于模块 .power_history / .thermal_history 汇总。采样少于 2 个时只说明数据不足，不作为功耗结论。'));
-    const listWin = document.createElement('div'); listWin.className = 'data-list';
+    frag.appendChild(heading('短窗口趋势', '每张卡会显示真实覆盖时长。混合充放电、接电 endpoint 或覆盖不足时只保留原始收支，不给出看似精确的平均功耗。'));
+    const listWin = document.createElement('div'); listWin.className = 'energy-window-grid';
     if (!windows.length) {
-      listWin.appendChild(row('短窗口', '暂无数据', 'badge off'));
+      const empty = document.createElement('div');
+      empty.className = 'energy-window-empty';
+      empty.textContent = '暂无短窗口数据';
+      listWin.appendChild(empty);
     } else {
       windows.forEach((win) => {
         const min = Number(win.minutes);
         const p = win.power || {};
         const t = win.thermal || {};
-        const pSamples = Number(p.samples || 0);
+        const pSamples = Number(p.effective_samples ?? p.samples ?? 0);
         const tSamples = Number(t.samples || 0);
-        const pText = pSamples >= 2
-          ? `${fmtMahPerHour(p.avg_discharge_mah_per_h)} · ${fmtMilliwatt(p.avg_discharge_mw)} · ${fmtMah(p.discharge_mah)}`
-          : '功耗样本不足';
-        const pWarn = p.quality === 'mixed_charge_discharge' || p.quality === 'charging_endpoint';
-        const pFinal = pWarn ? `${pText} · 混合充放电，不用于待机结论` : pText;
-        const tText = tSamples >= 2
-          ? `平均 ${fmtTempC(t.temp_avg_c)} / 最高 ${fmtTempC(t.temp_max_c)}`
+        const expectedSec = Number.isFinite(Number(p.expected_elapsed_sec))
+          ? Number(p.expected_elapsed_sec)
+          : min * 60;
+        const coverageSec = Number.isFinite(Number(p.coverage_elapsed_sec))
+          ? Number(p.coverage_elapsed_sec)
+          : Number(p.elapsed_sec || 0);
+        const rawCoverageRatio = Number(p.coverage_ratio);
+        const coverageRatio = Number.isFinite(rawCoverageRatio)
+          ? Math.max(0, Math.min(1, rawCoverageRatio))
+          : (expectedSec > 0 ? Math.max(0, Math.min(1, coverageSec / expectedSec)) : 0);
+        const coveragePercent = Math.round(coverageRatio * 100);
+        const hasTrustedAverage = typeof p.trusted_for_average === 'boolean';
+        const trustedAverage = hasTrustedAverage
+          ? p.trusted_for_average
+          : (p.quality === 'pure_discharge' && coverageRatio >= 0.8 && pSamples >= 2);
+        const cardTone = trustedAverage ? 'good' : (p.quality === 'no_data' || p.quality === 'insufficient_samples' ? 'off' : 'warn');
+
+        const card = document.createElement('div');
+        card.className = `energy-window-card ${cardTone}`;
+
+        const head = document.createElement('div');
+        head.className = 'energy-window-head';
+        const title = document.createElement('div');
+        title.className = 'energy-window-title';
+        title.textContent = `近 ${min} 分钟`;
+        const quality = document.createElement('span');
+        quality.className = qualityBadge(p.quality);
+        quality.textContent = qualityLabel(p.quality);
+        head.append(title, quality);
+
+        const main = document.createElement('div');
+        main.className = 'energy-window-main';
+        const value = document.createElement('div');
+        value.className = 'energy-window-value';
+        const detail = document.createElement('div');
+        detail.className = 'energy-window-detail';
+        if (trustedAverage) {
+          value.textContent = fmtMilliwatt(p.avg_discharge_mw);
+          detail.textContent = `${fmtMahPerHour(p.avg_discharge_mah_per_h)} · 放电 ${fmtMah(p.discharge_mah)}`;
+        } else if (p.quality === 'mixed_charge_discharge') {
+          value.textContent = '混合充放电';
+          detail.textContent = `放电 ${fmtMah(p.discharge_mah)} · 回充 ${fmtMah(p.charge_mah)}`;
+        } else if (p.quality === 'charging_endpoint') {
+          value.textContent = '接电中';
+          detail.textContent = `放电 ${fmtMah(p.discharge_mah)} · 回充 ${fmtMah(p.charge_mah)}`;
+        } else if (p.quality === 'partial_window') {
+          value.textContent = '覆盖不足';
+          detail.textContent = '当前覆盖不足 80%，不计算可信平均功耗';
+        } else if (p.quality === 'no_discharge_delta') {
+          value.textContent = '无放电差值';
+          detail.textContent = '电荷计未观察到可用放电变化';
+        } else {
+          value.textContent = pSamples >= 2 ? qualityLabel(p.quality) : '采样不足';
+          detail.textContent = '等待更多有效电荷计样本';
+        }
+        main.append(value, detail);
+
+        const coverage = document.createElement('div');
+        coverage.className = 'energy-window-coverage';
+        const coverageText = document.createElement('div');
+        coverageText.className = 'energy-window-coverage-text';
+        coverageText.textContent = `覆盖 ${fmtDuration(coverageSec)} / ${fmtDuration(expectedSec)} · ${coveragePercent}%`;
+        const coverageBar = document.createElement('div');
+        coverageBar.className = 'energy-window-progress';
+        const coverageFill = document.createElement('span');
+        coverageFill.style.width = `${coveragePercent}%`;
+        coverageBar.appendChild(coverageFill);
+        coverage.append(coverageText, coverageBar);
+
+        const meta = document.createElement('div');
+        meta.className = 'energy-window-meta';
+        const net = Number(p.net_discharge_mah);
+        const netText = Number.isFinite(net)
+          ? (net >= 0 ? `净放电 ${fmtMah(net)}` : `净回充 ${fmtMah(Math.abs(net))}`)
+          : '净收支 —';
+        const startsAtWindow = Number.isFinite(Number(p.window_start_ts))
+          && Number.isFinite(Number(p.start_ts))
+          && Number(p.window_start_ts) <= Number(p.start_ts);
+        const baselineText = p.baseline_used === true
+          ? '起点已补齐'
+          : (startsAtWindow ? '起点直接命中' : '起点 baseline 不足');
+        meta.textContent = `${netText} · ${pSamples} 个有效点 · ${baselineText}`;
+
+        const temp = document.createElement('div');
+        temp.className = 'energy-window-temp';
+        temp.textContent = tSamples >= 2
+          ? `温度 平均 ${fmtTempC(t.temp_avg_c)} · 最高 ${fmtTempC(t.temp_max_c)}`
           : '温度样本不足';
-        listWin.appendChild(row(`近 ${min} 分钟功耗`, pFinal, pWarn ? 'badge warn' : (pSamples >= 2 ? 'data-val' : 'badge off')));
-        listWin.appendChild(row(`近 ${min} 分钟质量`, qualityLabel(p.quality), qualityBadge(p.quality)));
-        listWin.appendChild(row(`近 ${min} 分钟温度`, tText, tSamples >= 2 ? 'data-val' : 'badge off'));
+
+        card.append(head, main, coverage, meta, temp);
+        listWin.appendChild(card);
       });
     }
     frag.appendChild(listWin);
