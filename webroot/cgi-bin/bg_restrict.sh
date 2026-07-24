@@ -6,6 +6,7 @@
 ##############################################################
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
 . "$MODDIR/scripts/bg_restrict_lib.sh"
+. "$MODDIR/scripts/app_identity_lib.sh"
 
 BG_ENABLED_FILE="$MODDIR/.bg_restrict_enabled"
 BG_LIST_FILE="$MODDIR/.bg_restrict_list"
@@ -49,6 +50,7 @@ emit_pkg_status() {
     _op_any=$(bg_read_appop_mode "$_pkg" RUN_ANY_IN_BACKGROUND)
     read_stop_state "$_pkg"
     read_package_stopped "$_pkg"
+    app_identity_load_package "$_pkg" >/dev/null 2>&1 || true
 
     _stop_state="not_applicable"
     if [ "$_policy" = "stop_after_leave" ]; then
@@ -76,9 +78,31 @@ emit_pkg_status() {
         true|false) _package_stopped_json="$_package_stopped" ;;
     esac
 
-    printf '{"pkg":"%s","policy":"%s","delay":"%s","bucket":"%s","appops":"%s","op_bg":"%s","op_any":"%s","stop_since":%s,"stop_done":%s,"package_stopped":%s,"stop_state":"%s"}' \
-        "$(json_escape "$_pkg")" "$_policy" "$_delay" "$(json_escape "$_bucket")" "$_op_any" "$_op_bg" "$_op_any" \
+    printf '{"pkg":"%s","label":"%s","category":"%s","restriction_tier":"%s",' \
+        "$(json_escape "$_pkg")" "$(json_escape "$_identity_label")" \
+        "$(json_escape "$_identity_category")" "$_identity_restriction_tier"
+    printf '"policy":"%s","delay":"%s","bucket":"%s","appops":"%s","op_bg":"%s","op_any":"%s",' \
+        "$_policy" "$_delay" "$(json_escape "$_bucket")" "$_op_any" "$_op_bg" "$_op_any"
+    printf '"stop_since":%s,"stop_done":%s,"package_stopped":%s,"stop_state":"%s"}' \
         "$_stop_since_json" "$_stop_done_json" "$_package_stopped_json" "$_stop_state"
+}
+
+emit_identity_suggestions() {
+    printf '"identity_source":"config/app_identities.tsv","suggestions":['
+    if [ -s "$APP_IDENTITY_FILE" ]; then
+        _installed_packages="|$(pm list packages 2>/dev/null | sed 's/^package://; s/$/|/' | tr -d '\r\n')"
+        awk -F'[|]' -v installed="$_installed_packages" '
+            BEGIN { first=1 }
+            $0 !~ /^#/ && $1 == "package" && ($5 == "normal" || $5 == "caution") {
+                if (index(installed, "|" $2 "|") == 0) next
+                if (!first) printf ","
+                first=0
+                printf "{\"pkg\":\"%s\",\"label\":\"%s\",\"category\":\"%s\",\"restriction_tier\":\"%s\"}", \
+                    $2, $3, $4, $5
+            }
+        ' "$APP_IDENTITY_FILE"
+    fi
+    printf ']'
 }
 
 delete_pkg_line() {
@@ -123,7 +147,8 @@ emit_state() {
             emit_pkg_status "$_line"
         done < "$BG_LIST_FILE"
     fi
-    printf ']'
+    printf '],'
+    emit_identity_suggestions
 }
 
 require_loopback

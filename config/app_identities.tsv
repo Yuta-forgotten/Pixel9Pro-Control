@@ -1,0 +1,103 @@
+# kind|key|label|category|restriction_tier|canonical
+#
+# Single source of truth for WebUI UID/package display names.
+# This file is data, not shell code: consumers must parse it as pipe-delimited text
+# and must never source/eval it.
+#
+# restriction_tier:
+#   normal  - installed package is offered in the background-restriction picker
+#   caution - offered with a warning because notifications/VPN/wearables may break
+#   hidden  - display-name resolution only; never offered as a restriction candidate
+
+uid|-5|网络共享 / 热点|网络共享|hidden|android.tethering
+uid|0|Android 系统核心 (root)|系统|hidden|android
+uid|1000|Android 系统服务 (system)|系统|hidden|android.system
+uid|1001|电话与基带服务 (radio)|电话与基带|hidden|android.radio
+uid|1002|蓝牙系统服务|蓝牙|hidden|android.bluetooth
+uid|1003|图形系统服务|图形|hidden|android.graphics
+uid|1006|相机系统服务|相机|hidden|android.camera
+uid|1013|媒体系统服务|媒体|hidden|android.media
+uid|1019|DRM 系统服务|媒体|hidden|android.drm
+uid|1027|NFC 系统服务|NFC|hidden|android.nfc
+uid|2000|ADB / Shell|开发工具|hidden|android.shell
+
+package|com.android.chrome|Chrome|浏览器|normal|
+package|com.google.android.apps.chrome|Chrome|浏览器|normal|
+package|com.google.android.apps.nexuslauncher|Pixel Launcher|系统界面|hidden|
+package|com.android.systemui|系统界面|系统界面|hidden|
+package|com.android.settings|系统设置|系统|hidden|
+package|com.android.vending|Google Play 商店|应用商店|hidden|
+package|com.google.android.gms|Google Play 服务|系统服务|hidden|
+package|com.google.android.gsf|Google 服务框架|系统服务|hidden|
+package|com.google.android.googlequicksearchbox|Google|系统服务|hidden|
+package|com.google.android.youtube|YouTube|视频|normal|
+package|com.google.android.apps.youtube.music|YouTube Music|音乐|normal|
+package|com.google.android.apps.photos|Google 相册|照片|normal|
+package|com.google.android.apps.maps|Google 地图|地图导航|caution|
+package|com.google.android.GoogleCamera|Pixel 相机|相机|hidden|
+package|com.google.android.dialer|电话|电话与通信|hidden|
+package|com.google.android.apps.messaging|信息|电话与通信|caution|
+package|com.google.android.apps.wellbeing|数字健康|系统服务|hidden|
+package|com.google.android.webview|Android System WebView|系统服务|hidden|
+package|com.google.android.inputmethod.latin|Gboard|输入法|caution|
+package|com.google.android.as|Android System Intelligence|系统服务|hidden|
+package|com.google.android.apps.turbo|Device Health Services|系统服务|hidden|
+package|com.google.android.networkstack.tethering|网络共享服务|网络共享|hidden|
+package|com.shannon.imsservice|Shannon IMS 服务|电话与基带|hidden|
+
+package|com.tencent.mm|微信|即时通信|caution|
+package|com.tencent.mobileqq|QQ|即时通信|caution|
+package|com.tencent.qqmusic|QQ 音乐|音乐|normal|
+package|com.tencent.wetype|微信输入法|输入法|caution|
+package|com.tencent.weread|微信读书|阅读|normal|
+package|com.tencent.tmgp.sgame|王者荣耀|游戏|normal|
+package|com.tencent.gamehelper.smoba|王者营地|游戏工具|normal|
+package|com.ss.android.ugc.aweme|抖音|短视频|normal|
+package|com.zhiliaoapp.musically|TikTok|短视频|normal|
+package|tv.danmaku.bili|哔哩哔哩|视频|normal|
+package|com.bilibili.app.in|哔哩哔哩|视频|normal|
+package|com.example.piliplus|PiliPlus|视频|normal|
+package|com.sina.weibo|微博|社交|normal|
+package|com.xingin.xhs|小红书|社交|normal|
+package|com.zhihu.android|知乎|资讯社区|normal|
+package|com.autonavi.minimap|高德地图|地图导航|caution|
+package|com.baidu.netdisk|百度网盘|云存储|normal|
+package|com.eg.android.AlipayGphone|支付宝|支付|caution|
+package|com.jingdong.app.mall|京东|购物|normal|
+package|com.sankuai.meituan|美团|生活服务|normal|
+package|com.quark.browser|夸克|浏览器|normal|
+package|com.coolapk.market|酷安|应用社区|normal|
+package|com.apple.android.music|Apple Music|音乐|normal|
+
+package|org.telegram.messenger|Telegram|即时通信|caution|
+package|com.radolyn.ayugram|AyuGram|即时通信|caution|
+package|com.instagram.android|Instagram|社交|normal|
+package|com.instagram.barcelona|Threads|社交|normal|
+package|com.twitter.android|X|社交|normal|
+package|com.whatsapp|WhatsApp|即时通信|caution|
+package|com.spotify.music|Spotify|音乐|normal|
+package|com.openai.chatgpt|ChatGPT|AI 助手|normal|
+
+package|com.github.metacubex.clash.meta|Clash Meta for Android|VPN / 代理|caution|
+package|com.gtxfury.flyclash.smart|FlyClash|VPN / 代理|caution|
+package|com.x8bit.bitwarden|Bitwarden|密码管理|caution|
+package|org.localsend.localsend_app|LocalSend|文件传输|normal|
+package|com.microsoft.appmanager|连接至 Windows|设备互联|caution|
+package|com.microsoft.office.word|Microsoft Word|办公|normal|
+package|com.microsoft.office.excel|Microsoft Excel|办公|normal|
+package|com.microsoft.office.powerpoint|Microsoft PowerPoint|办公|normal|
+package|com.microsoft.skydrive|OneDrive|云存储|normal|
+
+package|com.sec.android.app.shealth|Samsung Health|健康|caution|
+package|com.samsung.android.app.watchmanager|Galaxy Wearable|穿戴设备|caution|
+package|com.samsung.wearable.watch7plugin|Galaxy Watch7 Plugin|穿戴设备|caution|
+package|com.samsung.android.swsportplugin|Samsung Watch 运动插件|穿戴设备|caution|
+package|com.samsung.android.samsungpay.gear|Samsung Pay 手表插件|支付 / 穿戴|caution|
+package|nl.appyhapps.healthsync|Health Sync|健康|caution|
+
+package|me.bmax.apatch|APatch|Root 管理|hidden|
+package|com.omarea.vtools|Scene|系统调优|hidden|
+package|bin.mt.plus|MT 管理器|文件工具|normal|
+package|com.absinthe.libchecker|LibChecker|开发工具|normal|
+package|me.zhanghai.android.files|Material Files|文件工具|normal|
+package|com.unionpay|云闪付|支付|caution|

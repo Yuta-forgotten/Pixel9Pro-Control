@@ -8,6 +8,7 @@
 #   3. Android batterystats 窗口 (系统分项 / Top 应用来源)
 ##############################################################
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
+. "$MODDIR/scripts/app_identity_lib.sh"
 require_loopback
 [ "$REQUEST_METHOD" = "GET" ] || json_error '405 Method Not Allowed' 'GET only'
 json_headers
@@ -754,10 +755,49 @@ if [ "$_build_system_snapshot" -eq 1 ]; then
     _bs_daily=$(sed -n 's/^DAY://p' "${_tmp}_bs" | head -1)
     _bs_time=$(sed -n 's/^BAT://p' "${_tmp}_bs" | head -1 | sed 's/.*battery: //; s/ (.*//')
 
-    _core_json=$(awk -v pkgfile="${_tmp}_pkg" '
+    _core_json=$(awk -v pkgfile="${_tmp}_pkg" -v identityfile="$APP_IDENTITY_FILE" '
+    function labels_for_packages(packages, parts, count, i, value, out) {
+        count = split(packages, parts, ", ")
+        out = ""
+        for (i = 1; i <= count; i++) {
+            value = package_label[parts[i]]
+            if (value == "") continue
+            if (out == "") out = value
+            else if (index(" / " out " / ", " / " value " / ") == 0) out = out " / " value
+        }
+        return out
+    }
+
+    function category_for_packages(packages, parts, count, i, value, out) {
+        count = split(packages, parts, ", ")
+        out = ""
+        for (i = 1; i <= count; i++) {
+            value = package_category[parts[i]]
+            if (value == "") continue
+            if (out == "") out = value
+            else if (out != value) return "共享 UID"
+        }
+        return out
+    }
+
     BEGIN {
+        while ((getline identity_line < identityfile) > 0) {
+            if (identity_line ~ /^#/ || identity_line ~ /^[[:space:]]*$/) continue
+            split(identity_line, identity, "[|]")
+            if (identity[1] == "uid" && identity[2] ~ /^-?[0-9]+$/) {
+                identity_uid = identity[2] + 0
+                uid_name[identity_uid] = identity[3]
+                uid_category[identity_uid] = identity[4]
+                uid_canonical[identity_uid] = identity[6]
+            } else if (identity[1] == "package" && identity[2] != "") {
+                package_label[identity[2]] = identity[3]
+                package_category[identity[2]] = identity[4]
+            }
+        }
+        close(identityfile)
+
         while ((getline line < pkgfile) > 0) {
-            split(line, p, "|")
+            split(line, p, "[|]")
             uid = p[1] + 0
             if (uid > 0 && p[2] != "") {
                 if (pm[uid] == "") pm[uid] = p[2]
@@ -795,7 +835,7 @@ if [ "$_build_system_snapshot" -eq 1 ]; then
         uid_s = w[2]
         gsub(/:/, "", uid_s)
         mah = w[3] + 0
-        uid_label = ""
+        fallback_label = ""
         if (uid_s ~ /^u[0-9]+a[0-9]+$/) {
             uid_part = uid_s
             sub(/^u/, "", uid_part)
@@ -812,23 +852,27 @@ if [ "$_build_system_snapshot" -eq 1 ]; then
             isolated_id = uid_part
             sub(/^[0-9]+i/, "", isolated_id)
             n = (user_id + 0) * 100000 + 99000 + (isolated_id + 0)
-            uid_label = "应用隔离进程"
+            fallback_label = "应用隔离进程"
         } else { n = uid_s + 0 }
         pk = pm[n]
-        label = uid_label
-        if (n == 0) { pk = "android"; label = "Android 系统核心 (root)" }
-        else if (n == 1000) { pk = "android"; label = "Android 系统服务 (system)" }
-        else if (n == 1001) { pk = "android.radio"; label = "电话与基带服务 (radio)" }
-        else if (n == 1002) { pk = "android.bluetooth"; label = "蓝牙系统服务" }
-        else if (n == 1003) { pk = "android.graphics"; label = "图形系统服务" }
-        else if (n == 1006) { pk = "android.camera"; label = "相机系统服务" }
-        else if (n == 1013) { pk = "android.media"; label = "媒体系统服务" }
-        else if (n == 1019) { pk = "android.drm"; label = "DRM 系统服务" }
-        else if (n == 1027) { pk = "android.nfc"; label = "NFC 系统服务" }
-        else if (n == 2000) { pk = "android.shell"; label = "ADB / Shell" }
-        else if (pk == "" && label == "") { pk = ""; label = "已卸载或未知应用" }
+        label = fallback_label
+        category = ""
+        if (uid_name[n] != "") {
+            pk = uid_canonical[n]
+            label = uid_name[n]
+            category = uid_category[n]
+        } else if (pk != "") {
+            resolved_label = labels_for_packages(pk)
+            if (resolved_label != "") label = resolved_label
+            category = category_for_packages(pk)
+        } else if (label == "") {
+            pk = ""
+            if (n < 0) label = "Android 特殊统计 UID"
+            else label = "已卸载或未知应用"
+        }
         ap[an] = pk
         al[an] = label
+        ac[an] = category
         au[an] = uid_s
         ai[an] = n
         am[an] = mah
@@ -846,12 +890,16 @@ if [ "$_build_system_snapshot" -eq 1 ]; then
             if (i) printf ","
             gsub(/"/, "\\\"", ap[i])
             gsub(/"/, "\\\"", al[i])
+            gsub(/"/, "\\\"", ac[i])
             gsub(/"/, "\\\"", au[i])
             printf "{\"uid\":\"%s\",\"uid_num\":%s,\"pkg\":", au[i], ai[i]
             if (ap[i] != "") printf "\"%s\"", ap[i]
             else printf "null"
-            printf ",\"label\":", al[i]
+            printf ",\"label\":"
             if (al[i] != "") printf "\"%s\"", al[i]
+            else printf "null"
+            printf ",\"category\":"
+            if (ac[i] != "") printf "\"%s\"", ac[i]
             else printf "null"
             printf ",\"mah\":%.0f}", am[i]
         }

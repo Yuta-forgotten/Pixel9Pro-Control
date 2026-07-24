@@ -68,39 +68,6 @@ const CLUSTERS = [
   { label: '大核 · cpu7', maxHz: 3105000 },
 ];
 const HOME_CPU_LABELS = ['小核', '中核', '大核'];
-const PACKAGE_ALIASES = Object.freeze({
-  'com.android.chrome': 'Chrome',
-  'com.google.android.apps.chrome': 'Chrome',
-  'com.google.android.apps.nexuslauncher': 'Pixel Launcher',
-  'com.android.systemui': '系统界面',
-  'com.android.settings': '系统设置',
-  'com.android.vending': 'Google Play 商店',
-  'com.google.android.gms': 'Google Play 服务',
-  'com.google.android.gsf': 'Google 服务框架',
-  'com.google.android.googlequicksearchbox': 'Google',
-  'com.google.android.youtube': 'YouTube',
-  'com.google.android.apps.youtube.music': 'YouTube Music',
-  'com.google.android.apps.photos': 'Google 相册',
-  'com.google.android.apps.maps': 'Google 地图',
-  'com.google.android.GoogleCamera': 'Pixel 相机',
-  'com.google.android.dialer': '电话',
-  'com.google.android.apps.messaging': '信息',
-  'com.google.android.apps.wellbeing': '数字健康',
-  'com.google.android.webview': 'Android System WebView',
-  'com.tencent.mm': '微信',
-  'com.tencent.mobileqq': 'QQ',
-  'com.ss.android.ugc.aweme': '抖音',
-  'com.zhiliaoapp.musically': 'TikTok',
-  'com.bilibili.app.in': '哔哩哔哩',
-  'tv.danmaku.bili': '哔哩哔哩',
-  'org.telegram.messenger': 'Telegram',
-  'com.instagram.android': 'Instagram',
-  'com.whatsapp': 'WhatsApp',
-  'com.spotify.music': 'Spotify',
-  'com.example.piliplus': 'PiliPlus',
-  'com.gtxfury.flyclash.smart': 'FlyClash',
-  'com.radolyn.ayugram': 'AyuGram'
-});
 const TEMP_MIN = 25;
 const TEMP_MAX = 60;
 const THRESH_STOCK = 37;
@@ -388,6 +355,7 @@ const state = {
   standbyGuardBusy: false,
   bgRestrictEnabled: 'on',
   bgRestrictBusy: false,
+  bgRestrictSuggestions: [],
   standbyDiag: null,
   uecapMode: 'unknown',
   uecapActiveMode: 'unknown',
@@ -534,6 +502,8 @@ function initRefs() {
   refs.bgRestrictRows = $('bg-restrict-rows');
   refs.bgRestrictAddBtn = $('bg-restrict-add-btn');
   refs.bgRestrictPkgInput = $('bg-restrict-pkg-input');
+  refs.bgRestrictPkgSuggestions = $('bg-restrict-pkg-suggestions');
+  refs.bgRestrictPkgHint = $('bg-restrict-pkg-hint');
   refs.bgRestrictPolicySelect = $('bg-restrict-policy-select');
   refs.bgRestrictDelaySelect = $('bg-restrict-delay-select');
   refs.nrSwitchToggleLabel = $('nr-switch-toggle-label');
@@ -2433,17 +2403,52 @@ function friendlyPackageLabel(pkg, suppliedLabel = '') {
   const name = String(suppliedLabel || '').trim();
   const packageName = String(pkg || '').trim();
   if (name) return name;
-  if (PACKAGE_ALIASES[packageName]) return PACKAGE_ALIASES[packageName];
-  if (packageName === 'android (root)' || packageName === 'android') return 'Android 系统核心';
-  if (packageName === 'android (system)') return 'Android 系统服务';
-  if (packageName === 'android (radio)' || packageName === 'android.radio') return '电话与基带服务';
-  if (packageName === 'android.bluetooth') return '蓝牙系统服务';
-  if (packageName === 'android.media') return '媒体系统服务';
-  if (packageName === 'android.shell') return 'ADB / Shell';
   if (/^u\d+[ai]\d+$/.test(packageName)) return '已卸载或未知应用';
   if (packageName.includes(', ')) return '共享 UID 应用';
   if (!packageName) return '已卸载或未知应用';
   return packageName;
+}
+
+function renderBgRestrictSuggestions(suggestions, activePackages) {
+  const active = new Set(activePackages.map((item) => String(item.pkg || '')));
+  state.bgRestrictSuggestions = (Array.isArray(suggestions) ? suggestions : [])
+    .filter((item) => item && item.pkg && !active.has(String(item.pkg)))
+    .sort((a, b) => String(a.label || a.pkg).localeCompare(String(b.label || b.pkg), 'zh-CN'));
+  if (!refs.bgRestrictPkgSuggestions) return;
+  refs.bgRestrictPkgSuggestions.replaceChildren();
+  state.bgRestrictSuggestions.forEach((item) => {
+    const option = document.createElement('option');
+    const caution = item.restriction_tier === 'caution' ? ' · 谨慎限制' : '';
+    option.value = String(item.pkg);
+    option.label = `${item.label || item.pkg}${item.category ? ` · ${item.category}` : ''}${caution}`;
+    option.textContent = option.label;
+    refs.bgRestrictPkgSuggestions.appendChild(option);
+  });
+  refs.bgRestrictPkgInput.placeholder = state.bgRestrictSuggestions.length
+    ? '输入包名或选择本机常用应用'
+    : 'com.example.app';
+  syncBgPackageHint();
+}
+
+function syncBgPackageHint() {
+  if (!refs.bgRestrictPkgHint || !refs.bgRestrictPkgInput) return;
+  const pkg = String(refs.bgRestrictPkgInput.value || '').trim();
+  const suggestion = state.bgRestrictSuggestions.find((item) => item.pkg === pkg);
+  if (!pkg) {
+    refs.bgRestrictPkgHint.textContent = '名称来自统一识别目录；仍可手动输入未收录包名。';
+    refs.bgRestrictPkgHint.className = 'bg-package-hint';
+    return;
+  }
+  if (!suggestion) {
+    refs.bgRestrictPkgHint.textContent = '未在常用目录中识别，将按当前包名添加。';
+    refs.bgRestrictPkgHint.className = 'bg-package-hint';
+    return;
+  }
+  const caution = suggestion.restriction_tier === 'caution';
+  refs.bgRestrictPkgHint.textContent = caution
+    ? `${suggestion.label} · ${suggestion.category || '常用应用'}；限制后可能影响通知、连接或穿戴同步。`
+    : `${suggestion.label} · ${suggestion.category || '常用应用'}`;
+  refs.bgRestrictPkgHint.className = `bg-package-hint${caution ? ' warn' : ''}`;
 }
 
 function normalizeBgPolicy(policy) {
@@ -2490,6 +2495,7 @@ function syncBgRestrictControls() {
   const busy = state.bgRestrictBusy;
   if (refs.bgRestrictToggleBtn) refs.bgRestrictToggleBtn.disabled = busy;
   if (refs.bgRestrictAddBtn) refs.bgRestrictAddBtn.disabled = busy;
+  if (refs.bgRestrictPkgInput) refs.bgRestrictPkgInput.disabled = busy;
   if (refs.bgRestrictPolicySelect) refs.bgRestrictPolicySelect.disabled = busy;
   if (refs.bgRestrictDelaySelect) syncBgDelayControl(refs.bgRestrictPolicySelect, refs.bgRestrictDelaySelect);
   document.querySelectorAll('#bg-restrict-rows .bg-policy-row').forEach((row) => {
@@ -2554,6 +2560,7 @@ function renderBgRestrict(data) {
     : '已关闭：应用列表保留，后台设置已恢复。';
   refs.bgRestrictRows.replaceChildren();
   const packages = Array.isArray(data.packages) ? data.packages : [];
+  renderBgRestrictSuggestions(data.suggestions, packages);
   if (packages.length === 0) {
     refs.bgRestrictRows.appendChild(buildInfoRow('应用列表', '尚未添加应用', 'off'));
     syncBgRestrictControls();
@@ -2574,7 +2581,7 @@ function renderBgRestrict(data) {
     main.className = 'bg-policy-main';
     const title = document.createElement('div');
     title.className = 'bg-policy-title';
-    const displayName = friendlyPackageLabel(p.pkg);
+    const displayName = friendlyPackageLabel(p.pkg, p.label);
     title.textContent = displayName;
     const detail = document.createElement('div');
     detail.className = 'bg-policy-detail';
@@ -2700,8 +2707,15 @@ async function bgRestrictAdd() {
   }
   const policy = normalizeBgPolicy(refs.bgRestrictPolicySelect.value);
   const delay = normalizeBgDelay(refs.bgRestrictDelaySelect.value);
-  const ok = await bgRestrictAction({ action: 'add', package: pkg, policy, delay }, `已添加 ${pkg}`);
-  if (ok) refs.bgRestrictPkgInput.value = '';
+  const suggestion = state.bgRestrictSuggestions.find((item) => item.pkg === pkg);
+  const ok = await bgRestrictAction(
+    { action: 'add', package: pkg, policy, delay },
+    `已添加 ${friendlyPackageLabel(pkg, suggestion?.label)}`
+  );
+  if (ok) {
+    refs.bgRestrictPkgInput.value = '';
+    syncBgPackageHint();
+  }
 }
 
 async function bgRestrictUpdate(pkg, policy, delay) {
@@ -3899,10 +3913,13 @@ function renderEnergyDetail(input, options = {}) {
     };
     const apps = Array.isArray(d.apps) ? d.apps.map((app) => {
       const pkg = String(app.pkg || '');
+      const category = String(app.category || '');
       const legacyUid = /^u\d+[ai]\d+$/.test(pkg) ? pkg : '';
       const uid = String(app.uid || legacyUid || (Number.isFinite(Number(app.uid_num)) ? `UID ${app.uid_num}` : 'UID 未知'));
       const displayPkg = legacyUid ? '' : pkg;
-      const subtitle = displayPkg ? `${displayPkg} · ${uid}` : `${uid} · 未找到当前安装包`;
+      const subtitle = displayPkg
+        ? [displayPkg, category, uid].filter(Boolean).join(' · ')
+        : [uid, category, '未找到当前安装包'].filter(Boolean).join(' · ');
       return { label: packageLabel(app), subtitle, value: Number(app.mah) || 0 };
     }).filter((app) => app.value > 0) : [];
     const components = [
@@ -4516,6 +4533,7 @@ function bindStaticEvents() {
   $('bg-restrict-toggle-btn').addEventListener('click', toggleBgRestrict);
   $('bg-restrict-add-btn').addEventListener('click', bgRestrictAdd);
   $('bg-restrict-pkg-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') bgRestrictAdd(); });
+  $('bg-restrict-pkg-input').addEventListener('input', syncBgPackageHint);
   $('bg-restrict-policy-select').addEventListener('change', syncBgRestrictControls);
   $('bg-restrict-refresh-btn').addEventListener('click', forceRefreshBgRestrict);
   $('nr-switch-detail-btn').addEventListener('click', () => openDetail('NR 息屏降级详情', NR_SWITCH_DETAIL));

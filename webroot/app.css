@@ -682,6 +682,18 @@ button{border:none;background:none;padding:0;color:inherit}
   min-width:0;
 }
 
+.bg-package-hint{
+  flex:1 0 100%;
+  color:var(--text-2);
+  font-size:12px;
+  line-height:17px;
+  overflow-wrap:anywhere;
+}
+
+.bg-package-hint.warn{
+  color:var(--warn);
+}
+
 .bg-policy-select{
   flex:0 1 150px;
 }
@@ -2301,6 +2313,10 @@ button{border:none;background:none;padding:0;color:inherit}
   }
 
   .bg-add-area .bg-pkg-input{
+    grid-column:1 / -1;
+  }
+
+  .bg-add-area .bg-package-hint{
     grid-column:1 / -1;
   }
 

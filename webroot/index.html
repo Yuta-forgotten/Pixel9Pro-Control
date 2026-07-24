@@ -410,7 +410,8 @@
             <div class="skel" style="height:48px"></div>
           </div>
           <div id="bg-restrict-add-area" class="bg-add-area">
-            <input class="bg-pkg-input" type="text" id="bg-restrict-pkg-input" placeholder="com.ss.android.ugc.aweme">
+            <input class="bg-pkg-input" type="text" id="bg-restrict-pkg-input" list="bg-restrict-pkg-suggestions" placeholder="输入包名或选择本机常用应用" autocomplete="off">
+            <datalist id="bg-restrict-pkg-suggestions"></datalist>
             <select class="bg-policy-select" id="bg-restrict-policy-select" aria-label="后台限制策略">
               <option value="stop_after_leave" selected>休眠</option>
               <option value="block_all">禁止后台活动</option>
@@ -423,6 +424,7 @@
               <option value="10">10分钟</option>
             </select>
             <button class="tiny-btn primary" id="bg-restrict-add-btn" type="button">添加</button>
+            <div class="bg-package-hint" id="bg-restrict-pkg-hint">名称来自统一识别目录；仍可手动输入未收录包名。</div>
           </div>
           <details class="disclosure compact support-disclosure">
             <summary class="disclosure-summary">

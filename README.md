@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- Release: `v4.4.37`
-- versionCode: `101`
-- Asset: `pixel9pro_control_v4.4.37.zip`
+- Release: `v4.4.38`
+- versionCode: `102`
+- Asset: `pixel9pro_control_v4.4.38.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -79,7 +79,7 @@ WebUI 实时温度优先读取后台 worker 维护的 `.thermal_cache.json`，�
 - Wi-Fi multicast：亮屏开启，息屏关闭
 - SIM2 空槽：默认关闭（手动开启）。通过 `cmd phone set-sim-count 1` 在息屏时将 modem 实例从 2 降到 1，消除空槽 modem 的搜网/IMS 注册开销；亮屏或检测到 SIM2 插入时自动恢复双 modem
 - 待机隔离模式：仅用于过夜 A/B 排障。开启后息屏阶段暂停 NR 降级、SIM2 管理、功耗采样、thermal burst 和自动调度，尽量把 control 模块的待机干扰降到最低
-- 后台应用限制：按包选择 `降低后台优先级 / 禁止后台服务 / 禁止后台活动 / 休眠` 策略，默认仅预置抖音（休眠：锁屏或离开前台延时后 `force-stop`），移除或关闭时按接管前 bucket/AppOps 恢复
+- 后台应用限制：按包选择 `降低后台优先级 / 禁止后台服务 / 禁止后台活动 / 休眠` 策略；添加区会从统一应用识别目录列出本机已安装的常用应用，也保留手输包名。默认仅预置抖音（休眠：锁屏或离开前台延时后 `force-stop`），移除或关闭时按接管前 bucket/AppOps 恢复
 
 ### NR 息屏降级
 
@@ -142,6 +142,13 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 - **性能温控**：调度接管 / 手动·自动、CPU 实时频率与参数、性能模式卡、温度详情（刻度条 + 多传感器）、温控阈值档位
 - **网络**：UECap 三档、基带模块状态、NR 息屏降级、SIM2 空槽管理
 - **系统**：ZRAM/VM、后台应用限制、待机隔离、后台 worker 摘要、NTP、主题与配色
+
+**应用与 UID 识别目录**
+
+- `config/app_identities.tsv` 是功耗排行和后台应用限制共用的唯一名称资料源，记录 Android 特殊 UID、系统分项、常用包名、中文名称、类别和限制风险级别。
+- 功耗排行优先使用当前 PackageManager 的 UID→包名关系，再用目录补充易读名称；`UID -5` 会识别为“网络共享 / 热点”，未知负 UID 会标成 Android 特殊统计 UID，不再误报成已卸载 App。
+- 后台限制只把目录中标记为 `normal` / `caution` 且本机已安装的包显示为候选；系统组件只用于识别，不进入候选列表。`caution` 项会提示可能影响通知、VPN、穿戴同步或持续连接。
+- 目录是只读 TSV 数据，后端使用字段白名单解析，绝不作为 shell 脚本 `source` / `eval`；新增常用 App 时只需增加一行，不需要修改 `energy.sh` 或 `app.js`。
 
 **主题与配色（调色盘）**
 
