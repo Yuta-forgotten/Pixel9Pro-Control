@@ -1070,15 +1070,27 @@ read_saved_nr_mode() {
         mv "${POWER_SESSION_FILE}.tmp" "$POWER_SESSION_FILE"
     }
 
-    _trim_power_history_if_needed() {
-        _power_hist_count=$((_power_hist_count + 1))
-        if [ "$_power_hist_count" -ge 240 ]; then
-            _lines=$(wc -l < "$POWER_HISTORY" 2>/dev/null)
-            if [ "${_lines:-0}" -gt "$POWER_HISTORY_MAX" ]; then
-                _trim=$((_lines - POWER_HISTORY_MAX))
-                sed -i "1,${_trim}d" "$POWER_HISTORY" 2>/dev/null
-            fi
-            _power_hist_count=0
+    _compact_power_history_if_needed() {
+        [ "$_power_history_lines" -lt "$POWER_HISTORY_MAX" ] && return 0
+        _keep=$((POWER_HISTORY_MAX - 240))
+        _trim_tmp="${POWER_HISTORY}.trim.$$"
+        if tail -n "$_keep" "$POWER_HISTORY" > "$_trim_tmp" 2>/dev/null; then
+            mv "$_trim_tmp" "$POWER_HISTORY"
+            _power_history_lines=$_keep
+        else
+            rm -f "$_trim_tmp"
+        fi
+    }
+
+    _compact_thermal_history_if_needed() {
+        [ "$_thermal_history_lines" -lt "$THERMAL_HISTORY_MAX" ] && return 0
+        _keep=$((THERMAL_HISTORY_MAX - 360))
+        _trim_tmp="${THERMAL_HISTORY}.trim.$$"
+        if tail -n "$_keep" "$THERMAL_HISTORY" > "$_trim_tmp" 2>/dev/null; then
+            mv "$_trim_tmp" "$THERMAL_HISTORY"
+            _thermal_history_lines=$_keep
+        else
+            rm -f "$_trim_tmp"
         fi
     }
 
@@ -1142,8 +1154,9 @@ read_saved_nr_mode() {
         [ "$_p_level" != "$_power_last_level" ] && _should_sample=1
 
         if [ "$_should_sample" -eq 1 ]; then
+            _compact_power_history_if_needed
             printf '%s,%s,%s,%s\n' "$_now" "$_p_level" "$_p_charge" "$_p_status" >> "$POWER_HISTORY"
-            _trim_power_history_if_needed
+            _power_history_lines=$((_power_history_lines + 1))
             _power_last_sample=$_now
         fi
 
@@ -1253,7 +1266,6 @@ read_saved_nr_mode() {
     _nr_restored=0
     _prev_screen=""
     _just_off=0
-    _hist_count=0
     _sim2_check_count=0
     # _NR_DELAY: 屏幕熄灭后多久才切到 LTE-only。
     # 60s 会让短时间锁屏(口袋亮灭/查看消息)反复触发 modem 重注册,
@@ -1276,7 +1288,20 @@ read_saved_nr_mode() {
     _power_charge_start_level=0
     _power_charge_seen_full=0
     _power_reset_armed=0
-    _power_hist_count=0
+    if [ -s "$THERMAL_HISTORY" ]; then
+        _thermal_history_lines=$(wc -l < "$THERMAL_HISTORY" 2>/dev/null)
+    else
+        _thermal_history_lines=0
+    fi
+    if [ -s "$POWER_HISTORY" ]; then
+        _power_history_lines=$(wc -l < "$POWER_HISTORY" 2>/dev/null)
+    else
+        _power_history_lines=0
+    fi
+    case "$_thermal_history_lines" in ''|*[!0-9]*) _thermal_history_lines=0 ;; esac
+    case "$_power_history_lines" in ''|*[!0-9]*) _power_history_lines=0 ;; esac
+    _compact_thermal_history_if_needed
+    _compact_power_history_if_needed
     _AUTO_BATTERY_TEMP=40800
     _AUTO_BATTERY_HOLD=90
     _AUTO_BALANCED_COOL_TEMP=40400
@@ -1445,16 +1470,9 @@ read_saved_nr_mode() {
 
                 _vs_temp=$(printf '%s' "$_json" | sed 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/')
                 if [ -n "$_vs_temp" ] && [ "$_vs_temp" != "$_json" ]; then
+                    _compact_thermal_history_if_needed
                     printf '%s,%s\n' "$_now" "$_vs_temp" >> "$THERMAL_HISTORY"
-                    _hist_count=$((_hist_count + 1))
-                    if [ "$_hist_count" -ge 360 ]; then
-                        _lines=$(wc -l < "$THERMAL_HISTORY" 2>/dev/null)
-                        if [ "${_lines:-0}" -gt "$THERMAL_HISTORY_MAX" ]; then
-                            _trim=$((_lines - THERMAL_HISTORY_MAX))
-                            sed -i "1,${_trim}d" "$THERMAL_HISTORY" 2>/dev/null
-                        fi
-                        _hist_count=0
-                    fi
+                    _thermal_history_lines=$((_thermal_history_lines + 1))
                 fi
             else
                 rm -f "${THERMAL_CACHE}.$$.$_now.tmp"

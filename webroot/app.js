@@ -272,7 +272,7 @@ const UECAP_VERIFY_TIMEOUT_MS = 15000;
 const WEBUI_IDLE_MS = 45000;
 const POLL_MIN_DELAY_MS = 900;
 const TEMP_CHART_REFRESH_MS = 10000;
-const ENERGY_DETAIL_REFRESH_MS = 5000;
+const ENERGY_DETAIL_REFRESH_MS = 10000;
 const ENERGY_SYSTEM_REFRESH_FALLBACK_MS = 60000;
 const ENERGY_SYSTEM_REFRESH_MARGIN_MS = 2000;
 const POLL_INTERVALS = {
@@ -424,10 +424,13 @@ const state = {
     timer: null,
     fullTimer: null,
     requestId: 0,
+    requestKind: '',
+    requestController: null,
     fullData: null,
     liveData: null,
     activeWindowMinutes: 30,
-    openSections: Object.create(null)
+    openSections: Object.create(null),
+    renderSignature: ''
   }
 };
 
@@ -948,6 +951,14 @@ function pauseTempChartRefresh() {
   if (wasActive) stopThermalBurst();
 }
 
+function abortEnergyDetailRequest(reason = 'page-hidden') {
+  if (state.energyDetail.requestController) {
+    state.energyDetail.requestController.abort(reason);
+    state.energyDetail.requestController = null;
+  }
+  state.energyDetail.requestKind = '';
+}
+
 function stopEnergyDetailRefresh() {
   if (state.energyDetail.timer) {
     clearTimeout(state.energyDetail.timer);
@@ -957,7 +968,9 @@ function stopEnergyDetailRefresh() {
     clearTimeout(state.energyDetail.fullTimer);
     state.energyDetail.fullTimer = null;
   }
+  abortEnergyDetailRequest('detail-closed');
   state.energyDetail.requestId += 1;
+  state.energyDetail.renderSignature = '';
 }
 
 function pauseEnergyDetailRefresh() {
@@ -969,6 +982,7 @@ function pauseEnergyDetailRefresh() {
     clearTimeout(state.energyDetail.fullTimer);
     state.energyDetail.fullTimer = null;
   }
+  abortEnergyDetailRequest('page-hidden');
   state.energyDetail.requestId += 1;
 }
 
@@ -1084,7 +1098,7 @@ function prefetchWebuiToken() {
 }
 
 async function apiFetch(path, opts = {}) {
-  const controller = new AbortController();
+  const controller = opts.controller || new AbortController();
   const timeoutMs = opts.timeoutMs || 8000;
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   const headers = { ...(opts.headers || {}) };
@@ -1097,11 +1111,14 @@ async function apiFetch(path, opts = {}) {
   }
   const request = { cache: 'no-store', ...opts, headers, signal: controller.signal };
   delete request.timeoutMs;
+  delete request.controller;
   let response;
   try {
     response = await fetch(path, request);
   } catch (err) {
-    if (err && err.name === 'AbortError') throw new Error('request timeout');
+    if (err && err.name === 'AbortError') {
+      throw new Error(typeof controller.signal.reason === 'string' ? 'request cancelled' : 'request timeout');
+    }
     throw err;
   } finally {
     clearTimeout(timeoutId);
@@ -2979,22 +2996,32 @@ async function syncNtp() {
   }
 }
 
-function drawTempCanvas(container, data) {
-  if (!data || data.length < 2) {
-    setStaticHtml(container, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">数据采集中，后台每 5 秒记录一次</div>');
-    return null;
+function getTempGapThresholdSec(data) {
+  const deltas = [];
+  for (let i = 1; i < data.length; i++) {
+    const delta = data[i].ts - data[i - 1].ts;
+    if (delta > 0) deltas.push(delta);
   }
-  container.replaceChildren();
-  const canvas = document.createElement('canvas');
-  canvas.style.cssText = 'display:block;width:100%;height:200px';
-  container.appendChild(canvas);
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.offsetWidth || 380;
+  const sortedDeltas = deltas.sort((a, b) => a - b);
+  const medianDelta = sortedDeltas.length ? sortedDeltas[Math.floor(sortedDeltas.length / 2)] : 15;
+  return Math.max(90, medianDelta * 4);
+}
+
+function drawTempCanvas(canvas, data, options = {}) {
+  if (!canvas || !data || data.length < 2) return null;
+  const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
+  const w = Math.max(1, Math.round(canvas.getBoundingClientRect().width || canvas.offsetWidth || 380));
   const h = 200;
-  canvas.width = w * dpr;
-  canvas.height = h * dpr;
+  const pixelWidth = Math.max(1, Math.round(w * dpr));
+  const pixelHeight = Math.max(1, Math.round(h * dpr));
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
   const ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const pad = { top: 12, right: 8, bottom: 26, left: 38 };
   const plotW = w - pad.left - pad.right;
   const plotH = h - pad.top - pad.bottom;
@@ -3035,27 +3062,79 @@ function drawTempCanvas(container, data) {
     ctx.textAlign = i === 0 ? 'left' : i === xN ? 'right' : 'center';
     ctx.fillText(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`, x, h - pad.bottom + 6);
   }
-  let plotData = data;
-  if (data.length > plotW) {
-    const step = Math.ceil(data.length / plotW);
-    plotData = data.filter((_, i) => i % step === 0 || i === data.length - 1);
+  const gapThresholdSec = options.gapThresholdSec || getTempGapThresholdSec(data);
+  const segments = [];
+  const gaps = [];
+  let segment = [data[0]];
+  for (let i = 1; i < data.length; i++) {
+    const previous = data[i - 1];
+    const current = data[i];
+    if ((current.ts - previous.ts) > gapThresholdSec) {
+      segments.push(segment);
+      gaps.push([previous, current]);
+      segment = [current];
+    } else {
+      segment.push(current);
+    }
   }
-  ctx.beginPath();
-  plotData.forEach((p, i) => {
-    const x = pad.left + ((p.ts - t0) / timeSpan) * plotW;
-    const y = pad.top + ((maxT - p.temp) / (maxT - minT)) * plotH;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  if (segment.length) segments.push(segment);
+  const sampleStep = Math.max(1, Math.ceil(data.length / Math.max(1, plotW)));
+  const plotSegments = segments.map((points) => {
+    if (sampleStep === 1 || points.length <= 2) return points;
+    const sampled = points.filter((_, index) => index % sampleStep === 0);
+    const last = points[points.length - 1];
+    if (sampled[sampled.length - 1] !== last) sampled.push(last);
+    return sampled;
   });
-  ctx.strokeStyle = strokeColor;
-  ctx.lineWidth = 2;
+
+  const pointXY = (point) => ({
+    x: pad.left + ((point.ts - t0) / timeSpan) * plotW,
+    y: pad.top + ((maxT - point.temp) / (maxT - minT)) * plotH
+  });
   ctx.lineJoin = 'round';
-  ctx.stroke();
-  ctx.lineTo(pad.left + ((plotData[plotData.length - 1].ts - t0) / timeSpan) * plotW, pad.top + plotH);
-  ctx.lineTo(pad.left + ((plotData[0].ts - t0) / timeSpan) * plotW, pad.top + plotH);
-  ctx.closePath();
-  ctx.fillStyle = areaColor;
-  ctx.fill();
-  return { min: realMin, max: realMax, avg, count: data.length };
+  ctx.lineCap = 'round';
+  plotSegments.forEach((points) => {
+    if (!points.length) return;
+    const first = pointXY(points[0]);
+    const last = pointXY(points[points.length - 1]);
+    ctx.beginPath();
+    ctx.moveTo(first.x, pad.top + plotH);
+    ctx.lineTo(first.x, first.y);
+    points.slice(1).forEach((point) => {
+      const pos = pointXY(point);
+      ctx.lineTo(pos.x, pos.y);
+    });
+    ctx.lineTo(last.x, pad.top + plotH);
+    ctx.closePath();
+    ctx.fillStyle = areaColor;
+    ctx.fill();
+
+    ctx.beginPath();
+    points.forEach((point, index) => {
+      const pos = pointXY(point);
+      if (index === 0) ctx.moveTo(pos.x, pos.y);
+      else ctx.lineTo(pos.x, pos.y);
+    });
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  });
+  if (gaps.length) {
+    ctx.save();
+    ctx.setLineDash([6, 5]);
+    ctx.strokeStyle = labelColor;
+    ctx.lineWidth = 1.5;
+    gaps.forEach(([from, to]) => {
+      const start = pointXY(from);
+      const end = pointXY(to);
+      ctx.beginPath();
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(end.x, end.y);
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+  return { min: realMin, max: realMax, avg, count: data.length, gapCount: gaps.length, gapThresholdSec };
 }
 
 function fmtDuration(sec) {
@@ -3147,10 +3226,12 @@ function fmtBatterystatsWindow(label) {
 }
 
 async function fetchEnergyDetailWithRetry() {
-  let lastErr;
+  let lastErr = new Error('功耗数据暂不可用');
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      return await fetchEnergySystemDetail();
+      const result = await fetchEnergySystemDetail();
+      if (result) return result;
+      lastErr = new Error('功耗数据请求繁忙');
     } catch (err) {
       lastErr = err;
       const msg = String(err?.message || err || '');
@@ -3162,46 +3243,43 @@ async function fetchEnergyDetailWithRetry() {
     }
   }
   try {
-    return await apiFetch(API.energyFast, { timeoutMs: 3500 });
+    const result = await fetchEnergyFastDetail();
+    if (result) return result;
+    lastErr = new Error('功耗数据请求繁忙');
   } catch (err) {
     lastErr = err;
   }
   throw lastErr;
 }
 
+async function fetchEnergyRequest(kind, path, timeoutMs) {
+  if (state.energyDetail.requestKind) return null;
+  const controller = new AbortController();
+  state.energyDetail.requestKind = kind;
+  state.energyDetail.requestController = controller;
+  try {
+    return await apiFetch(path, { timeoutMs, controller });
+  } finally {
+    if (state.energyDetail.requestController === controller) {
+      state.energyDetail.requestController = null;
+      state.energyDetail.requestKind = '';
+    }
+  }
+}
+
 async function fetchEnergyFastDetail() {
-  return await apiFetch(API.energyFast, { timeoutMs: 3500 });
+  return await fetchEnergyRequest('fast', API.energyFast, 3500);
 }
 
 async function fetchEnergySystemDetail() {
-  return await apiFetch(API.energy, { timeoutMs: 16000 });
-}
-
-function thinHistoryPoints(points, maxPoints = 360) {
-  if (!Array.isArray(points) || points.length <= maxPoints) return points || [];
-  const out = [];
-  const bucketSize = Math.ceil(points.length / maxPoints);
-  for (let i = 0; i < points.length; i += bucketSize) {
-    const bucket = points.slice(i, i + bucketSize);
-    let min = bucket[0];
-    let max = bucket[0];
-    bucket.forEach((p) => {
-      if (p.temp < min.temp) min = p;
-      if (p.temp > max.temp) max = p;
-    });
-    if (min.ts <= max.ts) out.push(min, max);
-    else out.push(max, min);
-  }
-  const last = points[points.length - 1];
-  if (!out.length || out[out.length - 1].ts !== last.ts) out.push(last);
-  return out.sort((a, b) => a.ts - b.ts);
+  return await fetchEnergyRequest('full', API.energy, 16000);
 }
 
 async function fetchTempHistory(minutes) {
   try {
     const data = await apiFetch(`${API.thermal}?history=1&minutes=${minutes}`, { timeoutMs: 6000 });
     if (!data || !data.points) return [];
-    return thinHistoryPoints(data.points.map((p) => ({ ts: p[0], temp: p[1] / 1000 })));
+    return data.points.map((p) => ({ ts: p[0], temp: p[1] / 1000 }));
   } catch (_) {
     return [];
   }
@@ -3251,17 +3329,108 @@ function openTempChart() {
   areaEl.className = 'history-content';
   root.append(intro, tabsEl, areaEl);
   refs.detailBody.replaceChildren(root);
+  let view = null;
+  const createView = () => {
+    areaEl.replaceChildren();
+    const hero = document.createElement('section');
+    hero.className = 'history-hero';
+    const heroHead = document.createElement('div');
+    heroHead.className = 'history-hero-head';
+    const heroCopy = document.createElement('div');
+    heroCopy.className = 'history-hero-copy';
+    const currentLabel = document.createElement('div');
+    currentLabel.className = 'history-hero-kicker';
+    currentLabel.textContent = '当前温度';
+    const currentValue = document.createElement('div');
+    currentValue.className = 'history-hero-value';
+    const currentStatus = document.createElement('div');
+    currentStatus.className = 'history-hero-status';
+    heroCopy.append(currentLabel, currentValue, currentStatus);
+    const heroBadge = document.createElement('span');
+    heroBadge.className = 'history-hero-badge';
+    heroHead.append(heroCopy, heroBadge);
+    const summaryGrid = document.createElement('div');
+    summaryGrid.className = 'history-summary-grid';
+    const summaryValues = [];
+    ['最低', '平均', '最高'].forEach((label) => {
+      const item = document.createElement('div');
+      item.className = 'history-summary-item';
+      const labelEl = document.createElement('span');
+      labelEl.textContent = label;
+      const valueEl = document.createElement('strong');
+      item.append(labelEl, valueEl);
+      summaryGrid.appendChild(item);
+      summaryValues.push(valueEl);
+    });
+    hero.append(heroHead, summaryGrid);
+
+    const chartCard = document.createElement('section');
+    chartCard.className = 'history-chart-card';
+    const chartWrap = document.createElement('div');
+    chartWrap.className = 'chart-wrap';
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'display:block;width:100%;height:200px';
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', '机身温度趋势图');
+    chartWrap.appendChild(canvas);
+    const gapNote = document.createElement('div');
+    gapNote.className = 'history-gap-note';
+    gapNote.hidden = true;
+    chartCard.append(chartWrap, gapNote);
+
+    const details = document.createElement('details');
+    details.className = 'disclosure';
+    const detailsSummary = document.createElement('summary');
+    detailsSummary.className = 'disclosure-summary';
+    const detailsCopy = document.createElement('span');
+    detailsCopy.className = 'disclosure-copy';
+    const detailsTitle = document.createElement('strong');
+    detailsTitle.textContent = '更多统计';
+    const detailsMeta = document.createElement('small');
+    detailsCopy.append(detailsTitle, detailsMeta);
+    const chevron = document.createElement('span');
+    chevron.className = 'disclosure-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    chevron.textContent = '›';
+    detailsSummary.append(detailsCopy, chevron);
+    const detailsBody = document.createElement('div');
+    detailsBody.className = 'disclosure-body';
+    const statsList = document.createElement('div');
+    statsList.className = 'data-list';
+    const rangeRow = buildInfoRow('数据范围', '—');
+    const samplesRow = buildInfoRow('采样点', '—');
+    const thresholdRow = buildInfoRow('达到阈值', '—');
+    statsList.append(rangeRow, samplesRow, thresholdRow);
+    detailsBody.appendChild(statsList);
+    details.append(detailsSummary, detailsBody);
+    areaEl.append(hero, chartCard, details);
+    return {
+      hero,
+      currentValue,
+      currentStatus,
+      heroBadge,
+      summaryValues,
+      canvas,
+      gapNote,
+      detailsMeta,
+      rangeValue: rangeRow.querySelector('.data-val'),
+      samplesValue: samplesRow.querySelector('.data-val'),
+      thresholdKey: thresholdRow.querySelector('.data-key'),
+      thresholdValue: thresholdRow.querySelector('.data-val')
+    };
+  };
   const draw = async (rangeMin, options = {}) => {
     const requestId = ++state.tempChart.requestId;
     active = rangeMin;
     state.tempChart.activeRange = rangeMin;
     const rangeLabel = ranges.find((r) => r.min === rangeMin)?.label || `${rangeMin} 分钟`;
     tabsEl.querySelectorAll('.range-btn').forEach((button) => button.classList.toggle('active', Number(button.dataset.range) === rangeMin));
-    if (!options.silent) setStaticHtml(areaEl, '<div class="energy-empty">正在读取温度记录…</div>');
+    if (!options.silent && !view) setStaticHtml(areaEl, '<div class="energy-empty">正在读取温度记录…</div>');
     const data = await fetchTempHistory(rangeMin);
     if (requestId !== state.tempChart.requestId || state.tempChart.draw !== draw) return;
     if (!data || data.length < 2) {
       setStaticHtml(areaEl, '<div class="energy-empty">温度记录不足。保持页面运行一段时间后再查看。</div>');
+      view = null;
       return;
     }
     const temps = data.map((p) => p.temp);
@@ -3270,64 +3439,34 @@ function openTempChart() {
     const avg = temps.reduce((a, b) => a + b, 0) / temps.length;
     const current = data[data.length - 1].temp;
     const threshold = THRESH_STOCK + state.currentOffset;
+    const gapThresholdSec = getTempGapThresholdSec(data);
     let highSec = 0;
     for (let i = 1; i < data.length; i++) {
-      if (data[i - 1].temp >= threshold) highSec += data[i].ts - data[i - 1].ts;
+      const delta = data[i].ts - data[i - 1].ts;
+      if (delta <= gapThresholdSec && data[i - 1].temp >= threshold) highSec += delta;
     }
     const elapsed = data[data.length - 1].ts - data[0].ts;
-    areaEl.replaceChildren();
+    if (!view) view = createView();
     const tone = current >= threshold ? 'warn' : '';
-    const hero = document.createElement('section');
-    hero.className = `history-hero ${tone}`;
-    const heroHead = document.createElement('div');
-    heroHead.className = 'history-hero-head';
-    const heroCopy = document.createElement('div');
-    heroCopy.className = 'history-hero-copy';
-    setStaticHtml(heroCopy, `<div class="history-hero-kicker">当前温度</div><div class="history-hero-value">${current.toFixed(1)}°C</div><div class="history-hero-status">${current >= threshold ? `已达到 ${threshold}°C 温控阈值` : `距离 ${threshold}°C 温控阈值 ${(threshold - current).toFixed(1)}°C`}</div>`);
-    const heroBadge = document.createElement('span');
-    heroBadge.className = 'history-hero-badge';
-    heroBadge.textContent = rangeLabel;
-    heroHead.append(heroCopy, heroBadge);
-    const summaryGrid = document.createElement('div');
-    summaryGrid.className = 'history-summary-grid';
-    [
-      ['最低', `${realMin.toFixed(1)}°C`],
-      ['平均', `${avg.toFixed(1)}°C`],
-      ['最高', `${realMax.toFixed(1)}°C`]
-    ].forEach(([label, value]) => {
-      const item = document.createElement('div');
-      item.className = 'history-summary-item';
-      setStaticHtml(item, `<span>${label}</span><strong>${value}</strong>`);
-      summaryGrid.appendChild(item);
-    });
-    hero.append(heroHead, summaryGrid);
-
-    const chartCard = document.createElement('section');
-    chartCard.className = 'history-chart-card';
-    const chartWrap = document.createElement('div');
-    chartWrap.className = 'chart-wrap';
-    chartCard.appendChild(chartWrap);
-    areaEl.append(hero, chartCard);
-    drawTempCanvas(chartWrap, data);
-
-    const details = document.createElement('details');
-    details.className = 'disclosure';
-    const detailsSummary = document.createElement('summary');
-    detailsSummary.className = 'disclosure-summary';
-    setStaticHtml(detailsSummary, `<span class="disclosure-copy"><strong>更多统计</strong><small>${data.length} 个采样点 · 覆盖 ${fmtDuration(elapsed)}</small></span><span class="disclosure-chevron" aria-hidden="true">›</span>`);
-    const detailsBody = document.createElement('div');
-    detailsBody.className = 'disclosure-body';
-    const statsList = document.createElement('div');
-    statsList.className = 'data-list';
-    const rows = [
-      { label: '数据范围', value: fmtDuration(elapsed) },
-      { label: '采样点', value: `${data.length} 个` },
-      { label: `达到阈值（≥${threshold}°C）`, value: fmtDuration(highSec), cls: highSec > 60 ? 'warn' : 'good' },
-    ];
-    rows.forEach((row) => statsList.appendChild(buildInfoRow(row.label, row.value, row.cls || '')));
-    detailsBody.appendChild(statsList);
-    details.append(detailsSummary, detailsBody);
-    areaEl.appendChild(details);
+    view.hero.className = `history-hero${tone ? ` ${tone}` : ''}`;
+    view.currentValue.textContent = `${current.toFixed(1)}°C`;
+    view.currentStatus.textContent = current >= threshold
+      ? `已达到 ${threshold}°C 温控阈值`
+      : `距离 ${threshold}°C 温控阈值 ${(threshold - current).toFixed(1)}°C`;
+    view.heroBadge.textContent = rangeLabel;
+    view.summaryValues[0].textContent = `${realMin.toFixed(1)}°C`;
+    view.summaryValues[1].textContent = `${avg.toFixed(1)}°C`;
+    view.summaryValues[2].textContent = `${realMax.toFixed(1)}°C`;
+    const chartResult = drawTempCanvas(view.canvas, data, { gapThresholdSec });
+    const gapCount = chartResult?.gapCount || 0;
+    view.gapNote.hidden = gapCount === 0;
+    view.gapNote.textContent = gapCount > 0 ? `虚线表示 ${gapCount} 段无连续采样区间` : '';
+    view.detailsMeta.textContent = `${data.length} 个采样点 · 覆盖 ${fmtDuration(elapsed)}`;
+    view.rangeValue.textContent = fmtDuration(elapsed);
+    view.samplesValue.textContent = `${data.length} 个`;
+    view.thresholdKey.textContent = `达到阈值（≥${threshold}°C）`;
+    view.thresholdValue.className = `badge ${highSec > 60 ? 'warn' : 'good'}`;
+    view.thresholdValue.textContent = fmtDuration(highSec);
   };
   ranges.forEach((r) => {
     const btn = document.createElement('button');
@@ -3444,6 +3583,45 @@ function getEnergySystemRefreshDelay(data = state.energyDetail.fullData) {
   const ageSec = rawAge == null || rawAge === '' ? 0 : Math.max(0, Number(rawAge) || 0);
   const remainingSec = Math.max(0, ttlSec - ageSec);
   return Math.max(ENERGY_DETAIL_REFRESH_MS * 2, Math.round(remainingSec * 1000) + ENERGY_SYSTEM_REFRESH_MARGIN_MS);
+}
+
+function getEnergyRenderSignature(data) {
+  const ignored = new Set([
+    'generated_at', 'live_generated_at', '_live_generated_at',
+    'system_cache_age_sec'
+  ]);
+  return `${state.energyDetail.activeWindowMinutes}|${JSON.stringify(data, (key, value) => (
+    ignored.has(key) ? undefined : value
+  ))}`;
+}
+
+function reconcileStableDom(current, next) {
+  if (!current || !next) return;
+  if (current.nodeType !== next.nodeType || current.nodeName !== next.nodeName) {
+    current.replaceWith(next);
+    return;
+  }
+  if (current.nodeType === Node.TEXT_NODE) {
+    if (current.nodeValue !== next.nodeValue) current.nodeValue = next.nodeValue;
+    return;
+  }
+  const currentAttrs = Array.from(current.attributes || []);
+  const nextAttrs = Array.from(next.attributes || []);
+  currentAttrs.forEach((attr) => {
+    if (!next.hasAttribute(attr.name)) current.removeAttribute(attr.name);
+  });
+  nextAttrs.forEach((attr) => {
+    if (current.getAttribute(attr.name) !== attr.value) current.setAttribute(attr.name, attr.value);
+  });
+  if (current instanceof HTMLDetailsElement && next instanceof HTMLDetailsElement) current.open = next.open;
+  if (current instanceof HTMLButtonElement && next instanceof HTMLButtonElement) current.disabled = next.disabled;
+
+  const currentChildren = Array.from(current.childNodes);
+  const nextChildren = Array.from(next.childNodes);
+  const shared = Math.min(currentChildren.length, nextChildren.length);
+  for (let i = 0; i < shared; i++) reconcileStableDom(currentChildren[i], nextChildren[i]);
+  for (let i = currentChildren.length - 1; i >= nextChildren.length; i--) currentChildren[i].remove();
+  for (let i = shared; i < nextChildren.length; i++) current.appendChild(nextChildren[i]);
 }
 
 function renderEnergyDetail(input, options = {}) {
@@ -3595,6 +3773,9 @@ function renderEnergyDetail(input, options = {}) {
       state.energyDetail.activeWindowMinutes = views.find((view) => view.min === 30)?.min || views[0].min;
     }
     const activeView = views.find((view) => view.min === state.energyDetail.activeWindowMinutes) || null;
+    const renderSignature = getEnergyRenderSignature(d);
+    const existingRoot = refs.detailBody.firstElementChild;
+    if (state.energyDetail.renderSignature === renderSignature && existingRoot?.classList.contains('energy-overview')) return;
     const root = el('div', 'energy-overview');
 
     const usedMah = Number(scope.used_mah);
@@ -3816,13 +3997,11 @@ function renderEnergyDetail(input, options = {}) {
     technical.appendChild(disclosure('export', '历史与导出', '导出 15/30/60 分钟或本次窗口 CSV', exportBody));
     root.appendChild(technical);
 
-    refs.detailBody.replaceChildren();
-    refs.detailBody.appendChild(root);
-    refs.detailBody.style.opacity = '0';
-    void refs.detailBody.offsetWidth;
-    refs.detailBody.style.opacity = '1';
+    if (existingRoot?.classList.contains('energy-overview')) reconcileStableDom(existingRoot, root);
+    else refs.detailBody.replaceChildren(root);
+    state.energyDetail.renderSignature = renderSignature;
   } catch (err) {
-    refs.detailBody.style.opacity = '1';
+    state.energyDetail.renderSignature = '';
     refs.detailBody.replaceChildren(); refs.detailBody.appendChild(errorBlock(err.message));
   }
 }
@@ -3834,9 +4013,13 @@ function scheduleEnergyDetailRefresh(delay = ENERGY_DETAIL_REFRESH_MS) {
   state.energyDetail.timer = window.setTimeout(async () => {
     state.energyDetail.timer = null;
     if (!isWebUiActive() || !refs.detailModal.classList.contains('open') || requestId !== state.energyDetail.requestId) return;
+    if (state.energyDetail.requestKind) {
+      scheduleEnergyDetailRefresh(POLL_MIN_DELAY_MS);
+      return;
+    }
     try {
       const live = await fetchEnergyFastDetail();
-      if (requestId !== state.energyDetail.requestId) return;
+      if (!live || requestId !== state.energyDetail.requestId) return;
       if (isFullEnergyDetailData(live)) state.energyDetail.fullData = live;
       else state.energyDetail.liveData = live;
       renderEnergyDetail(live, { fullData: state.energyDetail.fullData });
@@ -3854,9 +4037,13 @@ function scheduleEnergySystemRefresh(delay = getEnergySystemRefreshDelay()) {
   state.energyDetail.fullTimer = window.setTimeout(async () => {
     state.energyDetail.fullTimer = null;
     if (!isWebUiActive() || !refs.detailModal.classList.contains('open') || requestId !== state.energyDetail.requestId) return;
+    if (state.energyDetail.requestKind) {
+      scheduleEnergySystemRefresh(POLL_MIN_DELAY_MS);
+      return;
+    }
     try {
       const full = await fetchEnergySystemDetail();
-      if (requestId !== state.energyDetail.requestId) return;
+      if (!full || requestId !== state.energyDetail.requestId) return;
       if (isFullEnergyDetailData(full)) {
         state.energyDetail.fullData = full;
         state.energyDetail.liveData = full;
@@ -3874,6 +4061,7 @@ async function openEnergyDetail() {
   stopEnergyDetailRefresh();
   state.energyDetail.fullData = null;
   state.energyDetail.liveData = null;
+  state.energyDetail.renderSignature = '';
   const requestId = state.energyDetail.requestId;
   refs.detailTitle.textContent = '功耗统计';
   setStaticHtml(refs.detailBody, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在加载功耗数据…</div>');

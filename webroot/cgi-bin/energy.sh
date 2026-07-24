@@ -19,6 +19,9 @@ SYSTEM_CACHE="$MODDIR/.energy_system_cache.json"
 SYSTEM_CACHE_TS="$MODDIR/.energy_system_cache.ts"
 SYSTEM_CACHE_TTL=45
 SYSTEM_CACHE_STALE_MAX=600
+FAST_CACHE="$MODDIR/.energy_fast_cache.json"
+FAST_CACHE_TS="$MODDIR/.energy_fast_cache.ts"
+FAST_CACHE_TTL=12
 POWER_WINDOW_BASELINE_MAX_GAP=900
 RESET_RULE='连续充电 >= 10 分钟且电量回升，或充满后重新拔线后，重置为新的放电会话'
 BATTERYSTATS_NOTE='系统分项和应用排行来自 Android batterystats 当前窗口；若系统或用户执行过 batterystats reset，这个窗口可能比放电会话更短。'
@@ -114,6 +117,29 @@ write_system_cache() {
     mv "${SYSTEM_CACHE}.tmp" "$SYSTEM_CACHE"
     printf '%s\n' "$_cache_now" > "${SYSTEM_CACHE_TS}.tmp"
     mv "${SYSTEM_CACHE_TS}.tmp" "$SYSTEM_CACHE_TS"
+}
+
+read_fast_cache_if_fresh() {
+    _cache_now="$1"
+    [ -s "$FAST_CACHE" ] || return 1
+    _cache_ts=$(cat "$FAST_CACHE_TS" 2>/dev/null | tr -d ' \n\r')
+    case "$_cache_ts" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    _cache_age=$((_cache_now - _cache_ts))
+    [ "$_cache_age" -lt 0 ] && _cache_age=999999
+    [ "$_cache_age" -le "$FAST_CACHE_TTL" ] || return 1
+    cat "$FAST_CACHE"
+    return 0
+}
+
+write_fast_cache() {
+    _payload="$1"
+    _cache_now="$2"
+    printf '%s\n' "$_payload" > "${_tmp}_fast_cache"
+    mv "${_tmp}_fast_cache" "$FAST_CACHE"
+    printf '%s\n' "$_cache_now" > "${_tmp}_fast_cache_ts"
+    mv "${_tmp}_fast_cache_ts" "$FAST_CACHE_TS"
 }
 
 build_power_window_json() {
@@ -404,6 +430,10 @@ release_energy_lock() {
 _now=$(date +%s 2>/dev/null || echo 0)
 _fast=0
 case "$QUERY_STRING" in *fast=1*) _fast=1 ;; esac
+if [ "$_fast" -eq 1 ] && _fast_payload=$(read_fast_cache_if_fresh "$_now"); then
+    printf '%s\n' "$_fast_payload"
+    exit 0
+fi
 
 _cur_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null | tr -d '\r')
 _cur_status=$(printf '%s' "$_cur_status" | sed 's/[[:space:]]*$//')
@@ -658,8 +688,10 @@ if [ "$_fast" -eq 1 ]; then
         "$(json_bool "$_is_charging_like")" \
         "$(json_bool "$_external_power_online")" \
         "$(json_str_or_null "$_power_source")")
-    printf '{"cap":0,"drain":0,"scroff":0,"scron":0,"bat_time":"","screen":0,"cpu":0,"cell":0,"wifi":0,"wakelock":0,"apps":[],"odpm_modem":%s,"scope":%s,"today":%s,"history_windows":%s,"charge_state":%s,"batterystats_window":{"window_label":null,"daily_label":null,"time_on_battery":null,"model_quality":"fast_no_batterystats","radio_note":%s,"note":"快速缓存口径；系统 batterystats 分项稍后刷新。"},"generated_at":%s,"live_generated_at":%s,"system_generated_at":null,"system_cache_age_sec":null,"system_cache_stale":false,"cache_ttl_sec":%s,"fast":true}\n' \
-        "$_odpm_json" "$_scope_json" "$_today_json" "$_history_windows_json" "$_charge_state_json" "$(json_str_or_null "$RADIO_MODEL_NOTE")" "$(json_num_or_null "$_now")" "$(json_num_or_null "$_now")" "$SYSTEM_CACHE_TTL"
+    _fast_payload=$(printf '{"cap":0,"drain":0,"scroff":0,"scron":0,"bat_time":"","screen":0,"cpu":0,"cell":0,"wifi":0,"wakelock":0,"apps":[],"odpm_modem":%s,"scope":%s,"today":%s,"history_windows":%s,"charge_state":%s,"batterystats_window":{"window_label":null,"daily_label":null,"time_on_battery":null,"model_quality":"fast_no_batterystats","radio_note":%s,"note":"快速缓存口径；系统 batterystats 分项稍后刷新。"},"generated_at":%s,"live_generated_at":%s,"system_generated_at":null,"system_cache_age_sec":null,"system_cache_stale":false,"cache_ttl_sec":%s,"fast_cache_ttl_sec":%s,"fast":true}' \
+        "$_odpm_json" "$_scope_json" "$_today_json" "$_history_windows_json" "$_charge_state_json" "$(json_str_or_null "$RADIO_MODEL_NOTE")" "$(json_num_or_null "$_now")" "$(json_num_or_null "$_now")" "$SYSTEM_CACHE_TTL" "$FAST_CACHE_TTL")
+    write_fast_cache "$_fast_payload" "$_now"
+    printf '%s\n' "$_fast_payload"
     exit 0
 fi
 

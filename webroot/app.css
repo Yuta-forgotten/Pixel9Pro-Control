@@ -1380,6 +1380,10 @@ button{border:none;background:none;padding:0;color:inherit}
   max-height:none;
   border-bottom:0;
   border-radius:var(--radius-xl) var(--radius-xl) 0 0;
+  box-shadow:none;
+  transform:none;
+  transition:none;
+  contain:layout paint;
 }
 
 .modal-wrap.energy-mode .modal-sheet-body,
@@ -1648,6 +1652,7 @@ button{border:none;background:none;padding:0;color:inherit}
 .history-chart-card{padding:14px;border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--surface)}
 .history-chart-card .chart-wrap{margin:0}
 .history-chart-card .chart-wrap canvas{height:220px}
+.history-gap-note{margin-top:8px;color:var(--text-3);font-size:11px;line-height:16px;text-align:center}
 .history-content{display:grid;gap:12px}
 .history-range-tabs{grid-template-columns:repeat(4,minmax(0,1fr))}
 
