@@ -1,7 +1,7 @@
 #!/system/bin/sh
 
-SOURCE_ROOT="${1:-/sdcard/Download/pixel9pro_control_candidate}"
-TEST_ROOT="${2:-/sdcard/Download/pixel9pro_owner_test_$$}"
+SOURCE_ROOT="${1:-/sdcard/Download/Pixel9Pro-Control-TestLab/candidate/control}"
+TEST_ROOT="${2:-/sdcard/Download/Pixel9Pro-Control-TestLab/runtime/owner_test_$$}"
 PASS=0
 FAIL=0
 TOTAL=0
