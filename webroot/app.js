@@ -130,31 +130,31 @@ const PROFILES = {
 const THERMAL_PRESETS = {
   [-2]: {
     name: '睡和放宽',
-    summary: '比原厂提前 2°C 介入，机身更凉。',
+    summary: '出厂 -2°C；HINT 35°C，VIRTUAL-SKIN 37°C。',
     detail: '<b>睡和放宽</b><br><br>出厂 -2°C，最早 35°C 介入。<br><br>HINT 35°C / VIRTUAL-SKIN 37°C / CPU-HIGH 39°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M9.37 5.51A7 7 0 0018.49 14.63 9 9 0 119.37 5.51z"/></svg>'
   },
   0: {
     name: '躺和放宽',
-    summary: '保持原厂阈值，温度控制最稳妥。',
+    summary: '出厂 0°C；HINT 37°C，VIRTUAL-SKIN 39°C。',
     detail: '<b>躺和放宽</b><br><br>出厂 0°C，最早 37°C 介入。<br><br>HINT 37°C / VIRTUAL-SKIN 39°C / CPU-HIGH 41°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/></svg>'
   },
   2: {
     name: '轻度放宽',
-    summary: 'HINT 39°C 开始介入，VIRTUAL-SKIN 阈值约 41°C。',
+    summary: '出厂 +2°C；HINT 39°C，VIRTUAL-SKIN 41°C。',
     detail: '<b>轻度放宽</b><br><br>出厂 +2°C；39°C 是最早 HINT 介入点，不是机身硬限温。<br><br>HINT 39°C / VIRTUAL-SKIN 41°C / CPU-HIGH 43°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82z"/></svg>'
   },
   4: {
     name: '坐和放宽',
-    summary: '比原厂晚 4°C 介入，日常推荐。',
+    summary: '出厂 +4°C；HINT 41°C，VIRTUAL-SKIN 43°C。',
     detail: '<b>坐和放宽（模块默认）</b><br><br>出厂 +4°C，最早 41°C 介入。<br><br>HINT 41°C / VIRTUAL-SKIN 43°C / CPU-HIGH 45°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67z"/></svg>'
   },
   6: {
     name: '站和放宽',
-    summary: '比原厂晚 6°C 介入，性能更积极。',
+    summary: '出厂 +6°C；HINT 43°C，VIRTUAL-SKIN 45°C。',
     detail: '<b>站和放宽</b><br><br>出厂 +6°C，最早 43°C 介入。<br><br>HINT 43°C / VIRTUAL-SKIN 45°C / CPU-HIGH 47°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>'
   }
@@ -346,6 +346,7 @@ const state = {
   paletteCustom: '#3aa6c2',
   webuiToken: '',
   cpuBusy: false,
+  profileApplyBusy: false,
   profilePolicyBusy: false,
   schedOwnerBusy: false,
   gameHandoffBusy: false,
@@ -1538,6 +1539,14 @@ function getSchedulerToggleText() {
   return hasExternalScheduler() ? '不覆盖外部调度' : '停用本模块调度';
 }
 
+function isCurrentStrategyBusy() {
+  return state.profileApplyBusy
+    || state.profilePolicyBusy
+    || state.schedOwnerBusy
+    || state.gameHandoffBusy
+    || state.ownerArbiterBusy;
+}
+
 function getSchedulerExternalDesc() {
   const name = getEffectiveSchedulerName();
   if (hasExternalScheduler()) {
@@ -1585,6 +1594,7 @@ function syncOptionalModuleUi() {
 
 function syncOwnerArbiterUi() {
   syncOptionalModuleUi();
+  const strategyBusy = isCurrentStrategyBusy();
   if (refs.gameHandoffRow) {
     const available = state.fasRsDetected;
     refs.gameHandoffRow.hidden = !available;
@@ -1593,7 +1603,7 @@ function syncOwnerArbiterUi() {
       refs.gameHandoffLabel.textContent = enabled
         ? '命中游戏时 fas-rs 临时接管，退出后恢复日常选择'
         : 'fas-rs 游戏临时接管已关闭';
-      refs.gameHandoffToggleBtn.disabled = state.gameHandoffBusy;
+      refs.gameHandoffToggleBtn.disabled = strategyBusy;
       refs.gameHandoffToggleBtn.className = `tiny-btn${enabled ? ' tonal' : ''}`;
       refs.gameHandoffToggleLabel.textContent = state.gameHandoffBusy ? '切换中…' : (enabled ? '关闭' : '启用');
     }
@@ -1606,8 +1616,33 @@ function syncOwnerArbiterUi() {
   refs.ownerArbiterLabel.textContent = state.ownerArbiterBusy
     ? '正在检查调度接管状态…'
     : `fas-rs ${active || '已检测到'}，可立即检查接管状态`;
-  refs.ownerArbiterTickBtn.disabled = state.ownerArbiterBusy;
+  refs.ownerArbiterTickBtn.disabled = strategyBusy;
   refs.ownerArbiterTickLabel.textContent = state.ownerArbiterBusy ? '检查中…' : '立即检查';
+}
+
+function syncCurrentStrategyTransitionCopy() {
+  let title = '';
+  let detail = '';
+  if (state.schedOwnerBusy) {
+    title = '正在切换调度接管';
+    detail = '正在停止旧调度器、恢复 CPU 基线并复读关键节点，通常需要数秒。';
+  } else if (state.gameHandoffBusy) {
+    title = '正在切换游戏接管';
+    detail = '正在更新 fas-rs 接管策略并核对当前 owner，通常需要数秒。';
+  } else if (state.ownerArbiterBusy) {
+    title = '正在检查调度协调';
+    detail = '正在复读前台场景、owner 和关键调度节点，通常需要数秒。';
+  } else if (state.profileApplyBusy) {
+    title = '正在切换性能模式';
+    detail = '正在应用 profile 并复读关键调度节点，通常需要数秒。';
+  } else if (state.profilePolicyBusy) {
+    title = '正在切换自动 / 手动';
+    detail = '正在应用当前 profile 并复读调度状态，通常需要数秒。';
+  }
+  if (!title) return;
+  refs.perfCurrentName.textContent = title;
+  refs.perfCurrentDesc.textContent = detail;
+  refs.perfPolicyDesc.textContent = '完成前请勿重复操作；温控与系统安全保护保持生效。';
 }
 
 function syncProfileUi() {
@@ -1615,6 +1650,7 @@ function syncProfileUi() {
   const isAuto = state.profilePolicy === 'auto';
   const isExternal = state.schedEffectiveOwner === 'external';
   const effectiveName = getEffectiveSchedulerName();
+  const strategyBusy = isCurrentStrategyBusy();
   if (isExternal) {
     refs.topbarProfileChip.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? `${effectiveName} 接管` : '外部调度未启用') : '调度让权';
     refs.perfCurrentName.textContent = hasExternalScheduler()
@@ -1630,7 +1666,7 @@ function syncProfileUi() {
     refs.profilePolicyAutoBtn.disabled = true;
     refs.schedOwnerLabel.textContent = getSchedulerStatusText();
     refs.schedOwnerToggleBtn.className = 'tiny-btn primary';
-    refs.schedOwnerToggleBtn.disabled = state.schedOwnerBusy || (!isUperfEnabled() && state.schedOwner !== 'external');
+    refs.schedOwnerToggleBtn.disabled = strategyBusy || (!isUperfEnabled() && state.schedOwner !== 'external');
     refs.schedOwnerToggleLabel.textContent = getSchedulerToggleText();
     refs.hero.className = 'hero-card mode-game';
     setStaticHtml(refs.heroIcon, PROFILES.performance.hero);
@@ -1639,6 +1675,7 @@ function syncProfileUi() {
       card.classList.remove('selected');
       card.classList.add('disabled');
     });
+    syncCurrentStrategyTransitionCopy();
     syncOwnerArbiterUi();
     return;
   }
@@ -1651,19 +1688,20 @@ function syncProfileUi() {
   refs.perfPolicyDesc.textContent = hasExternalScheduler() ? `${pixelPolicyDesc} ${getSchedulerPixelDesc()}` : pixelPolicyDesc;
   refs.profilePolicyManualBtn.className = `seg-btn${!isAuto ? ' active' : ''}`;
   refs.profilePolicyAutoBtn.className = `seg-btn${isAuto ? ' active' : ''}`;
-  refs.profilePolicyManualBtn.disabled = state.profilePolicyBusy;
-  refs.profilePolicyAutoBtn.disabled = state.profilePolicyBusy;
+  refs.profilePolicyManualBtn.disabled = strategyBusy;
+  refs.profilePolicyAutoBtn.disabled = strategyBusy;
   refs.schedOwnerLabel.textContent = getSchedulerStatusText();
   refs.schedOwnerToggleBtn.className = 'tiny-btn';
-  refs.schedOwnerToggleBtn.disabled = state.schedOwnerBusy || (!isUperfEnabled() && state.schedOwner !== 'external');
+  refs.schedOwnerToggleBtn.disabled = strategyBusy || (!isUperfEnabled() && state.schedOwner !== 'external');
   refs.schedOwnerToggleLabel.textContent = getSchedulerToggleText();
   refs.hero.className = `hero-card ${profile.modeClass}`;
   setStaticHtml(refs.heroIcon, profile.hero);
   refs.heroMode.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
   document.querySelectorAll('.profile-option').forEach((card) => {
-    card.classList.remove('disabled');
+    card.classList.toggle('disabled', strategyBusy);
     card.classList.toggle('selected', card.dataset.profile === state.currentProfile);
   });
+  syncCurrentStrategyTransitionCopy();
   syncOwnerArbiterUi();
 }
 
@@ -4204,10 +4242,12 @@ async function applyProfile(profile) {
       : '本模块 CPU 调度未启用，未切换 profile', 'warn');
     return;
   }
-  if (profile === state.currentProfile || state.cpuBusy) return;
+  if (profile === state.currentProfile || state.cpuBusy || isCurrentStrategyBusy()) return;
   const prevPolicy = state.profilePolicy;
   const card = refs.profileList.querySelector(`[data-profile="${profile}"]`);
   if (!card) return;
+  state.profileApplyBusy = true;
+  syncProfileUi();
   card.classList.add('loading');
   appendLog(`切换到 ${PROFILES[profile].name}…`, 'dim');
   refs.logCard.classList.add('open');
@@ -4228,6 +4268,8 @@ async function applyProfile(profile) {
     appendLog(String(err), 'err');
   } finally {
     card.classList.remove('loading');
+    state.profileApplyBusy = false;
+    syncProfileUi();
   }
 }
 
@@ -4239,7 +4281,7 @@ async function setProfilePolicy(policy) {
       : '本模块 CPU 调度未启用，自动/手动策略暂停', 'warn');
     return;
   }
-  if (state.profilePolicy === policy || state.profilePolicyBusy) return;
+  if (state.profilePolicy === policy || isCurrentStrategyBusy()) return;
   state.profilePolicyBusy = true;
   syncProfileUi();
   appendLog(policy === 'auto' ? '启用自动调度…' : '切回手动调度…', 'dim');
@@ -4272,7 +4314,7 @@ async function setProfilePolicy(policy) {
 }
 
 async function toggleSchedOwner() {
-  if (state.schedOwnerBusy) return;
+  if (isCurrentStrategyBusy()) return;
   const nextOwner = state.schedOwner === 'external' ? 'pixel' : 'external';
   state.schedOwnerBusy = true;
   syncProfileUi();
@@ -4314,10 +4356,10 @@ async function toggleSchedOwner() {
 }
 
 async function toggleGameHandoff() {
-  if (state.gameHandoffBusy || !state.fasRsDetected) return;
+  if (isCurrentStrategyBusy() || !state.fasRsDetected) return;
   const nextPolicy = state.gameHandoffPolicy === 'fas_rs' ? 'off' : 'fas_rs';
   state.gameHandoffBusy = true;
-  syncOwnerArbiterUi();
+  syncProfileUi();
   appendLog(nextPolicy === 'fas_rs' ? '启用 fas-rs 游戏临时接管…' : '关闭 fas-rs 游戏临时接管…', 'dim');
   refs.logCard.classList.add('open');
   try {
@@ -4344,14 +4386,14 @@ async function toggleGameHandoff() {
     appendLog(String(err), 'err');
   } finally {
     state.gameHandoffBusy = false;
-    syncOwnerArbiterUi();
+    syncProfileUi();
   }
 }
 
 async function triggerOwnerArbiter() {
-  if (state.ownerArbiterBusy || !state.fasRsDetected) return;
+  if (isCurrentStrategyBusy() || !state.fasRsDetected) return;
   state.ownerArbiterBusy = true;
-  syncOwnerArbiterUi();
+  syncProfileUi();
   appendLog('正在检查外部调度接管状态…', 'dim');
   refs.logCard.classList.add('open');
   try {
@@ -4375,7 +4417,7 @@ async function triggerOwnerArbiter() {
     appendLog(String(err), 'err');
   } finally {
     state.ownerArbiterBusy = false;
-    syncOwnerArbiterUi();
+    syncProfileUi();
   }
 }
 

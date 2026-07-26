@@ -140,7 +140,8 @@ emit_profile_state() {
     case "$_reason" in
         feed_warmup|feed_hold|feed_hot|nonfeed_reset) _reason="" ;;
     esac
-    detect_uperf_module 2>/dev/null
+    # detect_external_scheduler populates UGT and fas-rs state together.
+    # Avoid scanning every installed module twice on each WebUI request.
     detect_external_scheduler 2>/dev/null
     if [ "$UPERF_DETECTED" = "yes" ]; then
         _uperf_detected=true
