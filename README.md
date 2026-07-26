@@ -1,6 +1,6 @@
 # Pixel 9 Pro Control Module
 
-> APatch / KernelSU / Magisk 模块。为 Pixel 9 Pro / Pro XL (Tensor G4) 设计的温控阈值、可选 CPU 调度、ZRAM、待机优化和 UE 网络控制模块；附 Material 3 WebUI 控制台，可与 Uperf Game Turbo、fas-rs 等外部调度模块协同。（Magisk 下基带 UE 切换不可用。）
+> APatch / KernelSU / Magisk 模块。为 Pixel 9 Pro / Pro XL (Tensor G4) 设计的温控阈值、可选 CPU 调度、ZRAM、UE 网络控制模块；Material 3 WebUI 控制台，可与 Uperf Game Turbo、fas-rs 等外部调度模块协同。（Magisk 下基带 UE 切换不可用。）
 
 ## 当前版本
 
@@ -37,9 +37,9 @@ WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电�
 - 调度通过 `cpuset` 和 `sched_pixel response_time_ms` 控制；不直接写 `scaling_max_freq`
 - `foreground/cpus` 会被 framework 重置到 `0-6`，模块主要托管 `top-app/background/system-background`
 - 自动模式以均衡为日常底座，温度持续偏高时收口至省电，回落后恢复；死区设有粘滞，避免边界来回抖动
-- `.sched_owner_desired=pixel|external` 保存用户的日常选择，`.cpu_sched_owner` 只表示当前实际 owner；fas-rs 游戏 lease 不再覆盖用户意愿
+- `.sched_owner_desired=pixel|external` 保存用户的日常选择，`.cpu_sched_owner` 只表示当前实际 owner；fas-rs 游戏 lease 不覆盖用户意愿
 - Pixel 日常调度下仍可启用 fas-rs 游戏临时接管：命中游戏时 `effective=external`，退出后恢复原 Pixel auto/manual 状态
-- 日常选择为 `external` 时，普通应用恢复 UGT；若 UGT 未启用则保持 `external:none` 并明确告警，不会偷偷回写 Pixel 或 `balanced`
+- 日常选择为 `external` 时，普通应用恢复 UGT；若 UGT 未启用则保持 `external:none` 并明确告警，不会回写 Pixel 或 `balanced`
 
 当实际 `.cpu_sched_owner=external` 时，本模块跳过常规 profile/auto/enforce 写入；owner 事务层只在 Pixel/FAS handoff 边界清理 UGT 残留、恢复 cpufreq 基线并复读验证。温控、ZRAM、NR/SIM2、UECap 与 WebUI 始终由本模块负责。
 
@@ -115,11 +115,11 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 - 只安装基带模块：单独刷入 `pixel9pro_baseband_trial_v1.0.1.zip`，VoLTE/VoNR 自动生效，UECap 保持原厂
 - 控制模块 + 基带模块：WebUI 检测并展示基带模块状态；UECap 由控制模块管理，CarrierSettings / MCFG 由基带模块提供
 - 控制模块 + UGT / fas-rs：WebUI 的“日常选择”决定普通应用使用 Pixel 或 UGT；“游戏接管”可让 fas-rs 只在命中游戏时临时接管
-- 三者都安装：推荐边界为 Pixel9Pro-Control 管理日常 baseline、fas-rs 管理指定游戏 lease、UGT 仅在日常选择为 external 时运行，基带模块负责运营商配置增强
+- 三者都安装：推荐边界为 Pixel9Pro-Control 管理日常 baseline、fas-rs 管理指定游戏 lease，基带模块负责运营商配置增强
 
 **基带模块兼容性**：`pixel9pro_baseband_trial` 中的 CarrierSettings / MCFG 基于中国运营商配置；UECap binarypb 由控制模块管理，基于 Pixel 9 Pro (Exynos 5400 modem) 固件定制。Pixel 9 Pro XL 不可共用，binarypb 需重新提取。
 
-**外部调度协同说明**：Uperf Game Turbo、fas-rs 等为外部调度项目，本项目只识别设备上已经存在的模块，不提供下载、推荐或安装引导。v4.4.39 起用户意愿与运行态分离：`.sched_owner_desired` 是唯一日常 baseline，`.cpu_sched_owner` 是 effective owner；Scene 的 UGT 开关、UGT 模块 enabled 状态和历史 lease 都不能改写日常选择。
+**外部调度协同说明**：Uperf Game Turbo、fas-rs 等为外部调度项目，本项目只识别设备上已经存在的模块，不提供下载、推荐或安装引导。
 
 **可选模块按需显示**：WebUI 仅在检测到 UGT 时显示日常 UGT 接管控制，仅在检测到 fas-rs 时显示游戏 handoff / arbiter 控制；两者同时存在时组合显示。`pixel9pro_baseband_trial` 未安装、已禁用或待移除时，基带配置卡完全隐藏。首次安装只报告 UGT、fas-rs 与本项目基带模块是否已检测到，不提供下载、推荐或第三方安装引导。单独残留的 `/data/adb/fas_rs` 状态目录不再被当成 fas-rs 已安装。
 
@@ -142,7 +142,7 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 **信息架构（四标签）**
 
 - **状态**：当前模式、机身温度、内存与系统、CPU 实时频率、设备信息、操作记录
-- **性能温控**：调度接管 / 手动·自动、CPU 实时频率与参数、性能模式卡、温度详情（刻度条 + 多传感器）、温控阈值档位
+- **性能温控**：调度接管 / 手动·自动、CPU 实时频率与参数、性能模式卡、温度详情、温控阈值档位
 - **网络**：UECap 三档、基带模块状态、NR 息屏降级、SIM2 空槽管理
 - **系统**：ZRAM/VM、后台应用限制、待机隔离、后台 worker 摘要、NTP、主题与配色
 
