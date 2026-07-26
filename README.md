@@ -108,7 +108,7 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 | 模块 | 归属 | 详情 |
 |------|------|------|
 | `pixel9pro_control` | 本项目 | 温控、ZRAM、UECap 三档切换、NR 降级、SIM2 管理、后台限制、WebUI；未让出时管理 Pixel 原厂 CPU 调度 |
-| [`pixel9pro_baseband_trial`](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/download/v4.3.11/pixel9pro_baseband_trial_v1.0.1.zip) | 本项目可选基带模块 | CarrierSettings (3210 .pb)、China MCFG (5 .mbn)、APN、VoLTE/VoNR/WFC props |
+| [`pixel9pro_baseband_trial`](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/download/v4.3.11/pixel9pro_baseband_trial_v1.0.1.zip) | 本项目可选基带模块 | 基于 [Sun_Dream（酷安）](https://www.coolapk.com/u/1281808) 的 PLMN / CarrierSettings 设计；提供 China MCFG、APN 与 VoLTE/VoNR/WFC 配置 |
 | Uperf Game Turbo / fas-rs / 其它外部调度器 | 第三方或独立外部调度模块 | CPU scene 调度、输入/前台/游戏线程调度、frame-aware 调度、per-app 性能模式；由各自上游独立维护 |
 
 - 只安装控制模块：温控/ZRAM/NR/SIM2/UECap/WebUI 正常工作；CPU 调度默认由本模块管理，也可手动设为 `external` 停用
