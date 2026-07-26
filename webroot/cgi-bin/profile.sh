@@ -1,10 +1,8 @@
 #!/system/bin/sh
-##############################################################
-# CGI: /cgi-bin/profile.sh
-# GET  → 返回当前 profile / policy JSON
-# POST → 切换 profile 或 policy
-##############################################################
+# Scheduler/profile state CGI. Desired owner, effective owner, handoff policy,
+# and Pixel profile state are separate contracts and are committed explicitly.
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
+require_loopback
 
 PROFILE_FILE="$MODDIR/.current_profile"
 PROFILE_POLICY_FILE="$MODDIR/.profile_policy"
@@ -14,21 +12,22 @@ PROFILE_HISTORY_FILE="$MODDIR/.profile_history"
 SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 SCHED_OWNER_DESIRED_FILE="$MODDIR/.sched_owner_desired"
 GAME_HANDOFF_POLICY_FILE="$MODDIR/.game_handoff_policy"
-ARBITER_STATE_FILE="/data/adb/fas_rs/.arbiter_state"
+FAS_ROOT="${PIXEL9PRO_FAS_ROOT:-/data/adb/fas_rs}"
+ARBITER_STATE_FILE="$FAS_ROOT/.arbiter_state"
 
-[ -f "$MODDIR/scripts/scheduler_detect_lib.sh" ] && . "$MODDIR/scripts/scheduler_detect_lib.sh"
-[ -f "$MODDIR/scripts/scheduler_owner_lib.sh" ] && . "$MODDIR/scripts/scheduler_owner_lib.sh"
-if command -v scheduler_owner_init >/dev/null 2>&1; then
-    scheduler_owner_init "$MODDIR" "/data/adb/fas_rs"
-    so_migrate_state >/dev/null 2>&1 || true
-fi
+[ -r "$MODDIR/scripts/scheduler_detect_lib.sh" ] && . "$MODDIR/scripts/scheduler_detect_lib.sh" \
+    || json_error '500 Internal Server Error' 'scheduler detection contract not found'
+[ -r "$MODDIR/scripts/scheduler_owner_lib.sh" ] && . "$MODDIR/scripts/scheduler_owner_lib.sh" \
+    || json_error '500 Internal Server Error' 'scheduler owner contract not found'
+[ -r "$MODDIR/scripts/cpu_profile_lib.sh" ] && . "$MODDIR/scripts/cpu_profile_lib.sh" \
+    || json_error '500 Internal Server Error' 'CPU profile contract not found'
+scheduler_owner_init "$MODDIR" "$FAS_ROOT"
+so_migrate_state >/dev/null 2>&1 \
+    || json_error '500 Internal Server Error' 'scheduler owner state migration failed'
 
 read_valid_profile() {
     _prof=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
-    case "$_prof" in
-        performance|balanced|battery|default) printf '%s' "$_prof" ;;
-        *) printf '%s' "$2" ;;
-    esac
+    cpu_profile_normalize_runtime "$_prof" "$2"
 }
 
 read_valid_policy() {
@@ -40,36 +39,15 @@ read_valid_policy() {
 }
 
 read_valid_sched_owner() {
-    if command -v so_read_effective_owner >/dev/null 2>&1; then
-        so_read_effective_owner
-        return
-    fi
-    _owner=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    case "$_owner" in
-        external) printf 'external' ;;
-        *)        printf 'pixel' ;;
-    esac
+    so_read_effective_owner
 }
 
 read_valid_desired_sched_owner() {
-    if command -v so_read_desired_owner >/dev/null 2>&1; then
-        so_read_desired_owner
-        return
-    fi
-    _owner=$(cat "$SCHED_OWNER_DESIRED_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    case "$_owner" in
-        pixel|external) printf '%s' "$_owner" ;;
-        *) read_valid_sched_owner ;;
-    esac
+    so_read_desired_owner
 }
 
 read_valid_handoff_policy() {
-    if command -v so_read_handoff_policy >/dev/null 2>&1; then
-        so_read_handoff_policy
-        return
-    fi
-    _handoff=$(cat "$GAME_HANDOFF_POLICY_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    case "$_handoff" in fas_rs) printf 'fas_rs' ;; *) printf 'off' ;; esac
+    so_read_handoff_policy
 }
 
 read_arbiter_value() {
@@ -80,6 +58,49 @@ read_arbiter_value() {
 reconcile_owner_now() {
     [ -f "$MODDIR/scripts/owner_arbiter.sh" ] || return 1
     sh "$MODDIR/scripts/owner_arbiter.sh" apply-tick "$MODDIR" on >/dev/null 2>&1
+}
+
+commit_profile_state() {
+    _profile_new_active="$1"
+    _profile_new_manual="$2"
+    _profile_new_policy="$3"
+    _profile_new_reason="$4"
+
+    _profile_active_existed=0
+    _profile_manual_existed=0
+    _profile_policy_existed=0
+    _profile_reason_existed=0
+    [ -e "$PROFILE_FILE" ] && _profile_active_existed=1
+    [ -e "$PROFILE_MANUAL_FILE" ] && _profile_manual_existed=1
+    [ -e "$PROFILE_POLICY_FILE" ] && _profile_policy_existed=1
+    [ -e "$PROFILE_AUTO_REASON_FILE" ] && _profile_reason_existed=1
+    _profile_old_active=$(cat "$PROFILE_FILE" 2>/dev/null)
+    _profile_old_manual=$(cat "$PROFILE_MANUAL_FILE" 2>/dev/null)
+    _profile_old_policy=$(cat "$PROFILE_POLICY_FILE" 2>/dev/null)
+    _profile_old_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null)
+
+    if cgi_atomic_write "$PROFILE_FILE" "$_profile_new_active" \
+        && cgi_atomic_write "$PROFILE_MANUAL_FILE" "$_profile_new_manual" \
+        && cgi_atomic_write "$PROFILE_POLICY_FILE" "$_profile_new_policy" \
+        && cgi_atomic_write "$PROFILE_AUTO_REASON_FILE" "$_profile_new_reason"; then
+        return 0
+    fi
+
+    PROFILE_STATE_ROLLBACK_OK=1
+    cgi_restore_file "$PROFILE_FILE" "$_profile_active_existed" "$_profile_old_active" >/dev/null 2>&1 || PROFILE_STATE_ROLLBACK_OK=0
+    cgi_restore_file "$PROFILE_MANUAL_FILE" "$_profile_manual_existed" "$_profile_old_manual" >/dev/null 2>&1 || PROFILE_STATE_ROLLBACK_OK=0
+    cgi_restore_file "$PROFILE_POLICY_FILE" "$_profile_policy_existed" "$_profile_old_policy" >/dev/null 2>&1 || PROFILE_STATE_ROLLBACK_OK=0
+    cgi_restore_file "$PROFILE_AUTO_REASON_FILE" "$_profile_reason_existed" "$_profile_old_reason" >/dev/null 2>&1 || PROFILE_STATE_ROLLBACK_OK=0
+    return 1
+}
+
+rollback_profile_runtime_or_error() {
+    _profile_rollback_target="$1"
+    if sh "$MODDIR/scripts/cpu_profile.sh" "$_profile_rollback_target" "$MODDIR" force >/dev/null 2>&1 \
+        && [ "${PROFILE_STATE_ROLLBACK_OK:-1}" -eq 1 ]; then
+        json_error '500 Internal Server Error' 'failed to persist profile state; previous runtime restored'
+    fi
+    json_error '500 Internal Server Error' 'failed to persist profile state and rollback was incomplete'
 }
 
 append_profile_history() {
@@ -170,6 +191,8 @@ emit_profile_state() {
     _profile_surface="authoritative"
     _profile_surface_stale=false
     _profile_surface_note=""
+    _cpu_contract=$(cpu_profile_contract_json) \
+        || json_error '500 Internal Server Error' 'CPU profile contract serialization failed'
     if [ "$_sched_effective_owner" = "external" ]; then
         _profile_surface="delegated"
         _profile_surface_stale=true
@@ -208,17 +231,15 @@ emit_profile_state() {
         "$(json_escape "$_effective_scheduler_owner")" "$(json_escape "$_effective_scheduler_name")" \
         "$(json_escape "$_effective_scheduler_kind")" "$(json_escape "$_effective_scheduler_mode")" \
         "$(json_escape "$_profile_surface")" "$_profile_surface_stale" "$(json_escape "$_profile_surface_note")"
+    printf ',"cpu_contract":%s' "$_cpu_contract"
 }
-
-require_loopback
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
     require_token
     acquire_lock "profile"
-    len="${CONTENT_LENGTH:-0}"
-    [ "$len" -gt 512 ] 2>/dev/null && len=512
-    body=$(dd bs=1 count="$len" 2>/dev/null)
+    read_json_body 512
+    body="$JSON_BODY"
     newprof=$(printf '%s' "$body" | sed -n 's/.*"profile"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
     newpolicy=$(printf '%s' "$body" | sed -n 's/.*"policy"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
     newowner=$(printf '%s' "$body" | sed -n 's/.*"sched_owner"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
@@ -226,7 +247,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     case "$newprof" in
         ''|balanced|battery|default) ;;
-        performance) json_error '400 Bad Request' 'performance retired: use battery/balanced/default, or hand CPU scheduling to an external scheduler (sched_owner=external)' ;;
+        performance) json_error '400 Bad Request' 'performance is internal-only: use battery/balanced/default, or hand scheduling to an external scheduler' ;;
         *) json_error '400 Bad Request' 'invalid profile' ;;
     esac
     case "$newpolicy" in
@@ -243,15 +264,26 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     esac
 
     if [ -n "$newowner" ]; then
-        if command -v so_write_desired_owner >/dev/null 2>&1; then
-            so_write_desired_owner "$newowner" || json_error '500 Internal Server Error' 'failed to persist desired scheduler owner'
-        else
-            printf '%s' "$newowner" > "$SCHED_OWNER_DESIRED_FILE" || json_error '500 Internal Server Error' 'failed to persist desired scheduler owner'
-        fi
+        _old_desired=$(read_valid_desired_sched_owner)
+        _reason_existed=0
+        [ -e "$PROFILE_AUTO_REASON_FILE" ] && _reason_existed=1
+        _old_owner_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null)
+        so_write_desired_owner "$newowner" \
+            || json_error '500 Internal Server Error' 'failed to persist desired scheduler owner'
         _owner_reason="${newowner}_scheduler"
-        printf '%s' "$_owner_reason" > "$PROFILE_AUTO_REASON_FILE"
+        if ! cgi_atomic_write "$PROFILE_AUTO_REASON_FILE" "$_owner_reason"; then
+            _owner_rollback_ok=1
+            so_write_desired_owner "$_old_desired" >/dev/null 2>&1 || _owner_rollback_ok=0
+            cgi_restore_file "$PROFILE_AUTO_REASON_FILE" "$_reason_existed" "$_old_owner_reason" \
+                >/dev/null 2>&1 || _owner_rollback_ok=0
+            if [ "$_owner_rollback_ok" -eq 1 ]; then
+                json_error '500 Internal Server Error' 'failed to persist scheduler transition reason; previous owner restored'
+            fi
+            json_error '500 Internal Server Error' 'failed to persist scheduler transition reason and rollback was incomplete'
+        fi
         append_profile_history "$(read_valid_profile "$PROFILE_FILE" 'balanced')" "$_owner_reason"
-        reconcile_owner_now || true
+        _reconcile_rc=0
+        reconcile_owner_now || _reconcile_rc=$?
         _apply_result=$(read_arbiter_value apply_result)
         _effective=$(read_valid_sched_owner)
         _state=$(read_arbiter_value state)
@@ -260,6 +292,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             failed_*|transition_busy) _transition_ok=false ;;
             *) _transition_ok=true ;;
         esac
+        [ "$_reconcile_rc" -eq 0 ] || _transition_ok=false
         if [ "$_state" != "FAS_LEASED_GAME" ] && [ "$_state" != "EXIT_HOLD" ] && [ "$_effective" != "$newowner" ]; then
             _transition_ok=false
         fi
@@ -270,15 +303,14 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     fi
 
     if [ -n "$newhandoff" ]; then
-        if command -v so_write_handoff_policy >/dev/null 2>&1; then
-            so_write_handoff_policy "$newhandoff" || json_error '500 Internal Server Error' 'failed to persist game handoff policy'
-        else
-            printf '%s' "$newhandoff" > "$GAME_HANDOFF_POLICY_FILE" || json_error '500 Internal Server Error' 'failed to persist game handoff policy'
-        fi
-        reconcile_owner_now || true
+        so_write_handoff_policy "$newhandoff" \
+            || json_error '500 Internal Server Error' 'failed to persist game handoff policy'
+        _reconcile_rc=0
+        reconcile_owner_now || _reconcile_rc=$?
         _apply_result=$(read_arbiter_value apply_result)
         json_headers
         case "$_apply_result" in failed_*|transition_busy) _transition_ok=false ;; *) _transition_ok=true ;; esac
+        [ "$_reconcile_rc" -eq 0 ] || _transition_ok=false
         printf '{"ok":%s,' "$_transition_ok"
         emit_profile_state
         printf '}\n'
@@ -297,6 +329,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     fi
 
     if [ -n "$newprof" ]; then
+        _old_active=$(read_valid_profile "$PROFILE_FILE" balanced)
         _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$newprof" "$MODDIR" 2>/dev/null)
         _rc=$?
         if [ "$_rc" -ne 0 ]; then
@@ -313,10 +346,9 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             esac
             exit 0
         fi
-        printf '%s' "$newprof" > "$PROFILE_FILE"
-        printf '%s' "$newprof" > "$PROFILE_MANUAL_FILE"
-        printf 'manual' > "$PROFILE_POLICY_FILE"
-        printf 'manual_selected' > "$PROFILE_AUTO_REASON_FILE"
+        if ! commit_profile_state "$newprof" "$newprof" manual manual_selected; then
+            rollback_profile_runtime_or_error "$_old_active"
+        fi
         append_profile_history "$newprof" "manual_selected"
         json_headers
         printf '{"ok":true,'
@@ -328,24 +360,27 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     case "$newpolicy" in
         auto)
             _active=$(read_valid_profile "$PROFILE_FILE" 'balanced')
+            _old_active="$_active"
+            _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" balanced)
             case "$_active" in
                 balanced|battery) _target="$_active" ;;
                 *) _target="balanced" ;;
             esac
             _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_target" "$MODDIR" 2>/dev/null)
             [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
-            printf '%s' "$_target" > "$PROFILE_FILE"
-            printf 'auto' > "$PROFILE_POLICY_FILE"
-            printf 'auto_enabled' > "$PROFILE_AUTO_REASON_FILE"
+            if ! commit_profile_state "$_target" "$_manual" auto auto_enabled; then
+                rollback_profile_runtime_or_error "$_old_active"
+            fi
             append_profile_history "$_target" "auto_enabled"
             ;;
         manual)
             _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'balanced')
+            _old_active=$(read_valid_profile "$PROFILE_FILE" balanced)
             _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_manual" "$MODDIR" 2>/dev/null)
             [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
-            printf '%s' "$_manual" > "$PROFILE_FILE"
-            printf 'manual' > "$PROFILE_POLICY_FILE"
-            printf 'manual_policy' > "$PROFILE_AUTO_REASON_FILE"
+            if ! commit_profile_state "$_manual" "$_manual" manual manual_policy; then
+                rollback_profile_runtime_or_error "$_old_active"
+            fi
             append_profile_history "$_manual" "manual_policy"
             ;;
         '')

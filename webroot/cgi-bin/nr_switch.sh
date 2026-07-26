@@ -1,63 +1,19 @@
 #!/system/bin/sh
-##############################################################
-# CGI: /cgi-bin/nr_switch.sh
-# GET  -> NR 息屏降级开关状态 + 当前网络模式
-# POST -> 切换开关 on <-> off
-##############################################################
+# GET returns the screen-off NR policy and current RAT mode. POST updates the
+# policy; disabling it first restores and verifies the saved NR-capable mode.
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
 
 require_loopback
 
 STATE_FILE="$MODDIR/.nr_screen_switch"
 NR_MODE_FILE="$MODDIR/.nr_saved_mode"
+DEFAULTS_LIB="$MODDIR/scripts/runtime_defaults_lib.sh"
+NR_LIB="$MODDIR/scripts/nr_mode_lib.sh"
 
-nr_slot0_val() {
-    case "$1" in
-        *,*) printf '%s' "${1%%,*}" ;;
-        *) printf '%s' "$1" ;;
-    esac
-}
-
-is_nr_mode_value() {
-    _val=$(nr_slot0_val "$1")
-    case "$_val" in
-        ''|null|*[!0-9-]*) return 1 ;;
-    esac
-    [ "$_val" -ge 23 ] 2>/dev/null
-}
-
-is_nr_mode_raw() {
-    case "$1" in
-        ''|null|*[!0-9,-]*|*,*,*) return 1 ;;
-        *,*)
-            _first=${1%%,*}
-            _rest=${1#*,}
-            case "$_first" in ''|*[!0-9-]*) return 1 ;; esac
-            case "$_rest" in ''|*[!0-9,-]*) return 1 ;; esac
-            ;;
-        *) ;;
-    esac
-    return 0
-}
-
-read_saved_nr_mode() {
-    _saved=$(cat "$NR_MODE_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    if is_nr_mode_raw "$_saved" && is_nr_mode_value "$_saved"; then
-        printf '%s' "$_saved"
-    else
-        printf '33'
-        printf '%s' '33' > "$NR_MODE_FILE" 2>/dev/null || true
-    fi
-}
-
-detect_nr_key() {
-    _nr_key="preferred_network_mode1"
-    _current=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
-    if [ -z "$_current" ] || [ "$_current" = "null" ]; then
-        _nr_key="preferred_network_mode"
-        _current=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
-    fi
-}
+[ -r "$DEFAULTS_LIB" ] && [ -r "$NR_LIB" ] \
+    || json_error '500 Internal Server Error' 'NR mode contract not found'
+. "$DEFAULTS_LIB" && . "$NR_LIB" \
+    || json_error '500 Internal Server Error' 'NR mode contract failed to load'
 
 read_actual_rat() {
     dumpsys telephony.registry 2>/dev/null \
@@ -67,41 +23,59 @@ read_actual_rat() {
 
 if [ "$REQUEST_METHOD" = "GET" ]; then
     json_headers
-    enabled=$(cat "$STATE_FILE" 2>/dev/null || echo "on")
-    saved_nr=$(read_saved_nr_mode)
+    enabled=$(cat "$STATE_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    case "$enabled" in on|off) ;; *) enabled="$NR_SCREEN_SWITCH_DEFAULT" ;; esac
+    saved_nr=$(nr_mode_read_saved "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" 2>/dev/null) \
+        || saved_nr="$NR_SAVED_MODE_DEFAULT"
 
-    detect_nr_key
-    current="$_current"
-    slot0=$(nr_slot0_val "$current")
+    nr_mode_detect_setting
+    current="$NR_MODE_CURRENT"
+    slot0=$(nr_mode_slot0 "$current")
     actual_rat=$(read_actual_rat)
     [ -n "$actual_rat" ] || actual_rat="unknown"
 
-    printf '{"nr_switch":"%s","current_mode":"%s","current_slot0":"%s","actual_rat":"%s","saved_nr_mode":"%s"}' \
-        "$enabled" "${current:-unknown}" "$(json_escape "${slot0:-unknown}")" "$(json_escape "$actual_rat")" "$saved_nr"
+    printf '{"nr_switch":"%s","current_mode":"%s","current_slot0":"%s","actual_rat":"%s","saved_nr_mode":"%s","screen_off_delay_s":%s,"restore_cooldown_s":%s,"lte_recheck_s":%s,"lte_mode":%s}' \
+        "$enabled" "$(json_escape "${current:-unknown}")" "$(json_escape "${slot0:-unknown}")" "$(json_escape "$actual_rat")" "$saved_nr" \
+        "$NR_SCREEN_OFF_DELAY_S" "$NR_RESTORE_COOLDOWN_S" "$NR_LTE_RECHECK_S" "$NR_LTE_MODE"
 
 elif [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
     require_token
     acquire_lock "nr_switch"
-    _len="${CONTENT_LENGTH:-0}"
-    case "$_len" in ''|*[!0-9]*) _len=0 ;; esac
-    [ "$_len" -gt 0 ] 2>/dev/null || json_error '400 Bad Request' 'empty request body'
-    [ "$_len" -gt 256 ] 2>/dev/null && _len=256
-    body=$(dd bs=1 count="$_len" 2>/dev/null)
+    read_json_body 256
+    body="$JSON_BODY"
     action=$(printf '%s' "$body" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
     requested=$(printf '%s' "$body" | sed -n 's/.*"enabled"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
-    current=$(cat "$STATE_FILE" 2>/dev/null || echo "on")
-    case "$current" in on|off) ;; *) current="on" ;; esac
+    current=$(cat "$STATE_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    case "$current" in on|off) ;; *) current="$NR_SCREEN_SWITCH_DEFAULT" ;; esac
     case "$action" in
         toggle) [ "$current" = "on" ] && new="off" || new="on" ;;
         set) case "$requested" in on|off) new="$requested" ;; *) json_error '400 Bad Request' 'invalid enabled' ;; esac ;;
         *) json_error '400 Bad Request' 'invalid action' ;;
     esac
-    echo "$new" > "$STATE_FILE"
     if [ "$new" = "off" ]; then
-        saved_nr=$(read_saved_nr_mode)
-        detect_nr_key
-        settings put global "$_nr_key" "$saved_nr" 2>/dev/null
+        saved_nr=$(nr_mode_read_saved "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" 2>/dev/null) \
+            || json_error '500 Internal Server Error' 'saved NR mode is unavailable'
+        nr_mode_detect_setting
+        _nr_key="$NR_MODE_KEY"
+        _nr_before="$NR_MODE_CURRENT"
+        if ! nr_mode_write_verified "$_nr_key" "$saved_nr"; then
+            if nr_mode_is_valid_raw "$_nr_before" \
+                && nr_mode_write_verified "$_nr_key" "$_nr_before"; then
+                json_error '500 Internal Server Error' 'failed to restore NR mode; previous mode restored'
+            fi
+            json_error '500 Internal Server Error' 'failed to restore NR mode and rollback was incomplete'
+        fi
+    fi
+    if ! cgi_atomic_write "$STATE_FILE" "$new"; then
+        if [ "$new" = "off" ]; then
+            if nr_mode_is_valid_raw "$_nr_before" \
+                && nr_mode_write_verified "$_nr_key" "$_nr_before"; then
+                json_error '500 Internal Server Error' 'failed to persist NR setting; previous mode restored'
+            fi
+            json_error '500 Internal Server Error' 'failed to persist NR setting and rollback was incomplete'
+        fi
+        json_error '500 Internal Server Error' 'failed to persist NR setting'
     fi
     json_headers
     printf '{"ok":true,"nr_switch":"%s"}' "$new"

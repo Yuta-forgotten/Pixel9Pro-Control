@@ -14,6 +14,26 @@ release_review/
 modules/*/dist/
 release-assets/
 
+# Runtime state belongs to the installed module, never the source tree
+/.arbiter_*
+/.bg_*
+/.cpu_sched_owner
+/.current_profile
+/.game_handoff_policy
+/.idle_isolate_mode
+/.locks/
+/.nr_*
+/.ntp_server
+/.power_*
+/.profile_*
+/.sched_owner_desired
+/.sim2_*
+/.standby_diag_state
+/.swap_*
+/.thermal_*
+/.uecap_*
+/.webui_*
+
 # Nested repo copy (accidental, should not exist)
 Pixel9Pro-Control/
 

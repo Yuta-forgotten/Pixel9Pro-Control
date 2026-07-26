@@ -1,24 +1,19 @@
 #!/system/bin/sh
-##############################################################
-# CGI: /cgi-bin/history_export.sh
-# POST JSON {"minutes":15|30|60} or {"mode":"session","start_ts":epoch}
-# 手动导出模块功耗/温度历史到 /sdcard/Download
-##############################################################
+# Authenticated export of a fixed history window to /sdcard/Download.
+# Accepted bodies select 15/30/60 minutes or the current WebUI session.
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
 
 require_loopback
 require_json_post
 require_token
+acquire_lock "history_export"
 
 POWER_HISTORY="$MODDIR/.power_history"
 THERMAL_HISTORY="$MODDIR/.thermal_history"
 DOWNLOAD_DIR="/sdcard/Download"
 
-len="${CONTENT_LENGTH:-0}"
-case "$len" in ''|*[!0-9]*) len=0 ;; esac
-[ "$len" -gt 0 ] 2>/dev/null || json_error '400 Bad Request' 'empty request body'
-[ "$len" -gt 1024 ] 2>/dev/null && len=1024
-body=$(dd bs=1 count="$len" 2>/dev/null)
+read_json_body 1024
+body="$JSON_BODY"
 
 now=$(date +%s 2>/dev/null || echo 0)
 action=$(printf '%s' "$body" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([a-zA-Z0-9_]*\)".*/\1/p')
@@ -59,6 +54,7 @@ mkdir -p "$DOWNLOAD_DIR" 2>/dev/null || json_error '500 Internal Server Error' '
 
 out="$DOWNLOAD_DIR/pixel9pro_history_${stamp}_${suffix}.md"
 tmp="${out}.tmp.$$"
+[ ! -d "$out" ] || json_error '500 Internal Server Error' 'export path is not a file'
 
 power_samples=0
 thermal_samples=0
@@ -108,7 +104,8 @@ if {
     fi
     printf '```\n'
 } > "$tmp" 2>/dev/null; then
-    mv "$tmp" "$out" 2>/dev/null || json_error '500 Internal Server Error' 'cannot finalize export'
+    mv "$tmp" "$out" 2>/dev/null && [ -f "$out" ] \
+        || json_error '500 Internal Server Error' 'cannot finalize export'
 else
     json_error '500 Internal Server Error' 'cannot write export'
 fi

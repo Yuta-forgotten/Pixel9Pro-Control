@@ -1,6 +1,6 @@
 # Pixel 9 Pro Baseband Trial
 
-独立基带配置模块，负责：
+Pixel 9 Pro (`caiman`) 专用的独立基带配置模块，安装脚本会拒绝其它机型。负责：
 
 - `persist.dbg.volte_avail_ovr=1`（VoLTE）
 - `persist.dbg.wfc_avail_ovr=1`（Wi-Fi Calling）
@@ -15,7 +15,7 @@
 ## 与 pixel9pro_control 的关系
 
 - 两个模块**路径不冲突**，可同时安装
-- 本模块：OverlayFS 覆盖 `/product/etc/CarrierSettings/` 和 `/vendor/rfs/.../mcfg_sw/`
+- 本模块：由 root 框架挂载 `/product/etc/CarrierSettings/` 和 `/vendor/rfs/.../mcfg_sw/`；APatch/KSU metamodule 使用 OverlayFS，Magisk 使用 Magic Mount
 - 控制模块：bind mount 覆盖 `/vendor/firmware/uecapconfig/`
 - 控制模块 WebUI 可检测本模块状态并展示
 

@@ -1,0 +1,117 @@
+#!/system/bin/sh
+
+SOURCE_ROOT="${1:-${0%/tests/*}}"
+TEST_ROOT="${2:-${TMPDIR:-/tmp}/pixel9pro_uecap_state_$$}"
+PASS=0
+FAIL=0
+
+check_eq() {
+    if [ "$2" = "$3" ]; then
+        PASS=$((PASS + 1))
+        printf 'ok %s - %s\n' "$((PASS + FAIL))" "$1"
+    else
+        FAIL=$((FAIL + 1))
+        printf 'not ok %s - %s (expected=%s actual=%s)\n' "$((PASS + FAIL))" "$1" "$2" "$3"
+    fi
+}
+
+mkdir -p "$TEST_ROOT" || exit 2
+export PIXEL9PRO_MODDIR="$TEST_ROOT"
+export PIXEL9PRO_UECAP_MODE_FILE="$TEST_ROOT/mode"
+export PIXEL9PRO_UECAP_MANUAL_MODE_FILE="$TEST_ROOT/manual"
+export PIXEL9PRO_UECAP_POLICY_FILE="$TEST_ROOT/policy"
+export PIXEL9PRO_UECAP_REASON_FILE="$TEST_ROOT/reason"
+export PIXEL9PRO_UECAP_SWITCH_FILE="$TEST_ROOT/switch"
+export PIXEL9PRO_UECAP_LOGDIR="$TEST_ROOT/logs"
+. "$SOURCE_ROOT/uecap_profile.sh"
+
+printf 'balanced' > "$UECAP_MODE_FILE"
+printf 'balanced' > "$UECAP_MANUAL_MODE_FILE"
+printf 'manual' > "$UECAP_POLICY_FILE"
+printf 'old_reason' > "$UECAP_REASON_FILE"
+printf '100' > "$UECAP_SWITCH_FILE"
+
+uecap_commit_state special manual_locked 200
+check_eq 'transaction commits active mode' special "$(cat "$UECAP_MODE_FILE")"
+check_eq 'transaction commits manual mode' special "$(cat "$UECAP_MANUAL_MODE_FILE")"
+check_eq 'transaction keeps manual policy' manual "$(cat "$UECAP_POLICY_FILE")"
+check_eq 'transaction commits reason' manual_locked "$(cat "$UECAP_REASON_FILE")"
+check_eq 'transaction commits switch time' 200 "$(cat "$UECAP_SWITCH_FILE")"
+
+printf 'balanced' > "$UECAP_MODE_FILE"
+printf 'balanced' > "$UECAP_MANUAL_MODE_FILE"
+printf 'old_reason' > "$UECAP_REASON_FILE"
+printf '100' > "$UECAP_SWITCH_FILE"
+rm -f "$UECAP_POLICY_FILE"
+mkdir "$UECAP_POLICY_FILE" || exit 2
+
+if uecap_commit_state universal manual_locked 300; then
+    FAIL=$((FAIL + 1))
+    printf 'not ok %s - transaction rejects a partial state commit\n' "$((PASS + FAIL))"
+else
+    PASS=$((PASS + 1))
+    printf 'ok %s - transaction rejects a partial state commit\n' "$((PASS + FAIL))"
+fi
+check_eq 'failed transaction restores active mode' balanced "$(cat "$UECAP_MODE_FILE")"
+check_eq 'failed transaction restores manual mode' balanced "$(cat "$UECAP_MANUAL_MODE_FILE")"
+check_eq 'failed transaction preserves reason' old_reason "$(cat "$UECAP_REASON_FILE")"
+check_eq 'failed transaction preserves switch time' 100 "$(cat "$UECAP_SWITCH_FILE")"
+check_eq 'failed transaction reports incomplete state rollback' incomplete "$UECAP_STATE_ROLLBACK_RESULT"
+
+rmdir "$UECAP_POLICY_FILE" || exit 2
+printf 'manual' > "$UECAP_POLICY_FILE"
+export PIXEL9PRO_UECAP_TARGET="$TEST_ROOT/target.binarypb"
+export PIXEL9PRO_UECAP_SPECIAL="$TEST_ROOT/special.binarypb"
+export PIXEL9PRO_UECAP_BALANCED="$TEST_ROOT/balanced.binarypb"
+export PIXEL9PRO_UECAP_UNIVERSAL="$TEST_ROOT/universal.binarypb"
+UECAP_TARGET="$PIXEL9PRO_UECAP_TARGET"
+UECAP_SPECIAL="$PIXEL9PRO_UECAP_SPECIAL"
+UECAP_BALANCED="$PIXEL9PRO_UECAP_BALANCED"
+UECAP_UNIVERSAL="$PIXEL9PRO_UECAP_UNIVERSAL"
+printf 'special-payload' > "$UECAP_SPECIAL"
+printf 'balanced-payload' > "$UECAP_BALANCED"
+printf 'universal-payload' > "$UECAP_UNIVERSAL"
+printf 'balanced-payload' > "$UECAP_TARGET"
+printf 'balanced' > "$UECAP_MODE_FILE"
+printf 'balanced' > "$UECAP_MANUAL_MODE_FILE"
+MOUNTED=1
+FAIL_SPECIAL_BIND=1
+FAIL_ALL_BINDS=0
+RELOAD_FAIL=0
+
+uecap_target_is_mounted() { [ "$MOUNTED" -eq 1 ]; }
+uecap_unmount() { MOUNTED=0; printf 'stock-payload' > "$UECAP_TARGET"; }
+uecap_mount_bind() {
+    [ "$FAIL_ALL_BINDS" -eq 0 ] || return 1
+    if [ "$FAIL_SPECIAL_BIND" -eq 1 ] && [ "$1" = "$UECAP_SPECIAL" ]; then return 1; fi
+    cp "$1" "$2" || return 1
+    MOUNTED=1
+}
+uecap_reload_modem() {
+    [ "$RELOAD_FAIL" -eq 0 ] || { UECAP_RELOAD_DISPATCHED=false; return 1; }
+    UECAP_RELOAD_DISPATCHED=true
+}
+
+uecap_apply_mode special manual_locked
+check_eq 'bind failure returns rolled-back status' 1 "$?"
+check_eq 'bind failure result is explicit' bind_failed_rolled_back "$UECAP_APPLY_RESULT"
+check_eq 'bind failure restores previous payload' "$(uecap_hash "$UECAP_BALANCED")" "$(uecap_hash "$UECAP_TARGET")"
+
+FAIL_SPECIAL_BIND=0
+FAIL_ALL_BINDS=1
+uecap_apply_mode special manual_locked
+check_eq 'bind rollback failure returns distinct status' 2 "$?"
+check_eq 'bind rollback failure is explicit' bind_failed_rollback_incomplete "$UECAP_APPLY_RESULT"
+
+FAIL_ALL_BINDS=0
+MOUNTED=1
+printf 'balanced-payload' > "$UECAP_TARGET"
+RELOAD_FAIL=1
+uecap_apply_mode special manual_locked
+check_eq 'modem reload failure returns applied status' 3 "$?"
+check_eq 'modem reload failure keeps applied mode' special "$(cat "$UECAP_MODE_FILE")"
+check_eq 'modem reload failure is explicit' applied_reload_failed "$UECAP_APPLY_RESULT"
+
+printf '1..%s\n' "$((PASS + FAIL))"
+printf '# pass=%s fail=%s\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]

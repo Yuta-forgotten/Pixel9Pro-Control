@@ -967,6 +967,7 @@ button{border:none;background:none;padding:0;color:inherit}
 .profile-card[data-profile="stock"] .profile-icon,
 .profile-card[data-offset="0"] .profile-icon{color:#365fa0}
 .profile-card[data-offset="4"] .profile-icon{color:#8b6b08}
+.profile-card[data-offset="-2"] .profile-icon{color:#4f8a2f}
 
 .profile-desc{
   margin-top:4px;

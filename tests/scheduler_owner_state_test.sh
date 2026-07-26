@@ -57,7 +57,8 @@ new_fixture() {
     cp "$SOURCE_ROOT/scripts/owner_arbiter.sh" "$MOD/scripts/owner_arbiter.sh" || exit 2
     cp "$SOURCE_ROOT/scripts/scheduler_owner_lib.sh" "$MOD/scripts/scheduler_owner_lib.sh" || exit 2
     cp "$SOURCE_ROOT/scripts/scheduler_detect_lib.sh" "$MOD/scripts/scheduler_detect_lib.sh" || exit 2
-    printf '%s\n' '#!/system/bin/sh' 'exit 0' > "$MOD/scripts/cpu_profile.sh"
+    cp "$SOURCE_ROOT/scripts/cpu_profile_lib.sh" "$MOD/scripts/cpu_profile_lib.sh" || exit 2
+    printf '%s\n' '#!/system/bin/sh' '[ ! -f "${0%/*}/../.fail_cpu_profile" ] || exit 1' 'exit 0' > "$MOD/scripts/cpu_profile.sh"
     printf '%s\n' "$_t_desired" > "$MOD/.sched_owner_desired"
     printf '%s\n' "$_t_effective" > "$MOD/.cpu_sched_owner"
     printf '%s\n' "$_t_handoff" > "$MOD/.game_handoff_policy"
@@ -194,7 +195,11 @@ assert_eq 'handoff off keeps daily cap' 0 "$(cat "$FAS/uclamp_cap")"
 # fas-rs start failure rolls back to the desired Pixel baseline.
 new_fixture fas_failure pixel pixel fas_rs
 printf '1\n' > "$FAS/.test_runtime/fail_start_fas"
-run_tick com.example.game
+if run_tick com.example.game; then
+    not_ok 'fas-rs failure returns nonzero'
+else
+    ok 'fas-rs failure returns nonzero'
+fi
 assert_eq 'fas-rs failure rolls back Pixel effective' pixel "$(cat "$MOD/.cpu_sched_owner")"
 assert_eq 'fas-rs failure records Pixel fallback' failed_start_fas_rs_fallback_pixel "$(state_value "$FAS/.arbiter_state" apply_result)"
 assert_no_file 'fas-rs failure leaves no fas process' "$FAS/.test_runtime/fas_alive"
@@ -206,10 +211,28 @@ new_fixture fas_uclamp_failure pixel pixel fas_rs
 rm -f "$FAS/uclamp_cap"
 mkdir -p "$FAS/uclamp_cap"
 OWNER_ARBITER_UCLAMP_CAP_PATH="$FAS/uclamp_cap" run_tick com.example.game
+_cap_failure_rc=$?
+if [ "$_cap_failure_rc" -ne 0 ]; then
+    ok 'fas-rs cap failure returns nonzero'
+else
+    not_ok 'fas-rs cap failure returns nonzero'
+fi
 assert_eq 'fas-rs cap failure rolls back Pixel effective' pixel "$(cat "$MOD/.cpu_sched_owner")"
 assert_no_file 'fas-rs cap failure stops partial fas process' "$FAS/.test_runtime/fas_alive"
-assert_eq 'fas-rs cap failure records desired fallback' failed_verify_fas_rs_game_uclamp_cap_fallback_pixel "$(state_value "$FAS/.arbiter_state" apply_result)"
+assert_eq 'fas-rs cap failure records incomplete fallback' failed_verify_fas_rs_game_uclamp_cap_fallback_incomplete "$(state_value "$FAS/.arbiter_state" apply_result)"
 assert_eq 'fas-rs cap failure remains unverified' no "$(state_value "$FAS/.arbiter_state" uclamp_cap_verified)"
+
+# UGT must not start on top of a stale Pixel/battery cpuset. If the required
+# default-profile preparation fails, keep Pixel effective and expose that the
+# fallback could not reapply the same broken profile path.
+new_fixture external_default_failure external pixel off
+touch "$MOD/.fail_cpu_profile"
+run_tick com.android.launcher
+_default_failure_rc=$?
+if [ "$_default_failure_rc" -ne 0 ]; then ok 'UGT baseline preparation failure returns nonzero'; else not_ok 'UGT baseline preparation failure returns nonzero'; fi
+assert_eq 'UGT preparation failure keeps Pixel effective' pixel "$(cat "$MOD/.cpu_sched_owner")"
+assert_no_file 'UGT preparation failure does not start UGT' "$FAS/.test_runtime/uperf_alive"
+assert_eq 'UGT preparation failure reports incomplete fallback' failed_prepare_uperf_default_profile_fallback_pixel_incomplete "$(state_value "$FAS/.arbiter_state" apply_result)"
 
 # ThermalHAL cooling blocks cpufreq repair without blocking the owner lease.
 new_fixture thermal_gate pixel pixel fas_rs
@@ -230,7 +253,7 @@ assert_eq 'ThermalHAL gate leaves governor untouched' powersave "$(cat "$FAS/cpu
 new_fixture stale_transition_lock pixel external off
 mkdir -p "$FAS/.owner_transition.lock"
 printf '999999\n' > "$FAS/.owner_transition.lock/pid"
-printf '0\n' > "$FAS/.owner_transition.lock/epoch"
+printf '0\n' > "$FAS/.owner_transition.lock/start_ticks"
 run_tick com.android.launcher
 assert_eq 'stale transition lock is recovered' pixel "$(cat "$MOD/.cpu_sched_owner")"
 assert_no_file 'stale transition lock directory is released' "$FAS/.owner_transition.lock/pid"

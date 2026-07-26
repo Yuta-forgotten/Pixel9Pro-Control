@@ -46,9 +46,16 @@ so_read_handoff_policy() {
 so_atomic_write() {
     _so_file="$1"
     _so_value="$2"
+    [ -n "$_so_file" ] && [ ! -d "$_so_file" ] || return 1
     _so_tmp="${_so_file}.$$"
-    printf '%s\n' "$_so_value" > "$_so_tmp" 2>/dev/null || return 1
-    mv "$_so_tmp" "$_so_file" 2>/dev/null
+    if printf '%s\n' "$_so_value" > "$_so_tmp" 2>/dev/null \
+        && mv "$_so_tmp" "$_so_file" 2>/dev/null \
+        && [ -f "$_so_file" ]; then
+        _so_written=$(cat "$_so_file" 2>/dev/null | tr -d '\r\n')
+        [ "$_so_written" = "$_so_value" ] && return 0
+    fi
+    rm -f "$_so_tmp" 2>/dev/null
+    return 1
 }
 
 so_write_desired_owner() {
@@ -79,7 +86,7 @@ so_last_explicit_owner() {
 }
 
 so_migrate_state() {
-    mkdir -p "$SO_FAS_ROOT" 2>/dev/null || true
+    mkdir -p "$SO_FAS_ROOT" 2>/dev/null || return 1
 
     _so_desired=$(cat "$SO_DESIRED_FILE" 2>/dev/null | tr -d ' \n\r\t')
     case "$_so_desired" in
@@ -114,44 +121,61 @@ so_migrate_state() {
     esac
 }
 
-so_now_epoch() {
-    date +%s 2>/dev/null || echo 0
-}
-
 so_pid_alive() {
     case "$1" in ''|*[!0-9]*) return 1 ;; esac
     [ -d "$SO_PROC_ROOT/$1" ]
 }
 
+so_process_start_ticks() {
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    sed 's/^.*) //' "$SO_PROC_ROOT/$1/stat" 2>/dev/null | awk '{print $20}'
+}
+
+so_initialize_transition_lock() {
+    _so_start=$(so_process_start_ticks "$$")
+    if [ -z "$_so_start" ] \
+        || ! printf '%s\n' "$$" > "$SO_TRANSITION_LOCK_DIR/pid" 2>/dev/null \
+        || ! printf '%s\n' "$_so_start" > "$SO_TRANSITION_LOCK_DIR/start_ticks" 2>/dev/null; then
+        rm -f "$SO_TRANSITION_LOCK_DIR/pid" "$SO_TRANSITION_LOCK_DIR/start_ticks" 2>/dev/null
+        rmdir "$SO_TRANSITION_LOCK_DIR" 2>/dev/null
+        return 1
+    fi
+    SO_TRANSITION_LOCK_START="$_so_start"
+    return 0
+}
+
 so_acquire_transition_lock() {
-    _so_lock_now=$(so_now_epoch)
     _so_attempt=1
     while [ "$_so_attempt" -le 8 ] 2>/dev/null; do
         if mkdir "$SO_TRANSITION_LOCK_DIR" 2>/dev/null; then
-            printf '%s\n' "$$" > "$SO_TRANSITION_LOCK_DIR/pid" 2>/dev/null || true
-            printf '%s\n' "$_so_lock_now" > "$SO_TRANSITION_LOCK_DIR/epoch" 2>/dev/null || true
-            return 0
+            so_initialize_transition_lock
+            return $?
         fi
 
         _so_lock_pid=$(cat "$SO_TRANSITION_LOCK_DIR/pid" 2>/dev/null | tr -d ' \n\r\t')
-        _so_lock_epoch=$(cat "$SO_TRANSITION_LOCK_DIR/epoch" 2>/dev/null | tr -d ' \n\r\t')
-        case "$_so_lock_epoch" in ''|*[!0-9]*) _so_lock_epoch=0 ;; esac
-        _so_lock_age=$((_so_lock_now - _so_lock_epoch))
-        if ! so_pid_alive "$_so_lock_pid" || [ "$_so_lock_age" -gt 60 ] 2>/dev/null; then
-            rm -f "$SO_TRANSITION_LOCK_DIR/pid" "$SO_TRANSITION_LOCK_DIR/epoch" 2>/dev/null || true
+        _so_lock_start=$(cat "$SO_TRANSITION_LOCK_DIR/start_ticks" 2>/dev/null | tr -d ' \n\r\t')
+        _so_live_start=$(so_process_start_ticks "$_so_lock_pid")
+        if ! so_pid_alive "$_so_lock_pid" \
+            || [ -z "$_so_lock_start" ] \
+            || [ -z "$_so_live_start" ] \
+            || [ "$_so_live_start" != "$_so_lock_start" ]; then
+            rm -f "$SO_TRANSITION_LOCK_DIR/pid" "$SO_TRANSITION_LOCK_DIR/start_ticks" "$SO_TRANSITION_LOCK_DIR/epoch" 2>/dev/null
             rmdir "$SO_TRANSITION_LOCK_DIR" 2>/dev/null || true
             continue
         fi
         sleep 1
         _so_attempt=$((_so_attempt + 1))
-        _so_lock_now=$(so_now_epoch)
     done
     return 1
 }
 
 so_release_transition_lock() {
     _so_lock_pid=$(cat "$SO_TRANSITION_LOCK_DIR/pid" 2>/dev/null | tr -d ' \n\r\t')
-    [ "$_so_lock_pid" = "$$" ] || return 0
-    rm -f "$SO_TRANSITION_LOCK_DIR/pid" "$SO_TRANSITION_LOCK_DIR/epoch" 2>/dev/null || true
+    _so_lock_start=$(cat "$SO_TRANSITION_LOCK_DIR/start_ticks" 2>/dev/null | tr -d ' \n\r\t')
+    [ "$_so_lock_pid" = "$$" ] \
+        && [ -n "${SO_TRANSITION_LOCK_START:-}" ] \
+        && [ "$_so_lock_start" = "$SO_TRANSITION_LOCK_START" ] || return 0
+    rm -f "$SO_TRANSITION_LOCK_DIR/pid" "$SO_TRANSITION_LOCK_DIR/start_ticks" "$SO_TRANSITION_LOCK_DIR/epoch" 2>/dev/null
     rmdir "$SO_TRANSITION_LOCK_DIR" 2>/dev/null || true
+    SO_TRANSITION_LOCK_START=""
 }

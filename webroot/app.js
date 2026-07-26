@@ -11,7 +11,7 @@ const API = {
   thermal: '/cgi-bin/thermal.sh',
   thermalHistory: '/cgi-bin/thermal.sh?history=1',
   thermalFresh: '/cgi-bin/thermal.sh?fresh=1',
-  thermalClear: '/cgi-bin/thermal.sh?clear=1&fresh=1',
+  thermalClear: '/cgi-bin/thermal.sh',
   thermalSet: '/cgi-bin/set_thermal.sh',
   reboot: '/cgi-bin/reboot.sh',
   swap: '/cgi-bin/swap.sh',
@@ -87,7 +87,7 @@ const PROFILES = {
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     modeClass: 'mode-game',
-    detail: '<b>性能优先</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time</b>: 小核 12ms / 中核 20ms / 大核 80ms<br><b>sched_util_clamp_min</b>: 0 → 1024（恢复 Google 出厂 uclamp.min 上限，允许 ADPF/HBoost/fork/ExoPlayer 动态 boost 发挥作用）<br><br>这是手动性能档：中大核更早补位，前台峰值响应更强。代价是温升更快；自动策略只在均衡和省电之间切换，手动锁定性能优先时不会自动拉回。'
+    detail: '这是内部手动性能基线：中大核更早补位，前台峰值响应更强。代价是温升更快；自动策略不会进入此档。'
   },
   balanced: {
     name: '均衡',
@@ -96,7 +96,7 @@ const PROFILES = {
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     modeClass: 'mode-balanced',
-    detail: '<b>均衡</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3<br><b>response_time_ms</b>: 16 / 40 / 200（小 / 中 / 大核）<br><b>sched_util_clamp_min</b>: 0（抑制 per-task boost）<br><br>中等升频速率，top-app 可用全核，X4 升频节奏最慢（200ms）。'
+    detail: '日常均衡基线：保留全核调度能力，同时抑制不必要的 per-task boost。'
   },
   battery: {
     name: '省电',
@@ -105,7 +105,7 @@ const PROFILES = {
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     modeClass: 'mode-battery',
-    detail: '<b>省电</b><br><br><b>cpuset</b>: top-app → cpu0-6，background → cpu0-3<br><b>response_time_ms</b>: 32 / 96 / 200（小 / 中 / 大核）<br><b>sched_util_clamp_min</b>: 0（抑制 per-task boost）<br><br>升频速率最慢；top-app 限制在 cpu0-6，前台常规调度不含大核 X4。'
+    detail: '日常省电基线：放缓升频并让 top-app 避开大核 X4，降低轻中负载功耗。'
   },
   default: {
     name: '系统默认',
@@ -114,7 +114,7 @@ const PROFILES = {
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     modeClass: 'mode-stock',
-    detail: '<b>系统默认</b><br><br><b>cpuset</b>: top-app → cpu0-7，background → cpu0-3（出厂值）<br><b>response_time_ms</b>: 回写内核只读节点 response_time_ms_nom（本机实测 9 / 52 / 165，随内核版本自适应）<br><b>sched_util_clamp_min</b>: 1024（出厂上限，不压制 boost）<br><br>恢复内核出厂升频节奏与 uclamp/cpuset；balanced/battery 才把 cap 压成 0 省电，本档不压制。不进自动策略。'
+    detail: '恢复内核当前提供的 response_time_ms_nom、出厂 cpuset 与完整 boost 上限；具体数值由运行态 contract 提供。'
   },
   unknown: {
     name: '未选择',
@@ -129,15 +129,15 @@ const PROFILES = {
 
 const THERMAL_PRESETS = {
   [-2]: {
-    name: '睡和放宽',
+    name: '提前介入',
     summary: '出厂 -2°C；HINT 35°C，VIRTUAL-SKIN 37°C。',
-    detail: '<b>睡和放宽</b><br><br>出厂 -2°C，最早 35°C 介入。<br><br>HINT 35°C / VIRTUAL-SKIN 37°C / CPU-HIGH 39°C。',
+    detail: '<b>提前介入</b><br><br>比出厂提前 2°C，最早 35°C 介入。<br><br>HINT 35°C / VIRTUAL-SKIN 37°C / CPU-HIGH 39°C；数值型 SHUTDOWN 仍保持出厂 55/59°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M9.37 5.51A7 7 0 0018.49 14.63 9 9 0 119.37 5.51z"/></svg>'
   },
   0: {
-    name: '躺和放宽',
+    name: '原厂阈值',
     summary: '出厂 0°C；HINT 37°C，VIRTUAL-SKIN 39°C。',
-    detail: '<b>躺和放宽</b><br><br>出厂 0°C，最早 37°C 介入。<br><br>HINT 37°C / VIRTUAL-SKIN 39°C / CPU-HIGH 41°C。',
+    detail: '<b>原厂阈值</b><br><br>不平移前置阈值，最早 37°C 介入。<br><br>HINT 37°C / VIRTUAL-SKIN 39°C / CPU-HIGH 41°C；数值型 SHUTDOWN 保持出厂 55/59°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/></svg>'
   },
   2: {
@@ -147,18 +147,35 @@ const THERMAL_PRESETS = {
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82z"/></svg>'
   },
   4: {
-    name: '坐和放宽',
+    name: '日常放宽',
     summary: '出厂 +4°C；HINT 41°C，VIRTUAL-SKIN 43°C。',
-    detail: '<b>坐和放宽（模块默认）</b><br><br>出厂 +4°C，最早 41°C 介入。<br><br>HINT 41°C / VIRTUAL-SKIN 43°C / CPU-HIGH 45°C。',
+    detail: '<b>日常放宽（模块默认）</b><br><br>前置阈值目标 +4°C，最早 41°C 介入。<br><br>HINT 41°C / VIRTUAL-SKIN 43°C / CPU-HIGH 45°C；靠近 55/59°C SHUTDOWN 时会向前限幅，保持至少 0.5°C 间隔。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67z"/></svg>'
   },
   6: {
-    name: '站和放宽',
+    name: '最大放宽',
     summary: '出厂 +6°C；HINT 43°C，VIRTUAL-SKIN 45°C。',
-    detail: '<b>站和放宽</b><br><br>出厂 +6°C，最早 43°C 介入。<br><br>HINT 43°C / VIRTUAL-SKIN 45°C / CPU-HIGH 47°C。',
+    detail: '<b>最大放宽</b><br><br>前置阈值目标 +6°C，最早 43°C 介入。<br><br>HINT 43°C / VIRTUAL-SKIN 45°C / CPU-HIGH 47°C；靠近 55/59°C SHUTDOWN 时会向前限幅，不会整体推高最后安全阈值。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>'
   }
 };
+const THERMAL_OFFSETS = Object.freeze([-2, 0, 2, 4, 6]);
+const THERMAL_DEFAULT_OFFSET = 4;
+
+function buildProfileDetail(key) {
+  const profile = PROFILES[key] || PROFILES.unknown;
+  const contract = state.cpuContract;
+  const values = contract?.profiles?.[key];
+  let html = `<b>${profile.name}</b><br><br>${profile.detail}`;
+  if (!values || !contract) return `${html}<br><br>运行参数尚未读取。`;
+  const response = Array.isArray(values.response_ms)
+    ? values.response_ms.map((value) => `${value}ms`).join(' / ')
+    : '内核 response_time_ms_nom（运行时复读）';
+  html += `<br><br><b>cpuset</b>: top-app → cpu${escapeHtml(values.top_app_cpus || 'unknown')}，foreground → cpu${escapeHtml(contract.foreground_cpus || 'unknown')}，background → cpu${escapeHtml(contract.background_cpus || 'unknown')}`;
+  html += `<br><b>response_time_ms</b>: ${escapeHtml(response)}`;
+  html += `<br><b>sched_util_clamp_min</b>: ${Number.isFinite(values.uclamp_cap) ? values.uclamp_cap : 'unknown'}`;
+  return html;
+}
 
 // 内存优化详情按 state.swapData 实时生成: 数字取自当前值, 解释随取值自适应,
 // 手动改参后重新打开即反映当前 ZRAM / VM 方案 (不再硬编码)
@@ -195,15 +212,19 @@ function swapModeIntro(mode) {
   return '<b>当前方案：自定义</b><br>以下为基于你手动设定值的实时分析；应用后以 custom 模式随下次开机恢复。';
 }
 function buildSwapDetail(data) {
-  const d = data || { ...SWAP_OPTIMIZED, mode: 'optimized', zram_algo: 'lz77eh', zram_disksize: 11945377792, stock_zram_size: 0 };
-  const isEH = d.zram_algo === 'lz77eh';
+  if (!data) return '尚未读取到 ZRAM / VM 状态，请稍后刷新。';
+  const d = data;
+  const target = d.zram_target || {};
+  const isEH = d.zram_algo === target.algorithm;
   const sizeGB = (d.zram_disksize / 1073741824).toFixed(1);
   const totalRam = d.stock_zram_size > 0 ? d.stock_zram_size * 2 : 0;
   const ramPct = totalRam > 0 ? ` (约 ${Math.round((d.zram_disksize / totalRam) * 100)}% RAM)` : '';
   const wsf = d.watermark_scale_factor || 0;
+  const currentAlgorithm = escapeHtml(d.zram_algo || 'unknown');
+  const targetAlgorithm = escapeHtml(target.algorithm || 'unknown');
   const algoBlock = isEH
-    ? '<b>ZRAM 算法: lz77eh (Emerald Hill 硬件加速)</b><br>Tensor G4 内置固定功能压缩引擎，压缩和解压由专用硬件完成，CPU 几乎不参与，适合高频换页场景。'
-    : `<b>ZRAM 算法: ${d.zram_algo}</b><br>当前非硬件加速算法，重启后模块会自动切换为 lz77eh。`;
+    ? `<b>ZRAM 算法: ${targetAlgorithm} (Emerald Hill 硬件加速)</b><br>Tensor G4 内置固定功能压缩引擎，适合高频换页场景。`
+    : `<b>ZRAM 算法: ${currentAlgorithm}</b><br>当前未达到模块目标 ${targetAlgorithm}；开机服务会尝试恢复。`;
   const sizeBlock = `<b>ZRAM 大小: ${sizeGB}GB${ramPct}</b><br>原厂默认约为 50% RAM；模块扩容后让更多后台匿名页驻留在 ZRAM 中。`;
   return [
     swapModeIntro(d.mode),
@@ -215,16 +236,17 @@ function buildSwapDetail(data) {
     `<b>vfs_cache_pressure: ${d.vfs_cache_pressure}</b><br>${describeVfs(d.vfs_cache_pressure)}`
   ].join('<br><br>');
 }
-const SWAP_OPTIMIZED = { swappiness: 100, min_free_kbytes: 131072, watermark_scale_factor: 200, vfs_cache_pressure: 60 };
-const SWAP_STOCK = { swappiness: 150, min_free_kbytes: 27386, watermark_scale_factor: 50, vfs_cache_pressure: 100 };
-const SWAP_LIMITS = {
-  swappiness: { min: 0, max: 200, step: 5 },
-  min_free_kbytes: { min: 16384, max: 262144, step: 8192 },
-  watermark_scale_factor: { min: 10, max: 500, step: 10 },
-  vfs_cache_pressure: { min: 10, max: 200, step: 5 }
-};
+const SWAP_KEYS = ['swappiness', 'min_free_kbytes', 'watermark_scale_factor', 'vfs_cache_pressure'];
 
-const NR_SWITCH_DETAIL = '<b>NR 息屏降级 (Screen-Off LTE Switch)</b><br><br>开启后，息屏超过 <b>300 秒</b> 时网络模式从 5G NR 切换到 LTE，降低调制解调器射频功耗。亮屏时恢复 5G/NR 模式，<b>5GA / 5G CA 能力完全保留</b>。<br><br><b>防抖机制</b><br>- 息屏后等待 300 秒再切换，快速亮屏不会触发<br>- 恢复 NR 后冷却 10 分钟，避免频繁亮灭导致来回切换<br>- 已降 LTE 后每 300 秒低频复查，减少打断 deep suspend<br><br><b>原理</b><br>NR_SA Band 41 (100MHz) 射频功耗远高于 LTE 20MHz。息屏时降级为 LTE 可使调制解调器进入更深低功耗态，预期节省 30-50% 蜂窝待机功耗。<br><br><b>注意</b><br>- 切换期间可能有 1-2 秒网络短暂中断<br>- 开启热点时自动跳过降级，保障共享连接<br>- 息屏下载或后台大流量时可关闭此功能<br>- 功能状态即时生效，无需重启';
+function buildNrSwitchDetail() {
+  const contract = state.nrContract || {};
+  const delay = Number.isFinite(contract.screenOffDelayS) ? contract.screenOffDelayS : null;
+  const cooldown = Number.isFinite(contract.restoreCooldownS) ? contract.restoreCooldownS : null;
+  const recheck = Number.isFinite(contract.lteRecheckS) ? contract.lteRecheckS : null;
+  const lteMode = Number.isFinite(contract.lteMode) ? contract.lteMode : 'unknown';
+  const seconds = (value) => value === null ? '运行参数尚未读取' : `${value} 秒`;
+  return `<b>NR 息屏降级 (Screen-Off LTE Switch)</b><br><br>开启后，息屏超过 <b>${seconds(delay)}</b> 时只把 DSDS slot 0 从 NR-capable mode 切到 LTE mode ${lteMode}；亮屏时恢复已保存的完整 mode，slot 1 保持不变。<br><br><b>防抖机制</b><br>- 息屏延迟：${seconds(delay)}<br>- NR 恢复冷却：${seconds(cooldown)}<br>- LTE 状态复查：${seconds(recheck)}<br>- 当前 mode 无效或恢复值无法持久化时不执行降级<br><br><b>边界</b><br>该功能减少息屏期间维持 NR 射频链路的机会，实际收益取决于信号、驻网、后台流量和运营商网络，不能用固定百分比承诺。开启热点时自动跳过；切换时可能短暂中断蜂窝数据。`;
+}
 
 const UECAP_MODES = [
   { id: 'balanced', name: '国内频段', desc: '原厂 +25 组中国 NR 组合 · 推荐' },
@@ -248,13 +270,6 @@ const POLL_INTERVALS = {
   optim: { home: 45000, optim: 30000, relaxedHome: 120000, relaxedOptim: 90000 },
   slow: { home: 90000, optim: 75000, relaxedHome: 180000, relaxedOptim: 150000 },
 };
-
-const NTP_SERVERS = [
-  { id: 'ntp.aliyun.com', name: '阿里云', desc: '阿里云公共 NTP 服务' },
-  { id: 'ntp.myhuaweicloud.com', name: '华为云', desc: '华为云 NTP 服务' },
-  { id: 'ntp1.xiaomi.com', name: '小米', desc: '小米 NTP 服务' },
-  { id: 'time.android.com', name: 'Google 默认', desc: 'Pixel 出厂默认 NTP 服务器' },
-];
 
 const BG_RESTRICT_POLICY_ORDER = ['stop_after_leave', 'block_all', 'block_services', 'bucket'];
 const BG_RESTRICT_POLICIES = {
@@ -337,6 +352,7 @@ const state = {
   profileSurface: 'authoritative',
   profileSurfaceStale: false,
   profileSurfaceNote: '',
+  cpuContract: null,
   autoReason: '',
   currentOffset: 4,
   swapMode: 'unknown',
@@ -358,6 +374,7 @@ const state = {
   swapBusy: false,
   swapLoading: false,
   nrSwitch: 'off',
+  nrContract: null,
   nrBusy: false,
   sim2AutoManage: 'off',
   idleIsolateMode: 'off',
@@ -374,7 +391,8 @@ const state = {
   uecapVerifyMessage: '',
   uecapExpectedHash: '',
   uecapVerifyNonce: 0,
-  ntpServer: 'time.android.com',
+  ntpServer: '',
+  ntpServers: [],
   ntpBusy: false,
   deviceClockTimer: null,
   foregroundPaused: false,
@@ -548,6 +566,8 @@ function initRefs() {
 }
 
 function setStaticHtml(target, html) {
+  // Trusted project markup only. Escape every runtime/API value before it is
+  // interpolated, or build the node with textContent instead.
   const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
   target.replaceChildren(...Array.from(doc.body.childNodes).map((node) => document.importNode(node, true)));
 }
@@ -858,22 +878,25 @@ function closeDetailModal(){
 // 仅夹取 [min,max] 并取整, 不吸附 step —— 预设/手输需保留 27386 等非整步原厂值;
 // step 吸附交给滑块 (<input type=range step>) 的原生行为
 function clampSwapValue(key, raw) {
-  const limit = SWAP_LIMITS[key];
+  const input = refs.swapTuneInputs[key];
+  const contractLimit = state.swapData?.limits?.[key];
+  const limit = contractLimit || { min: Number(input.min), max: Number(input.max) };
   let value = Number(raw);
-  if (!Number.isFinite(value)) value = SWAP_OPTIMIZED[key];
+  if (!Number.isFinite(value)) value = Number(state.swapData?.optimized?.[key] ?? input.min);
   return Math.min(limit.max, Math.max(limit.min, Math.round(value)));
 }
 
 // 用滑块吸附后的实际 value 算填充百分比, 让填充轨道与 thumb 位置严格一致
 function updateSwapFill(key) {
   const el = refs.swapTuneInputs[key];
-  const limit = SWAP_LIMITS[key];
+  const limit = state.swapData?.limits?.[key] || { min: Number(el.min), max: Number(el.max) };
   const pct = ((Number(el.value) - limit.min) / (limit.max - limit.min)) * 100;
   el.style.setProperty('--fill', `${Math.max(0, Math.min(100, pct))}%`);
 }
 
 function setSwapTuneValues(values) {
-  Object.keys(SWAP_LIMITS).forEach((key) => {
+  if (!values) return;
+  SWAP_KEYS.forEach((key) => {
     const value = clampSwapValue(key, values && values[key]);
     refs.swapTuneInputs[key].value = String(value);
     refs.swapTuneNumbers[key].value = String(value);
@@ -884,7 +907,7 @@ function setSwapTuneValues(values) {
 
 function getSwapTuneValues() {
   const values = {};
-  Object.keys(SWAP_LIMITS).forEach((key) => {
+  SWAP_KEYS.forEach((key) => {
     values[key] = clampSwapValue(key, refs.swapTuneNumbers[key].value);
   });
   return values;
@@ -899,7 +922,12 @@ function syncSwapTuneField(key, raw) {
 }
 
 function openSwapTuneModal() {
-  const current = state.swapData || SWAP_OPTIMIZED;
+  const current = state.swapData;
+  if (!current?.limits || !current?.optimized || !current?.stock) {
+    showToast('VM 参数尚未读取，请稍后重试');
+    refreshSwap();
+    return;
+  }
   setSwapTuneValues({
     swappiness: current.swappiness,
     min_free_kbytes: current.min_free_kbytes,
@@ -1413,7 +1441,13 @@ function isThermalZoneValid(zone) {
 
 async function readThermalZones({ fresh = false, clear = false } = {}) {
   const path = clear ? API.thermalClear : fresh ? API.thermalFresh : API.thermal;
-  const zones = await apiFetch(path, { timeoutMs: fresh || clear ? 8000 : 3500 });
+  const options = { timeoutMs: fresh || clear ? 8000 : 3500 };
+  if (clear) {
+    options.method = 'POST';
+    options.headers = { 'Content-Type': 'application/json' };
+    options.body = JSON.stringify({ action: 'clear' });
+  }
+  const zones = await apiFetch(path, options);
   if (!Array.isArray(zones) || !zones.length) throw new Error('未读取到热区数据');
   const valid = zones.filter(isThermalZoneValid);
   const skin = valid.find((zone) => zone.zone === 'VIRTUAL-SKIN') || valid.find((zone) => zone.zone === 'SKIN');
@@ -1772,6 +1806,9 @@ function applyProfileState(data) {
   state.profileSurface = typeof data.profile_surface === 'string' ? data.profile_surface : 'authoritative';
   state.profileSurfaceStale = boolValue(data.profile_surface_stale);
   state.profileSurfaceNote = typeof data.profile_surface_note === 'string' ? data.profile_surface_note : '';
+  if (data.cpu_contract && typeof data.cpu_contract === 'object' && data.cpu_contract.profiles) {
+    state.cpuContract = data.cpu_contract;
+  }
   state.autoReason = typeof data.auto_reason === 'string' ? data.auto_reason : '';
   syncProfileUi();
   syncHeroDesc();
@@ -1840,7 +1877,7 @@ function renderProfileCards() {
 
 function renderThermalCards() {
   refs.thermalList.replaceChildren();
-  [-2, 0, 2, 4, 6].forEach((offset) => {
+  THERMAL_OFFSETS.forEach((offset) => {
     const preset = THERMAL_PRESETS[offset];
     const card = document.createElement('article');
     card.className = 'profile-card thermal-option';
@@ -1897,18 +1934,21 @@ function fmtBytes(bytes) {
 function renderSwapCard(data) {
   refs.swapRows.replaceChildren();
   const ratio = data.zram_orig_bytes > 0 ? ((data.zram_compr_bytes / data.zram_orig_bytes) * 100).toFixed(1) : '—';
-  const isEH = data.zram_algo === 'lz77eh';
+  const target = data.zram_target || {};
+  const optimized = data.optimized || {};
+  const stock = data.stock || {};
+  const isEH = data.zram_algo === target.algorithm;
   const sizeGB = (data.zram_disksize / 1073741824).toFixed(1);
   refs.swapDesc.textContent = isEH
     ? `Emerald Hill 硬件压缩 · 压缩率 ${ratio}% · 实占 ${fmtBytes(data.zram_mem_used_bytes)}`
-    : `算法 ${data.zram_algo} · 重启后自动切换为 lz77eh`;
+    : `算法 ${data.zram_algo} · 目标 ${target.algorithm || 'unknown'}`;
   const rows = [
     { label: 'ZRAM 算法', value: isEH ? '硬件加速' : data.zram_algo, cls: isEH ? 'good' : 'warn' },
-    { label: 'ZRAM 大小', value: `${sizeGB}GB`, cls: Math.abs(data.zram_disksize - 11945377792) < 536870912 ? 'good' : 'off' },
-    { label: 'swappiness', value: String(data.swappiness), cls: data.swappiness === SWAP_OPTIMIZED.swappiness ? 'good' : data.swappiness === SWAP_STOCK.swappiness ? 'warn' : 'off' },
-    { label: 'min_free_kbytes', value: String(data.min_free_kbytes), cls: data.min_free_kbytes === SWAP_OPTIMIZED.min_free_kbytes ? 'good' : data.min_free_kbytes === SWAP_STOCK.min_free_kbytes ? 'warn' : 'off' },
-    { label: 'watermark_scale_factor', value: String(data.watermark_scale_factor || 0), cls: data.watermark_scale_factor === SWAP_OPTIMIZED.watermark_scale_factor ? 'good' : data.watermark_scale_factor === SWAP_STOCK.watermark_scale_factor ? 'warn' : 'off' },
-    { label: 'vfs_cache_pressure', value: String(data.vfs_cache_pressure), cls: data.vfs_cache_pressure === SWAP_OPTIMIZED.vfs_cache_pressure ? 'good' : data.vfs_cache_pressure === SWAP_STOCK.vfs_cache_pressure ? 'warn' : 'off' }
+    { label: 'ZRAM 大小', value: `${sizeGB}GB`, cls: data.zram_disksize === target.size_bytes ? 'good' : 'off' },
+    { label: 'swappiness', value: String(data.swappiness), cls: data.swappiness === optimized.swappiness ? 'good' : data.swappiness === stock.swappiness ? 'warn' : 'off' },
+    { label: 'min_free_kbytes', value: String(data.min_free_kbytes), cls: data.min_free_kbytes === optimized.min_free_kbytes ? 'good' : data.min_free_kbytes === stock.min_free_kbytes ? 'warn' : 'off' },
+    { label: 'watermark_scale_factor', value: String(data.watermark_scale_factor || 0), cls: data.watermark_scale_factor === optimized.watermark_scale_factor ? 'good' : data.watermark_scale_factor === stock.watermark_scale_factor ? 'warn' : 'off' },
+    { label: 'vfs_cache_pressure', value: String(data.vfs_cache_pressure), cls: data.vfs_cache_pressure === optimized.vfs_cache_pressure ? 'good' : data.vfs_cache_pressure === stock.vfs_cache_pressure ? 'warn' : 'off' }
   ];
   rows.forEach((row) => refs.swapRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 }
@@ -2099,9 +2139,9 @@ async function loadSavedProfile() {
 async function loadThermalPreset() {
   try {
     const data = await apiFetch(API.thermalSet);
-    state.currentOffset = [0, 2, 4, 6].includes(data.offset) ? data.offset : 4;
+    state.currentOffset = THERMAL_OFFSETS.includes(data.offset) ? data.offset : THERMAL_DEFAULT_OFFSET;
   } catch (_) {
-    state.currentOffset = 4;
+    state.currentOffset = THERMAL_DEFAULT_OFFSET;
   }
   syncThermalUi();
   syncHeroDesc();
@@ -2222,6 +2262,16 @@ async function refreshSwap() {
     const data = await apiFetch(API.swap, { timeoutMs: 6000 });
     state.swapMode = data.mode || 'custom';
     state.swapData = data;
+    SWAP_KEYS.forEach((key) => {
+      const limit = data.limits?.[key];
+      if (!limit) return;
+      refs.swapTuneInputs[key].min = String(limit.min);
+      refs.swapTuneInputs[key].max = String(limit.max);
+      refs.swapTuneInputs[key].step = String(limit.step);
+      refs.swapTuneNumbers[key].min = String(limit.min);
+      refs.swapTuneNumbers[key].max = String(limit.max);
+      refs.swapTuneNumbers[key].step = String(limit.step);
+    });
     refs.swapToggleLabel.textContent = state.swapMode === 'optimized' ? '恢复原厂' : '应用模块默认';
     renderSwapCard(data);
     refs.rtZramUsage.textContent = `${data.zram_disksize > 0 ? ((data.zram_orig_bytes / data.zram_disksize) * 100).toFixed(0) : '0'}% (${fmtBytes(data.zram_orig_bytes)} / ${(data.zram_disksize / 1073741824).toFixed(1)}GB)`;
@@ -2255,9 +2305,11 @@ function renderNrSwitchRows(data) {
   ];
   rows.forEach((row) => refs.nrSwitchRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
   refs.nrSwitchToggleLabel.textContent = isOn ? '关闭' : '开启';
+  const delaySeconds = Number(data.screen_off_delay_s);
+  const delayText = Number.isFinite(delaySeconds) ? formatDuration(delaySeconds) : '设定延迟';
   refs.nrSwitchDesc.textContent = isOn
-    ? '已开启：息屏后切换至 LTE，亮屏自动恢复 5G。'
-    : '息屏 5 分钟后切换至 LTE，亮屏自动恢复。';
+    ? `已开启：息屏 ${delayText} 后切换至 LTE，亮屏自动恢复 5G。`
+    : `息屏 ${delayText} 后切换至 LTE，亮屏自动恢复。`;
 }
 
 function syncStandbyGuardButtons() {
@@ -2433,6 +2485,12 @@ async function refreshNrSwitch() {
   try {
     const data = await apiFetch(API.nrSwitch, { timeoutMs: 6000 });
     state.nrSwitch = data.nr_switch || 'off';
+    state.nrContract = {
+      screenOffDelayS: Number(data.screen_off_delay_s),
+      restoreCooldownS: Number(data.restore_cooldown_s),
+      lteRecheckS: Number(data.lte_recheck_s),
+      lteMode: Number(data.lte_mode)
+    };
     renderNrSwitchRows(data);
   } catch (err) {
     refs.nrSwitchRows.replaceChildren(); refs.nrSwitchRows.appendChild(errorBlock('获取失败：' + err.message));
@@ -2957,6 +3015,17 @@ async function setUecapMode(mode) {
       showToast(`${label}：已提交切换，正在校验配置`, 2600);
       appendLog(`UE 配置已提交: ${label}，等待校验结果`, 'ok');
       await verifyUecapSwitch(mode, expectedHash, data);
+    } else if (data.applied) {
+      state.uecapMode = data.requested_mode || mode;
+      state.uecapActiveMode = data.active_mode || mode;
+      state.uecapBusy = false;
+      state.uecapPendingMode = '';
+      state.uecapExpectedHash = '';
+      state.uecapVerifyState = 'failed';
+      state.uecapVerifyMessage = data.error || '配置已切换，但 modem 未完成重载';
+      renderUecapRows(data);
+      showToast(state.uecapVerifyMessage, 4200);
+      appendLog(`UE 配置已写入但重载失败: ${label}`, 'warn');
     } else {
       showToast(`切换失败：${data.error || '未知'}`);
       state.uecapBusy = false;
@@ -3042,18 +3111,33 @@ function syncDeviceClockForTab() {
 
 function renderNtpCard(data) {
   refs.ntpServerList.replaceChildren();
-  const current = data.ntp_server || 'time.android.com';
+  const servers = Array.isArray(data.servers)
+    ? data.servers.filter((server) => server && server.id && server.name)
+    : state.ntpServers;
+  if (!servers.length) {
+    refs.ntpServerList.appendChild(errorBlock('NTP 服务器配置为空'));
+    return;
+  }
+  state.ntpServers = servers;
+  const current = data.ntp_server || data.default_server || servers[0].id;
   state.ntpServer = current;
-  NTP_SERVERS.forEach((srv) => {
+  servers.forEach((srv) => {
     const card = document.createElement('div');
     card.className = `opt-item${srv.id === current ? ' ntp-selected' : ''}`;
     card.style.cursor = 'pointer';
-    setStaticHtml(card, `
-      <div class="opt-item-head">
-        <div class="opt-label">${srv.name}</div>
-        <span class="badge ${srv.id === current ? 'good' : 'off'}">${srv.id === current ? '当前' : '切换'}</span>
-      </div>
-      <div class="opt-meta">${srv.id} · ${srv.desc}</div>`);
+    const head = document.createElement('div');
+    head.className = 'opt-item-head';
+    const label = document.createElement('div');
+    label.className = 'opt-label';
+    label.textContent = srv.name;
+    const badge = document.createElement('span');
+    badge.className = `badge ${srv.id === current ? 'good' : 'off'}`;
+    badge.textContent = srv.id === current ? '当前' : '切换';
+    const meta = document.createElement('div');
+    meta.className = 'opt-meta';
+    meta.textContent = `${srv.id} · ${srv.desc}`;
+    head.append(label, badge);
+    card.append(head, meta);
     card.addEventListener('click', () => setNtpServer(srv.id));
     refs.ntpServerList.appendChild(card);
   });
@@ -3064,7 +3148,7 @@ function renderNtpCard(data) {
   refs.ntpInfoRows.appendChild(deviceTimeRow);
   refs.ntpInfoRows.appendChild(buildInfoRow('自动同步', data.auto_time === '1' ? '已开启' : '已关闭', data.auto_time === '1' ? 'good' : 'warn'));
   startDeviceClock();
-  const ntpLabel = NTP_SERVERS.find((s) => s.id === current)?.name || current;
+  const ntpLabel = servers.find((s) => s.id === current)?.name || current;
   refs.ntpDesc.textContent = `当前: ${ntpLabel} (${current})`;
 }
 
@@ -3088,9 +3172,14 @@ async function setNtpServer(server) {
       timeoutMs: 10000
     });
     if (data.ok) {
-      const label = NTP_SERVERS.find((s) => s.id === server)?.name || server;
-      showToast(`NTP 已切换为 ${label} 并同步`);
-      appendLog(`NTP: ${server}`, 'ok');
+      const label = state.ntpServers.find((s) => s.id === server)?.name || server;
+      if (data.refreshed === false) {
+        showToast(`NTP 已切换为 ${label}，即时同步未完成`);
+        appendLog(`NTP: ${server}（即时同步未完成）`, 'warn');
+      } else {
+        showToast(`NTP 已切换为 ${label} 并同步`);
+        appendLog(`NTP: ${server}`, 'ok');
+      }
       refreshNtp();
     } else {
       showToast(`切换失败：${data.error || '未知'}`);
@@ -4674,9 +4763,9 @@ function bindStaticEvents() {
   $('swap-tune-close-btn').addEventListener('click', closeSwapTuneModal);
   $('swap-tune-close-x').addEventListener('click', closeSwapTuneModal);
   $('swap-custom-apply-btn').addEventListener('click', applySwapCustom);
-  $('swap-preset-optimized').addEventListener('click', () => setSwapTuneValues(SWAP_OPTIMIZED));
-  $('swap-preset-stock').addEventListener('click', () => setSwapTuneValues(SWAP_STOCK));
-  Object.keys(SWAP_LIMITS).forEach((key) => {
+  $('swap-preset-optimized').addEventListener('click', () => setSwapTuneValues(state.swapData?.optimized));
+  $('swap-preset-stock').addEventListener('click', () => setSwapTuneValues(state.swapData?.stock));
+  SWAP_KEYS.forEach((key) => {
     refs.swapTuneInputs[key].addEventListener('input', (evt) => syncSwapTuneField(key, evt.target.value));
     refs.swapTuneNumbers[key].addEventListener('change', (evt) => syncSwapTuneField(key, evt.target.value));
     refs.swapTuneNumbers[key].addEventListener('keydown', (evt) => {
@@ -4695,7 +4784,7 @@ function bindStaticEvents() {
   $('bg-restrict-pkg-input').addEventListener('input', syncBgPackageHint);
   $('bg-restrict-policy-select').addEventListener('change', syncBgRestrictControls);
   $('bg-restrict-refresh-btn').addEventListener('click', forceRefreshBgRestrict);
-  $('nr-switch-detail-btn').addEventListener('click', () => openDetail('NR 息屏降级详情', NR_SWITCH_DETAIL));
+  $('nr-switch-detail-btn').addEventListener('click', () => openDetail('NR 息屏降级详情', buildNrSwitchDetail()));
   $('uecap-detail-btn').addEventListener('click', () => openDetail('UE 网络能力配置', UECAP_DETAIL));
   $('baseband-detail-btn').addEventListener('click', () => openDetail('基带模块说明', BASEBAND_DETAIL));
   $('baseband-refresh-btn').addEventListener('click', refreshBaseband);
@@ -4711,16 +4800,15 @@ function bindStaticEvents() {
   $('reboot-later-btn').addEventListener('click', closeRebootModal);
   $('reboot-cancel-btn').addEventListener('click', cancelThermalChange);
   $('open-cpu-detail-btn').addEventListener('click', () => {
-    const cpuSet = {
-      performance: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3',
-      balanced: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3',
-      battery: 'top-app: cpu0-6\nforeground: cpu0-6\nbackground: cpu0-3',
-      default: 'top-app: cpu0-7\nforeground: cpu0-6\nbackground: cpu0-3'
-    };
+    const contract = state.cpuContract;
+    const profileContract = contract?.profiles?.[state.currentProfile];
+    const cpuSet = profileContract && contract
+      ? `top-app: cpu${profileContract.top_app_cpus}\nforeground: cpu${contract.foreground_cpus}\nbackground: cpu${contract.background_cpus}`
+      : '运行参数尚未读取';
     let html = `<b>当前模式</b><br>${(PROFILES[state.currentProfile] || PROFILES.unknown).name}<br><br>`;
     html += state.schedOwner === 'external'
       ? `<b>cpuset 分配</b><br>${escapeHtml(getSchedulerStatusText())}`
-      : `<b>cpuset 分配</b><br>${(cpuSet[state.currentProfile] || '未设置').replace(/\n/g, '<br>')}`;
+      : `<b>cpuset 分配</b><br>${escapeHtml(cpuSet).replace(/\n/g, '<br>')}`;
     if (state.lastClusters && state.lastClusters.length) {
       state.lastClusters.forEach((cluster, index) => {
         const maxHz = cluster.max > 0 ? cluster.max : (CLUSTERS[index]?.maxHz || 0);
@@ -4728,8 +4816,8 @@ function bindStaticEvents() {
         html += `cur: ${cluster.cur ? `${(cluster.cur / 1000).toFixed(0)} MHz` : '—'} / max: ${maxHz ? `${(maxHz / 1000).toFixed(0)} MHz` : '—'}<br>`;
         const respText = typeof cluster.resp_ms_text === 'string' ? cluster.resp_ms_text : cluster.resp_ms;
         const downText = typeof cluster.down_us_text === 'string' ? cluster.down_us_text : cluster.down_us;
-        html += `resp_time: ${formatSchedValue(respText, 'ms')} · down_rate: ${formatSchedValue(downText, 'µs')}<br>`;
-        html += `governor: ${cluster.gov || '—'}`;
+        html += `resp_time: ${escapeHtml(formatSchedValue(respText, 'ms'))} · down_rate: ${escapeHtml(formatSchedValue(downText, 'µs'))}<br>`;
+        html += `governor: ${escapeHtml(cluster.gov || '—')}`;
       });
     } else html += '<br><br>暂无频率快照，请先刷新一次。';
     openDetail('CPU 调度参数详情', html);
@@ -4739,7 +4827,7 @@ function bindStaticEvents() {
   refs.themeModal.querySelector('.modal-bg').addEventListener('click', closeThemeSheet);
   refs.profileList.addEventListener('click', (evt) => {
     const detailBtn = evt.target.closest('[data-action="profile-detail"]');
-    if (detailBtn) openDetail(PROFILES[detailBtn.dataset.profile].name, PROFILES[detailBtn.dataset.profile].detail);
+    if (detailBtn) openDetail(PROFILES[detailBtn.dataset.profile].name, buildProfileDetail(detailBtn.dataset.profile));
   });
   refs.profilePolicyManualBtn.addEventListener('click', () => setProfilePolicy('manual'));
   refs.profilePolicyAutoBtn.addEventListener('click', () => setProfilePolicy('auto'));

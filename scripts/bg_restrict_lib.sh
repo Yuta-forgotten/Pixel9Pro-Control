@@ -1,7 +1,6 @@
 #!/system/bin/sh
-##############################################################
-# Background restriction helpers shared by service.sh and CGI
-##############################################################
+# Background-restriction transaction helpers shared by service.sh and CGI.
+# A baseline is retained until every restore command succeeds and is verified.
 
 BG_ENABLED_FILE="${BG_ENABLED_FILE:-$MODDIR/.bg_restrict_enabled}"
 BG_LIST_FILE="${BG_LIST_FILE:-$MODDIR/.bg_restrict_list}"
@@ -20,14 +19,15 @@ bg_read_standby_bucket() {
 bg_read_appop_mode() {
     _pkg="$1"
     _op="$2"
-    _out=$(cmd appops get "$_pkg" "$_op" 2>/dev/null | tr -d '\r' | tr '[:upper:]' '[:lower:]')
+    _out=$(cmd appops get "$_pkg" "$_op" 2>/dev/null) || return 1
+    _out=$(printf '%s' "$_out" | tr -d '\r' | tr '[:upper:]' '[:lower:]')
     case "$_out" in
         *ignore*) printf 'ignore' ;;
         *deny*) printf 'deny' ;;
         *foreground*) printf 'foreground' ;;
         *allow*) printf 'allow' ;;
         *default*|*"no operations"*) printf 'default' ;;
-        *) printf 'default' ;;
+        *) return 1 ;;
     esac
 }
 
@@ -95,7 +95,21 @@ bg_set_appop_mode() {
         allow|ignore|deny|default|foreground)
             cmd appops set "$_pkg" "$_op" "$_mode" 2>/dev/null
             ;;
+        *) return 1 ;;
     esac
+}
+
+bg_bucket_matches() {
+    _bg_actual=$(bg_read_standby_bucket "$1")
+    case "$2:$_bg_actual" in
+        exempted:5|exempted:exempted|active:10|active:active|working_set:20|working_set:working_set|frequent:30|frequent:frequent|rare:40|rare:rare|restricted:45|restricted:restricted|never:50|never:never) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+bg_appop_matches() {
+    _bg_actual=$(bg_read_appop_mode "$1" "$2") || return 1
+    [ "$_bg_actual" = "$3" ]
 }
 
 bg_baseline_line() {
@@ -106,8 +120,15 @@ bg_baseline_line() {
 bg_delete_baseline() {
     _pkg="$1"
     [ -s "$BG_BASELINE_FILE" ] || return 0
-    awk -F'|' -v p="$_pkg" '$1 != p' "$BG_BASELINE_FILE" > "${BG_BASELINE_FILE}.tmp" 2>/dev/null \
-        && mv "${BG_BASELINE_FILE}.tmp" "$BG_BASELINE_FILE" 2>/dev/null
+    [ ! -d "$BG_BASELINE_FILE" ] || return 1
+    _bg_tmp="${BG_BASELINE_FILE}.tmp.$$"
+    if awk -F'|' -v p="$_pkg" '$1 != p' "$BG_BASELINE_FILE" > "$_bg_tmp" 2>/dev/null \
+        && mv "$_bg_tmp" "$BG_BASELINE_FILE" 2>/dev/null \
+        && [ -f "$BG_BASELINE_FILE" ]; then
+        return 0
+    fi
+    rm -f "$_bg_tmp" 2>/dev/null
+    return 1
 }
 
 bg_record_baseline() {
@@ -116,12 +137,12 @@ bg_record_baseline() {
     bg_baseline_line "$_pkg" >/dev/null 2>&1 && return 0
 
     _bucket=$(bg_read_standby_bucket "$_pkg")
-    _op_bg=$(bg_read_appop_mode "$_pkg" RUN_IN_BACKGROUND)
-    _op_any=$(bg_read_appop_mode "$_pkg" RUN_ANY_IN_BACKGROUND)
+    _op_bg=$(bg_read_appop_mode "$_pkg" RUN_IN_BACKGROUND) || return 1
+    _op_any=$(bg_read_appop_mode "$_pkg" RUN_ANY_IN_BACKGROUND) || return 1
 
-    # If this package is already at the module target and no baseline exists,
-    # it is most likely a pre-v4.4.6 restriction. Do not snapshot the restricted
-    # state as its own restore target.
+    # A package already at the module target without a baseline predates
+    # baseline tracking. Do not record the restricted state as its own restore
+    # target.
     case "$_bucket" in
         45|restricted)
             if [ "$_op_bg" = "ignore" ] && [ "$_op_any" = "ignore" ]; then
@@ -130,85 +151,117 @@ bg_record_baseline() {
             ;;
     esac
 
-    [ -n "$_bucket" ] || _bucket="unknown"
+    _bucket_arg=$(bg_bucket_to_set_arg "$_bucket")
+    [ -n "$_bucket_arg" ] || return 1
     mkdir -p "${BG_BASELINE_FILE%/*}" 2>/dev/null
-    printf '%s|%s|%s|%s\n' "$_pkg" "$_bucket" "$_op_bg" "$_op_any" >> "$BG_BASELINE_FILE" 2>/dev/null
+    [ ! -d "$BG_BASELINE_FILE" ] || return 1
+    _bg_tmp="${BG_BASELINE_FILE}.tmp.$$"
+    if {
+        [ ! -s "$BG_BASELINE_FILE" ] || cat "$BG_BASELINE_FILE"
+        printf '%s|%s|%s|%s\n' "$_pkg" "$_bucket" "$_op_bg" "$_op_any"
+    } > "$_bg_tmp" 2>/dev/null \
+        && mv "$_bg_tmp" "$BG_BASELINE_FILE" 2>/dev/null \
+        && [ -f "$BG_BASELINE_FILE" ]; then
+        return 0
+    fi
+    rm -f "$_bg_tmp" 2>/dev/null
+    return 1
+}
+
+bg_parse_baseline() {
+    _bg_baseline_raw="$1"
+    _bg_base_pkg=""
+    _bg_base_bucket=""
+    _bg_base_op_bg=""
+    _bg_base_op_any=""
+    IFS='|' read -r _bg_base_pkg _bg_base_bucket _bg_base_op_bg _bg_base_op_any <<EOF
+$_bg_baseline_raw
+EOF
 }
 
 bg_restore_baseline() {
     _pkg="$1"
     _line=$(bg_baseline_line "$_pkg")
     if [ -n "$_line" ]; then
-        _old_ifs="$IFS"
-        IFS='|'
-        set -- $_line
-        IFS="$_old_ifs"
-        _bucket_arg=$(bg_bucket_to_set_arg "$2")
-        [ -n "$_bucket_arg" ] && am set-standby-bucket "$_pkg" "$_bucket_arg" 2>/dev/null
-        bg_set_appop_mode "$_pkg" RUN_IN_BACKGROUND "$3"
-        bg_set_appop_mode "$_pkg" RUN_ANY_IN_BACKGROUND "$4"
-        bg_delete_baseline "$_pkg"
-        return 0
+        bg_parse_baseline "$_line"
+        _bucket_arg=$(bg_bucket_to_set_arg "$_bg_base_bucket")
+        [ -n "$_bucket_arg" ] || return 1
+        am set-standby-bucket "$_pkg" "$_bucket_arg" 2>/dev/null \
+            && bg_set_appop_mode "$_pkg" RUN_IN_BACKGROUND "$_bg_base_op_bg" \
+            && bg_set_appop_mode "$_pkg" RUN_ANY_IN_BACKGROUND "$_bg_base_op_any" \
+            && bg_bucket_matches "$_pkg" "$_bucket_arg" \
+            && bg_appop_matches "$_pkg" RUN_IN_BACKGROUND "$_bg_base_op_bg" \
+            && bg_appop_matches "$_pkg" RUN_ANY_IN_BACKGROUND "$_bg_base_op_any" \
+            && bg_delete_baseline "$_pkg"
+        return $?
     fi
 
-    # Legacy fallback for packages restricted before baseline tracking existed.
-    am set-standby-bucket "$_pkg" active 2>/dev/null
-    cmd appops set "$_pkg" RUN_IN_BACKGROUND allow 2>/dev/null
-    cmd appops set "$_pkg" RUN_ANY_IN_BACKGROUND allow 2>/dev/null
+    # Compatibility fallback when no pre-restriction baseline was captured.
+    am set-standby-bucket "$_pkg" active 2>/dev/null \
+        && cmd appops set "$_pkg" RUN_IN_BACKGROUND allow 2>/dev/null \
+        && cmd appops set "$_pkg" RUN_ANY_IN_BACKGROUND allow 2>/dev/null \
+        && bg_bucket_matches "$_pkg" active \
+        && bg_appop_matches "$_pkg" RUN_IN_BACKGROUND allow \
+        && bg_appop_matches "$_pkg" RUN_ANY_IN_BACKGROUND allow
 }
 
 bg_restore_appops_from_baseline() {
     _pkg="$1"
     _line=$(bg_baseline_line "$_pkg")
     if [ -n "$_line" ]; then
-        _old_ifs="$IFS"
-        IFS='|'
-        set -- $_line
-        IFS="$_old_ifs"
-        bg_set_appop_mode "$_pkg" RUN_IN_BACKGROUND "$3"
-        bg_set_appop_mode "$_pkg" RUN_ANY_IN_BACKGROUND "$4"
-        return 0
+        bg_parse_baseline "$_line"
+        bg_set_appop_mode "$_pkg" RUN_IN_BACKGROUND "$_bg_base_op_bg" \
+            && bg_set_appop_mode "$_pkg" RUN_ANY_IN_BACKGROUND "$_bg_base_op_any" \
+            && bg_appop_matches "$_pkg" RUN_IN_BACKGROUND "$_bg_base_op_bg" \
+            && bg_appop_matches "$_pkg" RUN_ANY_IN_BACKGROUND "$_bg_base_op_any"
+        return $?
     fi
-    cmd appops set "$_pkg" RUN_IN_BACKGROUND allow 2>/dev/null
-    cmd appops set "$_pkg" RUN_ANY_IN_BACKGROUND allow 2>/dev/null
+    cmd appops set "$_pkg" RUN_IN_BACKGROUND allow 2>/dev/null \
+        && cmd appops set "$_pkg" RUN_ANY_IN_BACKGROUND allow 2>/dev/null \
+        && bg_appop_matches "$_pkg" RUN_IN_BACKGROUND allow \
+        && bg_appop_matches "$_pkg" RUN_ANY_IN_BACKGROUND allow
 }
 
 bg_restore_run_any_from_baseline() {
     _pkg="$1"
     _line=$(bg_baseline_line "$_pkg")
     if [ -n "$_line" ]; then
-        _old_ifs="$IFS"
-        IFS='|'
-        set -- $_line
-        IFS="$_old_ifs"
-        bg_set_appop_mode "$_pkg" RUN_ANY_IN_BACKGROUND "$4"
-        return 0
+        bg_parse_baseline "$_line"
+        bg_set_appop_mode "$_pkg" RUN_ANY_IN_BACKGROUND "$_bg_base_op_any" \
+            && bg_appop_matches "$_pkg" RUN_ANY_IN_BACKGROUND "$_bg_base_op_any"
+        return $?
     fi
-    cmd appops set "$_pkg" RUN_ANY_IN_BACKGROUND allow 2>/dev/null
+    cmd appops set "$_pkg" RUN_ANY_IN_BACKGROUND allow 2>/dev/null \
+        && bg_appop_matches "$_pkg" RUN_ANY_IN_BACKGROUND allow
 }
 
 bg_apply_restrict() {
     _pkg="$1"
-    bg_record_baseline "$_pkg"
-    am set-standby-bucket "$_pkg" restricted 2>/dev/null
-    cmd appops set "$_pkg" RUN_IN_BACKGROUND ignore 2>/dev/null
-    cmd appops set "$_pkg" RUN_ANY_IN_BACKGROUND ignore 2>/dev/null
+    am set-standby-bucket "$_pkg" restricted 2>/dev/null \
+        && cmd appops set "$_pkg" RUN_IN_BACKGROUND ignore 2>/dev/null \
+        && cmd appops set "$_pkg" RUN_ANY_IN_BACKGROUND ignore 2>/dev/null \
+        && bg_bucket_matches "$_pkg" restricted \
+        && bg_appop_matches "$_pkg" RUN_IN_BACKGROUND ignore \
+        && bg_appop_matches "$_pkg" RUN_ANY_IN_BACKGROUND ignore
 }
 
 bg_apply_policy() {
     _pkg="$1"
     _policy=$(bg_normalize_policy "$2")
     case "$_pkg" in ''|*[!a-zA-Z0-9._]*) return 1 ;; esac
-    bg_record_baseline "$_pkg"
+    bg_record_baseline "$_pkg" || return 1
     case "$_policy" in
         bucket)
-            am set-standby-bucket "$_pkg" rare 2>/dev/null
-            bg_restore_appops_from_baseline "$_pkg"
+            am set-standby-bucket "$_pkg" rare 2>/dev/null \
+                && bg_restore_appops_from_baseline "$_pkg" \
+                && bg_bucket_matches "$_pkg" rare
             ;;
         block_services)
-            am set-standby-bucket "$_pkg" restricted 2>/dev/null
-            cmd appops set "$_pkg" RUN_IN_BACKGROUND ignore 2>/dev/null
-            bg_restore_run_any_from_baseline "$_pkg"
+            am set-standby-bucket "$_pkg" restricted 2>/dev/null \
+                && cmd appops set "$_pkg" RUN_IN_BACKGROUND ignore 2>/dev/null \
+                && bg_restore_run_any_from_baseline "$_pkg" \
+                && bg_bucket_matches "$_pkg" restricted \
+                && bg_appop_matches "$_pkg" RUN_IN_BACKGROUND ignore
             ;;
         block_all|stop_after_leave|*)
             bg_apply_restrict "$_pkg"
@@ -229,18 +282,22 @@ bg_remove_restrict() {
 }
 
 bg_apply_all() {
-    [ -s "$BG_LIST_FILE" ] || return
+    [ -s "$BG_LIST_FILE" ] || return 0
+    _bg_failed=0
     while IFS= read -r _line || [ -n "$_line" ]; do
-        bg_apply_entry "$_line"
+        bg_apply_entry "$_line" || _bg_failed=1
     done < "$BG_LIST_FILE"
+    [ "$_bg_failed" -eq 0 ]
 }
 
 bg_remove_all() {
-    [ -s "$BG_LIST_FILE" ] || return
+    [ -s "$BG_LIST_FILE" ] || return 0
+    _bg_failed=0
     while IFS= read -r _line || [ -n "$_line" ]; do
         bg_parse_entry "$_line"
         [ -z "$_bg_pkg" ] && continue
         case "$_bg_pkg" in \#*) continue ;; esac
-        bg_remove_restrict "$_bg_pkg"
+        bg_remove_restrict "$_bg_pkg" || _bg_failed=1
     done < "$BG_LIST_FILE"
+    [ "$_bg_failed" -eq 0 ]
 }

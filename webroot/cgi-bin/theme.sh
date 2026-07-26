@@ -1,11 +1,6 @@
 #!/system/bin/sh
-##############################################################
-# CGI: /cgi-bin/theme.sh
-# GET  → 返回服务端保存的主题 (mode/palette/custom) JSON
-# POST → 保存主题到 $MODDIR/.webui_theme (token 鉴权, 即时落盘)
-# 说明: 前端 localStorage 为主、此处为兜底备份; WebView 清数据后回读,
-#       并随模块更新由 customize.sh 迁移 .webui_theme, 更新不丢主题。
-##############################################################
+# GET returns the persisted WebUI theme fallback. POST validates and atomically
+# updates it; browser localStorage remains the primary copy.
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
 
 require_loopback
@@ -29,21 +24,32 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
     require_token
     acquire_lock "theme"
-    len="${CONTENT_LENGTH:-0}"
-    [ "$len" -gt 256 ] 2>/dev/null && len=256
-    body=$(dd bs=1 count="$len" 2>/dev/null)
+    read_json_body 256
+    body="$JSON_BODY"
     mode=$(printf '%s' "$body" | sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([a-zA-Z]*\)".*/\1/p')
     palette=$(printf '%s' "$body" | sed -n 's/.*"palette"[[:space:]]*:[[:space:]]*"\([a-zA-Z0-9_]*\)".*/\1/p')
     # custom: 仅接受 #RRGGBB, 捕获 6 位十六进制, 落盘时补回 #
     custom=$(printf '%s' "$body" | sed -n 's/.*"custom"[[:space:]]*:[[:space:]]*"#\([0-9a-fA-F]\{6\}\)".*/\1/p')
-    # 服务端兜底校验 (不信任前端)
-    case "$mode" in system|light|dark) ;; *) mode="system" ;; esac
-    case "$palette" in ''|*[!a-zA-Z0-9_]*) palette="default" ;; esac
-    {
+    case "$mode" in system|light|dark) ;; *) json_error '400 Bad Request' 'invalid theme mode' ;; esac
+    case "$palette" in
+        ''|*[!a-zA-Z0-9_]*) json_error '400 Bad Request' 'invalid theme palette' ;;
+        *) ;;
+    esac
+    [ ! -d "$THEME_FILE" ] \
+        || json_error '500 Internal Server Error' 'theme state path is not a file'
+    _theme_tmp="${THEME_FILE}.tmp.$$"
+    if {
         printf 'mode=%s\n' "$mode"
         printf 'palette=%s\n' "$palette"
-        [ -n "$custom" ] && printf 'custom=#%s\n' "$custom"
-    } > "$THEME_FILE"
+        [ -z "$custom" ] || printf 'custom=#%s\n' "$custom"
+    } > "$_theme_tmp" 2>/dev/null \
+        && mv "$_theme_tmp" "$THEME_FILE" 2>/dev/null \
+        && [ -f "$THEME_FILE" ]; then
+        :
+    else
+        rm -f "$_theme_tmp" 2>/dev/null
+        json_error '500 Internal Server Error' 'failed to persist theme'
+    fi
     emit_theme
 elif [ "$REQUEST_METHOD" = "GET" ]; then
     emit_theme

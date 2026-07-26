@@ -1,11 +1,7 @@
 #!/system/bin/sh
-##############################################################
-# customize.sh — 安装时配置 (APatch / KernelSU / Magisk)
-# 版本: 发行总版本见 module.prop, 组件版本见 versions.prop (不在此硬编码)
-# 检测机型 → 迁移旧设置 → 音量键选择功能 → 温控配置
-##############################################################
+# APatch/KernelSU/Magisk installer: detect the device/root implementation,
+# migrate user state, collect first-install choices, and generate thermal JSON.
 
-STOCK_PRO="$MODPATH/system/vendor/etc/thermal_stock.json"
 STOCK_XL="$MODPATH/system/vendor/etc/thermal_stock_xl.json"
 STOCK_ACTIVE="$MODPATH/system/vendor/etc/thermal_stock.json"
 OUT_JSON="$MODPATH/system/vendor/etc/thermal_info_config.json"
@@ -20,15 +16,51 @@ DEVICE_FILE="$MODPATH/.device_variant"
 
 OLDDIR="/data/adb/modules/pixel9pro_control"
 
-[ -f "$MODPATH/scripts/scheduler_detect_lib.sh" ] && . "$MODPATH/scripts/scheduler_detect_lib.sh"
-[ -f "$MODPATH/scripts/scheduler_owner_lib.sh" ] && . "$MODPATH/scripts/scheduler_owner_lib.sh"
+if [ ! -r "$MODPATH/scripts/scheduler_detect_lib.sh" ] \
+    || ! . "$MODPATH/scripts/scheduler_detect_lib.sh"; then
+    ui_print "  ✗ 缺少外部调度检测配置, 已中止安装"
+    exit 1
+fi
+if [ ! -r "$MODPATH/scripts/scheduler_owner_lib.sh" ] \
+    || ! . "$MODPATH/scripts/scheduler_owner_lib.sh"; then
+    ui_print "  ✗ 缺少调度所有权配置, 已中止安装"
+    exit 1
+fi
+if [ ! -r "$MODPATH/scripts/runtime_defaults_lib.sh" ]; then
+    ui_print "  ✗ 缺少运行默认值配置, 已中止安装"
+    exit 1
+fi
+. "$MODPATH/scripts/runtime_defaults_lib.sh" || exit 1
+
+installer_write() {
+    if runtime_write_value "$1" "$2"; then
+        return 0
+    fi
+    ui_print "  ✗ 无法写入安装状态: ${1##*/}"
+    exit 1
+}
+if [ ! -r "$MODPATH/scripts/thermal_profile.sh" ]; then
+    ui_print "  ✗ 缺少温控配置库, 已中止安装"
+    exit 1
+fi
+. "$MODPATH/scripts/thermal_profile.sh" || exit 1
+NTP_CONFIG_FILE="$MODPATH/config/ntp_servers.tsv"
+if [ ! -r "$MODPATH/scripts/ntp_config_lib.sh" ] || [ ! -r "$NTP_CONFIG_FILE" ]; then
+    ui_print "  ✗ 缺少 NTP 配置, 已中止安装"
+    exit 1
+fi
+. "$MODPATH/scripts/ntp_config_lib.sh" || exit 1
+if ! ntp_config_validate; then
+    ui_print "  ✗ NTP 配置格式无效, 已中止安装"
+    exit 1
+fi
 
 detect_root_impl() {
-    if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
+    if [ "${APATCH:-}" = "true" ] || [ -n "${APATCH_VER_CODE:-}" ] || [ -d /data/adb/ap ]; then
         echo "APatch"
-    elif [ "${KSU:-}" = "true" ] || [ -d /data/adb/ksu ]; then
+    elif [ "${KSU:-}" = "true" ] || [ -n "${KSU_VER_CODE:-}" ] || [ -d /data/adb/ksu ]; then
         echo "KernelSU"
-    elif [ -d /data/adb/magisk ]; then
+    elif [ -n "${MAGISK_VER_CODE:-}" ] || [ -n "${MAGISK_VER:-}" ] || [ -d /data/adb/magisk ]; then
         echo "Magisk"
     else
         echo "Unknown"
@@ -37,16 +69,23 @@ detect_root_impl() {
 
 # ── Volume Key Functions ──
 TMPDIR=${TMPDIR:-/dev/tmp}
-mkdir -p "$TMPDIR" 2>/dev/null
+mkdir -p "$TMPDIR" 2>/dev/null || {
+    ui_print "  ✗ 无法创建安装临时目录"
+    exit 1
+}
+EVENT_FILE="$TMPDIR/pixel9pro_control_events.$$"
+trap 'rm -f "$EVENT_FILE" 2>/dev/null' EXIT
+trap 'rm -f "$EVENT_FILE" 2>/dev/null; exit 130' INT
+trap 'rm -f "$EVENT_FILE" 2>/dev/null; exit 143' TERM
 
 _flush_keys() { timeout 1 getevent -qlc 1 >/dev/null 2>&1; }
 
 chooseport() {
     _flush_keys
     while true; do
-        /system/bin/getevent -lc 1 2>&1 | /system/bin/grep VOLUME | /system/bin/grep " DOWN" > "$TMPDIR/events"
-        if cat "$TMPDIR/events" 2>/dev/null | /system/bin/grep -q VOLUME; then
-            cat "$TMPDIR/events" 2>/dev/null | /system/bin/grep -q VOLUMEUP && return 0 || return 1
+        /system/bin/getevent -lc 1 2>&1 | /system/bin/grep VOLUME | /system/bin/grep " DOWN" > "$EVENT_FILE"
+        if /system/bin/grep -q VOLUME "$EVENT_FILE" 2>/dev/null; then
+            /system/bin/grep -q VOLUMEUP "$EVENT_FILE" 2>/dev/null && return 0 || return 1
         fi
     done
 }
@@ -56,15 +95,15 @@ choose_cpu_scheduling() {
     detect_uperf_module 2>/dev/null || true
     detect_fas_rs_scheduler 2>/dev/null || true
     if [ "$FAS_RS_MODULE_ENABLED" = "yes" ]; then
-        echo 'fas_rs' > "$GAME_HANDOFF_POLICY_FILE"
+        installer_write "$GAME_HANDOFF_POLICY_FILE" fas_rs
     else
-        echo 'off' > "$GAME_HANDOFF_POLICY_FILE"
+        installer_write "$GAME_HANDOFF_POLICY_FILE" off
     fi
     if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
         # UGT is a valid daily external baseline. fas-rs-only installations
         # stay on Pixel daily scheduling and use the game handoff policy.
-        echo "external" > "$SCHED_OWNER_FILE"
-        echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
+        installer_write "$SCHED_OWNER_FILE" external
+        installer_write "$MODPATH/.profile_auto_reason" external_scheduler
         ui_print "  $_sch_step CPU 调度: 检测到 ${UPERF_MODULE_NAME:-UGT}, 日常调度默认交其接管"
         [ "$FAS_RS_MODULE_ENABLED" = "yes" ] && ui_print "    fas-rs: 命中游戏时临时接管，退出后恢复 UGT"
         ui_print ""
@@ -87,7 +126,12 @@ choose_cpu_scheduling() {
             if [ "$_i" -eq "$_sch_idx" ]; then _sch_cur=$_v; break; fi
             _i=$((_i + 1))
         done
-        eval "_sch_label=\"\$_SCH_LABEL_${_sch_cur}\""
+        case "$_sch_cur" in
+            balanced) _sch_label="$_SCH_LABEL_balanced" ;;
+            battery) _sch_label="$_SCH_LABEL_battery" ;;
+            default) _sch_label="$_SCH_LABEL_default" ;;
+            auto) _sch_label="$_SCH_LABEL_auto" ;;
+        esac
         ui_print "    > $_sch_label"
         if chooseport; then
             _sch_idx=$(( (_sch_idx + 1) % _sch_total ))
@@ -97,18 +141,18 @@ choose_cpu_scheduling() {
     done
     case "$_sch_cur" in
         auto)
-            echo "pixel" > "$SCHED_OWNER_FILE"
-            echo "balanced" > "$PROFILE_FILE"
-            echo "balanced" > "$PROFILE_MANUAL_FILE"
-            echo "auto" > "$PROFILE_POLICY_FILE"
-            echo "auto_install" > "$MODPATH/.profile_auto_reason"
+            installer_write "$SCHED_OWNER_FILE" pixel
+            installer_write "$PROFILE_FILE" balanced
+            installer_write "$PROFILE_MANUAL_FILE" balanced
+            installer_write "$PROFILE_POLICY_FILE" auto
+            installer_write "$MODPATH/.profile_auto_reason" auto_install
             ;;
         *)
-            echo "pixel" > "$SCHED_OWNER_FILE"
-            echo "$_sch_cur" > "$PROFILE_FILE"
-            echo "$_sch_cur" > "$PROFILE_MANUAL_FILE"
-            echo "manual" > "$PROFILE_POLICY_FILE"
-            echo "manual_install" > "$MODPATH/.profile_auto_reason"
+            installer_write "$SCHED_OWNER_FILE" pixel
+            installer_write "$PROFILE_FILE" "$_sch_cur"
+            installer_write "$PROFILE_MANUAL_FILE" "$_sch_cur"
+            installer_write "$PROFILE_POLICY_FILE" manual
+            installer_write "$MODPATH/.profile_auto_reason" manual_install
             ;;
     esac
     ui_print "    ✓ $_sch_label"
@@ -145,7 +189,9 @@ report_optional_module_inventory() {
     ui_print ""
 }
 
-device=$(getprop ro.product.device 2>/dev/null)
+device=$(getprop ro.product.device 2>/dev/null | tr -d ' \n\r\t')
+[ -n "$device" ] || device=$(getprop ro.build.product 2>/dev/null | tr -d ' \n\r\t')
+[ -n "$device" ] || device=$(getprop ro.product.vendor.device 2>/dev/null | tr -d ' \n\r\t')
 ROOT_IMPL=$(detect_root_impl)
 # 安装横幅版本动态取自 module.prop (发行总版本 SoT), 不硬编码; 组件版本见 versions.prop
 MOD_VER=$(grep '^version=' "$MODPATH/module.prop" 2>/dev/null | cut -d= -f2 | tr -d '\r\n "\\')
@@ -156,96 +202,122 @@ ui_print "  ${MOD_VER:-(version 见 module.prop)}"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print "  Root: $ROOT_IMPL"
 
+if [ "$ROOT_IMPL" = "Unknown" ]; then
+    ui_print "  ✗ 无法识别 APatch / KernelSU / Magisk 安装环境"
+    exit 1
+fi
+
 if [ "$ROOT_IMPL" = "KernelSU" ]; then
     ui_print "  ⚠ KSU 下需先安装 metamodule"
     ui_print "    (meta-overlayfs / Hybrid Mount)"
     ui_print ""
 fi
 
-# ── Magisk 自适应: 剔除基带 UECap 覆盖 ─────────────────────────
-# 原因: Magisk Magic Mount (bind mount + tmpfs overlay) 在 post-fs-data
-# 阶段才发生, 而 modem cbd 早期 mmap 加载 /vendor/firmware/uecapconfig/
-# *.binarypb. 两者存在 race, 强行覆盖会导致 cbd 重启循环, 卡 G logo
-# 滚动条 (用户实测反馈). APatch / KSU+metamodule 走 OverlayFS, 接管时机
-# 早于 cbd, 无此问题.
-# 适配方案: Magisk 下安装时就地删除 binarypb + 改 CGI 为 stub + 跳过菜单.
-IS_MAGISK_NO_BASEBAND=0
-if [ "$ROOT_IMPL" = "Magisk" ]; then
-    IS_MAGISK_NO_BASEBAND=1
-    ui_print "  ⚠ Magisk 下自动剔除基带 UECap 覆盖"
-    ui_print "    (规避 Magic Mount × modem cbd 启动 race)"
-    rm -rf "$MODPATH/system/vendor/firmware/uecapconfig" 2>/dev/null
-    rmdir "$MODPATH/system/vendor/firmware" 2>/dev/null
-    rm -f "$MODPATH/uecap_profile.sh" 2>/dev/null
-    ui_print ""
-fi
-
+UECAP_DISABLED=0
+UECAP_DISABLED_REASON=""
 case "$device" in
     komodo)
         ui_print "  机型: Pixel 9 Pro XL (komodo)"
         if [ -f "$STOCK_XL" ]; then
-            cp "$STOCK_XL" "$STOCK_ACTIVE"
-            ui_print "  ✓ Pro XL 温控配置"
+            if cp "$STOCK_XL" "$STOCK_ACTIVE" 2>/dev/null; then
+                ui_print "  ✓ Pro XL 温控配置"
+            else
+                ui_print "  ✗ XL 配置复制失败, 已中止安装"
+                exit 1
+            fi
         else
-            ui_print "  ✗ XL 配置缺失, 用 Pro 配置"
+            ui_print "  ✗ XL 温控 stock 配置缺失, 已中止安装"
+            exit 1
         fi
-        echo "komodo" > "$DEVICE_FILE"
+        UECAP_DISABLED=1
+        UECAP_DISABLED_REASON="uecap_unsupported_device"
+        installer_write "$DEVICE_FILE" komodo
         ;;
     caiman)
         ui_print "  机型: Pixel 9 Pro (caiman)"
         ui_print "  ✓ Pro 默认温控配置"
-        echo "caiman" > "$DEVICE_FILE"
+        installer_write "$DEVICE_FILE" caiman
         ;;
     *)
-        ui_print "  机型: $device (未知)"
-        ui_print "  ⚠ 非 Pro/Pro XL, 使用 Pro 配置"
-        echo "$device" > "$DEVICE_FILE"
+        ui_print "  ✗ 不支持的设备: ${device:-unknown}"
+        ui_print "    仅允许 Pixel 9 Pro (caiman) / Pro XL (komodo)"
+        exit 1
         ;;
 esac
 ui_print ""
+
+# Magisk Magic Mount 与 modem cbd 的早期 mmap 存在已验证的启动 race。
+# komodo 的 UECap payload 也不能复用 caiman 固件，因此两种情况都在安装
+# staging 目录内移除 payload 和运行脚本，避免生成不可启动的模块布局。
+if [ "$ROOT_IMPL" = "Magisk" ]; then
+    UECAP_DISABLED=1
+    [ -n "$UECAP_DISABLED_REASON" ] || UECAP_DISABLED_REASON="magisk_no_baseband"
+fi
+if [ "$UECAP_DISABLED" -eq 1 ]; then
+    case "$UECAP_DISABLED_REASON" in
+        uecap_unsupported_device)
+            ui_print "  ⚠ Pro XL 不加载 Pixel 9 Pro 专用 UECap payload"
+            ;;
+        *)
+            ui_print "  ⚠ Magisk 下自动剔除基带 UECap 覆盖"
+            ui_print "    (规避 Magic Mount × modem cbd 启动 race)"
+            ;;
+    esac
+    rm -f "$MODPATH/system/vendor/firmware/uecapconfig/"* 2>/dev/null \
+        || { ui_print "  ✗ 无法移除不兼容的 UECap payload"; exit 1; }
+    rmdir "$MODPATH/system/vendor/firmware/uecapconfig" 2>/dev/null || true
+    rmdir "$MODPATH/system/vendor/firmware" 2>/dev/null || true
+    rm -f "$MODPATH/uecap_profile.sh" 2>/dev/null \
+        || { ui_print "  ✗ 无法移除 UECap 运行脚本"; exit 1; }
+    [ ! -e "$MODPATH/uecap_profile.sh" ] \
+        || { ui_print "  ✗ UECap 运行脚本仍存在, 已中止安装"; exit 1; }
+    ui_print ""
+fi
 
 # ── 设置迁移: 从旧模块目录复制用户配置 ──
 _is_upgrade=0
 if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     _is_upgrade=1
     ui_print "  检测到已有配置, 正在迁移..."
+    _migration_failed=0
     for _sf in .thermal_offset .current_profile .profile_policy .profile_manual .profile_auto_reason .profile_history .nr_screen_switch \
                .sim2_auto_manage .idle_isolate_mode \
                .swap_mode .swap_custom .ntp_server .uecap_mode .uecap_manual_mode \
                .uecap_policy .uecap_reason .sim2_radio_off \
-               .nr_saved_mode .webui_token .webui_theme \
+               .nr_saved_mode .webui_theme \
                .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .cpu_sched_owner .sched_owner_desired .game_handoff_policy \
-               .thermal_history .power_history .power_session .standby_diag_state; do
+               .thermal_history .power_history .power_session; do
         if [ -f "$OLDDIR/$_sf" ]; then
-            cp "$OLDDIR/$_sf" "$MODPATH/$_sf" 2>/dev/null
+            cp "$OLDDIR/$_sf" "$MODPATH/$_sf" 2>/dev/null \
+                && [ -f "$MODPATH/$_sf" ] || _migration_failed=1
         fi
     done
+    if [ "$_migration_failed" -ne 0 ]; then
+        ui_print "  ✗ 用户配置迁移不完整, 已中止安装"
+        exit 1
+    fi
     ui_print "  ✓ 已迁移用户配置"
-    # v4.3.22: light 已删除, 映射到 balanced
-    # v4.4.11: WebUI 调度收敛为 balanced/battery 两档。
-    # v4.4.12: 重新引入「系统默认」(default) 为 WebUI 第三档 (恢复内核出厂调度: nom + 出厂 cpuset + cap=1024)。
-    #   旧 light/responsive/performance 仍并入 balanced; default 不再迁移, 作为用户可选档保留。
-    #   更强性能仍可改由 UGT / fas-rs 等外部调度接管 (.cpu_sched_owner=external)。
+    # Retired light/responsive/performance selections migrate to the current
+    # balanced daily baseline. default remains a selectable stock profile.
     _profile_migrated=0
     for _mf in "$MODPATH/.current_profile" "$MODPATH/.profile_manual"; do
         [ -f "$_mf" ] || continue
         case "$(cat "$_mf" 2>/dev/null | tr -d ' \n\r\t')" in
             light|responsive|performance)
-                printf 'balanced' > "$_mf"
+                installer_write "$_mf" balanced
                 _profile_migrated=1
                 ;;
         esac
     done
     [ "$_profile_migrated" -eq 1 ] && ui_print "  ✓ 旧性能档已并入均衡 (省电/均衡/系统默认 三档可在 WebUI 选择)"
-    # v4.4.8: only migrate the untouched old QQ/QQMusic default list.
+    # Replace only the untouched historical QQ/QQMusic seed; preserve any
+    # user-edited list.
     _bg_list="$MODPATH/.bg_restrict_list"
     if [ -f "$_bg_list" ]; then
         _bg_norm=$(sed 's/[[:space:]]//g' "$_bg_list" 2>/dev/null | sed '/^$/d')
         _old_default=$(printf 'com.tencent.mobileqq\ncom.tencent.qqmusic')
         if [ "$_bg_norm" = "$_old_default" ]; then
-            cat > "$_bg_list" <<'DEFLIST'
-com.ss.android.ugc.aweme|stop_after_leave|5
-DEFLIST
+            installer_write "$_bg_list" 'com.ss.android.ugc.aweme|stop_after_leave|5'
             ui_print "  ✓ 后台限制默认列表已迁移为抖音"
         fi
     fi
@@ -259,26 +331,25 @@ if [ "$_is_upgrade" -eq 0 ]; then
     ui_print "  [音量+] = 下一项  [音量-] = 确认"
     ui_print ""
 
-    # --- 温控偏移 ---
+    # --- 温控阈值: 现行五档 -2 / 0 / +2 / +4 / +6°C ---
     ui_print "  ① 温控偏移:"
-    _OFS_LIST="0 2 4 6"
-    _OFS_LABEL_0="+0C (原始)"
-    _OFS_LABEL_2="+2C (保守)"
-    _OFS_LABEL_4="+4C (日常推荐)"
-    _OFS_LABEL_6="+6C (性能)"
-    _ofs_idx=2
-    _ofs_vals="0 2 4 6"
+    _ofs_idx=3
+    _ofs_vals="-2 0 2 4 6"
     set -- $_ofs_vals
     _ofs_total=$#
     while true; do
-        shift $((_ofs_idx)) 2>/dev/null || true
-        set -- $_ofs_vals
         _i=0; _ofs_cur=""
         for _v in $_ofs_vals; do
             if [ "$_i" -eq "$_ofs_idx" ]; then _ofs_cur=$_v; break; fi
             _i=$((_i + 1))
         done
-        eval "_ofs_label=\"\$_OFS_LABEL_${_ofs_cur}\""
+        case "$_ofs_cur" in
+            -2) _ofs_label="-2°C (提前介入)" ;;
+            0)  _ofs_label="0°C (原厂阈值)" ;;
+            2)  _ofs_label="+2°C (轻度放宽)" ;;
+            4)  _ofs_label="+4°C (日常放宽, 模块默认)" ;;
+            6)  _ofs_label="+6°C (最大放宽)" ;;
+        esac
         ui_print "    > $_ofs_label"
         if chooseport; then
             _ofs_idx=$(( (_ofs_idx + 1) % _ofs_total ))
@@ -286,7 +357,7 @@ if [ "$_is_upgrade" -eq 0 ]; then
             break
         fi
     done
-    echo "$_ofs_cur" > "$OFFSET_FILE"
+    installer_write "$OFFSET_FILE" "$_ofs_cur"
     ui_print "    ✓ $_ofs_label"
     ui_print ""
 
@@ -295,12 +366,12 @@ if [ "$_is_upgrade" -eq 0 ]; then
 
 
     # --- UECap 网络能力 ---
-    if [ "$IS_MAGISK_NO_BASEBAND" -eq 1 ]; then
-        ui_print "  ③ 网络能力配置: 跳过 (Magisk 不含基带覆盖)"
-        echo "disabled" > "$MODPATH/.uecap_manual_mode"
-        echo "disabled" > "$MODPATH/.uecap_mode"
-        echo "disabled" > "$MODPATH/.uecap_policy"
-        echo "magisk_no_baseband" > "$MODPATH/.uecap_reason"
+    if [ "$UECAP_DISABLED" -eq 1 ]; then
+        ui_print "  ③ 网络能力配置: 跳过 (当前设备/root 不支持)"
+        installer_write "$MODPATH/.uecap_manual_mode" disabled
+        installer_write "$MODPATH/.uecap_mode" disabled
+        installer_write "$MODPATH/.uecap_policy" disabled
+        installer_write "$MODPATH/.uecap_reason" "$UECAP_DISABLED_REASON"
         ui_print ""
     else
     ui_print "  ③ 网络能力配置:"
@@ -316,7 +387,11 @@ if [ "$_is_upgrade" -eq 0 ]; then
             if [ "$_i" -eq "$_ue_idx" ]; then _ue_cur=$_v; break; fi
             _i=$((_i + 1))
         done
-        eval "_ue_label=\"\$_UE_LABEL_${_ue_cur}\""
+        case "$_ue_cur" in
+            balanced) _ue_label="$_UE_LABEL_balanced" ;;
+            special) _ue_label="$_UE_LABEL_special" ;;
+            universal) _ue_label="$_UE_LABEL_universal" ;;
+        esac
         ui_print "    > $_ue_label"
         if chooseport; then
             _ue_idx=$(( (_ue_idx + 1) % _ue_total ))
@@ -324,9 +399,9 @@ if [ "$_is_upgrade" -eq 0 ]; then
             break
         fi
     done
-    echo "$_ue_cur" > "$MODPATH/.uecap_manual_mode"
-    echo "$_ue_cur" > "$MODPATH/.uecap_mode"
-    echo "manual" > "$MODPATH/.uecap_policy"
+    installer_write "$MODPATH/.uecap_manual_mode" "$_ue_cur"
+    installer_write "$MODPATH/.uecap_mode" "$_ue_cur"
+    installer_write "$MODPATH/.uecap_policy" manual
     ui_print "    ✓ $_ue_label"
     ui_print ""
     fi
@@ -335,35 +410,28 @@ if [ "$_is_upgrade" -eq 0 ]; then
     ui_print "  ④ NR 息屏降级 (息屏自动切 LTE 省电):"
     ui_print "    [音量+] = 关闭  [音量-] = 开启"
     if chooseport; then
-        echo "off" > "$MODPATH/.nr_screen_switch"
+        installer_write "$MODPATH/.nr_screen_switch" off
         ui_print "    ✓ 关闭"
     else
-        echo "on" > "$MODPATH/.nr_screen_switch"
+        installer_write "$MODPATH/.nr_screen_switch" on
         ui_print "    ✓ 开启"
     fi
     ui_print ""
 
     # --- NTP ---
     ui_print "  ⑤ NTP 服务器:"
-    _NTP_VALS="ntp.aliyun.com ntp1.xiaomi.com ntp.myhuaweicloud.com time.android.com"
-    _NTP_LABEL_0="阿里云 (推荐)"
-    _NTP_LABEL_1="小米"
-    _NTP_LABEL_2="华为云"
-    _NTP_LABEL_3="Google (默认)"
+    _NTP_VALS=$(ntp_server_hosts)
+    set -- $_NTP_VALS
     _ntp_idx=0
-    _ntp_total=4
+    _ntp_total=$#
+    [ "$_ntp_total" -gt 0 ] 2>/dev/null || exit 1
     while true; do
         _i=0; _ntp_cur=""
         for _v in $_NTP_VALS; do
             if [ "$_i" -eq "$_ntp_idx" ]; then _ntp_cur=$_v; break; fi
             _i=$((_i + 1))
         done
-        case "$_ntp_idx" in
-            0) _ntp_label="$_NTP_LABEL_0" ;;
-            1) _ntp_label="$_NTP_LABEL_1" ;;
-            2) _ntp_label="$_NTP_LABEL_2" ;;
-            3) _ntp_label="$_NTP_LABEL_3" ;;
-        esac
+        _ntp_label=$(ntp_server_label "$_ntp_cur")
         ui_print "    > $_ntp_label"
         if chooseport; then
             _ntp_idx=$(( (_ntp_idx + 1) % _ntp_total ))
@@ -371,139 +439,109 @@ if [ "$_is_upgrade" -eq 0 ]; then
             break
         fi
     done
-    echo "$_ntp_cur" > "$MODPATH/.ntp_server"
+    installer_write "$MODPATH/.ntp_server" "$_ntp_cur"
     ui_print "    ✓ $_ntp_label"
     ui_print ""
 
-    # --- ZRAM 保持默认 (lz77eh + 11392MB) ---
-    echo "optimized" > "$MODPATH/.swap_mode"
+    # --- ZRAM / VM 使用共享 contract 的模块默认值 ---
+    installer_write "$MODPATH/.swap_mode" "$VM_MODE_DEFAULT"
 
 else
     # 升级模式: 确保必要的默认值存在
-    [ -f "$OFFSET_FILE" ] || echo '4' > "$OFFSET_FILE"
-    [ -f "$PROFILE_FILE" ] || echo 'balanced' > "$PROFILE_FILE"
-    [ -f "$PROFILE_MANUAL_FILE" ] || cp "$PROFILE_FILE" "$PROFILE_MANUAL_FILE" 2>/dev/null || echo 'balanced' > "$PROFILE_MANUAL_FILE"
-    [ -f "$PROFILE_POLICY_FILE" ] || echo 'manual' > "$PROFILE_POLICY_FILE"
+    [ -f "$OFFSET_FILE" ] || installer_write "$OFFSET_FILE" "$THERMAL_DEFAULT_OFFSET"
+    [ -f "$PROFILE_FILE" ] || installer_write "$PROFILE_FILE" balanced
+    if [ ! -f "$PROFILE_MANUAL_FILE" ]; then
+        _profile_for_manual=$(cat "$PROFILE_FILE" 2>/dev/null | tr -d ' \n\r\t')
+        case "$_profile_for_manual" in balanced|battery|default) ;;
+            *) _profile_for_manual=balanced ;;
+        esac
+        installer_write "$PROFILE_MANUAL_FILE" "$_profile_for_manual"
+    fi
+    [ -f "$PROFILE_POLICY_FILE" ] || installer_write "$PROFILE_POLICY_FILE" manual
     if [ ! -f "$SCHED_OWNER_FILE" ]; then
         detect_uperf_module 2>/dev/null || true
         if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
-            echo "external" > "$SCHED_OWNER_FILE"
-            echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
+            installer_write "$SCHED_OWNER_FILE" external
+            installer_write "$MODPATH/.profile_auto_reason" external_scheduler
             ui_print "  新增设置: 检测到 ${UPERF_MODULE_NAME:-UGT}, CPU 日常调度默认交其接管"
         else
-            echo "pixel" > "$SCHED_OWNER_FILE"
+            installer_write "$SCHED_OWNER_FILE" pixel
             ui_print "  新增设置: CPU 调度默认本模块 (可在 WebUI 调整)"
         fi
     else
         _sched_owner=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
         case "$_sched_owner" in
             pixel|external) ;;
-            *) echo 'pixel' > "$SCHED_OWNER_FILE" ;;
+            *) installer_write "$SCHED_OWNER_FILE" pixel ;;
         esac
     fi
     if [ ! -f "$GAME_HANDOFF_POLICY_FILE" ]; then
         detect_fas_rs_scheduler 2>/dev/null || true
         if [ "$FAS_RS_MODULE_ENABLED" = "yes" ]; then
-            echo 'fas_rs' > "$GAME_HANDOFF_POLICY_FILE"
+            installer_write "$GAME_HANDOFF_POLICY_FILE" fas_rs
         else
-            echo 'off' > "$GAME_HANDOFF_POLICY_FILE"
+            installer_write "$GAME_HANDOFF_POLICY_FILE" off
         fi
     fi
-    [ -f "$MODPATH/.profile_auto_reason" ] || echo 'manual_policy' > "$MODPATH/.profile_auto_reason"
-    [ -f "$MODPATH/.uecap_manual_mode" ] || echo 'balanced' > "$MODPATH/.uecap_manual_mode"
-    [ -f "$MODPATH/.uecap_mode" ] || echo 'balanced' > "$MODPATH/.uecap_mode"
-    [ -f "$MODPATH/.uecap_policy" ] || echo 'manual' > "$MODPATH/.uecap_policy"
-    # Magisk: 升级时若从 APatch/KSU 迁移过来的配置, 强制覆盖为 disabled
-    if [ "$IS_MAGISK_NO_BASEBAND" -eq 1 ]; then
-        echo 'disabled' > "$MODPATH/.uecap_manual_mode"
-        echo 'disabled' > "$MODPATH/.uecap_mode"
-        echo 'disabled' > "$MODPATH/.uecap_policy"
-        echo 'magisk_no_baseband' > "$MODPATH/.uecap_reason"
+    [ -f "$MODPATH/.profile_auto_reason" ] || installer_write "$MODPATH/.profile_auto_reason" manual_policy
+    [ -f "$MODPATH/.uecap_manual_mode" ] || installer_write "$MODPATH/.uecap_manual_mode" balanced
+    [ -f "$MODPATH/.uecap_mode" ] || installer_write "$MODPATH/.uecap_mode" balanced
+    [ -f "$MODPATH/.uecap_policy" ] || installer_write "$MODPATH/.uecap_policy" manual
+    # 不兼容的 root/设备升级时覆盖旧 UECap 状态，避免迁移出不可用档位。
+    if [ "$UECAP_DISABLED" -eq 1 ]; then
+        installer_write "$MODPATH/.uecap_manual_mode" disabled
+        installer_write "$MODPATH/.uecap_mode" disabled
+        installer_write "$MODPATH/.uecap_policy" disabled
+        installer_write "$MODPATH/.uecap_reason" "$UECAP_DISABLED_REASON"
+    else
+        # UECap has no automatic policy. Normalize any retired automatic state so
+        # service/WebUI never need to carry the retired branch.
+        installer_write "$MODPATH/.uecap_policy" manual
     fi
-    [ -f "$MODPATH/.nr_screen_switch" ] || echo 'off' > "$MODPATH/.nr_screen_switch"
-    [ -f "$MODPATH/.sim2_auto_manage" ] || echo 'on'  > "$MODPATH/.sim2_auto_manage"
-    [ -f "$MODPATH/.idle_isolate_mode" ] || echo 'off' > "$MODPATH/.idle_isolate_mode"
-    [ -f "$MODPATH/.swap_mode" ] || echo 'optimized' > "$MODPATH/.swap_mode"
-    [ -f "$MODPATH/.ntp_server" ] || echo 'ntp.aliyun.com' > "$MODPATH/.ntp_server"
+    [ -f "$MODPATH/.nr_screen_switch" ] || installer_write "$MODPATH/.nr_screen_switch" "$NR_SCREEN_SWITCH_DEFAULT"
+    [ -f "$MODPATH/.sim2_auto_manage" ] || installer_write "$MODPATH/.sim2_auto_manage" "$SIM2_AUTO_DEFAULT"
+    [ -f "$MODPATH/.idle_isolate_mode" ] || installer_write "$MODPATH/.idle_isolate_mode" "$IDLE_ISOLATE_DEFAULT"
+    [ -f "$MODPATH/.swap_mode" ] || installer_write "$MODPATH/.swap_mode" "$VM_MODE_DEFAULT"
+    if [ ! -f "$MODPATH/.ntp_server" ]; then
+        _ntp_default=$(ntp_server_default) || exit 1
+        installer_write "$MODPATH/.ntp_server" "$_ntp_default"
+    fi
 fi
+
+_offset_raw=$(cat "$OFFSET_FILE" 2>/dev/null | tr -d ' \n\r\t')
+offset=$(thermal_normalize_offset "$_offset_raw" "$THERMAL_DEFAULT_OFFSET")
+installer_write "$OFFSET_FILE" "$offset"
 
 # Split persistent user intent from the effective runtime owner.  For upgrades
 # from v4.4.38 and older, prefer the last explicit WebUI owner action because
 # the legacy arbiter could overwrite .cpu_sched_owner after that action.
-if command -v scheduler_owner_init >/dev/null 2>&1; then
-    scheduler_owner_init "$MODPATH" "/data/adb/fas_rs"
-    if so_migrate_state; then
-        ui_print "  CPU 调度意愿: $(so_read_desired_owner), 游戏接管: $(so_read_handoff_policy)"
-    else
-        [ -f "$SCHED_OWNER_DESIRED_FILE" ] || cp "$SCHED_OWNER_FILE" "$SCHED_OWNER_DESIRED_FILE" 2>/dev/null || echo 'pixel' > "$SCHED_OWNER_DESIRED_FILE"
-        [ -f "$GAME_HANDOFF_POLICY_FILE" ] || echo 'off' > "$GAME_HANDOFF_POLICY_FILE"
-        ui_print "  ⚠ CPU 调度状态迁移失败, 已使用安全兼容值"
+scheduler_owner_init "$MODPATH" "/data/adb/fas_rs"
+if so_migrate_state; then
+    ui_print "  CPU 调度意愿: $(so_read_desired_owner), 游戏接管: $(so_read_handoff_policy)"
+else
+    if [ ! -f "$SCHED_OWNER_DESIRED_FILE" ]; then
+        _desired_fallback=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
+        case "$_desired_fallback" in pixel|external) ;;
+            *) _desired_fallback=pixel ;;
+        esac
+        installer_write "$SCHED_OWNER_DESIRED_FILE" "$_desired_fallback"
     fi
+    [ -f "$GAME_HANDOFF_POLICY_FILE" ] || installer_write "$GAME_HANDOFF_POLICY_FILE" off
+    ui_print "  ⚠ CPU 调度状态迁移失败, 已使用安全兼容值"
 fi
 
-# ── 应用温控偏移到 thermal_info_config.json ──
-offset=$(cat "$OFFSET_FILE" 2>/dev/null | tr -d ' \n\r\t')
-case "$offset" in
-    0|2|4|6) ;;
-    *) offset="4" ;;
-esac
-
-awk -v off="$offset" '
-/"Name":/ {
-    n = $0
-    sub(/.*"Name": *"/, "", n)
-    sub(/".*/, "", n)
-    cur = n
-    tgt = (cur == "VIRTUAL-SKIN" || cur == "VIRTUAL-SKIN-HINT" || cur == "VIRTUAL-SKIN-SOC" || cur == "VIRTUAL-SKIN-CPU-LIGHT-ODPM" || cur == "VIRTUAL-SKIN-CPU-MID" || cur == "VIRTUAL-SKIN-CPU-ODPM" || cur == "VIRTUAL-SKIN-CPU-HIGH" || cur == "VIRTUAL-SKIN-GPU")
-}
-tgt && /"HotThreshold"/ && /\[/ && /\]/ {
-    line = $0
-    bs = index(line, "[")
-    prefix = substr(line, 1, bs - 1)
-    rest   = substr(line, bs + 1)
-    be     = index(rest, "]")
-    inner  = substr(rest, 1, be - 1)
-    suffix = substr(rest, be)
-    n_v = split(inner, vals, ",")
-    result = ""
-    for (i = 1; i <= n_v; i++) {
-        v = vals[i]; gsub(/[ \t]/, "", v)
-        if (v == "\"NAN\"") {
-            result = result (i > 1 ? ", " : "") v
-        } else {
-            result = result (i > 1 ? ", " : "") sprintf("%.1f", v + off + 0)
-        }
-    }
-    print prefix "[" result suffix
-    next
-}
-tgt && /"HotThreshold"/ && /\[/ && !/\]/ {
-    in_hot = 1; print; next
-}
-in_hot {
-    if (/\]/) { in_hot = 0; print; next }
-    line = $0; gsub(/[ \t]/, "", line); gsub(/,/, "", line)
-    if (line == "\"NAN\"") { print; next }
-    if (match(line, /^[0-9]/) || match(line, /^-/)) {
-        indent = $0; sub(/[^ \t].*/, "", indent)
-        val = line + 0
-        newval = sprintf("%.1f", val + off)
-        trailing = ""
-        if (sub(/,[ \t]*$/, "", $0) > 0) trailing = ","
-        printf "%s%s%s\n", indent, newval, trailing
-        next
-    }
-    print; next
-}
-{ print }
-' "$STOCK_ACTIVE" > "$OUT_JSON"
-
-if [ ! -s "$OUT_JSON" ]; then
-    cp "$STOCK_ACTIVE" "$OUT_JSON"
-    ui_print "  ⚠ 偏移量应用失败, 使用原始配置"
+# 从当前机型 stock 基线生成配置; 失败时同步回退文件与状态。
+if ! thermal_generate_config "$STOCK_ACTIVE" "$OUT_JSON" "$offset"; then
+    if ! cp "$STOCK_ACTIVE" "$OUT_JSON" 2>/dev/null; then
+        ui_print "  ✗ 温控配置生成失败, 已中止安装"
+        exit 1
+    fi
+    offset=0
+    installer_write "$OFFSET_FILE" 0
+    ui_print "  ⚠ 温控配置生成失败, 已回退到出厂阈值"
 fi
 
-ui_print "  温控偏移: +${offset}°C"
+ui_print "  温控偏移: $(thermal_format_offset "$offset")"
 ui_print ""
 ui_print "  安装完成, 重启生效"
 ui_print "  WebUI: http://127.0.0.1:6210"

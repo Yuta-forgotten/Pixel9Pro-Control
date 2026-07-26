@@ -1,209 +1,10 @@
 #!/system/bin/sh
-##############################################################
-# service.sh — 开机服务 (Doze 友好后台 + M3 WebUI)
-# 版本: 发行总版本见 module.prop, 组件版本见 versions.prop (运行时 banner 动态读取, 不硬编码)
-# 执行时机：late_start（约启动后 8s），以 root 运行
-# 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
-#
-# v4.4.40 变更:
-#   - UGT→fas-rs 先恢复 cpufreq residue 并验证游戏 cap=1024，再启动 fas-rs；失败按 desired
-#     owner 回滚，消除 owner 已发布但 cap=0 / policy7=powersave 的假 active 启动窗口。
-#
-# v4.4.39 变更:
-#   - 拆分用户日常选择 .sched_owner_desired 与运行态 .cpu_sched_owner，修复游戏 lease/UGT enabled
-#     状态覆盖用户 Pixel 选择后自动回弹的问题。
-#   - Pixel/UGT/fas-rs 统一经过 owner 事务锁；fas-rs 可在 Pixel baseline 上临时接管，退出后恢复
-#     原 auto/manual profile，失败按 desired owner 回滚。
-#   - owner 事务显式管理 sched_util_clamp_min：Pixel balanced/battery 与 UGT 日常 baseline=0，
-#     fas-rs 游戏 lease=1024（Google 出厂上限，完整放开 boost），退出游戏后复读恢复日常值；
-#     不触碰 ThermalHAL 独立使用的 uclamp.max 热保护。
-#
-# v4.4.12 变更:
-#   - CPU 调度面板恢复三档: 省电 / 均衡 / 系统默认 (WebUI 卡片顺序 省电→均衡→系统默认)。
-#     系统默认 = cpu_profile.sh 恢复出厂三件套: response_time_ms=内核只读 nom(设备实测 9/52/165)
-#     + 出厂 cpuset(top-app 0-7/fg 0-6/bg 0-3/sys-bg 0-3) + sched_util_clamp_min=1024(出厂上限,不压制 boost)。
-#     依据: 2026-06-16 设备实测 + 原厂 init.zumapro.soc.rc (不写 response_time_ms, 故 nom 即出厂节奏)。
-#   - 修自动放电迟滞 bug (B65): 放电态 battery 在 40.4~40.8°C 死区缺粘滞句, 温度跌破 40.8°C 即弹回
-#     balanced, 使 40.4°C/60s 冷却闸形同虚设、profile 在边界抖动。补 elif active=battery 粘滞, 对齐充电态。
-#   - performance 仍退出 WebUI (仅 force/CLI 内部基线); auto 状态空间仍只 balanced↔battery, 不进 default。
-#
-# v4.4.11 变更:
-#   - WebUI 写操作 token 改为静默自动填充 (auth.sh loopback), 取消首写确认弹窗 (auth.sh 失败才回退手输)。
-#   - CPU 调度面板收敛为 balanced/battery 两档; performance/default 退出 WebUI, 仅作内部基线, 更强性能由 UGT 接管。
-#   - 版本治理: 引入 versions.prop 组件分版, banner/安装横幅动态读 module.prop, 打包脚本自动戳 webroot ?v=。
-#
-# v4.4.10 变更:
-#   - 修复 standby worker 在 external 调度接管后诊断 active_profile 可能沿用旧缓存的问题。
-#
-# v4.4.9 变更:
-#   - WebUI 首次写操作通过 auth.sh 预填 token prompt, 按前辈要求优先易用性。
-#   - standby_guard.sh 避免诊断文件同名变量覆盖真实 idle_isolate_mode。
-#   - bg_restrict_lib.sh 修复 Android sh 下 pkg|policy|delay 解析为空。
-#
-# v4.4.8 变更:
-#   - WebUI token 不再通过 info.sh GET 下发, 改为浏览器端手动配对, 收紧本机 App 攻击面。
-#   - external 为 let-right 状态: 仅停止本模块 CPU 写入, 不因未检测到外部调度器而自动回写 balanced。
-#   - NR 息屏降级补齐 ap_br_wlan*/ap_br_softap* 热点桥接接口, 并从 preferred_network_mode 初始化 LTE/5G 状态。
-#   - .profile_history 兼容旧 9 列记录, 启动时追加 10 列 sched_owner baseline。
-#   - WebUI pid/lock 状态文件权限收紧。
-#   - 后台应用限制改为按包策略, 首次默认仅预置抖音 "休眠"。
-#
-# v4.4.6 变更:
-#   - WebUI token 改为每次 service 启动轮换, 缩短本机泄露后的可用窗口。
-#   - L1 后台限制新增 .bg_restrict_baseline, 移除/关闭时按原 bucket/appops 恢复。
-#   - .profile_history 追加 sched_owner 字段, 便于外部调度接管复盘。
-#   - WebUI httpd 改用 pid 文件停止本模块实例, 避免端口粗匹配误杀。
-#
-# v4.4.5 变更:
-#   - 新增外部调度接管模式: external 时跳过 response_time_ms / uclamp / cpuset / vendor_sched 写入
-#
-# v4.4.4 变更:
-#   - balanced 低热日用底座: response_time_ms 16/24/160 -> 16/40/200, 保持 top-app 0-7 与 cap=0。
-# v4.4.3 变更:
-#   - 修复 WebUI 温度历史折线图: 打开后自动静默刷新, 关闭/返回时清理刷新器.
-#
-# v4.4.2 变更:
-#   - 修复温度实时显示: thermalservice 只解析 Current temperatures from HAL, 缓存超过 30s 即重建.
-#   - 修复 .profile_history 启动后不生成: boot baseline 写入 service_start, 并修正 response_time_ms 路径.
-#
-# v4.4.1 变更:
-#   - 自动调度新增充电体感热闸: VIRTUAL-SKIN >= 41.0C 持续 120s 才压 battery,
-#     <= 39.5C 持续 90s 才恢复 balanced; thermalservice severity>=2 仍立即收口.
-#   - 新增 .profile_history 切档证据链, 记录 profile/reason/充电状态/VIRTUAL-SKIN/severity/cap/response.
-#
-# v4.4.0 变更:
-#   - CPU 新增 performance 档 (替换 responsive): 进档 sched_util_clamp_min 0→1024 还 Google
-#     出厂 uclamp.min 上限, 放开 ADPF/HBoost/fork/ExoPlayer 动态 boost (顺内核"还闸")
-#   - sched_util_clamp_min 改为按档管理 (cpu_profile.sh), 移除 boot 阶段独立写 0
-#   - 纠正旧机理: 它是 uclamp.min 系统级上限(cap), 非"虚假 100% util 信号"
-#   - 老用户 responsive 配置自动迁移到 performance
-#
-# v4.3.27 变更:
-#   - B42 fix: bg_restrict.sh remove_restrict() 增加 bucket 恢复 (v4.4.6 起优先按 baseline 原值恢复)
-#   - B43 fix: standby_guard.sh SIM2 恢复从废弃 radio power 改为 set-sim-count 2
-#   - B44 fix: customize.sh 升级迁移追加 .bg_restrict_list/.bg_restrict_enabled
-#   - B45 fix: refreshBgRestrict() 轮询改为 GET 只读, 手动刷新才 POST refresh
-#   - L1 注释移除未实现的 deviceidle whitelist 声明
-#   - B46 fix: 屏幕检测从 legacy DRM dpms 改为 enabled 节点 (dpms 在 atomic driver 下不更新)
-#
-# v4.3.26 变更:
-#   - L1 后台限制从硬编码包名改为配置文件驱动 (.bg_restrict_list + .bg_restrict_enabled)
-#   - 新增 WebUI "后台应用限制" 卡片: 主开关 + 包名列表 + 实时 bucket/appops 状态 + 添加/移除
-#   - 新增 CGI bg_restrict.sh: toggle/add/remove 三种 action
-#   - 首次运行自动预置默认列表, 用户可通过 WebUI 自由增删
-#
-# v4.3.25 变更:
-#   - 新增三层功耗方案 (L1-L3):
-#     L1: 官方 API 后台限制 (persistent) — App Standby Bucket + AppOps + Freezer
-#     L2: vendor_sched 后台 CPU 限制 (volatile, enforce 守护) — ug_bg_uclamp_max/ug_bg_group_throttle
-#     L3: response_time_ms (volatile, boot-time only) — 已有, 由 cpu_profile.sh 管理
-#   - cpu_profile.sh 新增 enforce 子命令: 只做 procfs 读写, 零 IPC, 零 wakelock
-#   - worker 亮屏分支每周期调用 enforce, 保证 vendor_sched 参数不被 PowerHAL hint 覆盖
-#   - [v4.3.28] 移除无效属性 vendor.powerhal.apf_enabled=false (Pixel 9 Pro PowerHAL 不识别)
-#
-# v4.3.21 变更:
-#   - 修复 NR 降级 tethering 误判: wlan1/wlan2 (bcmdhd P2P 虚拟接口) 被误判为热点,
-#     导致 _tether=1 永久阻止降级. 修复: 只检测 swlan0/ap0/softap0/rndis0/ncm0 且 operstate=up
-#   - 回滚 v4.3.20 错误的 IRQ smp_affinity 方案 (stock 内核无 dhd_dpc, suspend 时被驱动重置)
-#
-# v4.3.20 变更:
-#   - 修复 NR 降级 adaptive sleep bug: 等待期间 worker 从 600s 跳到 60s 间隔
-#   - 新增 sched_util_clamp_min=0 (v4.4.0 已改为按档管理; 机理纠正见 cpu_profile.sh)
-#   - 新增 apply_irq_affinity (后在 v4.3.21 回滚, 方案错误)
-#
-# v4.3.19 变更:
-#   - SIM2 空槽省电彻底重写: 从 cmd phone radio power (临时关 radio, 会被框架恢复)
-#     改为 cmd phone set-sim-count 1 (AOSP 官方 API, 持久化, 直接减少 Active modem count)
-#   - 恢复 DSDS: SIM2 插入时自动 set-sim-count 2
-#   - 移除 boot+120s/300s 重试 hack, 因为 set-sim-count 是持久化的不需要重试
-#
-# v4.3.17 变更:
-#   - 新增待机隔离模式(.idle_isolate_mode)，用于过夜隔离 control 模块对 suspend 的干扰
-#   - 新增 .standby_diag_state 低噪声诊断状态文件，记录 worker 当前分支与下次唤醒时间
-#   - WebUI 优化页新增 SIM2 自动管理 / 待机隔离显式开关
-#   - 待机隔离模式压过 thermal burst / LTE 轮询，确保息屏阶段维持 600s 最小唤醒路径
-#   - 文档与版本基线同步到 v4.3.17
-#
-# v4.3.16 变更:
-#   - 修复 deep sleep 0%: 息屏深度待机保护模式, 跳过 thermal/前台 profile 自动采样
-#   - SIM2/IMS 自动管理默认关闭, 避免 modem 重注册导致 s5100/umts_dm0 持锁
-#   - 120s 延迟复写移除 manage_sim2_radio, 减少 boot 阶段 radio IPC
-#   - 息屏路径不再执行 cmd phone / settings put preferred_network_mode 以外的 radio 命令
-#
-# v4.3.15 变更:
-#   - 新增慢切换自动调度策略: feed 类前台长亮屏保持 balanced，持续热平台时 balanced→battery
-#   - 自动策略只在亮屏前台生效，息屏或温度回落后回到 balanced，避免高频来回切换
-#   - 新增 .profile_policy / .profile_manual / .profile_auto_reason 状态文件
-#
-# v4.3.14 变更:
-#   - CPU 轻载策略重构: light/battery 不再把 top-app 固定推到 4-7，也不再锁死小核 820MHz
-#   - 平衡/轻度/省电三档改为更接近 Pixel 官方前台层级分工的 steady-state 方案
-#
-# v4.3.13 变更:
-#   - 显式开启 Adaptive Connectivity (Google 官方 5G 节电机制)
-#   - 显式确保 network_recommendations 不被其他模块关闭
-#   - UECap 三档重命名: 国内频段/全面增强/Google 默认
-#   - WebUI UE 能力说明精简
-#
-# v4.3.12 变更:
-#   - SIM2 空槽省电改用 cmd phone radio power -s 1 off (B36 旧 API 无效)
-#   - 同时关闭空槽 IMS (cmd phone ims disable -s 1) 消除 IMS 注册唤醒
-#   - NR 降级修复 DSDS preferred_network_mode 逗号格式解析 (B37)
-#   - 降级/恢复只改 slot 0，保留 slot 1 原值不丢失
-#
-# v4.3.11 变更:
-#   - 修正 UECap 参数说明：universal=stock 等价副本，balanced=trial_minimal_cn_combo
-#   - README / docs 技术参数口径同步到当前 payload hash/audit
-#
-# v4.3.10 变更:
-#   - WebUI 中文文案整体重构：UE 能力配置、温控阈值、基带模块说明改为更自然的中文口径
-#
-# v4.3.9 变更:
-#   - WebUI 固定四路 setInterval 改为单调度器，按当前 tab 计算下次唤醒时间
-#   - 用户闲置 45 秒或弹窗打开时自动降频，减少前台页面无效轮询
-#
-# v4.3.8 变更:
-#   - 功耗详情 CGI 增加短时缓存，减少重复解析 batterystats 带来的瞬时失败
-#   - WebUI 功耗详情在网络错误时自动重试一次
-#
-# v4.3.7 变更:
-#   - 新增低频电池采样与放电会话状态机，功耗详情明确区分“当前放电会话 / 今日累计 / batterystats 窗口”
-#   - 温度历史短时窗口调整为 10 分钟 / 30 分钟，两者都显示曲线 + 统计
-#
-# v4.3.6 变更:
-#   - WebUI 轮询按当前 tab 收口，避免前台停在无关页时继续刷新全部数据
-#   - NR 已降级到 LTE 的息屏阶段改为较短复查周期，同时保持息屏热缓存低频更新
-#
-# v4.3.5 变更:
-#   - WebUI UECap 切换后改为回读 active_mode/hash 校验
-#   - 不再用“约 5 秒后生效”作为成功提示
-#
-# v4.3.4 变更:
-#   - 恢复 balanced 为独立的 trial_minimal_cn_combo payload
-#   - 避免 balanced/special 指向同一份 binarypb，保证三档真正分离
-#
-# v4.3.3 变更:
-#   - boot 阶段 UECap 应用明确传入 boot_manual，避免开机误触发 modem restart
-#   - SIM2 空槽管理不再写 global mobile_data，避免误伤主卡数据开关
-#
-# v4.3.2 变更:
-#   - UECap 切换改为仅重启 cellular modem (cmd phone restart-modem)
-#   - 禁止再用 airplane toggle，避免 Connectivity/系统服务级联崩溃
-#
-# v4.3.1 变更:
-#   - SIM2 空槽自动关闭 radio instance (省 modem 搜网功耗)
-#   - SIM2 插入时自动恢复 radio (统一循环亮屏周期检查)
-#   - NR 息屏降级默认改为开启 (on)
-#   - UECap 切换后触发 modem 重载
-#
-# v4.3.0 变更:
-#   - 合并 4 个独立后台循环为 1 个统一工作循环 (Doze 友好)
-#   - 移除 UECap 自动策略循环，改为纯手动三档切换
-#   - 息屏 dumpsys 调用从 ~10/min 降至 ~0.1/min
-#   - 新增温度突发录制 (thermal burst): 用户打开历史图表时 5s 间隔
-#   - WiFi multicast: 仅在屏幕状态变化时切换，不轮询
-#   - 息屏后 60s 首次检查 (NR 防抖)，之后 600s 长休眠
-##############################################################
+
+# Pixel 9 Pro Control late_start service.
+# Waits for boot, restores persisted modem/VM/CPU policy, then starts the
+# WebUI and the screen-aware standby workers. Versions come from module.prop
+# and versions.prop; release history belongs in git, not this runtime file.
+
 MODDIR="${0%/*}"
 PORT=6210
 HTTPD_PID_FILE="$MODDIR/.webui_httpd.pid"
@@ -223,13 +24,47 @@ IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
 POWER_PROFILE_FILE="$MODDIR/.power_profile"
 
-. "$MODDIR/scripts/bg_restrict_lib.sh" 2>/dev/null
-[ -f "$MODDIR/scripts/scheduler_detect_lib.sh" ] && . "$MODDIR/scripts/scheduler_detect_lib.sh" 2>/dev/null
-[ -f "$MODDIR/scripts/scheduler_owner_lib.sh" ] && . "$MODDIR/scripts/scheduler_owner_lib.sh" 2>/dev/null
-if command -v scheduler_owner_init >/dev/null 2>&1; then
-    scheduler_owner_init "$MODDIR" "/data/adb/fas_rs"
-    so_migrate_state >/dev/null 2>&1 || true
+[ -r "$MODDIR/scripts/runtime_defaults_lib.sh" ] \
+    && . "$MODDIR/scripts/runtime_defaults_lib.sh" 2>/dev/null \
+    || { log -t pixel9pro_ctrl "ERROR: runtime defaults contract missing"; exit 1; }
+[ -r "$MODDIR/scripts/nr_mode_lib.sh" ] \
+    && . "$MODDIR/scripts/nr_mode_lib.sh" 2>/dev/null \
+    || { log -t pixel9pro_ctrl "ERROR: NR mode contract missing"; exit 1; }
+
+settings() {
+    runtime_android_settings "$@"
+}
+
+cmd() {
+    runtime_android_cmd "$@"
+}
+[ -r "$MODDIR/scripts/bg_restrict_lib.sh" ] \
+    && . "$MODDIR/scripts/bg_restrict_lib.sh" 2>/dev/null \
+    || { log -t pixel9pro_ctrl "ERROR: background restriction contract missing"; exit 1; }
+[ -r "$MODDIR/scripts/scheduler_detect_lib.sh" ] \
+    && . "$MODDIR/scripts/scheduler_detect_lib.sh" 2>/dev/null \
+    || { log -t pixel9pro_ctrl "ERROR: scheduler detection contract missing"; exit 1; }
+[ -r "$MODDIR/scripts/scheduler_owner_lib.sh" ] \
+    && . "$MODDIR/scripts/scheduler_owner_lib.sh" 2>/dev/null \
+    || { log -t pixel9pro_ctrl "ERROR: scheduler owner contract missing"; exit 1; }
+CPU_PROFILE_AVAILABLE=0
+if [ -r "$MODDIR/scripts/cpu_profile_lib.sh" ]; then
+    . "$MODDIR/scripts/cpu_profile_lib.sh" 2>/dev/null && CPU_PROFILE_AVAILABLE=1
 fi
+NTP_CONFIG_FILE="$MODDIR/config/ntp_servers.tsv"
+NTP_CONFIG_AVAILABLE=0
+if [ -r "$MODDIR/scripts/ntp_config_lib.sh" ] && [ -r "$NTP_CONFIG_FILE" ]; then
+    if . "$MODDIR/scripts/ntp_config_lib.sh" 2>/dev/null && ntp_config_validate; then
+        NTP_CONFIG_AVAILABLE=1
+    fi
+fi
+VM_PROFILE_AVAILABLE=0
+if [ -r "$MODDIR/scripts/vm_profile_lib.sh" ]; then
+    . "$MODDIR/scripts/vm_profile_lib.sh" 2>/dev/null && VM_PROFILE_AVAILABLE=1
+fi
+scheduler_owner_init "$MODDIR" "/data/adb/fas_rs"
+so_migrate_state >/dev/null 2>&1 \
+    || log -t pixel9pro_ctrl "WARNING: scheduler-owner state migration failed"
 
 detect_root_impl() {
     if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
@@ -253,7 +88,7 @@ find_webui_httpd_pid() {
         case "$_pid" in ''|*[!0-9]*) continue ;; esac
         _cmd=$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)
         case "$_cmd" in
-            *httpd*"$MODDIR/webroot"*|*httpd*"127.0.0.1:$PORT"*|*httpd*":$PORT"*)
+            *httpd*"$MODDIR/webroot"*)
                 printf '%s' "$_pid"
                 return 0
                 ;;
@@ -264,10 +99,11 @@ find_webui_httpd_pid() {
 
 stop_webui_httpd() {
     _pid=$(cat "$HTTPD_PID_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    case "$_pid" in ''|*[!0-9]*) _pid="" ;; esac
     if [ -n "$_pid" ] && [ -r "/proc/$_pid/cmdline" ]; then
         _cmd=$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)
         case "$_cmd" in
-            *httpd*"$MODDIR/webroot"*|*httpd*"127.0.0.1:$PORT"*|*httpd*":$PORT"*)
+            *httpd*"$MODDIR/webroot"*)
                 kill "$_pid" 2>/dev/null
                 rm -f "$HTTPD_PID_FILE" 2>/dev/null
                 return 0
@@ -285,41 +121,40 @@ stop_webui_httpd() {
 record_webui_httpd_pid() {
     _pid=$(find_webui_httpd_pid)
     if [ -n "$_pid" ]; then
-        printf '%s\n' "$_pid" > "$HTTPD_PID_FILE" 2>/dev/null
-        chmod 600 "$HTTPD_PID_FILE" 2>/dev/null
+        runtime_write_value "$HTTPD_PID_FILE" "$_pid" \
+            && chmod 600 "$HTTPD_PID_FILE" 2>/dev/null \
+            && return 0
     fi
+    return 1
 }
 
 read_onoff_file() {
-    _flag_value=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
-    case "$_flag_value" in
-        on|off) printf '%s' "$_flag_value" ;;
-        *) printf '%s' "$2" ;;
-    esac
+    runtime_read_onoff "$1" "$2"
 }
 
 restore_ntp_server() {
+    [ "$NTP_CONFIG_AVAILABLE" -eq 1 ] || return 0
     NTP_SAVE="$MODDIR/.ntp_server"
     if [ -s "$NTP_SAVE" ]; then
         _saved=$(cat "$NTP_SAVE" 2>/dev/null | tr -d ' \n\r')
-        case "$_saved" in
-            ntp.aliyun.com|ntp.myhuaweicloud.com|ntp1.xiaomi.com|time.android.com)
-                settings put global ntp_server "$_saved" 2>/dev/null
-                log -t pixel9pro_ctrl "NTP server restored: $_saved"
-                ;;
-        esac
+        _saved_normalized=$(ntp_server_normalize "$_saved" 2>/dev/null) || return 0
+        if [ "$_saved" != "$_saved_normalized" ]; then
+            runtime_write_value "$NTP_SAVE" "$_saved_normalized" 2>/dev/null || return 0
+        fi
+        if settings put global ntp_server "$_saved_normalized" 2>/dev/null \
+            && [ "$(settings get global ntp_server 2>/dev/null | tr -d ' \n\r')" = "$_saved_normalized" ]; then
+            log -t pixel9pro_ctrl "NTP server restored: $_saved_normalized"
+        else
+            log -t pixel9pro_ctrl "WARNING: failed to restore NTP server: $_saved_normalized"
+        fi
     fi
 }
 
 apply_uecap_profile() {
     if [ -f "$MODDIR/uecap_profile.sh" ]; then
         . "$MODDIR/uecap_profile.sh"
-        uecap_set_policy manual
-        [ -f "$UECAP_MANUAL_MODE_FILE" ] || uecap_set_manual_mode balanced
-        [ -f "$UECAP_MODE_FILE" ] || uecap_set_mode balanced
         _mode=$(uecap_current_manual_mode)
         if uecap_apply_mode "$_mode" "boot_manual" 2>/dev/null; then
-            uecap_set_reason boot_manual
             log -t pixel9pro_ctrl "UECap profile applied: $_mode (manual)"
         else
             log -t pixel9pro_ctrl "WARNING: failed to apply UECap profile: $_mode"
@@ -328,57 +163,61 @@ apply_uecap_profile() {
 }
 
 apply_keep5g_standby_settings() {
+    _standby_failed=0
     # 保留 5G / 5GA / CA 能力时，仍然建议关闭 mobile_data_always_on。
     # AOSP 定义表明该项仅用于在 Wi-Fi 等高优先级网络存在时，让蜂窝数据链路继续常驻以加快切换。
     # 关闭它不会取消 NR 注册或 CA 能力，但在 Wi-Fi -> 蜂窝回切时可能带来轻微时延。
-    settings put global mobile_data_always_on 0 2>/dev/null
+    apply_android_setting global mobile_data_always_on 0 || _standby_failed=1
 
     # keep-5G 分支显式不强制关闭 VoWiFi / WFC。
     # AOSP 中 wfc_ims_enabled 是 Wi-Fi Calling 用户开关；强制关闭会明确影响室内弱覆盖场景的通话连续性。
     # 该项对 5G/5GA/CA 能力本身没有收益，因此本版暂停托管。
 
     # 扫描与 Nearby 相关项对 5G 能力本身无直接影响，仅减少息屏扫描和发现流量。
-    settings put global nearby_sharing_enabled 0 2>/dev/null
-    settings put secure nearby_sharing_slice_enabled 0 2>/dev/null
-    settings put global wifi_scan_always_enabled 0 2>/dev/null
-    settings put global ble_scan_always_enabled 0 2>/dev/null
+    apply_android_setting global nearby_sharing_enabled 0 || _standby_failed=1
+    apply_android_setting secure nearby_sharing_slice_enabled 0 || _standby_failed=1
+    apply_android_setting global wifi_scan_always_enabled 0 || _standby_failed=1
+    apply_android_setting global ble_scan_always_enabled 0 || _standby_failed=1
 
-    # adaptive_connectivity: Google 官方背书的 5G 节电机制。
+    # adaptive_connectivity: Google 官方的 5G 节电机制。
     # 开启后，系统在 app 不需要高速时自动从 NR 回退到 LTE，降低 modem 空闲功耗。
     # 来源: https://support.google.com/pixelphone/answer/2819583
-    settings put global adaptive_connectivity_enabled 1 2>/dev/null
+    apply_android_setting global adaptive_connectivity_enabled 1 || _standby_failed=1
 
     # network_recommendations: 系统默认已是开启，显式确保不被其他模块关闭。
-    settings put global network_recommendations_enabled 1 2>/dev/null
+    apply_android_setting global network_recommendations_enabled 1 || _standby_failed=1
+    [ "$_standby_failed" -eq 0 ]
+}
+
+apply_android_setting() {
+    _setting_scope="$1"
+    _setting_key="$2"
+    _setting_value="$3"
+    if settings put "$_setting_scope" "$_setting_key" "$_setting_value" 2>/dev/null \
+        && [ "$(settings get "$_setting_scope" "$_setting_key" 2>/dev/null | tr -d ' \n\r\t')" = "$_setting_value" ]; then
+        return 0
+    fi
+    log -t pixel9pro_ctrl "WARNING: failed to apply setting $_setting_scope/$_setting_key=$_setting_value"
+    return 1
 }
 
 manage_sim2_radio() {
-    # SIM2 空槽省电: 通过 AOSP 官方 API 切换 DSDS ↔ 单 SIM 模式。
-    #
-    # 旧方案 (v4.3.1~v4.3.18): cmd phone radio power -s 1 off
-    #   问题: 只是临时关闭 radio，telephony 框架仍维护 2 个 modem 实例，
-    #   会在 boot/网络变化/IMS 注册等事件后自动恢复 radio，导致空槽 modem 重新搜网。
-    #
-    # 新方案 (v4.3.19): cmd phone set-sim-count 1
-    #   调用 TelephonyManager.switchMultiSimConfig()，AOSP 官方持久化 API。
-    #   效果: Active modem count 从 2 降到 1，persist.radio.multisim.config 从 dsds 变为空，
-    #   第二个 modem 实例被框架彻底释放，不存在"被恢复"的问题。
-    #   恢复: cmd phone set-sim-count 2 即可恢复 DSDS。
-    #
-    # 参考:
-    #   - DroidWin: https://droidwin.com/how-to-disable-dual-sim-dual-standby-on-pixel-devices/
-    #   - XDA: https://xdaforums.com/t/disable-multi-sim-feature-to-reduce-battery-drain.3057352/
-    #   - AOSP: TelephonyShellCommand.handleSetSimCount → TelephonyManager.switchMultiSimConfig
-    #   - 设备验证: persist.vendor.radio.multisim_switch_support=true (Pixel 9 Pro 官方支持)
+    # Persistently switch Active modem count through TelephonyShellCommand.
+    # set-sim-count 1 releases the unused DSDS instance; 2 restores DSDS when
+    # SIM2 is present or the user disables automation. The command return value
+    # is authoritative; this build does not expose a reliable support property.
 
-    _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" 'on')
+    _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" "$SIM2_AUTO_DEFAULT")
 
     if [ "$_sim2_auto" != "on" ]; then
         # 用户显式关闭自动管理: 恢复 DSDS 双 modem
         if [ "$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)" = "disabled" ]; then
-            cmd phone set-sim-count 2 2>/dev/null
-            printf 'enabled' > "$MODDIR/.sim2_radio_off"
-            log -t pixel9pro_ctrl "SIM2 auto-manage off: restored DSDS (set-sim-count 2)"
+            if runtime_set_sim_count_state "$MODDIR/.sim2_radio_off" 2 enabled 1; then
+                log -t pixel9pro_ctrl "SIM2 auto-manage off: restored DSDS (set-sim-count 2)"
+            else
+                log -t pixel9pro_ctrl "WARNING: SIM2 auto-manage off but DSDS restore failed ($SIM2_TRANSACTION_RESULT)"
+                return 1
+            fi
         fi
         return 0
     fi
@@ -387,16 +226,22 @@ manage_sim2_radio() {
     case "$_sim2_state" in
         ABSENT|NOT_READY|PIN_REQUIRED|PUK_REQUIRED|PERM_DISABLED)
             if [ "$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)" != "disabled" ]; then
-                cmd phone set-sim-count 1 2>/dev/null
-                printf 'disabled' > "$MODDIR/.sim2_radio_off"
-                log -t pixel9pro_ctrl "SIM2=$_sim2_state: switched to single SIM (set-sim-count 1)"
+                if runtime_set_sim_count_state "$MODDIR/.sim2_radio_off" 1 disabled 2; then
+                    log -t pixel9pro_ctrl "SIM2=$_sim2_state: switched to single SIM (set-sim-count 1)"
+                else
+                    log -t pixel9pro_ctrl "WARNING: SIM2=$_sim2_state but single-SIM switch failed ($SIM2_TRANSACTION_RESULT)"
+                    return 1
+                fi
             fi
             ;;
         LOADED|READY)
             if [ "$(cat "$MODDIR/.sim2_radio_off" 2>/dev/null)" = "disabled" ]; then
-                cmd phone set-sim-count 2 2>/dev/null
-                printf 'enabled' > "$MODDIR/.sim2_radio_off"
-                log -t pixel9pro_ctrl "SIM2=$_sim2_state: restored DSDS (set-sim-count 2)"
+                if runtime_set_sim_count_state "$MODDIR/.sim2_radio_off" 2 enabled 1; then
+                    log -t pixel9pro_ctrl "SIM2=$_sim2_state: restored DSDS (set-sim-count 2)"
+                else
+                    log -t pixel9pro_ctrl "WARNING: SIM2=$_sim2_state but DSDS restore failed ($SIM2_TRANSACTION_RESULT)"
+                    return 1
+                fi
             fi
             ;;
     esac
@@ -406,27 +251,20 @@ manage_sim2_radio() {
 # Power profile: balanced (默认) / battery (省电)
 # L1 (persistent): App Standby Bucket + AppOps + Freezer
 # L2 (volatile): vendor_sched 后台 CPU 限制
-# L3 (volatile, boot-time): response_time_ms (由 cpu_profile.sh 管理)
+# L3 (volatile, profile-time): response_time_ms (由 cpu_profile.sh 管理)
 #
 # AOSP 验证:
 #   - App Standby Bucket: UsageStatsService 持久化到 app_idle_stats.xml, 重启后保留
 #     am set-standby-bucket 设置 reason=FORCED_BY_USER, 只有用户交互才会提升
 #   - AppOps: 持久化到 appops.xml, 系统不会自动回退
 #   - vendor_sched: /proc/vendor_sched/ 纯 RAM, PowerHAL 在 hint 时可能覆盖
-#
-# 注: 旧版 L3 "APF touch boost" (vendor.powerhal.apf_enabled=false) 已在 v4.3.28 移除,
-#     Pixel 9 Pro PowerHAL 不识别该属性, INTERACTION hint 未配置且零次触发 (2026-05-03 验证)
 
 VENDOR_SCHED="/proc/vendor_sched"
 
 _power_profile_params() {
-    # 根据 power profile 返回参数 (balanced / battery)
-    # 格式: bg_uclamp_max bg_group_throttle
     _pp=$(cat "$POWER_PROFILE_FILE" 2>/dev/null | tr -d ' \n\r')
-    case "$_pp" in
-        battery) echo "150 80" ;;
-        *)       echo "200 100" ;;
-    esac
+    [ "$CPU_PROFILE_AVAILABLE" -eq 1 ] || return 1
+    cpu_power_profile_l2_params "$_pp"
 }
 
 apply_l1_persistent_limits() {
@@ -438,12 +276,12 @@ apply_l1_persistent_limits() {
     BG_BASELINE_FILE="$MODDIR/.bg_restrict_baseline"
     BG_STOP_STATE_FILE="$MODDIR/.bg_restrict_stop_state"
 
-    [ -f "$BG_ENABLED_FILE" ] || printf 'on' > "$BG_ENABLED_FILE"
+    [ -f "$BG_ENABLED_FILE" ] || runtime_write_value "$BG_ENABLED_FILE" on \
+        || { log -t pixel9pro_ctrl "WARNING: failed to initialize background restriction state"; return 1; }
     if [ ! -e "$BG_LIST_FILE" ]; then
         # 首次运行: 只预置抖音。文件存在但为空时表示用户已清空列表，不再重置默认包名。
-        cat > "$BG_LIST_FILE" <<'DEFLIST'
-com.ss.android.ugc.aweme|stop_after_leave|5
-DEFLIST
+        runtime_write_value "$BG_LIST_FILE" 'com.ss.android.ugc.aweme|stop_after_leave|5' \
+            || { log -t pixel9pro_ctrl "WARNING: failed to initialize background restriction list"; return 1; }
     fi
     rm -f "$BG_STOP_STATE_FILE" 2>/dev/null
 
@@ -454,40 +292,48 @@ DEFLIST
     fi
 
     _count=0
+    _failed=0
     while IFS= read -r _line || [ -n "$_line" ]; do
         bg_parse_entry "$_line"
         [ -z "$_bg_pkg" ] && continue
         case "$_bg_pkg" in \#*) continue ;; esac
-        bg_apply_policy "$_bg_pkg" "$_bg_policy"
-        _count=$((_count + 1))
+        if bg_apply_policy "$_bg_pkg" "$_bg_policy"; then
+            _count=$((_count + 1))
+        else
+            _failed=$((_failed + 1))
+            log -t pixel9pro_ctrl "WARNING: failed to apply background policy for $_bg_pkg"
+        fi
     done < "$BG_LIST_FILE"
 
     # Cached App Freezer: 确保开启 (cgroup v2 freeze, 缓存进程零 CPU)
-    settings put global cached_apps_freezer_enabled 1 2>/dev/null
+    apply_android_setting global cached_apps_freezer_enabled 1 \
+        || _failed=$((_failed + 1))
 
-    log -t pixel9pro_ctrl "L1: bg restrict applied to $_count packages, freezer=1"
+    log -t pixel9pro_ctrl "L1: bg restrict applied=$_count failed=$_failed"
+    [ "$_failed" -eq 0 ]
 }
 
 apply_l2_vendor_sched() {
     # L2: vendor_sched 后台 CPU 限制 — volatile, 需要 enforce 守护
-    _params=$(_power_profile_params)
+    _params=$(_power_profile_params) || {
+        log -t pixel9pro_ctrl "WARNING: CPU profile contract missing, skipped L2 restore"
+        return 1
+    }
     _bg_uclamp=$(echo "$_params" | cut -d' ' -f1)
     _bg_throttle=$(echo "$_params" | cut -d' ' -f2)
-    echo "$_bg_uclamp" > "$VENDOR_SCHED/ug_bg_uclamp_max" 2>/dev/null
-    echo "$_bg_throttle" > "$VENDOR_SCHED/ug_bg_group_throttle" 2>/dev/null
-    log -t pixel9pro_ctrl "L2: vendor_sched bg_uclamp_max=$_bg_uclamp bg_throttle=$_bg_throttle"
+    if printf '%s\n' "$_bg_uclamp" > "$VENDOR_SCHED/ug_bg_uclamp_max" 2>/dev/null \
+        && printf '%s\n' "$_bg_throttle" > "$VENDOR_SCHED/ug_bg_group_throttle" 2>/dev/null \
+        && [ "$(cat "$VENDOR_SCHED/ug_bg_uclamp_max" 2>/dev/null | tr -d ' \n\r\t')" = "$_bg_uclamp" ] \
+        && [ "$(cat "$VENDOR_SCHED/ug_bg_group_throttle" 2>/dev/null | tr -d ' \n\r\t')" = "$_bg_throttle" ]; then
+        log -t pixel9pro_ctrl "L2: vendor_sched bg_uclamp_max=$_bg_uclamp bg_throttle=$_bg_throttle"
+        return 0
+    fi
+    log -t pixel9pro_ctrl "WARNING: failed to apply or verify L2 vendor_sched params"
+    return 1
 }
 
-# [已移除] apply_l3_apf — v4.3.28 移除
-# vendor.powerhal.apf_enabled 在 Pixel 9 Pro 上无效:
-#   PowerHAL 二进制不含 apf 字符串, INTERACTION hint 未配置
-#   Pixel 9 Pro 使用 HBoost + ADPF 机制替代旧 INTERACTION hint
-
 valid_profile() {
-    case "$1" in
-        performance|balanced|battery|default) return 0 ;;
-        *) return 1 ;;
-    esac
+    [ "$CPU_PROFILE_AVAILABLE" -eq 1 ] && cpu_profile_is_valid "$1"
 }
 
 valid_profile_policy() {
@@ -501,12 +347,8 @@ read_valid_profile() {
     _profile_path="$1"
     _profile_default="$2"
     _profile_value=$(cat "$_profile_path" 2>/dev/null | tr -d ' \n\r\t')
-    # v4.3.22: light 已删除, 映射到 balanced
-    [ "$_profile_value" = "light" ] && _profile_value="balanced"
-    # v4.4.0: responsive 改名 performance (加 cap 管理), 旧值映射
-    [ "$_profile_value" = "responsive" ] && _profile_value="performance"
-    if valid_profile "$_profile_value"; then
-        printf '%s' "$_profile_value"
+    if [ "$CPU_PROFILE_AVAILABLE" -eq 1 ]; then
+        cpu_profile_normalize_runtime "$_profile_value" "$_profile_default"
     else
         printf '%s' "$_profile_default"
     fi
@@ -522,27 +364,11 @@ read_valid_profile_policy() {
 }
 
 read_valid_sched_owner() {
-    if command -v so_read_effective_owner >/dev/null 2>&1; then
-        so_read_effective_owner
-        return
-    fi
-    _owner_value=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    case "$_owner_value" in
-        external) printf 'external' ;;
-        *)        printf 'pixel' ;;
-    esac
+    so_read_effective_owner
 }
 
 read_valid_desired_sched_owner() {
-    if command -v so_read_desired_owner >/dev/null 2>&1; then
-        so_read_desired_owner
-        return
-    fi
-    _owner_value=$(cat "$SCHED_OWNER_DESIRED_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    case "$_owner_value" in
-        pixel|external) printf '%s' "$_owner_value" ;;
-        *) read_valid_sched_owner ;;
-    esac
+    so_read_desired_owner
 }
 
 append_profile_history() {
@@ -612,9 +438,9 @@ ensure_profile_history_baseline() {
     if command -v build_thermal_json >/dev/null 2>&1; then
         _ph_json=$(build_thermal_json 2>/dev/null)
         if [ -n "$_ph_json" ] && [ "$_ph_json" != "[]" ]; then
-            _ph_tmp="${THERMAL_CACHE}.$$.$_now.tmp"
-            printf '%s' "$_ph_json" > "$_ph_tmp" 2>/dev/null
-            mv "$_ph_tmp" "$THERMAL_CACHE" 2>/dev/null
+            if ! runtime_write_value "$THERMAL_CACHE" "$_ph_json"; then
+                log -t pixel9pro_ctrl "WARNING: failed to refresh thermal cache baseline"
+            fi
         fi
     fi
     _vs_temp=$(sed -n 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/p' "$THERMAL_CACHE" 2>/dev/null | head -1)
@@ -623,24 +449,43 @@ ensure_profile_history_baseline() {
     esac
     _sev=$(dumpsys thermalservice 2>/dev/null | grep "Thermal Status:" | head -1 | sed 's/.*Thermal Status:[[:space:]]*//' | tr -d ' \n\r')
     case "$_sev" in ''|*[!0-9]*) _sev=0 ;; esac
-    append_profile_history "$(read_valid_profile "$PROFILE_FILE" 'default')" "service_start"
+    append_profile_history "$(read_valid_profile "$PROFILE_FILE" 'balanced')" "service_start"
     _now="$_ph_saved_now"
 }
 
 profile_lock_acquire() {
     _plock="$LOCKDIR_BASE/profile.lock"
-    mkdir -p "$LOCKDIR_BASE" 2>/dev/null
+    mkdir -p "$LOCKDIR_BASE" 2>/dev/null || return 1
     if mkdir "$_plock" 2>/dev/null; then
-        echo "$$" > "$_plock/pid" 2>/dev/null
+        _lock_start=$(sed 's/^[^)]*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}')
+        [ -n "$_lock_start" ] \
+            && printf '%s\n' "$$" > "$_plock/pid" 2>/dev/null \
+            && printf '%s\n' "$_lock_start" > "$_plock/start_ticks" 2>/dev/null \
+            || { rm -f "$_plock/pid" "$_plock/start_ticks" 2>/dev/null; rmdir "$_plock" 2>/dev/null; return 1; }
+        PROFILE_LOCK_START_TICKS="$_lock_start"
         return 0
     fi
-    _lock_pid=$(cat "$_plock/pid" 2>/dev/null)
-    if [ -z "$_lock_pid" ] || ! kill -0 "$_lock_pid" 2>/dev/null; then
-        rm -f "$_plock/pid" 2>/dev/null
+    _lock_pid=$(cat "$_plock/pid" 2>/dev/null | tr -d ' \n\r\t')
+    _lock_start=$(cat "$_plock/start_ticks" 2>/dev/null | tr -d ' \n\r\t')
+    case "$_lock_pid" in
+        ''|*[!0-9]*) _lock_live_start="" ;;
+        *) _lock_live_start=$(sed 's/^[^)]*) //' "/proc/$_lock_pid/stat" 2>/dev/null | awk '{print $20}') ;;
+    esac
+    if [ -z "$_lock_pid" ] || [ -z "$_lock_start" ] \
+        || ! kill -0 "$_lock_pid" 2>/dev/null \
+        || [ -z "$_lock_live_start" ] || [ "$_lock_live_start" != "$_lock_start" ]; then
+        rm -f "$_plock/pid" "$_plock/start_ticks" 2>/dev/null
         rmdir "$_plock" 2>/dev/null
         if mkdir "$_plock" 2>/dev/null; then
-            echo "$$" > "$_plock/pid" 2>/dev/null
-            return 0
+            _lock_start=$(sed 's/^[^)]*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}')
+            if [ -n "$_lock_start" ] \
+                && printf '%s\n' "$$" > "$_plock/pid" 2>/dev/null \
+                && printf '%s\n' "$_lock_start" > "$_plock/start_ticks" 2>/dev/null; then
+                PROFILE_LOCK_START_TICKS="$_lock_start"
+                return 0
+            fi
+            rm -f "$_plock/pid" "$_plock/start_ticks" 2>/dev/null
+            rmdir "$_plock" 2>/dev/null
         fi
     fi
     return 1
@@ -648,14 +493,22 @@ profile_lock_acquire() {
 
 profile_lock_release() {
     _plock="$LOCKDIR_BASE/profile.lock"
-    rm -f "$_plock/pid" 2>/dev/null
-    rmdir "$_plock" 2>/dev/null
+    _lock_pid=$(cat "$_plock/pid" 2>/dev/null | tr -d ' \n\r\t')
+    _lock_start=$(cat "$_plock/start_ticks" 2>/dev/null | tr -d ' \n\r\t')
+    if [ "$_lock_pid" = "$$" ] \
+        && [ -n "${PROFILE_LOCK_START_TICKS:-}" ] \
+        && [ "$_lock_start" = "$PROFILE_LOCK_START_TICKS" ]; then
+        rm -f "$_plock/pid" "$_plock/start_ticks" 2>/dev/null
+        rmdir "$_plock" 2>/dev/null
+    fi
+    PROFILE_LOCK_START_TICKS=""
 }
 
 apply_profile_state() {
     _target="$1"
     _reason="$2"
 
+    [ "$CPU_PROFILE_AVAILABLE" -eq 1 ] || return 1
     valid_profile "$_target" || return 1
 
     if [ "$(read_valid_sched_owner)" = "external" ]; then
@@ -668,12 +521,26 @@ apply_profile_state() {
         return 1
     fi
 
+    _previous_profile=$(read_valid_profile "$PROFILE_FILE" balanced)
+    _previous_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null)
     _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_target" "$MODDIR" 2>/dev/null)
     _rc=$?
 
     if [ "$_rc" -eq 0 ]; then
-        printf '%s' "$_target" > "$PROFILE_FILE"
-        printf '%s' "$_reason" > "$PROFILE_AUTO_REASON_FILE"
+        if ! runtime_write_value "$PROFILE_FILE" "$_target" \
+            || ! runtime_write_value "$PROFILE_AUTO_REASON_FILE" "$_reason"; then
+            _profile_rollback_ok=1
+            runtime_write_value "$PROFILE_FILE" "$_previous_profile" >/dev/null 2>&1 || _profile_rollback_ok=0
+            runtime_write_value "$PROFILE_AUTO_REASON_FILE" "$_previous_reason" >/dev/null 2>&1 || _profile_rollback_ok=0
+            sh "$MODDIR/scripts/cpu_profile.sh" "$_previous_profile" "$MODDIR" force >/dev/null 2>&1 || _profile_rollback_ok=0
+            if [ "$_profile_rollback_ok" -eq 1 ]; then
+                log -t pixel9pro_ctrl "WARNING: CPU profile state commit failed; restored $_previous_profile"
+            else
+                log -t pixel9pro_ctrl "ERROR: CPU profile state commit failed and rollback to $_previous_profile was incomplete"
+            fi
+            profile_lock_release
+            return 1
+        fi
         append_profile_history "$_target" "$_reason"
         log -t pixel9pro_ctrl "CPU profile applied: $_target ($_reason)"
         profile_lock_release
@@ -722,12 +589,18 @@ sleep 20
 # ──────────────────────────────────────────────────────────
 # 1.1 WebUI 安全: token 生成 + 环境变量导出
 # ──────────────────────────────────────────────────────────
-mkdir -p "$LOCKDIR_BASE" 2>/dev/null
-chmod 700 "$LOCKDIR_BASE" 2>/dev/null
+mkdir -p "$LOCKDIR_BASE" 2>/dev/null \
+    && chmod 700 "$LOCKDIR_BASE" 2>/dev/null \
+    || { log -t pixel9pro_ctrl "ERROR: failed to prepare WebUI lock directory"; exit 1; }
 token=$(dd if=/dev/urandom bs=16 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
-[ -n "$token" ] || token="$(date +%s 2>/dev/null)_$$"
-printf '%s' "$token" > "$TOKEN_FILE"
+[ -n "$token" ] || { log -t pixel9pro_ctrl "ERROR: secure token generation failed"; exit 1; }
+runtime_write_value "$TOKEN_FILE" "$token" \
+    || { log -t pixel9pro_ctrl "ERROR: secure token persistence failed"; exit 1; }
 chmod 600 "$TOKEN_FILE" 2>/dev/null
+if [ "$?" -ne 0 ]; then
+    log -t pixel9pro_ctrl "ERROR: failed to secure WebUI token permissions"
+    exit 1
+fi
 
 export PIXEL9PRO_MODDIR="$MODDIR"
 export PIXEL9PRO_WEBUI_PORT="$PORT"
@@ -738,151 +611,140 @@ export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
 # ──────────────────────────────────────────────────────────
 # 2. 系统设置优化 (保 5G 分支)
 # ──────────────────────────────────────────────────────────
-# SIM2 自动管理: 默认 on。空槽 radio 全天消耗 800-1000 mAh，无任何收益。
-# 若文件因热更新丢失，但 .sim2_radio_off 记录曾 disabled → 说明用户之前开过，恢复为 on。
-# 若两个文件都不存在（首次运行）→ 默认 on，让功能立即生效。
+# SIM2 automation defaults to on and is persisted as an explicit user setting.
 if [ ! -f "$SIM2_AUTO_FILE" ]; then
-    printf 'on' > "$SIM2_AUTO_FILE"
+    runtime_write_value "$SIM2_AUTO_FILE" "$SIM2_AUTO_DEFAULT" \
+        || log -t pixel9pro_ctrl "WARNING: failed to initialize SIM2 automation state"
 fi
-[ -f "$IDLE_ISOLATE_FILE" ] || printf 'off' > "$IDLE_ISOLATE_FILE"
+[ -f "$IDLE_ISOLATE_FILE" ] || runtime_write_value "$IDLE_ISOLATE_FILE" "$IDLE_ISOLATE_DEFAULT" \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize idle-isolate state"
 
 log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: applying keep-5G standby optimizations..."
 
 # === UECap 档位 (纯手动三档) ===
-# special: global special，stock +52 组增强组合
-# balanced: trial_minimal_cn_combo，stock +25 组中国 n28/n41/n79 组合
-# universal: stock 等价副本
+# special / balanced / universal 分别对应全面增强 / 国内频段 / Google 默认；
+# payload 组合与 hash 由模块资源和构建校验负责，boot 不复制第二份参数表。
 apply_uecap_profile
 
-# === Modem / 待机优化 (参考 Mori 帖子 + RMBD 模块) ===
-# 开机时先应用 keep-5G 分支设置，再由后续延迟复写兜住开机后被系统回写的项目。
-apply_keep5g_standby_settings
+# === Modem / standby settings ===
+# Apply once after boot, then repeat after unlock because Android may restore
+# scan/time settings during late framework initialization.
+apply_keep5g_standby_settings \
+    || log -t pixel9pro_ctrl "WARNING: one or more standby settings failed verification"
 restore_ntp_server
 
 # === SIM2 空槽省电: 关闭空卡槽的 radio instance ===
 manage_sim2_radio
 
-# 开机时先全局关闭 WiFi multicast (RMBD 基础策略)
-# 后续由 screen-aware 循环在亮屏时恢复
-# [v4.3.28] 移除 dumpsys wifi disable-multicast:
-#   WifiShellCommand 不含 disable-multicast 子命令 (AOSP 源码验证),
-#   dumpsys wifi disable-multicast 仅触发 dump 输出, 不改变多播状态。
-#   实际控制由 ip link set wlan0 multicast off 完成 (移除接口 MULTICAST 标志)。
+# Wi-Fi multicast follows screen state through the interface flag. The
+# WifiShellCommand has no mutating disable-multicast command on this build.
 ip link set wlan0 multicast off 2>/dev/null
 
 # === 内核 I/O 参数优化 ===
-echo 3000 > /proc/sys/vm/dirty_writeback_centisecs 2>/dev/null
-echo 50 > /proc/sys/vm/dirty_ratio 2>/dev/null
-echo 20 > /proc/sys/vm/dirty_background_ratio 2>/dev/null
+if [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
+    vm_apply_dirty_params \
+        || log -t pixel9pro_ctrl "WARNING: failed to apply one or more VM dirty-page parameters"
+fi
 
-# === uclamp.min cap (sched_util_clamp_min) 现由 cpu_profile.sh 按档管理 ===
-# 纠正旧机理: 它是 uclamp.min 的"系统级上限(cap)", 不是"虚假 100% util 信号"
-#   (内核文档 sched-util-clamp; 出厂 1024 仅是允许的最大请求值, 不主动抬 util)。
-# v4.4.0 起不在 boot 独立写: performance=1024(还 Google 动态 boost) / 其它档=0,
-#   由 cpu_profile.sh 各分支成对管理; 下方第 3 节的 cpu_profile.sh 调用会按当前档写好 cap。
+# sched_util_clamp_min is applied with the selected CPU profile: balanced and
+# battery use 0; default and the internal performance baseline use 1024.
 
-# === ZRAM 配置 (Emerald Hill 硬件加速 + 扩容) ===
+# === ZRAM / VM 配置 ===
+if [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
 # 原厂出厂: persist.vendor.zram_comp_algorithm 默认为 lz4, ZRAM 大小 50% RAM ≈ 8GB.
 # init.rc 代码兜底默认是 lz77eh (Emerald Hill 硬件), 但出厂 persist 属性覆盖为 lz4.
-# 本模块统一配置: 算法 lz77eh (硬件加速, 压缩率更优, CPU 零开销) + 大小 11392MB.
+# 目标算法、大小和 VM 预设由 scripts/vm_profile_lib.sh 统一定义。
 #
 # persist 属性确保后续重启时 init.rc 直接使用 lz77eh, 减少 swapoff 次数.
-setprop persist.vendor.zram_comp_algorithm lz77eh 2>/dev/null
-
-# 目标: lz77eh + 11392MB (11945377792 bytes)
-TARGET_ALGO="lz77eh"
-TARGET_SIZE="11945377792"
+if ! setprop persist.vendor.zram_comp_algorithm "$VM_ZRAM_ALGO" 2>/dev/null \
+    || [ "$(getprop persist.vendor.zram_comp_algorithm 2>/dev/null | tr -d ' \n\r\t')" != "$VM_ZRAM_ALGO" ]; then
+    log -t pixel9pro_ctrl "WARNING: failed to persist ZRAM algorithm property"
+fi
 
 CURRENT_ALGO=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | sed 's/.*\[\(.*\)\].*/\1/')
 CURRENT_SIZE=$(cat /sys/block/zram0/disksize 2>/dev/null)
 
-if [ "$CURRENT_ALGO" != "$TARGET_ALGO" ] || [ "$CURRENT_SIZE" != "$TARGET_SIZE" ]; then
-    log -t pixel9pro_ctrl "ZRAM reconfigure: ${CURRENT_ALGO}/${CURRENT_SIZE} -> ${TARGET_ALGO}/${TARGET_SIZE}"
-    if swapoff /dev/block/zram0 2>/dev/null; then
-        echo 1 > /sys/block/zram0/reset 2>/dev/null
-        echo "$TARGET_ALGO" > /sys/block/zram0/comp_algorithm 2>/dev/null
-        echo "$TARGET_SIZE" > /sys/block/zram0/disksize 2>/dev/null
-        mkswap /dev/block/zram0 >/dev/null 2>&1
-        swapon /dev/block/zram0 2>/dev/null
-        log -t pixel9pro_ctrl "ZRAM: $TARGET_ALGO $(($TARGET_SIZE / 1048576))MB ready"
+if [ "$CURRENT_ALGO" != "$VM_ZRAM_ALGO" ] || [ "$CURRENT_SIZE" != "$VM_ZRAM_SIZE_BYTES" ]; then
+    log -t pixel9pro_ctrl "ZRAM reconfigure: ${CURRENT_ALGO}/${CURRENT_SIZE} -> ${VM_ZRAM_ALGO}/${VM_ZRAM_SIZE_BYTES}"
+    if vm_reconfigure_zram "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES"; then
+        log -t pixel9pro_ctrl "ZRAM: $VM_ZRAM_ALGO $(($VM_ZRAM_SIZE_BYTES / 1048576))MB ready"
     else
-        log -t pixel9pro_ctrl "ZRAM: swapoff failed (heavy usage?), keeping current config"
+        _zram_rc=$?
+        if [ "$_zram_rc" -eq 2 ]; then
+            log -t pixel9pro_ctrl "ERROR: ZRAM reconfigure failed and previous configuration restore was incomplete"
+        else
+            log -t pixel9pro_ctrl "WARNING: ZRAM reconfigure failed; previous configuration restored"
+        fi
     fi
 else
-    log -t pixel9pro_ctrl "ZRAM: already $TARGET_ALGO $(($TARGET_SIZE / 1048576))MB, skip"
+    log -t pixel9pro_ctrl "ZRAM: already $VM_ZRAM_ALGO $(($VM_ZRAM_SIZE_BYTES / 1048576))MB, skip"
 fi
 
 # === Swap / 内存回收调优 (按上次用户选择恢复) ===
-OPT_SWAPPINESS=100
-OPT_MIN_FREE_KBYTES=131072
-OPT_WATERMARK_SCALE=200
-OPT_VFS_CACHE_PRESSURE=60
-STOCK_SWAPPINESS=150
-STOCK_MIN_FREE_KBYTES=27386
-STOCK_WATERMARK_SCALE=50
-STOCK_VFS_CACHE_PRESSURE=100
 SWAP_CUSTOM_FILE="$MODDIR/.swap_custom"
-
-is_uint_range() {
-    _val="$1"
-    _min="$2"
-    _max="$3"
-    case "$_val" in
-        ''|*[!0-9]*) return 1 ;;
-    esac
-    [ "$_val" -ge "$_min" ] 2>/dev/null && [ "$_val" -le "$_max" ] 2>/dev/null
-}
-
-write_vm_params() {
-    echo "$1" > /proc/sys/vm/swappiness 2>/dev/null
-    echo "$2" > /proc/sys/vm/min_free_kbytes 2>/dev/null
-    echo "$3" > /proc/sys/vm/watermark_scale_factor 2>/dev/null
-    echo "$4" > /proc/sys/vm/vfs_cache_pressure 2>/dev/null
-}
-
-read_swap_custom_param() {
-    sed -n "s/^$1=//p" "$SWAP_CUSTOM_FILE" 2>/dev/null | tail -1 | tr -d ' \n\r'
-}
 
 SWAP_MODE=$(cat "$MODDIR/.swap_mode" 2>/dev/null | tr -d ' \n\r')
 case "$SWAP_MODE" in
     stock)
-        write_vm_params "$STOCK_SWAPPINESS" "$STOCK_MIN_FREE_KBYTES" "$STOCK_WATERMARK_SCALE" "$STOCK_VFS_CACHE_PRESSURE"
-        log -t pixel9pro_ctrl "Swap: restored stock VM params"
+        if vm_write_params "$VM_STOCK_SWAPPINESS" "$VM_STOCK_MIN_FREE_KBYTES" "$VM_STOCK_WATERMARK_SCALE" "$VM_STOCK_VFS_CACHE_PRESSURE"; then
+            log -t pixel9pro_ctrl "Swap: restored stock VM params"
+        else
+            log -t pixel9pro_ctrl "WARNING: failed to restore stock VM params"
+        fi
         ;;
     custom)
-        _custom_sw=$(read_swap_custom_param swappiness)
-        _custom_mfk=$(read_swap_custom_param min_free_kbytes)
-        _custom_wsf=$(read_swap_custom_param watermark_scale_factor)
-        _custom_vcp=$(read_swap_custom_param vfs_cache_pressure)
-        if is_uint_range "$_custom_sw" 0 200 \
-            && is_uint_range "$_custom_mfk" 16384 262144 \
-            && is_uint_range "$_custom_wsf" 10 500 \
-            && is_uint_range "$_custom_vcp" 10 200; then
-            write_vm_params "$_custom_sw" "$_custom_mfk" "$_custom_wsf" "$_custom_vcp"
-            log -t pixel9pro_ctrl "Swap: restored custom VM params"
+        _custom_sw=$(vm_read_custom_param swappiness "$SWAP_CUSTOM_FILE")
+        _custom_mfk=$(vm_read_custom_param min_free_kbytes "$SWAP_CUSTOM_FILE")
+        _custom_wsf=$(vm_read_custom_param watermark_scale_factor "$SWAP_CUSTOM_FILE")
+        _custom_vcp=$(vm_read_custom_param vfs_cache_pressure "$SWAP_CUSTOM_FILE")
+        if vm_is_uint_range "$_custom_sw" "$VM_SWAPPINESS_MIN" "$VM_SWAPPINESS_MAX" \
+            && vm_is_uint_range "$_custom_mfk" "$VM_MIN_FREE_KBYTES_MIN" "$VM_MIN_FREE_KBYTES_MAX" \
+            && vm_is_uint_range "$_custom_wsf" "$VM_WATERMARK_SCALE_MIN" "$VM_WATERMARK_SCALE_MAX" \
+            && vm_is_uint_range "$_custom_vcp" "$VM_VFS_CACHE_PRESSURE_MIN" "$VM_VFS_CACHE_PRESSURE_MAX"; then
+            if vm_write_params "$_custom_sw" "$_custom_mfk" "$_custom_wsf" "$_custom_vcp"; then
+                log -t pixel9pro_ctrl "Swap: restored custom VM params"
+            else
+                log -t pixel9pro_ctrl "WARNING: failed to restore custom VM params"
+            fi
         else
-            write_vm_params "$OPT_SWAPPINESS" "$OPT_MIN_FREE_KBYTES" "$OPT_WATERMARK_SCALE" "$OPT_VFS_CACHE_PRESSURE"
-            echo "optimized" > "$MODDIR/.swap_mode"
-            log -t pixel9pro_ctrl "Swap: invalid custom params, restored optimized VM params"
+            if vm_write_params "$VM_OPT_SWAPPINESS" "$VM_OPT_MIN_FREE_KBYTES" "$VM_OPT_WATERMARK_SCALE" "$VM_OPT_VFS_CACHE_PRESSURE"; then
+                if runtime_write_value "$MODDIR/.swap_mode" optimized >/dev/null 2>&1; then
+                    log -t pixel9pro_ctrl "Swap: invalid custom params, restored optimized VM params"
+                else
+                    log -t pixel9pro_ctrl "ERROR: optimized VM params restored but swap-mode state commit failed"
+                fi
+            else
+                log -t pixel9pro_ctrl "WARNING: invalid custom params and optimized fallback failed"
+            fi
         fi
         ;;
     *)
-        write_vm_params "$OPT_SWAPPINESS" "$OPT_MIN_FREE_KBYTES" "$OPT_WATERMARK_SCALE" "$OPT_VFS_CACHE_PRESSURE"
-        [ -s "$MODDIR/.swap_mode" ] || echo "optimized" > "$MODDIR/.swap_mode"
+        if vm_write_params "$VM_OPT_SWAPPINESS" "$VM_OPT_MIN_FREE_KBYTES" "$VM_OPT_WATERMARK_SCALE" "$VM_OPT_VFS_CACHE_PRESSURE"; then
+            runtime_write_value "$MODDIR/.swap_mode" optimized >/dev/null 2>&1 \
+                || log -t pixel9pro_ctrl "WARNING: failed to normalize VM mode state"
+        else
+            log -t pixel9pro_ctrl "WARNING: failed to restore optimized VM params"
+        fi
         ;;
 esac
+else
+    log -t pixel9pro_ctrl "WARNING: VM profile library missing, skipped ZRAM/VM restore"
+fi
 
-log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: keep-5G standby settings applied (radio+kernel+swap+zram)"
+log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: boot policy restore completed; warnings above remain authoritative"
 
 # ──────────────────────────────────────────────────────────
 # 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)
 #     L3 (response_time_ms) 由后续 cpu_profile.sh 管理
 # ──────────────────────────────────────────────────────────
-[ -f "$POWER_PROFILE_FILE" ] || printf 'balanced' > "$POWER_PROFILE_FILE"
-[ -f "$SCHED_OWNER_FILE" ] || printf 'pixel' > "$SCHED_OWNER_FILE"
-[ -f "$SCHED_OWNER_DESIRED_FILE" ] || printf '%s' "$(read_valid_sched_owner)" > "$SCHED_OWNER_DESIRED_FILE"
-[ -f "$GAME_HANDOFF_POLICY_FILE" ] || printf 'off' > "$GAME_HANDOFF_POLICY_FILE"
+[ -f "$POWER_PROFILE_FILE" ] || runtime_write_value "$POWER_PROFILE_FILE" balanced \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize power profile state"
+[ -f "$SCHED_OWNER_FILE" ] || runtime_write_value "$SCHED_OWNER_FILE" pixel \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize scheduler owner state"
+[ -f "$SCHED_OWNER_DESIRED_FILE" ] || runtime_write_value "$SCHED_OWNER_DESIRED_FILE" "$(read_valid_sched_owner)" \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize desired scheduler owner"
+[ -f "$GAME_HANDOFF_POLICY_FILE" ] || runtime_write_value "$GAME_HANDOFF_POLICY_FILE" off \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize game handoff policy"
 apply_l1_persistent_limits
 if [ "$(read_valid_sched_owner)" = "external" ]; then
     log -t pixel9pro_ctrl "L2: skipped, scheduler owner=external"
@@ -893,23 +755,36 @@ fi
 # 延迟复写：NTP 服务器和扫描类设置可能在用户解锁后被系统回写。
 (
     sleep 120
-    apply_keep5g_standby_settings
+    _late_settings_result=ok
+    apply_keep5g_standby_settings || _late_settings_result=failed
     restore_ntp_server
-    log -t pixel9pro_ctrl "Standby settings re-applied after late boot"
+    if [ "$_late_settings_result" = "ok" ]; then
+        log -t pixel9pro_ctrl "Standby settings re-applied after late boot"
+    else
+        log -t pixel9pro_ctrl "WARNING: late-boot standby settings were only partially applied"
+    fi
 ) &
 
 # ──────────────────────────────────────────────────────────
 # 3. 应用 CPU 调度方案 (cpuset + sched_pixel 参数)
 # ──────────────────────────────────────────────────────────
-PROFILE=$(read_valid_profile "$PROFILE_FILE" 'default')
-[ -f "$PROFILE_MANUAL_FILE" ] || printf '%s' "$PROFILE" > "$PROFILE_MANUAL_FILE"
-[ -f "$PROFILE_POLICY_FILE" ] || printf 'manual' > "$PROFILE_POLICY_FILE"
-[ -f "$PROFILE_AUTO_REASON_FILE" ] || printf 'manual_policy' > "$PROFILE_AUTO_REASON_FILE"
+PROFILE=$(read_valid_profile "$PROFILE_FILE" 'balanced')
+[ -f "$PROFILE_MANUAL_FILE" ] || runtime_write_value "$PROFILE_MANUAL_FILE" "$PROFILE" \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize manual profile state"
+[ -f "$PROFILE_POLICY_FILE" ] || runtime_write_value "$PROFILE_POLICY_FILE" manual \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize profile policy"
+[ -f "$PROFILE_AUTO_REASON_FILE" ] || runtime_write_value "$PROFILE_AUTO_REASON_FILE" manual_policy \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize profile reason"
 if [ "$(read_valid_sched_owner)" = "external" ]; then
     log -t pixel9pro_ctrl "CPU profile skipped: scheduler owner=external"
+elif [ "$CPU_PROFILE_AVAILABLE" -ne 1 ]; then
+    log -t pixel9pro_ctrl "WARNING: CPU profile contract missing, skipped profile restore"
 else
-    sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" "$MODDIR" 2>/dev/null
-    log -t pixel9pro_ctrl "CPU profile: $PROFILE"
+    if sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" "$MODDIR" 2>/dev/null; then
+        log -t pixel9pro_ctrl "CPU profile applied: $PROFILE"
+    else
+        log -t pixel9pro_ctrl "WARNING: CPU profile restore failed: $PROFILE"
+    fi
 fi
 ensure_profile_history_baseline
 
@@ -984,13 +859,13 @@ log -t pixel9pro_ctrl "Owner arbiter worker started"
 
 # ──────────────────────────────────────────────────────────
 # 4. 统一后台工作循环 (Doze 友好)
-#    合并原 4 个独立循环为 1 个，每周期只调用 1 次 dumpsys display
+#    屏幕状态优先读 DRM sysfs，仅在节点异常时回退一次 display/power IPC
 #    亮屏 15s / 息屏首次 60s (NR防抖) / 息屏后续 600s / 突发 5s
 #    若已降到 LTE, 改为较短复查周期，避免亮屏后长期停留 LTE
 #    WiFi multicast: 仅在屏幕状态变化时切换，不轮询
 #    NR 降级: 集成防抖，仅在开启时生效
-#    温度历史: 每周期记录，息屏 600s 一次 (突发时 5s)
-#    UECap 自动策略: 已移除 (v4.3.0 改为纯手动三档)
+#    温度历史: 仅亮屏记录，WebUI 前台突发窗口缩短为 5s
+#    UECap: manual profile is applied only during boot or an explicit WebUI action
 # ──────────────────────────────────────────────────────────
 NR_SWITCH_FILE="$MODDIR/.nr_screen_switch"
 NR_MODE_FILE="$MODDIR/.nr_saved_mode"
@@ -1001,67 +876,30 @@ POWER_HISTORY="$MODDIR/.power_history"
 POWER_HISTORY_MAX=20160
 POWER_SESSION_FILE="$MODDIR/.power_session"
 
-[ -f "$NR_SWITCH_FILE" ] || echo "off" > "$NR_SWITCH_FILE"
-
-_nr_slot0_val() {
-    case "$1" in
-        *,*) printf '%s' "${1%%,*}" ;;
-        *) printf '%s' "$1" ;;
-    esac
-}
-
-_nr_replace_slot0() {
-    case "$1" in
-        *,*) printf '%s,%s' "$2" "${1#*,}" ;;
-        *) printf '%s' "$2" ;;
-    esac
-}
-
-is_nr_mode_value() {
-    _val=$(_nr_slot0_val "$1")
-    case "$_val" in
-        ''|null) return 1 ;;
-        *[!0-9-]*) return 1 ;;
-    esac
-    [ "$_val" -ge 23 ] 2>/dev/null
-}
-
-is_nr_mode_raw() {
-    case "$1" in
-        ''|null|*[!0-9,-]*|*,*,*) return 1 ;;
-        *,*)
-            _raw_first=${1%%,*}
-            _raw_rest=${1#*,}
-            case "$_raw_first" in ''|*[!0-9-]*) return 1 ;; esac
-            case "$_raw_rest" in ''|*[!0-9,-]*) return 1 ;; esac
-            ;;
-        *) ;;
-    esac
-    return 0
-}
-
-read_saved_nr_mode() {
-    _saved_nr_mode=$(cat "$NR_MODE_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    if is_nr_mode_raw "$_saved_nr_mode" && is_nr_mode_value "$_saved_nr_mode"; then
-        printf '%s' "$_saved_nr_mode"
-    else
-        printf '33'
-        printf '%s' '33' > "$NR_MODE_FILE" 2>/dev/null || true
-    fi
-}
+[ -f "$NR_SWITCH_FILE" ] || runtime_write_value "$NR_SWITCH_FILE" "$NR_SCREEN_SWITCH_DEFAULT" >/dev/null 2>&1 \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize NR switch state"
 
 (
     . "$MODDIR/webroot/cgi-bin/_thermal_cache.sh"
 
     _cleanup_nr() {
         if [ "$_nr_state" = "lte" ] && [ -n "$_nr_key" ]; then
-            settings put global "$_nr_key" "$(read_saved_nr_mode)" 2>/dev/null
-            log -t pixel9pro_ctrl "NR switch: worker exit, restored NR"
+            _nr_restore=$(nr_mode_read_saved "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" 2>/dev/null)
+            if [ -n "$_nr_restore" ] && nr_mode_write_verified "$_nr_key" "$_nr_restore"; then
+                log -t pixel9pro_ctrl "NR switch: worker exit, restored NR"
+            else
+                log -t pixel9pro_ctrl "WARNING: worker exit NR restore failed"
+            fi
         fi
     }
-    trap '_cleanup_nr' EXIT TERM HUP
+    trap '_cleanup_nr' EXIT
+    trap '_cleanup_nr; exit 130' INT
+    trap '_cleanup_nr; exit 143' TERM
+    trap '_cleanup_nr; exit 129' HUP
 
     _write_standby_diag_state() {
+        _diag_tmp="${STANDBY_DIAG_FILE}.tmp.$$"
+        [ ! -d "$STANDBY_DIAG_FILE" ] || return 1
         {
             printf 'updated_at=%s\n' "$1"
             printf 'screen=%s\n' "$2"
@@ -1075,8 +913,11 @@ read_saved_nr_mode() {
             printf 'idle_isolate=%s\n' "${10}"
             printf 'sim2_auto_manage=%s\n' "${11}"
             printf 'cycle_count=%s\n' "${12}"
-        } > "${STANDBY_DIAG_FILE}.tmp"
-        mv "${STANDBY_DIAG_FILE}.tmp" "$STANDBY_DIAG_FILE"
+        } > "$_diag_tmp" 2>/dev/null \
+            && mv "$_diag_tmp" "$STANDBY_DIAG_FILE" 2>/dev/null \
+            && [ -f "$STANDBY_DIAG_FILE" ] && return 0
+        rm -f "$_diag_tmp" 2>/dev/null
+        return 1
     }
 
     _read_odpm_uws() {
@@ -1097,6 +938,8 @@ read_saved_nr_mode() {
         _ps_charge="$3"
         _ps_reason="$4"
         _read_odpm_uws
+        _ps_tmp="${POWER_SESSION_FILE}.tmp.$$"
+        [ ! -d "$POWER_SESSION_FILE" ] || return 1
         {
             printf 'start_ts=%s\n' "$_ps_start"
             printf 'start_level=%s\n' "$_ps_level"
@@ -1104,8 +947,11 @@ read_saved_nr_mode() {
             printf 'reset_reason=%s\n' "$_ps_reason"
             printf 'odpm_modem_uws=%s\n' "$_odpm_modem"
             printf 'odpm_rffe_uws=%s\n' "$_odpm_rffe"
-        } > "${POWER_SESSION_FILE}.tmp"
-        mv "${POWER_SESSION_FILE}.tmp" "$POWER_SESSION_FILE"
+        } > "$_ps_tmp" 2>/dev/null \
+            && mv "$_ps_tmp" "$POWER_SESSION_FILE" 2>/dev/null \
+            && [ -f "$POWER_SESSION_FILE" ] && return 0
+        rm -f "$_ps_tmp" 2>/dev/null
+        return 1
     }
 
     _compact_power_history_if_needed() {
@@ -1113,8 +959,13 @@ read_saved_nr_mode() {
         _keep=$((POWER_HISTORY_MAX - 240))
         _trim_tmp="${POWER_HISTORY}.trim.$$"
         if tail -n "$_keep" "$POWER_HISTORY" > "$_trim_tmp" 2>/dev/null; then
-            mv "$_trim_tmp" "$POWER_HISTORY"
-            _power_history_lines=$_keep
+            if [ ! -d "$POWER_HISTORY" ] && mv "$_trim_tmp" "$POWER_HISTORY" 2>/dev/null \
+                && [ -f "$POWER_HISTORY" ]; then
+                _power_history_lines=$_keep
+            else
+                rm -f "$_trim_tmp" 2>/dev/null
+                log -t pixel9pro_ctrl "WARNING: failed to compact power history"
+            fi
         else
             rm -f "$_trim_tmp"
         fi
@@ -1125,8 +976,13 @@ read_saved_nr_mode() {
         _keep=$((THERMAL_HISTORY_MAX - 360))
         _trim_tmp="${THERMAL_HISTORY}.trim.$$"
         if tail -n "$_keep" "$THERMAL_HISTORY" > "$_trim_tmp" 2>/dev/null; then
-            mv "$_trim_tmp" "$THERMAL_HISTORY"
-            _thermal_history_lines=$_keep
+            if [ ! -d "$THERMAL_HISTORY" ] && mv "$_trim_tmp" "$THERMAL_HISTORY" 2>/dev/null \
+                && [ -f "$THERMAL_HISTORY" ]; then
+                _thermal_history_lines=$_keep
+            else
+                rm -f "$_trim_tmp" 2>/dev/null
+                log -t pixel9pro_ctrl "WARNING: failed to compact thermal history"
+            fi
         else
             rm -f "$_trim_tmp"
         fi
@@ -1169,11 +1025,13 @@ read_saved_nr_mode() {
             fi
         else
             if [ ! -s "$POWER_SESSION_FILE" ]; then
-                _write_power_session "$_now" "$_p_level" "$_p_charge" "boot_init"
+                _write_power_session "$_now" "$_p_level" "$_p_charge" "boot_init" \
+                    || log -t pixel9pro_ctrl "WARNING: failed to initialize power session"
             elif [ "$_power_prev_is_charging" -eq 1 ] && [ "$_power_reset_armed" -eq 1 ]; then
                 _reason="charged_10m"
                 [ "$_power_charge_seen_full" -eq 1 ] && _reason="full_replug"
-                _write_power_session "$_now" "$_p_level" "$_p_charge" "$_reason"
+                _write_power_session "$_now" "$_p_level" "$_p_charge" "$_reason" \
+                    || log -t pixel9pro_ctrl "WARNING: failed to reset power session ($_reason)"
                 log -t pixel9pro_ctrl "Power session reset: ${_reason}, level=${_p_level}"
             fi
             _power_charge_since=0
@@ -1223,10 +1081,21 @@ read_saved_nr_mode() {
         _bg_stop_pkg="$1"
         _bg_stop_since="$2"
         _bg_stop_done="$3"
-        mkdir -p "${BG_STOP_STATE_FILE%/*}" 2>/dev/null
-        awk -F'|' -v p="$_bg_stop_pkg" '$1 != p' "$BG_STOP_STATE_FILE" > "${BG_STOP_STATE_FILE}.tmp" 2>/dev/null
-        printf '%s|%s|%s\n' "$_bg_stop_pkg" "$_bg_stop_since" "$_bg_stop_done" >> "${BG_STOP_STATE_FILE}.tmp"
-        mv "${BG_STOP_STATE_FILE}.tmp" "$BG_STOP_STATE_FILE" 2>/dev/null
+        mkdir -p "${BG_STOP_STATE_FILE%/*}" 2>/dev/null || return 1
+        [ ! -d "$BG_STOP_STATE_FILE" ] || return 1
+        _bg_state_tmp="${BG_STOP_STATE_FILE}.tmp.$$"
+        if [ -s "$BG_STOP_STATE_FILE" ]; then
+            awk -F'|' -v p="$_bg_stop_pkg" '$1 != p' "$BG_STOP_STATE_FILE" > "$_bg_state_tmp" 2>/dev/null \
+                || { rm -f "$_bg_state_tmp" 2>/dev/null; return 1; }
+        else
+            : > "$_bg_state_tmp" 2>/dev/null \
+                || return 1
+        fi
+        printf '%s|%s|%s\n' "$_bg_stop_pkg" "$_bg_stop_since" "$_bg_stop_done" >> "$_bg_state_tmp" 2>/dev/null \
+            && mv "$_bg_state_tmp" "$BG_STOP_STATE_FILE" 2>/dev/null \
+            && [ -f "$BG_STOP_STATE_FILE" ] && return 0
+        rm -f "$_bg_state_tmp" 2>/dev/null
+        return 1
     }
 
     _enforce_stop_after_leave() {
@@ -1247,7 +1116,8 @@ read_saved_nr_mode() {
             [ "$_bg_policy" = "stop_after_leave" ] || continue
 
             if [ -n "$_fg_pkg" ] && [ "$_fg_pkg" = "$_bg_pkg" ]; then
-                _bg_stop_state_set "$_bg_pkg" "$_now" 0
+                _bg_stop_state_set "$_bg_pkg" "$_now" 0 \
+                    || log -t pixel9pro_ctrl "WARNING: failed to persist background-stop timer for $_bg_pkg"
                 continue
             fi
 
@@ -1261,7 +1131,8 @@ read_saved_nr_mode() {
             if [ "$_elapsed" -ge "$_delay_sec" ] 2>/dev/null; then
                 if [ "$_bg_stop_done" -ne 1 ]; then
                     am force-stop "$_bg_pkg" 2>/dev/null
-                    _bg_stop_state_set "$_bg_pkg" "$_now" 1
+                    _bg_stop_state_set "$_bg_pkg" "$_now" 1 \
+                        || log -t pixel9pro_ctrl "WARNING: failed to persist background-stop completion for $_bg_pkg"
                     log -t pixel9pro_ctrl "L1: force-stopped $_bg_pkg after ${_bg_delay}m away from foreground"
                 fi
             else
@@ -1274,22 +1145,21 @@ read_saved_nr_mode() {
         done < "$BG_LIST_FILE"
     }
 
-    # NR key detection
-    _nr_key="preferred_network_mode1"
-    _v=$(settings get global preferred_network_mode1 2>/dev/null | tr -d ' \n\r')
-    if [ -z "$_v" ] || [ "$_v" = "null" ]; then
-        _nr_key="preferred_network_mode"
-    fi
-    _cur=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
-    if is_nr_mode_value "$_cur"; then
-        echo "$_cur" > "$NR_MODE_FILE"
+    # Detect the active Settings key once. DSDS values keep slot 1 unchanged.
+    nr_mode_detect_setting
+    _nr_key="$NR_MODE_KEY"
+    _cur="$NR_MODE_CURRENT"
+    if nr_mode_is_valid_raw "$_cur" && nr_mode_is_nr_capable "$_cur"; then
+        nr_mode_save_current "$NR_MODE_FILE" "$_cur" >/dev/null 2>&1 \
+            || log -t pixel9pro_ctrl "WARNING: failed to persist current NR mode"
     elif [ ! -s "$NR_MODE_FILE" ]; then
-        echo "33" > "$NR_MODE_FILE"
+        runtime_write_value "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" >/dev/null 2>&1 \
+            || log -t pixel9pro_ctrl "WARNING: failed to initialize NR mode fallback"
     fi
 
-    _NR_LTE=9
+    _NR_LTE="$NR_LTE_MODE"
     _mc_state=""
-    _cur_slot0=$(_nr_slot0_val "$_cur")
+    _cur_slot0=$(nr_mode_slot0 "$_cur")
     case "$_cur_slot0" in
         ''|null|*[!0-9-]*) _nr_state="5g" ;;
         *)
@@ -1308,13 +1178,13 @@ read_saved_nr_mode() {
     # _NR_DELAY: 屏幕熄灭后多久才切到 LTE-only。
     # 60s 会让短时间锁屏(口袋亮灭/查看消息)反复触发 modem 重注册,
     # 每次 attach/detach 持 s5100_wake_lock ~1-2s。300s 防抖,只在真待机时切。
-    _NR_DELAY=300
-    _NR_COOLDOWN=600
+    _NR_DELAY="$NR_SCREEN_OFF_DELAY_S"
+    _NR_COOLDOWN="$NR_RESTORE_COOLDOWN_S"
     # _NR_LTE_POLL: 切换到 LTE 后,worker 多久醒一次检查屏幕状态。
     # 60s 节奏会让 alarmtimer.4.auto 与 suspend 流程挤兑(实测 71 次 failed_suspend)。
     # 300s 把 wakeup 密度降到 12 次/h,给 kernel 真正的 deep suspend 窗口。
     # 代价:屏幕点亮后 NR 恢复最多滞后 5 分钟(用户体感可接受,RIL 数据通道不受影响)。
-    _NR_LTE_POLL=300
+    _NR_LTE_POLL="$NR_LTE_RECHECK_S"
     _POWER_SAMPLE_INTERVAL_ON=60
     _POWER_SAMPLE_INTERVAL_OFF=600
     _power_last_sample=0
@@ -1380,8 +1250,8 @@ read_saved_nr_mode() {
                 esac
                 ;;
         esac
-        _idle_isolate=$(read_onoff_file "$IDLE_ISOLATE_FILE" 'off')
-        _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" 'on')
+        _idle_isolate=$(read_onoff_file "$IDLE_ISOLATE_FILE" "$IDLE_ISOLATE_DEFAULT")
+        _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" "$SIM2_AUTO_DEFAULT")
         _screen_off_isolate=0
         if [ "$_idle_isolate" = "on" ] && [ "$_screen" = "off" ]; then
             _screen_off_isolate=1
@@ -1410,9 +1280,8 @@ read_saved_nr_mode() {
         fi
         _prev_screen="$_screen"
 
-        # --- SIM2 radio management (check every ~10 on-screen cycles) ---
-        # 只在亮屏时检查: 息屏期间任何 telephony IPC 都会唤醒 modem 打断 kernel suspend。
-        # boot 阶段的关闭由 boot+20s / boot+120s / boot+300s 三次一次性尝试保证。
+        # Check SIM2 every ~10 on-screen cycles. Boot performs one initial
+        # application; screen-off avoids telephony IPC so suspend is not disturbed.
         if [ "$_screen" = "on" ] && [ "$_idle_isolate" != "on" ]; then
             _sim2_check_count=$((_sim2_check_count + 1))
             if [ "$_sim2_check_count" -ge 10 ]; then
@@ -1428,16 +1297,20 @@ read_saved_nr_mode() {
         fi
 
         # --- NR screen-off switch ---
-        _nr_enabled=$(read_onoff_file "$NR_SWITCH_FILE" 'off')
+        _nr_enabled=$(read_onoff_file "$NR_SWITCH_FILE" "$NR_SCREEN_SWITCH_DEFAULT")
         if [ "$_screen_off_isolate" -eq 1 ]; then
             _nr_off_since=0
         else
             if [ "$_nr_enabled" != "on" ]; then
                 if [ "$_nr_state" = "lte" ]; then
-                    settings put global "$_nr_key" "$(read_saved_nr_mode)" 2>/dev/null
-                    _nr_state="5g"
-                    _nr_restored=$_now
-                    log -t pixel9pro_ctrl "NR switch: disabled, restored NR"
+                    _nr_restore=$(nr_mode_read_saved "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" 2>/dev/null)
+                    if [ -n "$_nr_restore" ] && nr_mode_write_verified "$_nr_key" "$_nr_restore"; then
+                        _nr_state="5g"
+                        _nr_restored=$_now
+                        log -t pixel9pro_ctrl "NR switch: disabled, restored NR"
+                    else
+                        log -t pixel9pro_ctrl "WARNING: NR switch disabled but restore failed"
+                    fi
                 fi
                 _nr_off_since=0
             elif [ "$_screen" = "off" ]; then
@@ -1459,30 +1332,40 @@ read_saved_nr_mode() {
                         done
                         if [ "$_tether" -eq 0 ]; then
                             _cur=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
-                            if is_nr_mode_value "$_cur"; then
-                                echo "$_cur" > "$NR_MODE_FILE"
+                            if ! nr_mode_is_valid_raw "$_cur" || ! nr_mode_is_nr_capable "$_cur"; then
+                                log -t pixel9pro_ctrl "WARNING: NR switch skipped invalid current mode ($_cur)"
+                            elif ! nr_mode_save_current "$NR_MODE_FILE" "$_cur"; then
+                                log -t pixel9pro_ctrl "WARNING: NR switch skipped because restore mode could not be persisted"
+                            else
+                                _lte_val=$(nr_mode_replace_slot0 "$_cur" "$_NR_LTE")
                             fi
-                            _lte_val=$(_nr_replace_slot0 "$_cur" "$_NR_LTE")
-                            settings put global "$_nr_key" "$_lte_val" 2>/dev/null
-                            _nr_state="lte"
-                            log -t pixel9pro_ctrl "NR switch: off ${_elapsed}s, switched to LTE ($_lte_val)"
+                            if [ -n "${_lte_val:-}" ] && nr_mode_write_verified "$_nr_key" "$_lte_val"; then
+                                _nr_state="lte"
+                                log -t pixel9pro_ctrl "NR switch: off ${_elapsed}s, switched to LTE ($_lte_val)"
+                            elif [ -n "${_lte_val:-}" ]; then
+                                log -t pixel9pro_ctrl "WARNING: NR switch to LTE failed ($_lte_val)"
+                            fi
+                            _lte_val=""
                         fi
                     fi
                 fi
             else
                 _nr_off_since=0
                 if [ "$_nr_state" = "lte" ]; then
-                    settings put global "$_nr_key" "$(read_saved_nr_mode)" 2>/dev/null
-                    _nr_state="5g"
-                    _nr_restored=$_now
-                    log -t pixel9pro_ctrl "NR switch: screen on, restored NR"
+                    _nr_restore=$(nr_mode_read_saved "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" 2>/dev/null)
+                    if [ -n "$_nr_restore" ] && nr_mode_write_verified "$_nr_key" "$_nr_restore"; then
+                        _nr_state="5g"
+                        _nr_restored=$_now
+                        log -t pixel9pro_ctrl "NR switch: screen on, restored NR"
+                    else
+                        log -t pixel9pro_ctrl "WARNING: screen on but NR restore failed"
+                    fi
                 fi
             fi
         fi
 
-        # --- Thermal cache + history ---
-        # v4.3.16: 息屏深度待机保护 — 跳过 thermal 与前台自动调度采样,
-        # 保留 power tracking，避免能耗统计与充电会话重置失真.
+        # Screen-off skips thermal/profile sampling to protect deep standby,
+        # while power tracking remains active for session accounting.
         _burst_until=$(cat "$THERMAL_BURST_FILE" 2>/dev/null | tr -d ' \n\r')
         _burst_active=0
         if [ -n "$_burst_until" ] && [ "$_burst_until" -gt "$_now" ] 2>/dev/null; then
@@ -1502,9 +1385,9 @@ read_saved_nr_mode() {
             # --- 仅亮屏执行 thermal 更新；WebUI 历史页可临时提高采样频率 ---
             _json=$(build_thermal_json 2>/dev/null)
             if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
-                _thermal_tmp="${THERMAL_CACHE}.$$.$_now.tmp"
-                printf '%s' "$_json" > "$_thermal_tmp"
-                mv "$_thermal_tmp" "$THERMAL_CACHE"
+                if ! runtime_write_value "$THERMAL_CACHE" "$_json"; then
+                    log -t pixel9pro_ctrl "WARNING: failed to refresh thermal cache"
+                fi
 
                 _vs_temp=$(printf '%s' "$_json" | sed 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/')
                 if [ -n "$_vs_temp" ] && [ "$_vs_temp" != "$_json" ]; then
@@ -1545,7 +1428,8 @@ read_saved_nr_mode() {
                 _auto_charge_hot_since=0
                 _auto_charge_cool_since=0
                 _active_profile=$(read_valid_profile "$PROFILE_FILE" "$_active_profile")
-                printf '%s' 'external_scheduler' > "$PROFILE_AUTO_REASON_FILE"
+                runtime_write_value "$PROFILE_AUTO_REASON_FILE" external_scheduler >/dev/null 2>&1 \
+                    || log -t pixel9pro_ctrl "WARNING: failed to persist external scheduler reason"
             elif [ "$_profile_policy" = "manual" ]; then
                 _auto_hot_since=0
                 _auto_cool_since=0
@@ -1595,7 +1479,8 @@ read_saved_nr_mode() {
                         fi
                     fi
                 else
-                    # 放电态: 原有 40.8C/90s 软收口 (VIRTUAL-SKIN)
+                    # Discharge uses the VIRTUAL-SKIN thresholds and hold times
+                    # defined by the _AUTO_BATTERY_* / _AUTO_BALANCED_* contract.
                     _auto_charge_hot_since=0
                     _auto_charge_cool_since=0
                     if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$_AUTO_BATTERY_TEMP" ] 2>/dev/null; then
@@ -1613,9 +1498,9 @@ read_saved_nr_mode() {
                         _target_profile="balanced"
                         _target_reason="hot_cooldown"
                     elif [ "$_active_profile" = "battery" ]; then
-                        # 死区(40.4~40.8C)粘滞: 已在 battery 时保持, 直到 <=40.4C 持续 60s 才回 balanced。
-                        # 缺这句会导致温度一旦跌破 40.8C 就立刻弹回 balanced, 冷却闸形同虚设、profile 在边界抖动。
-                        # 与充电态分支(charging_comfort_hot)的迟滞结构对齐。
+                        # Keep battery inside the configured hot/cool deadband;
+                        # otherwise one sample below the hot threshold would
+                        # bypass the cool hold and make the profile oscillate.
                         _target_profile="battery"
                         _target_reason="steady_hot_guard"
                     elif [ "$_auto_hot_since" -gt 0 ] && [ $((_now - _auto_hot_since)) -ge "$_AUTO_BATTERY_HOLD" ]; then
@@ -1633,7 +1518,8 @@ read_saved_nr_mode() {
                             _active_profile="$_target_profile"
                         fi
                     else
-                        printf '%s' "$_target_reason" > "$PROFILE_AUTO_REASON_FILE"
+                        runtime_write_value "$PROFILE_AUTO_REASON_FILE" "$_target_reason" >/dev/null 2>&1 \
+                            || log -t pixel9pro_ctrl "WARNING: failed to update profile reason: $_target_reason"
                     fi
                 fi
             else
@@ -1643,7 +1529,8 @@ read_saved_nr_mode() {
                         _active_profile="balanced"
                     fi
                 elif [ "$_just_off" -eq 1 ]; then
-                    printf '%s' 'deep_standby_reset' > "$PROFILE_AUTO_REASON_FILE"
+                    runtime_write_value "$PROFILE_AUTO_REASON_FILE" deep_standby_reset >/dev/null 2>&1 \
+                        || log -t pixel9pro_ctrl "WARNING: failed to persist deep-standby profile reason"
                 fi
                 _auto_hot_since=0
                 _auto_cool_since=0
@@ -1678,7 +1565,8 @@ read_saved_nr_mode() {
             _next_sleep_secs="$_bg_stop_next_due"
         fi
         _diag_profile_policy=$(read_valid_profile_policy)
-        _write_standby_diag_state "$_now" "$_screen" "$_worker_mode" "$_next_sleep_secs" "$_burst_effective" "$_nr_enabled" "$_nr_state" "$_diag_profile_policy" "$_active_profile" "$_idle_isolate" "$_sim2_auto" "$_cycle_count"
+        _write_standby_diag_state "$_now" "$_screen" "$_worker_mode" "$_next_sleep_secs" "$_burst_effective" "$_nr_enabled" "$_nr_state" "$_diag_profile_policy" "$_active_profile" "$_idle_isolate" "$_sim2_auto" "$_cycle_count" \
+            || log -t pixel9pro_ctrl "WARNING: failed to persist standby diagnostics"
         sleep "$_next_sleep_secs"
     done
 ) &
@@ -1707,9 +1595,12 @@ if [ -n "$BB" ]; then
     if "$BB" nc -z 127.0.0.1 $PORT 2>/dev/null; then
         log -t pixel9pro_ctrl "WARNING: port $PORT already in use"
     else
-        "$BB" httpd -p "127.0.0.1:$PORT" -h "$MODDIR/webroot"
-        record_webui_httpd_pid
-        log -t pixel9pro_ctrl "WebUI(loopback)[$ROOT_IMPL]: http://127.0.0.1:$PORT"
+        if "$BB" httpd -p "127.0.0.1:$PORT" -h "$MODDIR/webroot" \
+            && record_webui_httpd_pid; then
+            log -t pixel9pro_ctrl "WebUI(loopback)[$ROOT_IMPL]: http://127.0.0.1:$PORT"
+        else
+            log -t pixel9pro_ctrl "ERROR[$ROOT_IMPL]: WebUI httpd failed to start or publish its PID"
+        fi
     fi
 else
     log -t pixel9pro_ctrl "WARNING[$ROOT_IMPL]: busybox not found"

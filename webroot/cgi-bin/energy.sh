@@ -8,10 +8,10 @@
 #   3. Android batterystats 窗口 (系统分项 / Top 应用来源)
 ##############################################################
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
-. "$MODDIR/scripts/app_identity_lib.sh"
 require_loopback
+[ -r "$MODDIR/scripts/app_identity_lib.sh" ] && . "$MODDIR/scripts/app_identity_lib.sh" \
+    || json_error '500 Internal Server Error' 'app identity library not found'
 [ "$REQUEST_METHOD" = "GET" ] || json_error '405 Method Not Allowed' 'GET only'
-json_headers
 
 POWER_HISTORY="$MODDIR/.power_history"
 THERMAL_HISTORY="$MODDIR/.thermal_history"
@@ -28,16 +28,24 @@ RESET_RULE='连续充电 >= 10 分钟且电量回升，或充满后重新拔线�
 BATTERYSTATS_NOTE='系统分项和应用排行来自 Android batterystats 当前窗口；若系统或用户执行过 batterystats reset，这个窗口可能比放电会话更短。'
 RADIO_MODEL_NOTE='Pixel/Exynos 5400 的 Android mobile_radio 是模型估算；绝对 mAh 不作为硬件电表，只能看相对方向。'
 
-mkdir -p "$LOCKDIR_BASE/tmp" 2>/dev/null || true
-chmod 700 "$LOCKDIR_BASE/tmp" 2>/dev/null || true
+mkdir -p "$LOCKDIR_BASE/tmp" 2>/dev/null \
+    || json_error '500 Internal Server Error' 'cannot create energy scratch directory'
+chmod 700 "$LOCKDIR_BASE/tmp" 2>/dev/null \
+    || json_error '500 Internal Server Error' 'cannot secure energy scratch directory'
 _tmp="$LOCKDIR_BASE/tmp/energy_$$"
 trap 'rm -f "${_tmp}"_*' EXIT
+json_headers
 
 json_num_or_null() {
-    case "$1" in
-        ''|null) printf 'null' ;;
-        *[!0-9.-]*) printf 'null' ;;
-        *) printf '%s' "$1" ;;
+    _json_number="$1"
+    case "$_json_number" in
+        ''|null) printf 'null'; return ;;
+        -*) _json_unsigned=${_json_number#-} ;;
+        *) _json_unsigned="$_json_number" ;;
+    esac
+    case "$_json_unsigned" in
+        ''|*[!0-9.]*|.*|*.|*.*.*) printf 'null' ;;
+        *) printf '%s' "$_json_number" ;;
     esac
 }
 
@@ -114,10 +122,8 @@ read_system_cache_if_usable() {
 write_system_cache() {
     _payload="$1"
     _cache_now="$2"
-    printf '%s\n' "$_payload" > "${SYSTEM_CACHE}.tmp"
-    mv "${SYSTEM_CACHE}.tmp" "$SYSTEM_CACHE"
-    printf '%s\n' "$_cache_now" > "${SYSTEM_CACHE_TS}.tmp"
-    mv "${SYSTEM_CACHE_TS}.tmp" "$SYSTEM_CACHE_TS"
+    cgi_atomic_write "$SYSTEM_CACHE" "$_payload" \
+        && cgi_atomic_write "$SYSTEM_CACHE_TS" "$_cache_now"
 }
 
 read_fast_cache_if_fresh() {
@@ -137,10 +143,8 @@ read_fast_cache_if_fresh() {
 write_fast_cache() {
     _payload="$1"
     _cache_now="$2"
-    printf '%s\n' "$_payload" > "${_tmp}_fast_cache"
-    mv "${_tmp}_fast_cache" "$FAST_CACHE"
-    printf '%s\n' "$_cache_now" > "${_tmp}_fast_cache_ts"
-    mv "${_tmp}_fast_cache_ts" "$FAST_CACHE_TS"
+    cgi_atomic_write "$FAST_CACHE" "$_payload" \
+        && cgi_atomic_write "$FAST_CACHE_TS" "$_cache_now"
 }
 
 build_power_window_json() {
@@ -384,38 +388,45 @@ build_thermal_window_json() {
 
 try_acquire_energy_lock() {
     _lock="$1"
-    _lock_now="$2"
-    _lock_max_age=180
-    mkdir -p "$LOCKDIR_BASE" 2>/dev/null
+    mkdir -p "$LOCKDIR_BASE" 2>/dev/null || return 1
     if mkdir "$_lock" 2>/dev/null; then
-        echo "$$" > "$_lock/pid" 2>/dev/null
-        echo "$_lock_now" > "$_lock/ts" 2>/dev/null
+        _lock_start=$(process_start_ticks "$$")
+        if [ -z "$_lock_start" ] \
+            || ! printf '%s\n' "$$" > "$_lock/pid" 2>/dev/null \
+            || ! printf '%s\n' "$_lock_start" > "$_lock/start_ticks" 2>/dev/null; then
+            rm -f "$_lock/pid" "$_lock/start_ticks" 2>/dev/null
+            rmdir "$_lock" 2>/dev/null
+            return 1
+        fi
+        ENERGY_LOCK_START="$_lock_start"
         return 0
     fi
 
-    _lock_pid=$(cat "$_lock/pid" 2>/dev/null)
-    _lock_ts=$(cat "$_lock/ts" 2>/dev/null | tr -d ' \n\r\t')
+    _lock_pid=$(cat "$_lock/pid" 2>/dev/null | tr -d ' \n\r\t')
+    _lock_start=$(cat "$_lock/start_ticks" 2>/dev/null | tr -d ' \n\r\t')
+    _lock_live_start=$(process_start_ticks "$_lock_pid")
     _lock_stale=0
-    if [ -z "$_lock_pid" ]; then
+    if [ -z "$_lock_pid" ] || [ -z "$_lock_start" ]; then
         _lock_stale=1
     elif ! kill -0 "$_lock_pid" 2>/dev/null; then
         _lock_stale=1
-    else
-        case "$_lock_ts" in
-            ''|*[!0-9]*) ;;
-            *)
-                _lock_age=$((_lock_now - _lock_ts))
-                [ "$_lock_age" -gt "$_lock_max_age" ] 2>/dev/null && _lock_stale=1
-                ;;
-        esac
+    elif [ -z "$_lock_live_start" ] || [ "$_lock_live_start" != "$_lock_start" ]; then
+        _lock_stale=1
     fi
 
     if [ "$_lock_stale" -eq 1 ]; then
-        rm -f "$_lock/pid" "$_lock/ts" 2>/dev/null
+        rm -f "$_lock/pid" "$_lock/start_ticks" "$_lock/ts" 2>/dev/null
         rmdir "$_lock" 2>/dev/null
         if mkdir "$_lock" 2>/dev/null; then
-            echo "$$" > "$_lock/pid" 2>/dev/null
-            echo "$_lock_now" > "$_lock/ts" 2>/dev/null
+            _lock_start=$(process_start_ticks "$$")
+            if [ -z "$_lock_start" ] \
+                || ! printf '%s\n' "$$" > "$_lock/pid" 2>/dev/null \
+                || ! printf '%s\n' "$_lock_start" > "$_lock/start_ticks" 2>/dev/null; then
+                rm -f "$_lock/pid" "$_lock/start_ticks" 2>/dev/null
+                rmdir "$_lock" 2>/dev/null
+                return 1
+            fi
+            ENERGY_LOCK_START="$_lock_start"
             return 0
         fi
     fi
@@ -424,8 +435,15 @@ try_acquire_energy_lock() {
 
 release_energy_lock() {
     _lock="$1"
-    rm -f "$_lock/pid" "$_lock/ts" 2>/dev/null
-    rmdir "$_lock" 2>/dev/null
+    _lock_pid=$(cat "$_lock/pid" 2>/dev/null | tr -d ' \n\r\t')
+    _lock_start=$(cat "$_lock/start_ticks" 2>/dev/null | tr -d ' \n\r\t')
+    if [ "$_lock_pid" = "$$" ] \
+        && [ -n "${ENERGY_LOCK_START:-}" ] \
+        && [ "$_lock_start" = "$ENERGY_LOCK_START" ]; then
+        rm -f "$_lock/pid" "$_lock/start_ticks" "$_lock/ts" 2>/dev/null
+        rmdir "$_lock" 2>/dev/null
+    fi
+    ENERGY_LOCK_START=""
 }
 
 _now=$(date +%s 2>/dev/null || echo 0)
@@ -691,7 +709,8 @@ if [ "$_fast" -eq 1 ]; then
         "$(json_str_or_null "$_power_source")")
     _fast_payload=$(printf '{"cap":0,"drain":0,"scroff":0,"scron":0,"bat_time":"","screen":0,"cpu":0,"cell":0,"wifi":0,"wakelock":0,"apps":[],"odpm_modem":%s,"scope":%s,"today":%s,"history_windows":%s,"charge_state":%s,"batterystats_window":{"window_label":null,"daily_label":null,"time_on_battery":null,"model_quality":"fast_no_batterystats","radio_note":%s,"note":"快速缓存口径；系统 batterystats 分项稍后刷新。"},"generated_at":%s,"live_generated_at":%s,"system_generated_at":null,"system_cache_age_sec":null,"system_cache_stale":false,"cache_ttl_sec":%s,"fast_cache_ttl_sec":%s,"fast":true}' \
         "$_odpm_json" "$_scope_json" "$_today_json" "$_history_windows_json" "$_charge_state_json" "$(json_str_or_null "$RADIO_MODEL_NOTE")" "$(json_num_or_null "$_now")" "$(json_num_or_null "$_now")" "$SYSTEM_CACHE_TTL" "$FAST_CACHE_TTL")
-    write_fast_cache "$_fast_payload" "$_now"
+    write_fast_cache "$_fast_payload" "$_now" \
+        || log -t pixel9pro_ctrl "WARNING: failed to persist fast energy cache"
     printf '%s\n' "$_fast_payload"
     exit 0
 fi
@@ -933,7 +952,10 @@ if [ "$_build_system_snapshot" -eq 1 ]; then
     _system_generated_at=$_now
     _system_cache_age=0
     _system_cache_stale=0
-    [ "$_have_system_lock" -eq 1 ] && write_system_cache "$_system_payload" "$_system_generated_at"
+    if [ "$_have_system_lock" -eq 1 ]; then
+        write_system_cache "$_system_payload" "$_system_generated_at" \
+            || log -t pixel9pro_ctrl "WARNING: failed to persist system energy cache"
+    fi
 fi
 
 [ "$_have_system_lock" -eq 1 ] && release_energy_lock "$_system_lock"

@@ -1,17 +1,33 @@
 #!/system/bin/sh
-##############################################################
-# CGI: /cgi-bin/thermal.sh
-# GET           → 返回关键热区温度 JSON (快路径优先读缓存)
-# GET ?fresh=1 → 强制重建热区缓存后返回
-# GET ?clear=1&fresh=1 → 清除可疑缓存后重建（需 WebUI token）
-# GET ?history=1 → 返回后端持久化的温度历史 CSV→JSON
-#   可选 &minutes=N (默认 30, 最大 720)
-##############################################################
+# Thermal telemetry endpoint. GET serves cached/live zones or history; the
+# authenticated POST clear action removes a suspect cache before a live read.
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
-. "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_thermal_cache.sh"
-
 require_loopback
-[ "$REQUEST_METHOD" = "GET" ] || json_error '405 Method Not Allowed' 'GET only'
+. "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_thermal_cache.sh" \
+    || json_error '500 Internal Server Error' 'thermal cache library not found'
+
+_clear=0
+case "$REQUEST_METHOD" in
+    GET) ;;
+    POST)
+        require_json_post
+        require_token
+        read_json_body 128
+        _action=$(printf '%s' "$JSON_BODY" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
+        [ "$_action" = "clear" ] || json_error '400 Bad Request' 'invalid thermal action'
+        acquire_lock "thermal_cache"
+        [ ! -d "$THERMAL_CACHE" ] \
+            || json_error '500 Internal Server Error' 'thermal cache path is a directory'
+        if [ -e "$THERMAL_CACHE" ]; then
+            rm -f "$THERMAL_CACHE" 2>/dev/null \
+                || json_error '500 Internal Server Error' 'cannot clear thermal cache'
+        fi
+        [ ! -e "$THERMAL_CACHE" ] \
+            || json_error '500 Internal Server Error' 'thermal cache clear was not committed'
+        _clear=1
+        ;;
+    *) json_error '405 Method Not Allowed' 'GET or POST only' ;;
+esac
 
 # --- 历史模式 ---
 case "$QUERY_STRING" in *history=1*)
@@ -24,6 +40,7 @@ case "$QUERY_STRING" in *history=1*)
     _mins=30
     case "$QUERY_STRING" in *minutes=*)
         _mins=$(printf '%s' "$QUERY_STRING" | sed 's/.*minutes=\([0-9]*\).*/\1/')
+        case "$_mins" in ''|*[!0-9]*) _mins=30 ;; esac
         [ "$_mins" -gt 720 ] 2>/dev/null && _mins=720
         [ "$_mins" -lt 1 ] 2>/dev/null && _mins=1
         ;;
@@ -34,7 +51,7 @@ case "$QUERY_STRING" in *history=1*)
     {
         if ($1+0 >= cutoff && $2+0 > 0) {
             if (n>0) printf ","
-            printf "[%s,%s]", $1, $2
+            printf "[%.0f,%.0f]", $1 + 0, $2 + 0
             n++
         }
     }
@@ -48,9 +65,8 @@ esac
 json_headers
 _cache_max_age=30
 _now=$(date +%s 2>/dev/null || echo 0)
-_fresh=0
+_fresh="$_clear"
 case "$QUERY_STRING" in *fresh=1*) _fresh=1 ;; esac
-case "$QUERY_STRING" in *clear=1*) require_token; rm -f "$THERMAL_CACHE" 2>/dev/null; _fresh=1 ;; esac
 
 cache_has_valid_skin() {
     _file="$1"
@@ -87,8 +103,12 @@ fi
 _json=$(build_thermal_json 2>/dev/null)
 if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
     _tmp="${THERMAL_CACHE}.$$.$_now.tmp"
-    printf '%s' "$_json" > "$_tmp" 2>/dev/null
-    mv "$_tmp" "$THERMAL_CACHE" 2>/dev/null
+    if [ -d "$THERMAL_CACHE" ] \
+        || ! printf '%s' "$_json" > "$_tmp" 2>/dev/null \
+        || ! mv "$_tmp" "$THERMAL_CACHE" 2>/dev/null \
+        || [ ! -f "$THERMAL_CACHE" ]; then
+        rm -f "$_tmp" 2>/dev/null
+    fi
     printf '%s' "$_json"
     exit 0
 fi

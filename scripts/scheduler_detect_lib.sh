@@ -1,7 +1,7 @@
 #!/system/bin/sh
-# Shared scheduler ownership helpers.
+# Shared scheduler detection contract.
 # Detects external CPU schedulers without suggesting installation.
-# Keep the legacy Uperf fields/API for WebUI compatibility.
+# Uperf-named fields remain a stable compatibility contract for the WebUI.
 
 SCHEDULER_MODULES_ROOT="${SCHEDULER_MODULES_ROOT:-/data/adb/modules}"
 SCHEDULER_MODULES_UPDATE_ROOT="${SCHEDULER_MODULES_UPDATE_ROOT:-/data/adb/modules_update}"

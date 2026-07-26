@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- Release: `v4.4.41`
-- versionCode: `105`
-- Asset: `pixel9pro_control_v4.4.41.zip`
+- Release: `v4.5.01`
+- versionCode: `106`
+- Asset: `pixel9pro_control_v4.5.01.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -15,7 +15,7 @@
 | 设备 | 代号 | 状态 |
 |------|------|------|
 | Pixel 9 Pro | caiman | APatch 实机验证 |
-| Pixel 9 Pro XL | komodo | 机型分支已适配；未实际测试 |
+| Pixel 9 Pro XL | komodo | 温控分支已适配；未实际测试；UECap 保持 stock |
 
 安装时自动检测机型，刷入对应的温控配置。基带配置仅限 Pixel 9 Pro。
 
@@ -23,7 +23,7 @@
 
 ### CPU 调度 / 外部调度接管
 
-本模块内置 Pixel 原厂调度参数微调；如已安装 Uperf Game Turbo、fas-rs 或其它外部调度器，可在安装向导或 WebUI 中选择 `external`，将 CPU scene / 游戏调度交由外部调度器处理。本项目不打包、不改写 UGT / fas-rs，只做只读探测和调度让权。
+本模块内置 Pixel 原厂调度参数微调。UGT 可作为日常 `external` baseline；fas-rs 只在命中目标游戏时临时接管，退出后恢复用户选择的 Pixel 或 UGT 日常 baseline。本项目不打包、不改写 UGT / fas-rs，只做只读探测和有验证的调度让权。
 
 WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电→均衡→系统默认）；性能优先降为内部基线，需要游戏级线程调度请切到 `external`，由 UGT / fas-rs / 外部调度接管。
 
@@ -39,21 +39,21 @@ WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电�
 - 自动模式以均衡为日常底座，温度持续偏高时收口至省电，回落后恢复；死区设有粘滞，避免边界来回抖动
 - `.sched_owner_desired=pixel|external` 保存用户的日常选择，`.cpu_sched_owner` 只表示当前实际 owner；fas-rs 游戏 lease 不覆盖用户意愿
 - Pixel 日常调度下仍可启用 fas-rs 游戏临时接管：命中游戏时 `effective=external`，退出后恢复原 Pixel auto/manual 状态
-- 日常选择为 `external` 时，普通应用恢复 UGT；若 UGT 未启用则保持 `external:none` 并明确告警，不会回写 Pixel 或 `balanced`
+- 日常选择为 `external` 时，普通应用恢复 UGT；若 UGT 未启用则保持 `external:none` 并明确告警，不会把 fas-rs 误当作日常调度器，也不会擅自回写 Pixel 或 `balanced`
 
 当实际 `.cpu_sched_owner=external` 时，本模块跳过常规 profile/auto/enforce 写入；owner 事务层只在 Pixel/FAS handoff 边界清理 UGT 残留、恢复 cpufreq 基线并复读验证。温控、ZRAM、NR/SIM2、UECap 与 WebUI 始终由本模块负责。
 
-### 温控优化 (5 档)
+### 温控阈值 (5 档)
 
 | 档位 | Offset 偏移值 | 最早介入温度 (HINT) | 说明 |
 |------|--------|---------------------------|------|
-| 睡和放宽 | -2°C | 35°C | 低于出厂 2°C |
-| 躺和放宽 | +0°C | 37°C | 出厂口径 |
+| 提前介入 | -2°C | 35°C | 比出厂提前 2°C 介入 |
+| 原厂阈值 | 0°C | 37°C | 不平移前置阈值 |
 | 轻度放宽 | +2°C | 39°C | HINT 最早 39°C；VIRTUAL-SKIN 主阈值约 41°C，并非 39°C 硬限温 |
-| 坐和放宽 | +4°C | 41°C | 模块默认设定 |
-| 站和放宽 | +6°C | 43°C | 提升 +6°C |
+| 日常放宽 | +4°C | 41°C | 模块默认；靠近 SHUTDOWN 时安全收敛 |
+| 最大放宽 | +6°C | 43°C | 前置阈值目标 +6°C，最后安全阈值不平移 |
 
-偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。各传感器 Google 原厂首档不同（HINT 37°C 最低，GPU 43°C 最高），偏移统一叠加。安全阈值 `55°C` 保留不变。
+偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前 6 个 severity 槽位先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。`+4/+6°C` 在接近 SHUTDOWN 时会向前限幅，至少保留 `0.5°C` 间隔，避免阈值相等或逆序导致 Thermal HAL 启动失败。
 
 WebUI 实时温度优先读取后台 worker 维护的 `.thermal_cache.json`，避免普通刷新被 `dumpsys thermalservice` 慢路径阻塞；当缓存缺失、无 `VIRTUAL-SKIN`、温度越界或连续异常时，会自动走 `fresh=1` 重建，连续异常后清除缓存再重建，避免坏缓存长期误导显示。
 
@@ -78,7 +78,7 @@ WebUI 实时温度优先读取后台 worker 维护的 `.thermal_cache.json`，�
 | `nearby_sharing_enabled` | `0` | 关闭 Nearby Sharing |
 
 - Wi-Fi multicast：亮屏开启，息屏关闭
-- SIM2 空槽：默认关闭（手动开启）。通过 `cmd phone set-sim-count 1` 在息屏时将 modem 实例从 2 降到 1，消除空槽 modem 的搜网/IMS 注册开销；亮屏或检测到 SIM2 插入时自动恢复双 modem
+- SIM2 空槽：默认开启。通过 `cmd phone set-sim-count 1` 将 modem 实例从 2 降到 1；检测到 SIM2 插入或用户关闭自动管理时通过 `set-sim-count 2` 恢复双 modem
 - 待机隔离模式：仅用于过夜 A/B 排障。开启后息屏阶段暂停 NR 降级、SIM2 管理、功耗采样、thermal burst 和自动调度，尽量把 control 模块的待机干扰降到最低
 - 后台应用限制：按包选择 `降低后台优先级 / 禁止后台服务 / 禁止后台活动 / 休眠` 策略；添加区会从统一应用识别目录列出本机已安装的常用应用，也保留手输包名。默认仅预置抖音（休眠：锁屏或离开前台延时后 `force-stop`），移除或关闭时按接管前 bucket/AppOps 恢复
 
@@ -107,7 +107,7 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 
 | 模块 | 归属 | 详情 |
 |------|------|------|
-| `pixel9pro_control` | 本项目 | 温控、ZRAM、UECap 三档切换、NR 降级、SIM2 管理、后台限制、WebUI；未让出时管理 Pixel 原厂 CPU 调度 |
+| `pixel9pro_control` | 本项目 | 温控、ZRAM、UECap 三档切换（仅 caiman + APatch/KSU）、NR 降级、SIM2 管理、后台限制、WebUI；未让出时管理 Pixel 原厂 CPU 调度 |
 | [`pixel9pro_baseband_trial`](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/download/v4.3.11/pixel9pro_baseband_trial_v1.0.1.zip) | 本项目可选基带模块 | 基于 [Sun_Dream（酷安）](https://www.coolapk.com/u/1281808) 的 PLMN / CarrierSettings 设计；提供 China MCFG、APN 与 VoLTE/VoNR/WFC 配置 |
 | Uperf Game Turbo / fas-rs / 其它外部调度器 | 第三方或独立外部调度模块 | CPU scene 调度、输入/前台/游戏线程调度、frame-aware 调度、per-app 性能模式；由各自上游独立维护 |
 
@@ -117,13 +117,13 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 - 控制模块 + UGT / fas-rs：WebUI 的“日常选择”决定普通应用使用 Pixel 或 UGT；“游戏接管”可让 fas-rs 只在命中游戏时临时接管
 - 三者都安装：推荐边界为 Pixel9Pro-Control 管理日常 baseline、fas-rs 管理指定游戏 lease，基带模块负责运营商配置增强
 
-**基带模块兼容性**：`pixel9pro_baseband_trial` 中的 CarrierSettings / MCFG 基于中国运营商配置；UECap binarypb 由控制模块管理，基于 Pixel 9 Pro (Exynos 5400 modem) 固件定制。Pixel 9 Pro XL 不可共用，binarypb 需重新提取。
+**基带模块兼容性**：`pixel9pro_baseband_trial` 中的 CarrierSettings / MCFG 基于中国运营商配置，安装器只允许 `caiman`。控制模块的 UECap binarypb 同样基于 Pixel 9 Pro (Exynos 5400 modem) 固件定制；`komodo` 安装时会移除该 payload 和切换脚本并保持 stock，不能用 caiman 文件代替。
 
 **外部调度协同说明**：Uperf Game Turbo、fas-rs 等为外部调度项目，本项目只识别设备上已经存在的模块，不提供下载、推荐或安装引导。
 
 **可选模块按需显示**：WebUI 仅在检测到 UGT 时显示日常 UGT 接管控制，仅在检测到 fas-rs 时显示游戏 handoff / arbiter 控制；两者同时存在时组合显示。`pixel9pro_baseband_trial` 未安装、已禁用或待移除时，基带配置卡完全隐藏。首次安装只报告 UGT、fas-rs 与本项目基带模块是否已检测到，不提供下载、推荐或第三方安装引导。单独残留的 `/data/adb/fas_rs` 状态目录不再被当成 fas-rs 已安装。
 
-**owner arbiter**：`scripts/owner_arbiter.sh` 默认仍是 Phase A dry-run 观测；创建 `/data/adb/fas_rs/.arbiter_apply` 或手动执行 `apply-tick` 后才执行事务。普通应用只恢复 `.sched_owner_desired`；命中 fas-rs 游戏时停止 UGT、进入 `FAS_LEASED_GAME`，退出后按 desired 精确恢复 Pixel 或 UGT。切换共用 `.owner_transition.lock`，Pixel 接管会停止 UGT/fas-rs、恢复 cpufreq baseline、重新应用当前 profile 并复读 cap/cpuset/response；FAS 启动失败也按 desired 回滚。v4.4.40 起，UGT→fas-rs 必须先修复 powersave/cpufreq residue 并验证 cap=1024，随后才启动 fas-rs 和发布游戏 owner，避免 owner 已显示接管但运行面尚未就绪的假 active 窗口。cap 契约为 Pixel `balanced/battery=0`、UGT 日常 `=0`、fas-rs 游戏 lease `=1024`（Google 出厂上限，允许完整 boost）；退出游戏后恢复 desired baseline 并再次复读。Pixel `default/performance` 仍遵循对应 profile 的出厂/性能语义 `=1024`。这里只写 `sched_util_clamp_min`，不会覆盖 ThermalHAL 独立使用的 `uclamp.max` 热保护。`.arbiter_state` 同时记录 `desired_owner`、effective owner、handoff policy、lease、transition result、`uclamp_cap_current/expected/verified`、重复 UGT 归一与 cpufreq/ThermalHAL 复读结果。UGT enabled 但 desired=Pixel 时不得自行启动；desired=external 但 UGT disabled 时明确进入 `external:none`。
+**owner arbiter**：`scripts/owner_arbiter.sh` 的普通 `tick` 只记录决策；创建 `/data/adb/fas_rs/.arbiter_apply` 或执行 `apply-tick` / `apply` 才执行事务切换。普通应用只恢复 `.sched_owner_desired`；命中 fas-rs 游戏时停止 UGT、进入 `FAS_LEASED_GAME`，退出后按 desired 精确恢复 Pixel 或 UGT。切换共用 `.owner_transition.lock`，Pixel 接管会停止 UGT/fas-rs、恢复 cpufreq baseline、重新应用当前 profile 并复读 cap/cpuset/response；FAS 启动失败也按 desired 回滚。UGT→fas-rs 必须先修复 powersave/cpufreq residue 并验证 cap=1024，随后才启动 fas-rs 和发布游戏 owner，避免 owner 已显示接管但运行面尚未就绪的假 active 窗口。cap 契约为 Pixel `balanced/battery=0`、UGT 日常 `=0`、fas-rs 游戏 lease `=1024`（Google 出厂上限，允许完整 boost）；退出游戏后恢复 desired baseline 并再次复读。Pixel `default/performance` 仍遵循对应 profile 的出厂/性能语义 `=1024`。这里只写 `sched_util_clamp_min`，不会覆盖 ThermalHAL 独立使用的 `uclamp.max` 热保护。`.arbiter_state` 同时记录 `desired_owner`、effective owner、handoff policy、lease、transition result、`uclamp_cap_current/expected/verified`、重复 UGT 归一与 cpufreq/ThermalHAL 复读结果。UGT enabled 但 desired=Pixel 时不得自行启动；desired=external 但 UGT disabled 时明确进入 `external:none`。
 
 **owner arbiter cpufreq 恢复边界**：低频残留恢复只在 `FAS_LEASED_GAME` / `EXIT_HOLD` 且 ThermalHAL CPU cooling 未激活时尝试。恢复时从 `scaling_available_governors` 保留空格匹配 `sched_pixel` 或 `schedutil`，再按“打开 `scaling_max_freq` 到 `cpuinfo_max_freq` → 切 governor → 再写 max → 等待 `ARB_CPUFREQ_RESTORE_SETTLE_S`（默认 2 秒）→ 复读验证”的顺序执行；首次复读失败只做一轮 guarded retry，并在日志中同时记录 `first_after` 与 `retry_after`。如果仍失败，状态会保持 `cpufreq_restore_failed=yes`，这代表存在 PowerHAL / Scene object / cpufreq QoS 等外层写入者或平台限制，不能用循环抢写 sysfs 当作修复。
 
@@ -173,8 +173,8 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 1. 从 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 下载最新 `pixel9pro_control_vX.Y.Z.zip`
 2. KernelSU 用户需先安装 metamodule（如 `meta-overlayfs`）并重启
 3. APatch / KernelSU / Magisk → 模块 → 从存储安装
-4. **首次安装**：音量键交互向导，依次配置温控偏移、CPU 调度（检测到启用中的 UGT / fas-rs 外部调度器则默认交其接管；否则五选一：不接管／均衡／省电／系统默认／自动）、UECap 档位（仅 APatch/KSU）、NR 降级、NTP
-5. **升级安装**：自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；若旧配置缺调度接管设置，则检测到启用中的外部调度器默认交其接管、否则默认本模块管理
+4. **首次安装**：音量键交互向导，依次配置温控偏移、CPU 调度（检测到启用中的 UGT 时默认交其接管；否则四选一：均衡／省电／系统默认／自动）、UECap 档位（仅 APatch/KSU）、NR 降级、NTP
+5. **升级安装**：自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；若旧配置缺调度接管设置，仅在检测到启用中的 UGT 时设为日常 external，fas-rs 仍只作为游戏临时接管
 6. 重启
 7. 打开 `http://127.0.0.1:6210` 验证
 
@@ -191,7 +191,7 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 | 功能 | APatch / KSU+metamodule | Magisk |
 |---|---|---|
 | 温控阈值偏移、CPU 调度、ZRAM、后台应用限制、SIM2、NR 降级、WebUI | ✅ | ✅ |
-| UECap 三档基带切换 (balanced/special/universal) | ✅ | ❌ 不支持 |
+| UECap 三档基带切换 (balanced/special/universal) | ✅（仅 caiman） | ❌ 不支持 |
 
 ## 已知问题
 

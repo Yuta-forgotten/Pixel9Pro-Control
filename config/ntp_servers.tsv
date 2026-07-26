@@ -1,0 +1,6 @@
+# host<TAB>label<TAB>description<TAB>default
+# Parsed as data by scripts/ntp_config_lib.sh; never source or eval this file.
+ntp.aliyun.com	阿里云	阿里云公共 NTP 服务	yes
+ntp.myhuaweicloud.com	华为云	华为云 NTP 服务	no
+ntp1.xiaomi.com	小米	小米 NTP 服务	no
+time.android.com	Google 默认	Pixel 出厂默认 NTP 服务器	no

@@ -1,8 +1,6 @@
 #!/system/bin/sh
-##############################################################
-# UID/package identity catalog helpers.
-# The TSV catalog is parsed as data and is never sourced/evaluated.
-##############################################################
+# UID/package identity helpers. The TSV catalog is parsed as data and is never
+# sourced or evaluated as shell code.
 
 APP_IDENTITY_FILE="${APP_IDENTITY_FILE:-$MODDIR/config/app_identities.tsv}"
 

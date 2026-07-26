@@ -1,12 +1,10 @@
 #!/system/bin/sh
-##############################################################
-# CGI: /cgi-bin/set_thermal.sh
-# GET  → 返回当前温控档位 {"offset": N}
-# POST → 切换温控档位（body: {"offset": -2|0|2|4|6}）
-#        1. 以 stock JSON 为基准 + offset 重写 thermal_info_config.json
-#        2. 尝试重启 thermalserviced（无需整机重启）
-#        3. 保存 offset 到 .thermal_offset
-##############################################################
+
+# GET returns the active thermal offset. POST accepts -2/0/+2/+4/+6, rebuilds
+# config from the device stock baseline, persists the offset, and attempts one
+# verified Thermal HAL restart. The shared library owns threshold selection,
+# offset translation, SHUTDOWN preservation, and monotonicity validation.
+
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
 
 require_loopback
@@ -14,119 +12,151 @@ require_loopback
 OFFSET_FILE="$MODDIR/.thermal_offset"
 STOCK_JSON="$MODDIR/system/vendor/etc/thermal_stock.json"
 OUT_JSON="$MODDIR/system/vendor/etc/thermal_info_config.json"
+THERMAL_LIB="$MODDIR/scripts/thermal_profile.sh"
+
+[ -r "$THERMAL_LIB" ] \
+    || json_error '500 Internal Server Error' 'thermal profile library not found'
+. "$THERMAL_LIB" \
+    || json_error '500 Internal Server Error' 'thermal profile library failed to load'
+
+thermal_service_getprop() {
+    _thermal_bin="/system/bin/getprop"
+    [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = "1" ] \
+        && _thermal_bin="${PIXEL9PRO_ANDROID_GETPROP:-getprop}"
+    "$_thermal_bin" "$@"
+}
+
+thermal_service_stop() {
+    _thermal_bin="/system/bin/stop"
+    [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = "1" ] \
+        && _thermal_bin="${PIXEL9PRO_ANDROID_STOP:-stop}"
+    "$_thermal_bin" "$@"
+}
+
+thermal_service_start() {
+    _thermal_bin="/system/bin/start"
+    [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = "1" ] \
+        && _thermal_bin="${PIXEL9PRO_ANDROID_START:-start}"
+    "$_thermal_bin" "$@"
+}
+
+thermal_service_log() {
+    _thermal_bin="/system/bin/log"
+    [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = "1" ] \
+        && _thermal_bin="${PIXEL9PRO_ANDROID_LOG:-log}"
+    "$_thermal_bin" "$@"
+}
+
+ensure_thermal_service_running() {
+    _thermal_service="$1"
+    for _thermal_attempt in 1 2; do
+        thermal_service_start "$_thermal_service" 2>/dev/null || true
+        sleep 1
+        [ "$(thermal_service_getprop "init.svc.$_thermal_service" 2>/dev/null)" = "running" ] \
+            && return 0
+    done
+    return 1
+}
+
+rollback_thermal_change() {
+    THERMAL_ROLLBACK_RESULT="incomplete"
+    _rollback_config_ok=0
+    _rollback_state_ok=0
+    if mv "$_rollback" "$OUT_JSON" 2>/dev/null \
+        && [ "$(sha256sum "$OUT_JSON" 2>/dev/null | awk '{print $1}')" = "$_rollback_hash" ]; then
+        _rollback_config_ok=1
+    fi
+    if cgi_restore_file "$OFFSET_FILE" "$_offset_existed" "$_offset_old"; then
+        _rollback_state_ok=1
+    fi
+    case "$_rollback_config_ok:$_rollback_state_ok" in
+        1:1) THERMAL_ROLLBACK_RESULT="complete"; return 0 ;;
+        1:0) THERMAL_ROLLBACK_RESULT="state_incomplete" ;;
+        0:1) THERMAL_ROLLBACK_RESULT="config_incomplete" ;;
+        *) THERMAL_ROLLBACK_RESULT="config_and_state_incomplete" ;;
+    esac
+    return 1
+}
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
     require_token
     acquire_lock "thermal"
-    len="${CONTENT_LENGTH:-0}"
-    [ "$len" -gt 512 ] 2>/dev/null && len=512
-    body=$(dd bs=1 count="$len" 2>/dev/null)
+
+    read_json_body 512
+    body="$JSON_BODY"
     offset=$(printf '%s' "$body" | sed 's/.*"offset"[[:space:]]*:[[:space:]]*\(-\{0,1\}[0-9]*\).*/\1/')
 
-    # 只接受 -2 / 0 / 2 / 4 / 6
-    case "$offset" in
-        -2|0|2|4|6) ;;
-        *)
-            json_error '400 Bad Request' "invalid offset: $offset"
-            ;;
-    esac
+    thermal_is_valid_offset "$offset" \
+        || json_error '400 Bad Request' "invalid offset: $offset"
+    [ -f "$STOCK_JSON" ] \
+        || json_error '500 Internal Server Error' 'stock json not found'
 
-    if [ ! -f "$STOCK_JSON" ]; then
-        json_error '500 Internal Server Error' 'stock json not found'
+    _candidate="${OUT_JSON}.candidate.$$"
+    _rollback="${OUT_JSON}.rollback.$$"
+    _offset_existed=0
+    [ -e "$OFFSET_FILE" ] && _offset_existed=1
+    _offset_old=$(cat "$OFFSET_FILE" 2>/dev/null)
+    thermal_generate_config "$STOCK_JSON" "$_candidate" "$offset" \
+        || json_error '500 Internal Server Error' 'thermal config generation failed'
+    cp "$OUT_JSON" "$_rollback" 2>/dev/null || {
+        rm -f "$_candidate" 2>/dev/null
+        json_error '500 Internal Server Error' 'thermal rollback snapshot failed'
+    }
+    _rollback_hash=$(sha256sum "$_rollback" 2>/dev/null | awk '{print $1}')
+    [ -n "$_rollback_hash" ] || {
+        rm -f "$_candidate" "$_rollback" 2>/dev/null
+        json_error '500 Internal Server Error' 'thermal rollback snapshot verification failed'
+    }
+    if ! mv "$_candidate" "$OUT_JSON" 2>/dev/null; then
+        rm -f "$_candidate" "$_rollback" 2>/dev/null
+        json_error '500 Internal Server Error' 'thermal config commit failed'
+    fi
+    if ! cgi_atomic_write "$OFFSET_FILE" "$offset"; then
+        if rollback_thermal_change; then
+            json_error '500 Internal Server Error' 'thermal offset persistence failed; previous config restored'
+        fi
+        json_error '500 Internal Server Error' "thermal offset persistence failed; rollback incomplete ($THERMAL_ROLLBACK_RESULT)"
     fi
 
-    # ──────────────────────────────────────────────────────────
-    # 用 awk 将目标传感器的 HotThreshold 数值整体 +offset
-    # 目标传感器 (Pro + Pro XL 共有):
-    #   VIRTUAL-SKIN / VIRTUAL-SKIN-HINT / VIRTUAL-SKIN-SOC
-    #   VIRTUAL-SKIN-CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU
-    # HotThreshold 中的 "NAN" 字符串跳过，其余浮点数 +offset
-    # 支持多行 JSON 格式 (HotThreshold 数组跨行)
-    # ──────────────────────────────────────────────────────────
-    awk -v off="$offset" '
-    /"Name":/ {
-        n = $0
-        sub(/.*"Name": *"/, "", n)
-        sub(/".*/, "", n)
-        cur = n
-        tgt = (cur == "VIRTUAL-SKIN" || cur == "VIRTUAL-SKIN-HINT" || cur == "VIRTUAL-SKIN-SOC" || cur == "VIRTUAL-SKIN-CPU-LIGHT-ODPM" || cur == "VIRTUAL-SKIN-CPU-MID" || cur == "VIRTUAL-SKIN-CPU-ODPM" || cur == "VIRTUAL-SKIN-CPU-HIGH" || cur == "VIRTUAL-SKIN-GPU")
-    }
-    tgt && /"HotThreshold"/ && /\[/ && /\]/ {
-        line = $0
-        bs = index(line, "[")
-        prefix = substr(line, 1, bs - 1)
-        rest   = substr(line, bs + 1)
-        be     = index(rest, "]")
-        inner  = substr(rest, 1, be - 1)
-        suffix = substr(rest, be)
-        n_v = split(inner, vals, ",")
-        result = ""
-        for (i = 1; i <= n_v; i++) {
-            v = vals[i]; gsub(/[ \t]/, "", v)
-            if (v == "\"NAN\"") {
-                result = result (i > 1 ? ", " : "") v
-            } else {
-                result = result (i > 1 ? ", " : "") sprintf("%.1f", v + off + 0)
-            }
-        }
-        print prefix "[" result suffix
-        next
-    }
-    tgt && /"HotThreshold"/ && /\[/ && !/\]/ {
-        in_hot = 1; print; next
-    }
-    in_hot {
-        if (/\]/) { in_hot = 0; print; next }
-        line = $0; gsub(/[ \t]/, "", line); gsub(/,/, "", line)
-        if (line == "\"NAN\"") { print; next }
-        if (match(line, /^[0-9]/) || match(line, /^-/)) {
-            indent = $0; sub(/[^ \t].*/, "", indent)
-            val = line + 0
-            newval = sprintf("%.1f", val + off)
-            trailing = ""
-            if (sub(/,[ \t]*$/, "", $0) > 0) trailing = ","
-            printf "%s%s%s\n", indent, newval, trailing
-            next
-        }
-        print; next
-    }
-    { print }
-    ' "$STOCK_JSON" > "${OUT_JSON}.tmp"
-
-    if [ $? -ne 0 ] || [ ! -s "${OUT_JSON}.tmp" ]; then
-        rm -f "${OUT_JSON}.tmp"
-        json_error '500 Internal Server Error' 'awk failed'
-    fi
-
-    mv "${OUT_JSON}.tmp" "$OUT_JSON"
-    printf '%s' "$offset" > "$OFFSET_FILE"
-
-    # ──────────────────────────────────────────────────────────
-    # 尝试重启温控服务使修改立即生效（无需整机重启）
-    # ──────────────────────────────────────────────────────────
     restarted=false
     for svc in vendor.thermal-hal vendor.thermal-hal-2-0 thermal-hal-2-0 thermalserviced; do
-        state=$(getprop "init.svc.$svc" 2>/dev/null)
-        if [ "$state" = "running" ]; then
-            stop "$svc" 2>/dev/null
+        [ "$(thermal_service_getprop "init.svc.$svc" 2>/dev/null)" = "running" ] || continue
+        if thermal_service_stop "$svc" 2>/dev/null; then
             sleep 1
-            start "$svc" 2>/dev/null
-            restarted=true
-            log -t pixel9pro_ctrl "Thermal service restarted: $svc (offset=${offset}C)"
-            break
+            if ensure_thermal_service_running "$svc"; then
+                restarted=true
+                thermal_service_log -t pixel9pro_ctrl "Thermal service restarted: $svc (offset=${offset}C)"
+            else
+                thermal_service_log -t pixel9pro_ctrl "ERROR: thermal service did not return to running: $svc"
+                _thermal_rollback_ok=0
+                rollback_thermal_change && _thermal_rollback_ok=1
+                _thermal_service_recovered=0
+                ensure_thermal_service_running "$svc" && _thermal_service_recovered=1
+                if [ "$_thermal_rollback_ok" -eq 1 ] && [ "$_thermal_service_recovered" -eq 1 ]; then
+                    json_error '500 Internal Server Error' 'thermal restart failed; previous config restored'
+                fi
+                if [ "$_thermal_rollback_ok" -eq 1 ]; then
+                    json_error '500 Internal Server Error' 'thermal restart failed; previous config restored but service recovery failed'
+                fi
+                json_error '500 Internal Server Error' "thermal restart failed; rollback incomplete ($THERMAL_ROLLBACK_RESULT)"
+            fi
+        else
+            if rollback_thermal_change; then
+                json_error '500 Internal Server Error' 'thermal service stop failed; previous config restored'
+            fi
+            json_error '500 Internal Server Error' "thermal service stop failed; rollback incomplete ($THERMAL_ROLLBACK_RESULT)"
         fi
+        break
     done
+
+    rm -f "$_rollback" 2>/dev/null
 
     json_headers
     printf '{"ok":true,"offset":%s,"restarted":%s}\n' "$offset" "$restarted"
-
 elif [ "$REQUEST_METHOD" = "GET" ]; then
     offset=$(cat "$OFFSET_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    case "$offset" in
-        -2|0|2|4|6) ;;
-        *) offset="4" ;;
-    esac
+    offset=$(thermal_normalize_offset "$offset" "$THERMAL_DEFAULT_OFFSET")
     json_headers
     printf '{"offset":%s}\n' "$offset"
 else

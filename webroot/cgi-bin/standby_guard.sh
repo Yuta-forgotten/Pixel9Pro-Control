@@ -10,13 +10,13 @@ SIM2_AUTO_FILE="$MODDIR/.sim2_auto_manage"
 IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
 SIM2_RADIO_STATE_FILE="$MODDIR/.sim2_radio_off"
+DEFAULTS_LIB="$MODDIR/scripts/runtime_defaults_lib.sh"
+
+[ -r "$DEFAULTS_LIB" ] && . "$DEFAULTS_LIB" \
+    || json_error '500 Internal Server Error' 'runtime defaults contract not found'
 
 read_onoff_file() {
-    _flag_value=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
-    case "$_flag_value" in
-        on|off) printf '%s' "$_flag_value" ;;
-        *) printf '%s' "$2" ;;
-    esac
+    runtime_read_onoff "$1" "$2"
 }
 
 read_state_value() {
@@ -29,8 +29,8 @@ read_state_value() {
 }
 
 emit_state() {
-    _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" 'off')
-    _idle_isolate_mode=$(read_onoff_file "$IDLE_ISOLATE_FILE" 'off')
+    _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" "$SIM2_AUTO_DEFAULT")
+    _idle_isolate_mode=$(read_onoff_file "$IDLE_ISOLATE_FILE" "$IDLE_ISOLATE_DEFAULT")
 
     diag_updated_at=""
     diag_screen="unknown"
@@ -67,9 +67,17 @@ emit_state() {
 restore_sim2_unmanaged_state() {
     _prev_state=$(cat "$SIM2_RADIO_STATE_FILE" 2>/dev/null | tr -d ' \n\r\t')
     if [ "$_prev_state" = "disabled" ]; then
-        cmd phone set-sim-count 2 2>/dev/null
-        printf 'enabled' > "$SIM2_RADIO_STATE_FILE"
+        runtime_set_sim_count_state "$SIM2_RADIO_STATE_FILE" 2 enabled 1
     fi
+}
+
+restore_standby_files() {
+    _standby_restore_ok=1
+    cgi_restore_file "$SIM2_AUTO_FILE" "$_sim2_existed" "$_sim2_old" \
+        >/dev/null 2>&1 || _standby_restore_ok=0
+    cgi_restore_file "$IDLE_ISOLATE_FILE" "$_isolate_existed" "$_isolate_old" \
+        >/dev/null 2>&1 || _standby_restore_ok=0
+    [ "$_standby_restore_ok" -eq 1 ]
 }
 
 require_loopback
@@ -83,11 +91,8 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
     require_token
     acquire_lock "standby_guard"
-    len="${CONTENT_LENGTH:-0}"
-    case "$len" in ''|*[!0-9]*) len=0 ;; esac
-    [ "$len" -gt 0 ] 2>/dev/null || json_error '400 Bad Request' 'empty request body'
-    [ "$len" -gt 512 ] 2>/dev/null && len=512
-    body=$(dd bs=1 count="$len" 2>/dev/null)
+    read_json_body 512
+    body="$JSON_BODY"
 
     new_sim2=$(printf '%s' "$body" | sed -n 's/.*"sim2_auto_manage"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
     new_isolate=$(printf '%s' "$body" | sed -n 's/.*"idle_isolate_mode"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
@@ -103,11 +108,29 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
 
     [ -n "$new_sim2" ] || [ -n "$new_isolate" ] || json_error '400 Bad Request' 'missing standby guard field'
 
-    if [ -n "$new_sim2" ]; then
-        printf '%s' "$new_sim2" > "$SIM2_AUTO_FILE"
-        [ "$new_sim2" = "off" ] && restore_sim2_unmanaged_state
+    _sim2_existed=0
+    _isolate_existed=0
+    [ -e "$SIM2_AUTO_FILE" ] && _sim2_existed=1
+    [ -e "$IDLE_ISOLATE_FILE" ] && _isolate_existed=1
+    _sim2_old=$(cat "$SIM2_AUTO_FILE" 2>/dev/null)
+    _isolate_old=$(cat "$IDLE_ISOLATE_FILE" 2>/dev/null)
+
+    if { [ -z "$new_sim2" ] || cgi_atomic_write "$SIM2_AUTO_FILE" "$new_sim2"; } \
+        && { [ -z "$new_isolate" ] || cgi_atomic_write "$IDLE_ISOLATE_FILE" "$new_isolate"; }; then
+        :
+    else
+        if restore_standby_files; then
+            json_error '500 Internal Server Error' 'failed to persist standby setting; previous state restored'
+        fi
+        json_error '500 Internal Server Error' 'failed to persist standby setting and rollback was incomplete'
     fi
-    [ -n "$new_isolate" ] && printf '%s' "$new_isolate" > "$IDLE_ISOLATE_FILE"
+    if [ "$new_sim2" = "off" ] && ! restore_sim2_unmanaged_state; then
+        _sim2_result="$SIM2_TRANSACTION_RESULT"
+        if restore_standby_files && [ "$_sim2_result" != "state_failed_rollback_incomplete" ]; then
+            json_error '500 Internal Server Error' "failed to restore DSDS ($_sim2_result); previous state restored"
+        fi
+        json_error '500 Internal Server Error' "failed to restore DSDS ($_sim2_result) and rollback was incomplete"
+    fi
 
     json_headers
     printf '{"ok":true,'
