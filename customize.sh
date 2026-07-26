@@ -14,11 +14,14 @@ PROFILE_FILE="$MODPATH/.current_profile"
 PROFILE_POLICY_FILE="$MODPATH/.profile_policy"
 PROFILE_MANUAL_FILE="$MODPATH/.profile_manual"
 SCHED_OWNER_FILE="$MODPATH/.cpu_sched_owner"
+SCHED_OWNER_DESIRED_FILE="$MODPATH/.sched_owner_desired"
+GAME_HANDOFF_POLICY_FILE="$MODPATH/.game_handoff_policy"
 DEVICE_FILE="$MODPATH/.device_variant"
 
 OLDDIR="/data/adb/modules/pixel9pro_control"
 
 [ -f "$MODPATH/scripts/scheduler_detect_lib.sh" ] && . "$MODPATH/scripts/scheduler_detect_lib.sh"
+[ -f "$MODPATH/scripts/scheduler_owner_lib.sh" ] && . "$MODPATH/scripts/scheduler_owner_lib.sh"
 
 detect_root_impl() {
     if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
@@ -50,27 +53,34 @@ chooseport() {
 
 choose_cpu_scheduling() {
     _sch_step="$1"
-    detect_external_scheduler 2>/dev/null
-    if [ "$EXTERNAL_SCHEDULER_ACTIVE" = "yes" ]; then
-        # 检测到启用中的外部调度器 (UGT / fas-rs 等): 默认交其接管, 不打断安装。
+    detect_uperf_module 2>/dev/null || true
+    detect_fas_rs_scheduler 2>/dev/null || true
+    if [ "$FAS_RS_MODULE_ENABLED" = "yes" ]; then
+        echo 'fas_rs' > "$GAME_HANDOFF_POLICY_FILE"
+    else
+        echo 'off' > "$GAME_HANDOFF_POLICY_FILE"
+    fi
+    if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
+        # UGT is a valid daily external baseline. fas-rs-only installations
+        # stay on Pixel daily scheduling and use the game handoff policy.
         echo "external" > "$SCHED_OWNER_FILE"
         echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
-        ui_print "  $_sch_step CPU 调度: 检测到 ${EXTERNAL_SCHEDULER_NAME:-外部调度器}, 默认交其接管"
-        ui_print "    本模块不写 CPU 调度节点; 如需改回本模块接管, 在 WebUI 切换"
+        ui_print "  $_sch_step CPU 调度: 检测到 ${UPERF_MODULE_NAME:-UGT}, 日常调度默认交其接管"
+        [ "$FAS_RS_MODULE_ENABLED" = "yes" ] && ui_print "    fas-rs: 命中游戏时临时接管，退出后恢复 UGT"
         ui_print ""
         return
     fi
 
-    # 未检测到启用中的外部调度器: 五选一 (不接管 / 均衡 / 省电 / 系统默认 / 自动)。
-    ui_print "  $_sch_step CPU 调度 (未检测到启用中的 UGT / fas-rs 外部调度):"
-    _SCH_VALS="external balanced battery default auto"
-    _SCH_LABEL_external="不接管 (本模块不写 CPU 调度, 交系统/外部)"
+    # Without UGT there is no valid daily external baseline. fas-rs, when
+    # present, remains a game-only temporary handoff.
+    ui_print "  $_sch_step CPU 调度:"
+    _SCH_VALS="balanced battery default auto"
     _SCH_LABEL_balanced="均衡 (本模块, 日常推荐)"
     _SCH_LABEL_battery="省电 (本模块)"
     _SCH_LABEL_default="系统默认 (本模块, 恢复内核默认 sched_pixel + 出厂 cpuset/cap)"
     _SCH_LABEL_auto="自动 (均衡↔省电, 按温度切换)"
-    _sch_idx=1
-    _sch_total=5
+    _sch_idx=0
+    _sch_total=4
     while true; do
         _i=0; _sch_cur=""
         for _v in $_SCH_VALS; do
@@ -86,10 +96,6 @@ choose_cpu_scheduling() {
         fi
     done
     case "$_sch_cur" in
-        external)
-            echo "external" > "$SCHED_OWNER_FILE"
-            echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
-            ;;
         auto)
             echo "pixel" > "$SCHED_OWNER_FILE"
             echo "balanced" > "$PROFILE_FILE"
@@ -106,6 +112,36 @@ choose_cpu_scheduling() {
             ;;
     esac
     ui_print "    ✓ $_sch_label"
+    ui_print ""
+}
+
+report_optional_module_inventory() {
+    detect_uperf_module 2>/dev/null || true
+    detect_fas_rs_scheduler 2>/dev/null || true
+
+    _baseband_state="未检测到"
+    for _bb_dir in /data/adb/modules/pixel9pro_baseband_trial /data/adb/modules_update/pixel9pro_baseband_trial; do
+        [ -d "$_bb_dir" ] || continue
+        _baseband_state="已检测到"
+        break
+    done
+
+    if [ "$UPERF_DETECTED" = "yes" ]; then
+        _ugt_report="已检测到"
+    else
+        _ugt_report="未检测到"
+    fi
+    if [ "$FAS_RS_DETECTED" = "yes" ]; then
+        _fas_report="已检测到"
+    else
+        _fas_report="未检测到"
+    fi
+
+    ui_print "  可选模块检测（仅报告当前状态）:"
+    ui_print "    UGT: $_ugt_report"
+    ui_print "    fas-rs: $_fas_report"
+    ui_print "    Pixel 9 Pro 基带模块: $_baseband_state"
+    ui_print "    不下载、不推荐或引导安装其他模块"
     ui_print ""
 }
 
@@ -178,7 +214,7 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
                .swap_mode .swap_custom .ntp_server .uecap_mode .uecap_manual_mode \
                .uecap_policy .uecap_reason .sim2_radio_off \
                .nr_saved_mode .webui_token .webui_theme \
-               .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .cpu_sched_owner \
+               .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .cpu_sched_owner .sched_owner_desired .game_handoff_policy \
                .thermal_history .power_history .power_session .standby_diag_state; do
         if [ -f "$OLDDIR/$_sf" ]; then
             cp "$OLDDIR/$_sf" "$MODPATH/$_sf" 2>/dev/null
@@ -200,7 +236,7 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
                 ;;
         esac
     done
-    [ "$_profile_migrated" -eq 1 ] && ui_print "  ✓ 旧性能档已并入均衡 (省电/均衡/系统默认 三档可在 WebUI 选; 更强性能用外部调度接管)"
+    [ "$_profile_migrated" -eq 1 ] && ui_print "  ✓ 旧性能档已并入均衡 (省电/均衡/系统默认 三档可在 WebUI 选择)"
     # v4.4.8: only migrate the untouched old QQ/QQMusic default list.
     _bg_list="$MODPATH/.bg_restrict_list"
     if [ -f "$_bg_list" ]; then
@@ -218,6 +254,7 @@ fi
 
 # ── 首次安装: 音量键功能选择 ──
 if [ "$_is_upgrade" -eq 0 ]; then
+    report_optional_module_inventory
     ui_print "  首次安装 — 配置向导"
     ui_print "  [音量+] = 下一项  [音量-] = 确认"
     ui_print ""
@@ -348,11 +385,11 @@ else
     [ -f "$PROFILE_MANUAL_FILE" ] || cp "$PROFILE_FILE" "$PROFILE_MANUAL_FILE" 2>/dev/null || echo 'balanced' > "$PROFILE_MANUAL_FILE"
     [ -f "$PROFILE_POLICY_FILE" ] || echo 'manual' > "$PROFILE_POLICY_FILE"
     if [ ! -f "$SCHED_OWNER_FILE" ]; then
-        detect_external_scheduler 2>/dev/null
-        if [ "$EXTERNAL_SCHEDULER_ACTIVE" = "yes" ]; then
+        detect_uperf_module 2>/dev/null || true
+        if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
             echo "external" > "$SCHED_OWNER_FILE"
             echo "external_scheduler" > "$MODPATH/.profile_auto_reason"
-            ui_print "  新增设置: 检测到 ${EXTERNAL_SCHEDULER_NAME:-外部调度器}, CPU 调度默认交其接管"
+            ui_print "  新增设置: 检测到 ${UPERF_MODULE_NAME:-UGT}, CPU 日常调度默认交其接管"
         else
             echo "pixel" > "$SCHED_OWNER_FILE"
             ui_print "  新增设置: CPU 调度默认本模块 (可在 WebUI 调整)"
@@ -363,6 +400,14 @@ else
             pixel|external) ;;
             *) echo 'pixel' > "$SCHED_OWNER_FILE" ;;
         esac
+    fi
+    if [ ! -f "$GAME_HANDOFF_POLICY_FILE" ]; then
+        detect_fas_rs_scheduler 2>/dev/null || true
+        if [ "$FAS_RS_MODULE_ENABLED" = "yes" ]; then
+            echo 'fas_rs' > "$GAME_HANDOFF_POLICY_FILE"
+        else
+            echo 'off' > "$GAME_HANDOFF_POLICY_FILE"
+        fi
     fi
     [ -f "$MODPATH/.profile_auto_reason" ] || echo 'manual_policy' > "$MODPATH/.profile_auto_reason"
     [ -f "$MODPATH/.uecap_manual_mode" ] || echo 'balanced' > "$MODPATH/.uecap_manual_mode"
@@ -380,6 +425,20 @@ else
     [ -f "$MODPATH/.idle_isolate_mode" ] || echo 'off' > "$MODPATH/.idle_isolate_mode"
     [ -f "$MODPATH/.swap_mode" ] || echo 'optimized' > "$MODPATH/.swap_mode"
     [ -f "$MODPATH/.ntp_server" ] || echo 'ntp.aliyun.com' > "$MODPATH/.ntp_server"
+fi
+
+# Split persistent user intent from the effective runtime owner.  For upgrades
+# from v4.4.38 and older, prefer the last explicit WebUI owner action because
+# the legacy arbiter could overwrite .cpu_sched_owner after that action.
+if command -v scheduler_owner_init >/dev/null 2>&1; then
+    scheduler_owner_init "$MODPATH" "/data/adb/fas_rs"
+    if so_migrate_state; then
+        ui_print "  CPU 调度意愿: $(so_read_desired_owner), 游戏接管: $(so_read_handoff_policy)"
+    else
+        [ -f "$SCHED_OWNER_DESIRED_FILE" ] || cp "$SCHED_OWNER_FILE" "$SCHED_OWNER_DESIRED_FILE" 2>/dev/null || echo 'pixel' > "$SCHED_OWNER_DESIRED_FILE"
+        [ -f "$GAME_HANDOFF_POLICY_FILE" ] || echo 'off' > "$GAME_HANDOFF_POLICY_FILE"
+        ui_print "  ⚠ CPU 调度状态迁移失败, 已使用安全兼容值"
+    fi
 fi
 
 # ── 应用温控偏移到 thermal_info_config.json ──

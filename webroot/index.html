@@ -34,7 +34,7 @@
       <div class="status-strip">
         <span class="status-chip"><strong id="topbar-profile-chip">读取中</strong></span>
         <span class="status-chip" id="topbar-thermal-chip">温控配置读取中</span>
-        <span class="status-chip" id="topbar-theme-chip">跟随系统</span>
+        <span class="status-chip" id="topbar-theme-chip">界面 · 跟随系统</span>
       </div>
     </div>
   </header>
@@ -169,15 +169,22 @@
             <button class="seg-btn" id="profile-policy-auto-btn" type="button">自动</button>
           </div>
           <div class="section-sub" id="perf-policy-desc" style="margin-top:10px">读取当前调度策略…</div>
-          <div class="preference-group">
-            <div class="ctrl-row">
+          <div class="preference-group" id="external-scheduler-controls" data-module-visible="ugt|fas" hidden>
+            <div class="ctrl-row" id="sched-owner-row" data-module-visible="ugt" hidden>
               <div class="ctrl-copy">
                 <div class="ctrl-label">调度接管</div>
                 <div class="ctrl-val" id="sched-owner-label">读取中</div>
               </div>
               <button class="tiny-btn" id="sched-owner-toggle-btn" type="button"><span id="sched-owner-toggle-label">读取中…</span></button>
             </div>
-            <div class="ctrl-row" id="owner-arbiter-row" hidden>
+            <div class="ctrl-row" id="game-handoff-row" data-module-visible="fas" hidden>
+              <div class="ctrl-copy">
+                <div class="ctrl-label">游戏接管</div>
+                <div class="ctrl-val" id="game-handoff-label">读取 fas-rs 接管策略</div>
+              </div>
+              <button class="tiny-btn tonal" id="game-handoff-toggle-btn" type="button"><span id="game-handoff-toggle-label">读取中…</span></button>
+            </div>
+            <div class="ctrl-row" id="owner-arbiter-row" data-module-visible="fas" hidden>
               <div class="ctrl-copy">
                 <div class="ctrl-label">调度协调</div>
                 <div class="ctrl-val" id="owner-arbiter-label">外部调度器可立即检查接管状态</div>
@@ -217,10 +224,10 @@
 
         <details class="disclosure">
           <summary class="disclosure-summary">
-            <span class="disclosure-copy"><strong>调度说明</strong><small>自动策略、系统默认与外部调度</small></span>
+            <span class="disclosure-copy"><strong>调度说明</strong><small>自动策略与系统默认</small></span>
             <span class="disclosure-chevron" aria-hidden="true">›</span>
           </summary>
-          <div class="disclosure-body support-copy">省电与均衡会调整核心分配和升频节奏；系统默认恢复内核原厂设置。自动模式仅在均衡与省电之间切换。游戏级线程调度可交由 UGT、fas-rs 或其他外部调度器接管。</div>
+          <div class="disclosure-body support-copy">省电与均衡会调整核心分配和升频节奏；系统默认恢复内核原厂设置。自动模式仅在均衡与省电之间切换。<span id="external-scheduler-help" data-module-visible="ugt|fas" hidden></span></div>
         </details>
 
         <div class="section-head" style="margin-top:6px">
@@ -314,7 +321,7 @@
           </details>
         </article>
 
-        <article class="surface-card preference-card" id="baseband-card">
+        <article class="surface-card preference-card" id="baseband-card" data-module-visible="baseband" hidden>
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">基带模块</div>

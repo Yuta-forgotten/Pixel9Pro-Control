@@ -142,8 +142,8 @@ const THERMAL_PRESETS = {
   },
   2: {
     name: '轻度放宽',
-    summary: '比原厂晚 2°C 介入，轻度释放性能。',
-    detail: '<b>轻度放宽</b><br><br>出厂 +2°C，最早 39°C 介入。<br><br>HINT 39°C / VIRTUAL-SKIN 41°C / CPU-HIGH 43°C。',
+    summary: 'HINT 39°C 开始介入，VIRTUAL-SKIN 阈值约 41°C。',
+    detail: '<b>轻度放宽</b><br><br>出厂 +2°C；39°C 是最早 HINT 介入点，不是机身硬限温。<br><br>HINT 39°C / VIRTUAL-SKIN 41°C / CPU-HIGH 43°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82z"/></svg>'
   },
   4: {
@@ -289,10 +289,17 @@ const ZONE_LABELS = {
 const refs = {};
 const state = {
   currentTab: 'home',
+  deviceModel: '',
+  basebandInstalled: false,
   currentProfile: 'unknown',
   manualProfile: 'balanced',
   profilePolicy: 'manual',
   schedOwner: 'pixel',
+  schedEffectiveOwner: 'pixel',
+  gameHandoffPolicy: 'off',
+  arbiterState: '',
+  arbiterApplyResult: '',
+  arbiterReason: '',
   uperfDetected: false,
   uperfModuleId: '',
   uperfModuleName: '',
@@ -341,6 +348,7 @@ const state = {
   cpuBusy: false,
   profilePolicyBusy: false,
   schedOwnerBusy: false,
+  gameHandoffBusy: false,
   ownerArbiterBusy: false,
   thermalBusy: false,
   thermalBadReads: 0,
@@ -440,13 +448,20 @@ function initRefs() {
   refs.perfPolicyDesc = $('perf-policy-desc');
   refs.profilePolicyManualBtn = $('profile-policy-manual-btn');
   refs.profilePolicyAutoBtn = $('profile-policy-auto-btn');
+  refs.externalSchedulerControls = $('external-scheduler-controls');
+  refs.schedOwnerRow = $('sched-owner-row');
   refs.schedOwnerLabel = $('sched-owner-label');
   refs.schedOwnerToggleBtn = $('sched-owner-toggle-btn');
   refs.schedOwnerToggleLabel = $('sched-owner-toggle-label');
+  refs.gameHandoffRow = $('game-handoff-row');
+  refs.gameHandoffLabel = $('game-handoff-label');
+  refs.gameHandoffToggleBtn = $('game-handoff-toggle-btn');
+  refs.gameHandoffToggleLabel = $('game-handoff-toggle-label');
   refs.ownerArbiterRow = $('owner-arbiter-row');
   refs.ownerArbiterLabel = $('owner-arbiter-label');
   refs.ownerArbiterTickBtn = $('owner-arbiter-tick-btn');
   refs.ownerArbiterTickLabel = $('owner-arbiter-tick-label');
+  refs.externalSchedulerHelp = $('external-scheduler-help');
   refs.cpuRows = $('cpu-rows');
   refs.profileList = $('profile-list');
   refs.thermalCurrentName = $('thermal-current-name');
@@ -511,6 +526,7 @@ function initRefs() {
   refs.uecapDesc = $('uecap-desc');
   refs.uecapBtnGroup = $('uecap-btn-group');
   refs.uecapRows = $('uecap-rows');
+  refs.basebandCard = $('baseband-card');
   refs.basebandDesc = $('baseband-desc');
   refs.basebandRows = $('baseband-rows');
   refs.ntpDesc = $('ntp-desc');
@@ -551,7 +567,7 @@ function syncThemeUi() {
   document.documentElement.dataset.theme = resolved;
   document.querySelector('meta[name="theme-color"]').setAttribute('content', resolved === 'dark' ? '#191c1b' : '#eceeec');
   setStaticHtml(refs.themeBtnIcon, THEME_ICONS[state.themeMode] || THEME_ICONS.system);
-  refs.topbarThemeChip.textContent = getThemeLabel(state.themeMode);
+  refs.topbarThemeChip.textContent = `界面 · ${getThemeLabel(state.themeMode)}`;
   refs.themeChoices.forEach((choice) => {
     choice.classList.toggle('selected', choice.dataset.themeOption === state.themeMode);
   });
@@ -1504,11 +1520,14 @@ function getExternalSchedulerStateText() {
 
 function getSchedulerStatusText() {
   const name = getEffectiveSchedulerName();
-  if (state.schedOwner === 'external') {
-    if (!hasExternalScheduler()) return '调度让权 · 等待外部调度';
-    return isExternalSchedulerActive() ? `${name} 接管${getEffectiveSchedulerModeText()} (${getExternalSchedulerStateText()})` : `${name} ${getExternalSchedulerStateText()}`;
+  const desired = state.schedOwner === 'external' ? '日常 External' : '日常 Pixel';
+  if (state.schedEffectiveOwner === 'external') {
+    if (!hasExternalScheduler()) return `${desired} · 当前无外部调度器运行`;
+    const lease = state.effectiveSchedulerKind === 'fas_rs' && (state.arbiterState === 'FAS_LEASED_GAME' || state.arbiterState === 'EXIT_HOLD');
+    const current = isExternalSchedulerActive() ? `${name} 接管${getEffectiveSchedulerModeText()}` : `${name} ${getExternalSchedulerStateText()}`;
+    return `${desired} · 当前 ${current}${lease ? '（游戏临时接管）' : ''}`;
   }
-  return hasExternalScheduler() ? `本模块覆盖 ${name}` : 'Pixel 温控模块';
+  return state.schedOwner === 'external' ? '日常 External · 当前 Pixel（等待协调）' : '日常 Pixel · 当前 Pixel9Pro-Control';
 }
 
 function getSchedulerToggleText() {
@@ -1529,14 +1548,56 @@ function getSchedulerExternalDesc() {
 }
 
 function getSchedulerPixelDesc() {
-  const name = getExternalSchedulerName();
-  if (hasExternalScheduler()) {
-    return `检测到 ${name}，当前由本模块覆盖接管 CPU 调度。`;
+  if (state.uperfDetected && state.fasRsDetected) {
+    return `当前日常调度由本模块管理；${getUperfName()} 未接管，fas-rs 仅按游戏策略临时接管。`;
   }
-  return '未检测到 UGT / fas-rs 外部调度器，当前由本模块管理 CPU 调度。';
+  if (state.uperfDetected) {
+    return `检测到 ${getUperfName()}，当前日常调度由本模块管理。`;
+  }
+  if (state.fasRsDetected) {
+    return 'fas-rs 仅在命中游戏时临时接管；当前日常调度由本模块管理。';
+  }
+  return '当前由本模块管理 CPU 调度。';
+}
+
+function syncOptionalModuleUi() {
+  const available = {
+    ugt: state.uperfDetected,
+    fas: state.fasRsDetected,
+    baseband: state.basebandInstalled && state.deviceModel === 'Pixel 9 Pro',
+  };
+  document.querySelectorAll('[data-module-visible]').forEach((element) => {
+    const keys = String(element.dataset.moduleVisible || '').split('|').filter(Boolean);
+    element.hidden = !keys.some((key) => available[key]);
+  });
+  if (refs.externalSchedulerHelp) {
+    if (available.ugt && available.fas) {
+      refs.externalSchedulerHelp.textContent = ' 已检测到 UGT 与 fas-rs：UGT 可作为日常调度，fas-rs 仅在命中游戏时临时接管。';
+    } else if (available.ugt) {
+      refs.externalSchedulerHelp.textContent = ' 已检测到 UGT，可在日常 Pixel 调度与 UGT 之间切换。';
+    } else if (available.fas) {
+      refs.externalSchedulerHelp.textContent = ' 已检测到 fas-rs，可在命中游戏时临时接管，退出后恢复 Pixel 日常调度。';
+    } else {
+      refs.externalSchedulerHelp.textContent = '';
+    }
+  }
 }
 
 function syncOwnerArbiterUi() {
+  syncOptionalModuleUi();
+  if (refs.gameHandoffRow) {
+    const available = state.fasRsDetected;
+    refs.gameHandoffRow.hidden = !available;
+    if (available) {
+      const enabled = state.gameHandoffPolicy === 'fas_rs';
+      refs.gameHandoffLabel.textContent = enabled
+        ? '命中游戏时 fas-rs 临时接管，退出后恢复日常选择'
+        : 'fas-rs 游戏临时接管已关闭';
+      refs.gameHandoffToggleBtn.disabled = state.gameHandoffBusy;
+      refs.gameHandoffToggleBtn.className = `tiny-btn${enabled ? ' tonal' : ''}`;
+      refs.gameHandoffToggleLabel.textContent = state.gameHandoffBusy ? '切换中…' : (enabled ? '关闭' : '启用');
+    }
+  }
   if (!refs.ownerArbiterRow) return;
   const available = state.fasRsDetected;
   refs.ownerArbiterRow.hidden = !available;
@@ -1552,7 +1613,7 @@ function syncOwnerArbiterUi() {
 function syncProfileUi() {
   const profile = PROFILES[state.currentProfile] || PROFILES.unknown;
   const isAuto = state.profilePolicy === 'auto';
-  const isExternal = state.schedOwner === 'external';
+  const isExternal = state.schedEffectiveOwner === 'external';
   const effectiveName = getEffectiveSchedulerName();
   if (isExternal) {
     refs.topbarProfileChip.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? `${effectiveName} 接管` : '外部调度未启用') : '调度让权';
@@ -1569,7 +1630,7 @@ function syncProfileUi() {
     refs.profilePolicyAutoBtn.disabled = true;
     refs.schedOwnerLabel.textContent = getSchedulerStatusText();
     refs.schedOwnerToggleBtn.className = 'tiny-btn primary';
-    refs.schedOwnerToggleBtn.disabled = state.schedOwnerBusy;
+    refs.schedOwnerToggleBtn.disabled = state.schedOwnerBusy || (!isUperfEnabled() && state.schedOwner !== 'external');
     refs.schedOwnerToggleLabel.textContent = getSchedulerToggleText();
     refs.hero.className = 'hero-card mode-game';
     setStaticHtml(refs.heroIcon, PROFILES.performance.hero);
@@ -1594,7 +1655,7 @@ function syncProfileUi() {
   refs.profilePolicyAutoBtn.disabled = state.profilePolicyBusy;
   refs.schedOwnerLabel.textContent = getSchedulerStatusText();
   refs.schedOwnerToggleBtn.className = 'tiny-btn';
-  refs.schedOwnerToggleBtn.disabled = state.schedOwnerBusy;
+  refs.schedOwnerToggleBtn.disabled = state.schedOwnerBusy || (!isUperfEnabled() && state.schedOwner !== 'external');
   refs.schedOwnerToggleLabel.textContent = getSchedulerToggleText();
   refs.hero.className = `hero-card ${profile.modeClass}`;
   setStaticHtml(refs.heroIcon, profile.hero);
@@ -1631,6 +1692,11 @@ function applyProfileState(data) {
   state.manualProfile = PROFILES[data.manual_profile] ? data.manual_profile : state.currentProfile;
   state.profilePolicy = data.policy === 'auto' ? 'auto' : 'manual';
   state.schedOwner = data.sched_owner === 'external' ? 'external' : 'pixel';
+  state.schedEffectiveOwner = data.sched_effective_owner === 'external' ? 'external' : 'pixel';
+  state.gameHandoffPolicy = data.game_handoff_policy === 'fas_rs' ? 'fas_rs' : 'off';
+  state.arbiterState = typeof data.arbiter_state === 'string' ? data.arbiter_state : '';
+  state.arbiterApplyResult = typeof data.arbiter_apply_result === 'string' ? data.arbiter_apply_result : '';
+  state.arbiterReason = typeof data.arbiter_reason === 'string' ? data.arbiter_reason : '';
   state.uperfDetected = boolValue(data.uperf_detected);
   state.uperfModuleId = typeof data.uperf_module_id === 'string' ? data.uperf_module_id : '';
   state.uperfModuleName = typeof data.uperf_module_name === 'string' ? data.uperf_module_name : '';
@@ -1677,7 +1743,7 @@ function syncHeroDesc() {
   const parts = [];
   const preset = THERMAL_PRESETS[state.currentOffset];
   if (preset) parts.push(preset.name);
-  if (state.schedOwner === 'external') parts.push(hasExternalScheduler() ? (isExternalSchedulerActive() ? '外部调度接管' : '外部调度未启用') : '调度停用');
+  if (state.schedEffectiveOwner === 'external') parts.push(hasExternalScheduler() ? (isExternalSchedulerActive() ? '外部调度接管' : '外部调度未启用') : '调度停用');
   else if (hasExternalScheduler()) parts.push('覆盖外部调度');
   if (state.swapMode === 'optimized') parts.push('内存已优化');
   else if (state.swapMode === 'stock') parts.push('内存默认');
@@ -1892,6 +1958,10 @@ async function loadInfo() {
   try {
     const data = await apiFetch(API.info);
     const deviceModel = data.model || '—';
+    const hadBaseband = state.basebandInstalled;
+    state.deviceModel = deviceModel;
+    state.basebandInstalled = boolValue(data.baseband_installed);
+    syncOptionalModuleUi();
     refs.infoModel.textContent = deviceModel;
     refs.infoAndroid.textContent = data.version ? `Android ${data.version}` : '—';
     refs.infoKernel.textContent = data.kernel || '—';
@@ -1899,8 +1969,7 @@ async function loadInfo() {
     refs.topbarKicker.textContent = data.module_version
       ? `${deviceModel} · UI ${data.module_version}`
       : `${deviceModel} · UI`;
-    const basebandCard = $('baseband-card');
-    if (basebandCard) basebandCard.hidden = deviceModel !== 'Pixel 9 Pro';
+    if (state.basebandInstalled && !hadBaseband) refreshBaseband();
     refs.rtWebuiMem.textContent = data.httpd_rss_kb
       ? data.httpd_rss_kb < 1024 ? `${data.httpd_rss_kb}KB` : `${(data.httpd_rss_kb / 1024).toFixed(1)}MB`
       : '—';
@@ -1941,6 +2010,11 @@ async function loadSavedProfile() {
     state.manualProfile = 'balanced';
     state.profilePolicy = 'manual';
     state.schedOwner = 'pixel';
+    state.schedEffectiveOwner = 'pixel';
+    state.gameHandoffPolicy = 'off';
+    state.arbiterState = '';
+    state.arbiterApplyResult = '';
+    state.arbiterReason = '';
     state.uperfDetected = false;
     state.uperfModuleId = '';
     state.uperfModuleName = '';
@@ -2868,10 +2942,12 @@ async function setUecapMode(mode) {
 function renderBasebandRows(data) {
   refs.basebandRows.replaceChildren();
   if (!data.installed) {
-    refs.basebandDesc.textContent = '未检测到独立基带模块，当前运营商配置和 MCFG 使用系统默认。';
-    refs.basebandRows.appendChild(buildInfoRow('安装状态', '未安装', 'off'));
+    state.basebandInstalled = false;
+    syncOptionalModuleUi();
     return;
   }
+  state.basebandInstalled = true;
+  syncOptionalModuleUi();
   refs.basebandDesc.textContent = `已安装 ${data.version || ''}，可提供 CarrierSettings、MCFG 和 IMS 相关配置。`;
   const props = data.props || {};
   const cs = data.carrier_settings || {};
@@ -2888,6 +2964,10 @@ function renderBasebandRows(data) {
 }
 
 async function refreshBaseband() {
+  if (!state.basebandInstalled) {
+    syncOptionalModuleUi();
+    return;
+  }
   try {
     const data = await apiFetch(API.checkBaseband, { timeoutMs: 6000 });
     renderBasebandRows(data);
@@ -4206,10 +4286,10 @@ async function toggleSchedOwner() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sched_owner: nextOwner }),
-      timeoutMs: 8000
+      timeoutMs: 25000
     });
+    if (typeof data.sched_owner === 'string') applyProfileState(data);
     if (data.ok) {
-      applyProfileState(data);
       showToast(nextOwner === 'external'
         ? (hasExternalScheduler() ? '已不覆盖外部调度' : '已停用本模块调度')
         : (hasExternalScheduler() ? '本模块已覆盖接管' : '已启用本模块调度'));
@@ -4220,8 +4300,9 @@ async function toggleSchedOwner() {
         : `本模块调度已启用：${PROFILES[state.currentProfile].name}`, 'ok');
       refreshCpu();
     } else {
-      showToast(`切换失败：${data.error || '未知'}`);
-      appendLog(data.error || '切换失败', 'err');
+      const detail = data.arbiter_apply_result || data.error || '状态复读未通过';
+      showToast(`切换未完成：${detail}`);
+      appendLog(`Owner 已记录为 ${nextOwner}，但运行态未通过复读：${detail}`, 'err');
     }
   } catch (err) {
     showToast('请求失败，检查服务是否运行');
@@ -4229,6 +4310,41 @@ async function toggleSchedOwner() {
   } finally {
     state.schedOwnerBusy = false;
     syncProfileUi();
+  }
+}
+
+async function toggleGameHandoff() {
+  if (state.gameHandoffBusy || !state.fasRsDetected) return;
+  const nextPolicy = state.gameHandoffPolicy === 'fas_rs' ? 'off' : 'fas_rs';
+  state.gameHandoffBusy = true;
+  syncOwnerArbiterUi();
+  appendLog(nextPolicy === 'fas_rs' ? '启用 fas-rs 游戏临时接管…' : '关闭 fas-rs 游戏临时接管…', 'dim');
+  refs.logCard.classList.add('open');
+  try {
+    const data = await apiFetch(API.profile, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ game_handoff: nextPolicy }),
+      timeoutMs: 25000
+    });
+    if (typeof data.game_handoff_policy === 'string') applyProfileState(data);
+    if (data.ok) {
+      showToast(nextPolicy === 'fas_rs' ? 'fas-rs 游戏接管已启用' : 'fas-rs 游戏接管已关闭');
+      appendLog(nextPolicy === 'fas_rs'
+        ? '命中游戏后 fas-rs 临时接管，退出后恢复日常调度'
+        : '游戏场景保持日常调度选择', 'ok');
+      await refreshCpu();
+    } else {
+      const detail = data.arbiter_apply_result || data.error || '状态复读未通过';
+      showToast(`切换未完成：${detail}`);
+      appendLog(detail, 'err');
+    }
+  } catch (err) {
+    showToast('请求失败，检查服务是否运行');
+    appendLog(String(err), 'err');
+  } finally {
+    state.gameHandoffBusy = false;
+    syncOwnerArbiterUi();
   }
 }
 
@@ -4508,6 +4624,7 @@ function bindStaticEvents() {
   $('theme-open-btn').addEventListener('click', openThemeSheet);
   $('refresh-all-btn').addEventListener('click', doFullRefresh);
   $('sched-owner-toggle-btn').addEventListener('click', toggleSchedOwner);
+  $('game-handoff-toggle-btn').addEventListener('click', toggleGameHandoff);
   $('owner-arbiter-tick-btn').addEventListener('click', triggerOwnerArbiter);
   $('swap-toggle-btn').addEventListener('click', toggleSwapMode);
   $('swap-detail-btn').addEventListener('click', () => openDetail('内存优化详情', buildSwapDetail(state.swapData)));

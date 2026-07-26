@@ -3,6 +3,13 @@
 # Detects external CPU schedulers without suggesting installation.
 # Keep the legacy Uperf fields/API for WebUI compatibility.
 
+SCHEDULER_MODULES_ROOT="${SCHEDULER_MODULES_ROOT:-/data/adb/modules}"
+SCHEDULER_MODULES_UPDATE_ROOT="${SCHEDULER_MODULES_UPDATE_ROOT:-/data/adb/modules_update}"
+SCHEDULER_FAS_RUNTIME_ROOT="${SCHEDULER_FAS_RUNTIME_ROOT:-/data/adb/fas_rs}"
+SCHEDULER_FAS_MODE_PATH="${SCHEDULER_FAS_MODE_PATH:-/dev/fas_rs/mode}"
+SCHEDULER_TEST_MODE="${SCHEDULER_TEST_MODE:-0}"
+SCHEDULER_TEST_RUNTIME_ROOT="${SCHEDULER_TEST_RUNTIME_ROOT:-}"
+
 UPERF_DETECTED="no"
 UPERF_MODULE_ID=""
 UPERF_MODULE_NAME=""
@@ -89,8 +96,8 @@ read_module_prop_value() {
 
 scheduler_module_source() {
     case "$1" in
-        /data/adb/modules_update/*) printf '%s' "modules_update" ;;
-        /data/adb/modules/*)        printf '%s' "modules" ;;
+        "$SCHEDULER_MODULES_UPDATE_ROOT"/*) printf '%s' "modules_update" ;;
+        "$SCHEDULER_MODULES_ROOT"/*)        printf '%s' "modules" ;;
         *)                          printf '%s' "runtime" ;;
     esac
 }
@@ -118,6 +125,10 @@ scheduler_state_enabled() {
 
 scheduler_process_alive() {
     _sd_proc="$1"
+    if [ "$SCHEDULER_TEST_MODE" = "1" ] && [ -n "$SCHEDULER_TEST_RUNTIME_ROOT" ]; then
+        [ -f "$SCHEDULER_TEST_RUNTIME_ROOT/${_sd_proc}_alive" ]
+        return
+    fi
     pidof "$_sd_proc" >/dev/null 2>&1 && return 0
     ps -A 2>/dev/null | grep -E "(^|[[:space:]])${_sd_proc}([[:space:]]|$)" | grep -v grep >/dev/null 2>&1
 }
@@ -139,7 +150,7 @@ detect_uperf_module() {
     reset_uperf_detection
 
     _sd_uperf_found=0
-    for _sd_prop in /data/adb/modules/*/module.prop /data/adb/modules_update/*/module.prop; do
+    for _sd_prop in "$SCHEDULER_MODULES_ROOT"/*/module.prop "$SCHEDULER_MODULES_UPDATE_ROOT"/*/module.prop; do
         [ -f "$_sd_prop" ] || continue
         is_uperf_module_prop "$_sd_prop" || continue
 
@@ -197,9 +208,9 @@ is_fas_rs_module_prop() {
 
 detect_fas_rs_scheduler() {
     reset_fas_rs_detection
-    FAS_RS_RUNTIME_ROOT="/data/adb/fas_rs"
+    FAS_RS_RUNTIME_ROOT="$SCHEDULER_FAS_RUNTIME_ROOT"
 
-    for _sd_prop in /data/adb/modules/*/module.prop /data/adb/modules_update/*/module.prop; do
+    for _sd_prop in "$SCHEDULER_MODULES_ROOT"/*/module.prop "$SCHEDULER_MODULES_UPDATE_ROOT"/*/module.prop; do
         [ -f "$_sd_prop" ] || continue
         is_fas_rs_module_prop "$_sd_prop" || continue
 
@@ -226,7 +237,10 @@ detect_fas_rs_scheduler() {
     fi
 
     [ -s "$FAS_RS_RUNTIME_ROOT/.owner_state" ] && FAS_RS_OWNER_STATE=$(head -n 1 "$FAS_RS_RUNTIME_ROOT/.owner_state" 2>/dev/null | tr -d '\r')
-    [ -e /dev/fas_rs/mode ] && FAS_RS_MODE=$(head -n 1 /dev/fas_rs/mode 2>/dev/null | tr -d ' \r\n\t')
+    if [ -e "$SCHEDULER_FAS_MODE_PATH" ]; then
+        FAS_RS_MODE=$(head -n 1 "$SCHEDULER_FAS_MODE_PATH" 2>/dev/null | tr -d ' \r\n\t')
+        FAS_RS_DETECTED="yes"
+    fi
     if [ -n "$FAS_RS_OWNER_STATE" ]; then
         case "$FAS_RS_OWNER_STATE" in
             fas-rs:game:*)
@@ -243,8 +257,11 @@ detect_fas_rs_scheduler() {
         esac
     fi
 
-    if [ -d "$FAS_RS_RUNTIME_ROOT" ] || [ -n "$FAS_RS_OWNER_STATE" ] || [ -n "$FAS_RS_MODE" ]; then
-        FAS_RS_DETECTED="yes"
+    # The control module also owns /data/adb/fas_rs arbiter state. A runtime
+    # directory or stale .owner_state alone is not proof that fas-rs is
+    # installed. Only a module, live process, or /dev/fas_rs mode interface
+    # may expose fas-rs-specific UI and handoff controls.
+    if [ "$FAS_RS_DETECTED" = "yes" ]; then
         [ -n "$FAS_RS_MODULE_ID" ] || FAS_RS_MODULE_ID="fas_rs"
         [ -n "$FAS_RS_MODULE_NAME" ] || FAS_RS_MODULE_NAME="fas-rs"
         [ -n "$FAS_RS_MODULE_PATH" ] || FAS_RS_MODULE_PATH="$FAS_RS_RUNTIME_ROOT"
@@ -279,7 +296,7 @@ detect_fas_rs_scheduler() {
     elif [ "$FAS_RS_MODULE_ENABLED" = "yes" ]; then
         FAS_RS_RUNTIME_STATE="module_enabled"
         FAS_RS_ACTIVE="no"
-    elif [ -d "$FAS_RS_RUNTIME_ROOT" ] || [ -n "$FAS_RS_MODE" ]; then
+    elif [ -n "$FAS_RS_MODE" ]; then
         FAS_RS_RUNTIME_STATE="runtime_present"
         FAS_RS_ACTIVE="no"
     else

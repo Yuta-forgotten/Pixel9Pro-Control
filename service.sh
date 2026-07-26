@@ -5,6 +5,19 @@
 # 执行时机：late_start（约启动后 8s），以 root 运行
 # 流程: 等待启动 → 系统设置优化 → 内核参数 → 三层功耗优化 → CPU配置 → 统一后台 → WebUI
 #
+# v4.4.40 变更:
+#   - UGT→fas-rs 先恢复 cpufreq residue 并验证游戏 cap=1024，再启动 fas-rs；失败按 desired
+#     owner 回滚，消除 owner 已发布但 cap=0 / policy7=powersave 的假 active 启动窗口。
+#
+# v4.4.39 变更:
+#   - 拆分用户日常选择 .sched_owner_desired 与运行态 .cpu_sched_owner，修复游戏 lease/UGT enabled
+#     状态覆盖用户 Pixel 选择后自动回弹的问题。
+#   - Pixel/UGT/fas-rs 统一经过 owner 事务锁；fas-rs 可在 Pixel baseline 上临时接管，退出后恢复
+#     原 auto/manual profile，失败按 desired owner 回滚。
+#   - owner 事务显式管理 sched_util_clamp_min：Pixel balanced/battery 与 UGT 日常 baseline=0，
+#     fas-rs 游戏 lease=1024（Google 出厂上限，完整放开 boost），退出游戏后复读恢复日常值；
+#     不触碰 ThermalHAL 独立使用的 uclamp.max 热保护。
+#
 # v4.4.12 变更:
 #   - CPU 调度面板恢复三档: 省电 / 均衡 / 系统默认 (WebUI 卡片顺序 省电→均衡→系统默认)。
 #     系统默认 = cpu_profile.sh 恢复出厂三件套: response_time_ms=内核只读 nom(设备实测 9/52/165)
@@ -203,6 +216,8 @@ PROFILE_MANUAL_FILE="$MODDIR/.profile_manual"
 PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
 PROFILE_HISTORY_FILE="$MODDIR/.profile_history"
 SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
+SCHED_OWNER_DESIRED_FILE="$MODDIR/.sched_owner_desired"
+GAME_HANDOFF_POLICY_FILE="$MODDIR/.game_handoff_policy"
 SIM2_AUTO_FILE="$MODDIR/.sim2_auto_manage"
 IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
@@ -210,6 +225,11 @@ POWER_PROFILE_FILE="$MODDIR/.power_profile"
 
 . "$MODDIR/scripts/bg_restrict_lib.sh" 2>/dev/null
 [ -f "$MODDIR/scripts/scheduler_detect_lib.sh" ] && . "$MODDIR/scripts/scheduler_detect_lib.sh" 2>/dev/null
+[ -f "$MODDIR/scripts/scheduler_owner_lib.sh" ] && . "$MODDIR/scripts/scheduler_owner_lib.sh" 2>/dev/null
+if command -v scheduler_owner_init >/dev/null 2>&1; then
+    scheduler_owner_init "$MODDIR" "/data/adb/fas_rs"
+    so_migrate_state >/dev/null 2>&1 || true
+fi
 
 detect_root_impl() {
     if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
@@ -502,10 +522,26 @@ read_valid_profile_policy() {
 }
 
 read_valid_sched_owner() {
+    if command -v so_read_effective_owner >/dev/null 2>&1; then
+        so_read_effective_owner
+        return
+    fi
     _owner_value=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
     case "$_owner_value" in
         external) printf 'external' ;;
         *)        printf 'pixel' ;;
+    esac
+}
+
+read_valid_desired_sched_owner() {
+    if command -v so_read_desired_owner >/dev/null 2>&1; then
+        so_read_desired_owner
+        return
+    fi
+    _owner_value=$(cat "$SCHED_OWNER_DESIRED_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    case "$_owner_value" in
+        pixel|external) printf '%s' "$_owner_value" ;;
+        *) read_valid_sched_owner ;;
     esac
 }
 
@@ -845,6 +881,8 @@ log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: keep-5G standby settings applied (r
 # ──────────────────────────────────────────────────────────
 [ -f "$POWER_PROFILE_FILE" ] || printf 'balanced' > "$POWER_PROFILE_FILE"
 [ -f "$SCHED_OWNER_FILE" ] || printf 'pixel' > "$SCHED_OWNER_FILE"
+[ -f "$SCHED_OWNER_DESIRED_FILE" ] || printf '%s' "$(read_valid_sched_owner)" > "$SCHED_OWNER_DESIRED_FILE"
+[ -f "$GAME_HANDOFF_POLICY_FILE" ] || printf 'off' > "$GAME_HANDOFF_POLICY_FILE"
 apply_l1_persistent_limits
 if [ "$(read_valid_sched_owner)" = "external" ]; then
     log -t pixel9pro_ctrl "L2: skipped, scheduler owner=external"

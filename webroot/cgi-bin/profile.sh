@@ -12,8 +12,16 @@ PROFILE_MANUAL_FILE="$MODDIR/.profile_manual"
 PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
 PROFILE_HISTORY_FILE="$MODDIR/.profile_history"
 SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
+SCHED_OWNER_DESIRED_FILE="$MODDIR/.sched_owner_desired"
+GAME_HANDOFF_POLICY_FILE="$MODDIR/.game_handoff_policy"
+ARBITER_STATE_FILE="/data/adb/fas_rs/.arbiter_state"
 
 [ -f "$MODDIR/scripts/scheduler_detect_lib.sh" ] && . "$MODDIR/scripts/scheduler_detect_lib.sh"
+[ -f "$MODDIR/scripts/scheduler_owner_lib.sh" ] && . "$MODDIR/scripts/scheduler_owner_lib.sh"
+if command -v scheduler_owner_init >/dev/null 2>&1; then
+    scheduler_owner_init "$MODDIR" "/data/adb/fas_rs"
+    so_migrate_state >/dev/null 2>&1 || true
+fi
 
 read_valid_profile() {
     _prof=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
@@ -32,6 +40,10 @@ read_valid_policy() {
 }
 
 read_valid_sched_owner() {
+    if command -v so_read_effective_owner >/dev/null 2>&1; then
+        so_read_effective_owner
+        return
+    fi
     _owner=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
     case "$_owner" in
         external) printf 'external' ;;
@@ -39,12 +51,43 @@ read_valid_sched_owner() {
     esac
 }
 
+read_valid_desired_sched_owner() {
+    if command -v so_read_desired_owner >/dev/null 2>&1; then
+        so_read_desired_owner
+        return
+    fi
+    _owner=$(cat "$SCHED_OWNER_DESIRED_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    case "$_owner" in
+        pixel|external) printf '%s' "$_owner" ;;
+        *) read_valid_sched_owner ;;
+    esac
+}
+
+read_valid_handoff_policy() {
+    if command -v so_read_handoff_policy >/dev/null 2>&1; then
+        so_read_handoff_policy
+        return
+    fi
+    _handoff=$(cat "$GAME_HANDOFF_POLICY_FILE" 2>/dev/null | tr -d ' \n\r\t')
+    case "$_handoff" in fas_rs) printf 'fas_rs' ;; *) printf 'off' ;; esac
+}
+
+read_arbiter_value() {
+    [ -s "$ARBITER_STATE_FILE" ] || return 0
+    sed -n "s/^$1=//p" "$ARBITER_STATE_FILE" 2>/dev/null | head -n 1 | tr -d '\r'
+}
+
+reconcile_owner_now() {
+    [ -f "$MODDIR/scripts/owner_arbiter.sh" ] || return 1
+    sh "$MODDIR/scripts/owner_arbiter.sh" apply-tick "$MODDIR" on >/dev/null 2>&1
+}
+
 append_profile_history() {
     _ph_profile="$1"
     _ph_reason="$2"
     _ph_epoch=$(date +%s 2>/dev/null || echo 0)
     _ph_policy=$(read_valid_policy)
-    _ph_owner=$(read_valid_sched_owner)
+    _ph_owner=$(read_valid_desired_sched_owner)
     _ph_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null | tr -d ' \n\r\t')
     case "$_ph_status" in
         Charging|Full) _ph_charging=1 ;;
@@ -86,7 +129,12 @@ emit_profile_state() {
     _active=$(read_valid_profile "$PROFILE_FILE" 'balanced')
     _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" "$_active")
     _policy=$(read_valid_policy)
-    _sched_owner=$(read_valid_sched_owner)
+    _sched_owner=$(read_valid_desired_sched_owner)
+    _sched_effective_owner=$(read_valid_sched_owner)
+    _game_handoff_policy=$(read_valid_handoff_policy)
+    _arbiter_state=$(read_arbiter_value state)
+    _arbiter_apply_result=$(read_arbiter_value apply_result)
+    _arbiter_reason=$(read_arbiter_value reason)
     _reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null | tr -d '\r')
     _last_profile_change=$(tail -n 1 "$PROFILE_HISTORY_FILE" 2>/dev/null | tr -d '\r')
     case "$_reason" in
@@ -121,7 +169,7 @@ emit_profile_state() {
     _profile_surface="authoritative"
     _profile_surface_stale=false
     _profile_surface_note=""
-    if [ "$_sched_owner" = "external" ]; then
+    if [ "$_sched_effective_owner" = "external" ]; then
         _profile_surface="delegated"
         _profile_surface_stale=true
         _profile_surface_note="profile_policy_display_only_external_owner"
@@ -139,8 +187,10 @@ emit_profile_state() {
         fi
     fi
 
-    printf '"profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","auto_reason":"%s","last_profile_change":"%s","uperf_detected":%s,"uperf_module_id":"%s","uperf_module_name":"%s","uperf_module_path":"%s","uperf_module_source":"%s","uperf_module_state":"%s","uperf_module_enabled":"%s","uperf_process_alive":"%s","uperf_active":"%s","fas_rs_detected":%s,"fas_rs_module_id":"%s","fas_rs_module_name":"%s","fas_rs_module_path":"%s","fas_rs_module_source":"%s","fas_rs_module_state":"%s","fas_rs_module_enabled":"%s","fas_rs_owner_state":"%s","fas_rs_mode":"%s","fas_rs_process_alive":"%s","fas_rs_runtime_state":"%s","fas_rs_active":"%s","external_scheduler_detected":%s,"external_scheduler_active":%s,"external_scheduler_id":"%s","external_scheduler_name":"%s","external_scheduler_kind":"%s","external_scheduler_path":"%s","external_scheduler_source":"%s","external_scheduler_state":"%s","external_scheduler_enabled":"%s","effective_scheduler_owner":"%s","effective_scheduler_name":"%s","effective_scheduler_kind":"%s","effective_scheduler_mode":"%s","profile_surface":"%s","profile_surface_stale":%s,"profile_surface_note":"%s"' \
-        "$_active" "$_manual" "$_policy" "$_sched_owner" "$(json_escape "$_reason")" "$(json_escape "$_last_profile_change")" \
+    printf '"profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","sched_effective_owner":"%s","game_handoff_policy":"%s","arbiter_state":"%s","arbiter_apply_result":"%s","arbiter_reason":"%s","auto_reason":"%s","last_profile_change":"%s","uperf_detected":%s,"uperf_module_id":"%s","uperf_module_name":"%s","uperf_module_path":"%s","uperf_module_source":"%s","uperf_module_state":"%s","uperf_module_enabled":"%s","uperf_process_alive":"%s","uperf_active":"%s","fas_rs_detected":%s,"fas_rs_module_id":"%s","fas_rs_module_name":"%s","fas_rs_module_path":"%s","fas_rs_module_source":"%s","fas_rs_module_state":"%s","fas_rs_module_enabled":"%s","fas_rs_owner_state":"%s","fas_rs_mode":"%s","fas_rs_process_alive":"%s","fas_rs_runtime_state":"%s","fas_rs_active":"%s","external_scheduler_detected":%s,"external_scheduler_active":%s,"external_scheduler_id":"%s","external_scheduler_name":"%s","external_scheduler_kind":"%s","external_scheduler_path":"%s","external_scheduler_source":"%s","external_scheduler_state":"%s","external_scheduler_enabled":"%s","effective_scheduler_owner":"%s","effective_scheduler_name":"%s","effective_scheduler_kind":"%s","effective_scheduler_mode":"%s","profile_surface":"%s","profile_surface_stale":%s,"profile_surface_note":"%s"' \
+        "$_active" "$_manual" "$_policy" "$_sched_owner" "$_sched_effective_owner" "$_game_handoff_policy" \
+        "$(json_escape "$_arbiter_state")" "$(json_escape "$_arbiter_apply_result")" "$(json_escape "$_arbiter_reason")" \
+        "$(json_escape "$_reason")" "$(json_escape "$_last_profile_change")" \
         "$_uperf_detected" "$(json_escape "$UPERF_MODULE_ID")" "$(json_escape "$UPERF_MODULE_NAME")" \
         "$(json_escape "$UPERF_MODULE_PATH")" "$(json_escape "$UPERF_MODULE_SOURCE")" \
         "$(json_escape "$UPERF_MODULE_STATE")" "$(json_escape "$UPERF_MODULE_ENABLED")" \
@@ -171,6 +221,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     newprof=$(printf '%s' "$body" | sed -n 's/.*"profile"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
     newpolicy=$(printf '%s' "$body" | sed -n 's/.*"policy"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
     newowner=$(printf '%s' "$body" | sed -n 's/.*"sched_owner"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
+    newhandoff=$(printf '%s' "$body" | sed -n 's/.*"game_handoff"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
 
     case "$newprof" in
         ''|balanced|battery|default) ;;
@@ -185,24 +236,49 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         ''|pixel|external) ;;
         *) json_error '400 Bad Request' 'invalid scheduler owner' ;;
     esac
+    case "$newhandoff" in
+        ''|fas_rs|off) ;;
+        *) json_error '400 Bad Request' 'invalid game handoff policy' ;;
+    esac
 
     if [ -n "$newowner" ]; then
-        if [ "$newowner" = "external" ]; then
-            printf 'external' > "$SCHED_OWNER_FILE"
-            printf '%s' 'external_scheduler' > "$PROFILE_AUTO_REASON_FILE"
-            append_profile_history "$(read_valid_profile "$PROFILE_FILE" 'balanced')" "external_scheduler"
+        if command -v so_write_desired_owner >/dev/null 2>&1; then
+            so_write_desired_owner "$newowner" || json_error '500 Internal Server Error' 'failed to persist desired scheduler owner'
         else
-            _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'balanced')
-            printf 'pixel' > "$SCHED_OWNER_FILE"
-            _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_manual" "$MODDIR" 2>/dev/null)
-            [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
-            printf '%s' "$_manual" > "$PROFILE_FILE"
-            printf 'manual' > "$PROFILE_POLICY_FILE"
-            printf 'pixel_scheduler' > "$PROFILE_AUTO_REASON_FILE"
-            append_profile_history "$_manual" "pixel_scheduler"
+            printf '%s' "$newowner" > "$SCHED_OWNER_DESIRED_FILE" || json_error '500 Internal Server Error' 'failed to persist desired scheduler owner'
         fi
+        _owner_reason="${newowner}_scheduler"
+        printf '%s' "$_owner_reason" > "$PROFILE_AUTO_REASON_FILE"
+        append_profile_history "$(read_valid_profile "$PROFILE_FILE" 'balanced')" "$_owner_reason"
+        reconcile_owner_now || true
+        _apply_result=$(read_arbiter_value apply_result)
+        _effective=$(read_valid_sched_owner)
+        _state=$(read_arbiter_value state)
         json_headers
-        printf '{"ok":true,'
+        case "$_apply_result" in
+            failed_*|transition_busy) _transition_ok=false ;;
+            *) _transition_ok=true ;;
+        esac
+        if [ "$_state" != "FAS_LEASED_GAME" ] && [ "$_state" != "EXIT_HOLD" ] && [ "$_effective" != "$newowner" ]; then
+            _transition_ok=false
+        fi
+        printf '{"ok":%s,' "$_transition_ok"
+        emit_profile_state
+        printf '}\n'
+        exit 0
+    fi
+
+    if [ -n "$newhandoff" ]; then
+        if command -v so_write_handoff_policy >/dev/null 2>&1; then
+            so_write_handoff_policy "$newhandoff" || json_error '500 Internal Server Error' 'failed to persist game handoff policy'
+        else
+            printf '%s' "$newhandoff" > "$GAME_HANDOFF_POLICY_FILE" || json_error '500 Internal Server Error' 'failed to persist game handoff policy'
+        fi
+        reconcile_owner_now || true
+        _apply_result=$(read_arbiter_value apply_result)
+        json_headers
+        case "$_apply_result" in failed_*|transition_busy) _transition_ok=false ;; *) _transition_ok=true ;; esac
+        printf '{"ok":%s,' "$_transition_ok"
         emit_profile_state
         printf '}\n'
         exit 0
@@ -272,7 +348,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             append_profile_history "$_manual" "manual_policy"
             ;;
         '')
-            json_error '400 Bad Request' 'missing profile or policy'
+            json_error '400 Bad Request' 'missing profile, policy, scheduler owner, or game handoff policy'
             ;;
     esac
     json_headers

@@ -34,7 +34,7 @@ uptime_sec=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null)
 
 # 检测基带模块安装状态
 baseband_module_dir="/data/adb/modules/pixel9pro_baseband_trial"
-if [ -d "$baseband_module_dir" ]; then
+if [ -d "$baseband_module_dir" ] && [ ! -f "$baseband_module_dir/disable" ] && [ ! -f "$baseband_module_dir/remove" ]; then
     baseband_installed="true"
     baseband_version=$(grep '^version=' "$baseband_module_dir/module.prop" 2>/dev/null | cut -d= -f2 | tr -d '\r\n "\\')
 else

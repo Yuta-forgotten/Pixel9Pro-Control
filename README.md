@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- Release: `v4.4.38`
-- versionCode: `102`
-- Asset: `pixel9pro_control_v4.4.38.zip`
+- Release: `v4.4.40`
+- versionCode: `104`
+- Asset: `pixel9pro_control_v4.4.40.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -37,10 +37,11 @@ WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电�
 - 调度通过 `cpuset` 和 `sched_pixel response_time_ms` 控制；不直接写 `scaling_max_freq`
 - `foreground/cpus` 会被 framework 重置到 `0-6`，模块主要托管 `top-app/background/system-background`
 - 自动模式以均衡为日常底座，温度持续偏高时收口至省电，回落后恢复；死区设有粘滞，避免边界来回抖动
-- 前台自动调度仅在 `.cpu_sched_owner=pixel` 时生效；选择 `external` 后本模块主动让位给 UGT / fas-rs / 其它外部调度模块，并暂停 WebUI 的 profile/auto/enforce 写入
-- 切到 `external` 后若未检测到启用中的外部调度器，本模块仍保持让权，不会自动回写 `balanced`
+- `.sched_owner_desired=pixel|external` 保存用户的日常选择，`.cpu_sched_owner` 只表示当前实际 owner；fas-rs 游戏 lease 不再覆盖用户意愿
+- Pixel 日常调度下仍可启用 fas-rs 游戏临时接管：命中游戏时 `effective=external`，退出后恢复原 Pixel auto/manual 状态
+- 日常选择为 `external` 时，普通应用恢复 UGT；若 UGT 未启用则保持 `external:none` 并明确告警，不会偷偷回写 Pixel 或 `balanced`
 
-当 `.cpu_sched_owner=external` 时，本模块跳过 `sched_pixel response_time_ms`、`sched_util_clamp_min`、`/dev/cpuset/*/cpus`、`/proc/vendor_sched/ug_bg_*`；此时前台交互、游戏、线程 affinity/prio、top-app 与 touch scene 由 UGT / fas-rs / 外部调度器自身策略处理，本模块继续负责温控、ZRAM、NR/SIM2、UECap 与 WebUI。
+当实际 `.cpu_sched_owner=external` 时，本模块跳过常规 profile/auto/enforce 写入；owner 事务层只在 Pixel/FAS handoff 边界清理 UGT 残留、恢复 cpufreq 基线并复读验证。温控、ZRAM、NR/SIM2、UECap 与 WebUI 始终由本模块负责。
 
 ### 温控优化 (5 档)
 
@@ -48,7 +49,7 @@ WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电�
 |------|--------|---------------------------|------|
 | 睡和放宽 | -2°C | 35°C | 低于出厂 2°C |
 | 躺和放宽 | +0°C | 37°C | 出厂口径 |
-| 轻度放宽 | +2°C | 39°C | 提升 +2°C |
+| 轻度放宽 | +2°C | 39°C | HINT 最早 39°C；VIRTUAL-SKIN 主阈值约 41°C，并非 39°C 硬限温 |
 | 坐和放宽 | +4°C | 41°C | 模块默认设定 |
 | 站和放宽 | +6°C | 43°C | 提升 +6°C |
 
@@ -113,14 +114,16 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 - 只安装控制模块：温控/ZRAM/NR/SIM2/UECap/WebUI 正常工作；CPU 调度默认由本模块管理，也可手动设为 `external` 停用
 - 只安装基带模块：单独刷入 `pixel9pro_baseband_trial_v1.0.1.zip`，VoLTE/VoNR 自动生效，UECap 保持原厂
 - 控制模块 + 基带模块：WebUI 检测并展示基带模块状态；UECap 由控制模块管理，CarrierSettings / MCFG 由基带模块提供
-- 控制模块 + 外部调度：首次安装检测到启用中的 UGT / fas-rs 即默认 `external`（交外部调度器接管），可在 WebUI 改回本模块接管
-- 三者都安装：推荐边界为外部调度器负责 CPU / 游戏调度、本模块负责温控与系统优化、基带模块负责运营商配置增强
+- 控制模块 + UGT / fas-rs：WebUI 的“日常选择”决定普通应用使用 Pixel 或 UGT；“游戏接管”可让 fas-rs 只在命中游戏时临时接管
+- 三者都安装：推荐边界为 Pixel9Pro-Control 管理日常 baseline、fas-rs 管理指定游戏 lease、UGT 仅在日常选择为 external 时运行，基带模块负责运营商配置增强
 
 **基带模块兼容性**：`pixel9pro_baseband_trial` 中的 CarrierSettings / MCFG 基于中国运营商配置；UECap binarypb 由控制模块管理，基于 Pixel 9 Pro (Exynos 5400 modem) 固件定制。Pixel 9 Pro XL 不可共用，binarypb 需重新提取。
 
-**外部调度协同说明**：Uperf Game Turbo、fas-rs 等为外部调度项目，建议从其官方渠道安装和更新。本项目不引导安装外部调度器；`external` 下本模块前台自动 CPU 调度不再生效，避免与 UGT / fas-rs 互相抢写 `cpuset`、`uclamp`、`sched_pixel` 等节点。`external` 是让权态，不会因为未检测到外部调度器而自动回落到 `balanced`。
+**外部调度协同说明**：Uperf Game Turbo、fas-rs 等为外部调度项目，本项目只识别设备上已经存在的模块，不提供下载、推荐或安装引导。v4.4.39 起用户意愿与运行态分离：`.sched_owner_desired` 是唯一日常 baseline，`.cpu_sched_owner` 是 effective owner；Scene 的 UGT 开关、UGT 模块 enabled 状态和历史 lease 都不能改写日常选择。
 
-**owner arbiter**：`scripts/owner_arbiter.sh` 默认仍是 Phase A dry-run 观测，每个亮屏 worker 周期读取 top-app、fas-rs `games.toml` / `.lease_game_list`、Scene `games.xml`（仅当 fas-rs `scene_game_list=true`）、UGT/fas-rs 状态和本模块 `.cpu_sched_owner`，把建议状态写到 `/data/adb/fas_rs/.arbiter_state` 与 `.arbiter_history`；fas-rs `exclude_list` 会优先阻止 lease。创建 `/data/adb/fas_rs/.arbiter_apply` 或手动执行 `owner_arbiter.sh apply-tick` 后进入受保护 Phase B：命中游戏稳定后停止 `uperf`、启动 `fas-rs` 并保持 `.cpu_sched_owner=external`；退出 lease 后恢复原 baseline owner，若 baseline 为 UGT 则恢复 `uperf`。前台包识别按 `mFocusedApp` / `mCurrentFocus` / `mFocusedWindow` / ActivityTask fallback 的优先级扫描，并跳过 `NotificationShade`、keyguard/bouncer 等无包名 overlay，避免息屏/下拉通知栏恢复时把系统 UI 当作“无游戏前台”；`service.sh` 的后台限制 `stop_after_leave` 前台解析也复用同一优先级口径，避免 overlay 让后台策略误判真实前台。UGT 恢复启动带 `/sdcard` 可用性检查、`.uperf_start.lock` 互斥、启动后 5s 稳定窗口、`pidof` + `/proc/*/status` root 实例计数与 post-apply 重复实例归一，避免锁屏未解密时堆积等待脚本，或 service worker、UGT 自启动与手动 tick 并发拉起两组 `uperf`；若刚重启仍处于 `RUNNING_LOCKED` 且 `/sdcard/Android` 未解密挂载，恢复 UGT 会记录为 `deferred_start_uperf_storage_locked`，不再误报 `failed_start_uperf`。`.arbiter_state` 会记录 `uperf_root_instances` / `uperf_normalized` 便于 ADB 监听确认是否存在双 root 实例以及本轮是否做过归一；fas-rs 游戏 lease 内如发现 cpufreq governor/max 低频残留，会按 `ARB_CPUFREQ_RESTORE_RETRY_S`（默认 30s）冷却间隔持续检测并重试恢复 governor/policy max，写后复读并记录 `cpufreq_lowfreq_present` / `cpufreq_thermal_cooling_active` / `cpufreq_restored` / `cpufreq_restore_verified` / `cpufreq_restore_failed` / `cpufreq_restore_skipped` / `cpufreq_restore_lease` / `cpufreq_restore_epoch`；若 ThermalHAL 的 `thermal-cpufreq-*` 或 `thermal-uclamp-*` cooling device 已 active，则跳过恢复并记录 `cpufreq_thermal_cooling_active=yes`，避免把真实热保护误报为普通调度残留，也避免第一次被 PowerHAL/Scene 覆盖后彻底放弃。外部调度检测区分“模块已启用/owner 标记”和“运行态已接管”：FAS active 必须有 live `fas-rs` 进程证明，UGT active 必须有 live `uperf` 进程证明；FAS lease 期间 UGT 模块仍显示已安装，但只要 `uperf` 进程已停止，就不会再被标记为 `multiple` active。创建 `/data/adb/fas_rs/.arbiter_disable` 可停止 arbiter 采样并记录 `ARB_DISABLED`。
+**可选模块按需显示**：WebUI 仅在检测到 UGT 时显示日常 UGT 接管控制，仅在检测到 fas-rs 时显示游戏 handoff / arbiter 控制；两者同时存在时组合显示。`pixel9pro_baseband_trial` 未安装、已禁用或待移除时，基带配置卡完全隐藏。首次安装只报告 UGT、fas-rs 与本项目基带模块是否已检测到，不提供下载、推荐或第三方安装引导。单独残留的 `/data/adb/fas_rs` 状态目录不再被当成 fas-rs 已安装。
+
+**owner arbiter**：`scripts/owner_arbiter.sh` 默认仍是 Phase A dry-run 观测；创建 `/data/adb/fas_rs/.arbiter_apply` 或手动执行 `apply-tick` 后才执行事务。普通应用只恢复 `.sched_owner_desired`；命中 fas-rs 游戏时停止 UGT、进入 `FAS_LEASED_GAME`，退出后按 desired 精确恢复 Pixel 或 UGT。切换共用 `.owner_transition.lock`，Pixel 接管会停止 UGT/fas-rs、恢复 cpufreq baseline、重新应用当前 profile 并复读 cap/cpuset/response；FAS 启动失败也按 desired 回滚。v4.4.40 起，UGT→fas-rs 必须先修复 powersave/cpufreq residue 并验证 cap=1024，随后才启动 fas-rs 和发布游戏 owner，避免 owner 已显示接管但运行面尚未就绪的假 active 窗口。cap 契约为 Pixel `balanced/battery=0`、UGT 日常 `=0`、fas-rs 游戏 lease `=1024`（Google 出厂上限，允许完整 boost）；退出游戏后恢复 desired baseline 并再次复读。Pixel `default/performance` 仍遵循对应 profile 的出厂/性能语义 `=1024`。这里只写 `sched_util_clamp_min`，不会覆盖 ThermalHAL 独立使用的 `uclamp.max` 热保护。`.arbiter_state` 同时记录 `desired_owner`、effective owner、handoff policy、lease、transition result、`uclamp_cap_current/expected/verified`、重复 UGT 归一与 cpufreq/ThermalHAL 复读结果。UGT enabled 但 desired=Pixel 时不得自行启动；desired=external 但 UGT disabled 时明确进入 `external:none`。
 
 **owner arbiter cpufreq 恢复边界**：低频残留恢复只在 `FAS_LEASED_GAME` / `EXIT_HOLD` 且 ThermalHAL CPU cooling 未激活时尝试。恢复时从 `scaling_available_governors` 保留空格匹配 `sched_pixel` 或 `schedutil`，再按“打开 `scaling_max_freq` 到 `cpuinfo_max_freq` → 切 governor → 再写 max → 等待 `ARB_CPUFREQ_RESTORE_SETTLE_S`（默认 2 秒）→ 复读验证”的顺序执行；首次复读失败只做一轮 guarded retry，并在日志中同时记录 `first_after` 与 `retry_after`。如果仍失败，状态会保持 `cpufreq_restore_failed=yes`，这代表存在 PowerHAL / Scene object / cpufreq QoS 等外层写入者或平台限制，不能用循环抢写 sysfs 当作修复。
 

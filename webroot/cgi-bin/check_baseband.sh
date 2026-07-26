@@ -21,7 +21,7 @@ fi
 
 baseband_module_dir="/data/adb/modules/pixel9pro_baseband_trial"
 
-if [ -d "$baseband_module_dir" ]; then
+if [ -d "$baseband_module_dir" ] && [ ! -f "$baseband_module_dir/disable" ] && [ ! -f "$baseband_module_dir/remove" ]; then
     installed="true"
     bb_version=$(grep '^version=' "$baseband_module_dir/module.prop" 2>/dev/null | cut -d= -f2 | tr -d '\r\n "\\')
     bb_versionCode=$(grep '^versionCode=' "$baseband_module_dir/module.prop" 2>/dev/null | cut -d= -f2 | tr -d '\r\n "\\')
