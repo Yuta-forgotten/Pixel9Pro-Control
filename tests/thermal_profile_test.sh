@@ -33,14 +33,14 @@ assert_eq() {
     fi
 }
 
-hot_threshold_values() {
-    awk -v target="$2" '
+sensor_array_values() {
+    awk -v target="$2" -v key="$3" '
         /"Name":/ {
             name = $0
             sub(/.*"Name": *"/, "", name)
             sub(/".*/, "", name)
         }
-        name == target && /"HotThreshold"/ && /\[/ && /\]/ {
+        name == target && $0 ~ ("\"" key "\"") && /\[/ && /\]/ {
             line=$0
             sub(/^[^[]*\[/, "", line)
             sub(/\].*$/, "", line)
@@ -52,14 +52,22 @@ hot_threshold_values() {
             }
             exit
         }
-        name == target && /"HotThreshold"/ { in_hot = 1; next }
-        in_hot && /\]/ { exit }
-        in_hot {
+        name == target && $0 ~ ("\"" key "\"") { in_array = 1; next }
+        in_array && /\]/ { exit }
+        in_array {
             value = $0
             gsub(/[ ,\t]/, "", value)
             print value
         }
     ' "$1"
+}
+
+hot_threshold_values() {
+    sensor_array_values "$1" "$2" HotThreshold
+}
+
+hot_hysteresis_values() {
+    sensor_array_values "$1" "$2" HotHysteresis
 }
 
 first_hot_threshold() {
@@ -103,6 +111,41 @@ assert_target_thresholds_ordered() {
     fi
 }
 
+assert_target_thresholds_non_overlapping() {
+    _overlap_free=yes
+    for _overlap_sensor in VIRTUAL-SKIN VIRTUAL-SKIN-HINT VIRTUAL-SKIN-SOC \
+        VIRTUAL-SKIN-CPU-LIGHT-ODPM VIRTUAL-SKIN-CPU-MID VIRTUAL-SKIN-CPU-ODPM \
+        VIRTUAL-SKIN-CPU-HIGH VIRTUAL-SKIN-GPU; do
+        _overlap_thresholds=$(hot_threshold_values "$1" "$_overlap_sensor" | tr '\n' ' ')
+        _overlap_hysteresis=$(hot_hysteresis_values "$1" "$_overlap_sensor" | tr '\n' ' ')
+        awk -v thresholds="$_overlap_thresholds" -v hysteresis="$_overlap_hysteresis" '
+            BEGIN {
+                sub(/^ +/, "", thresholds)
+                sub(/ +$/, "", thresholds)
+                sub(/^ +/, "", hysteresis)
+                sub(/ +$/, "", hysteresis)
+                threshold_count = split(thresholds, threshold, / +/)
+                hysteresis_count = split(hysteresis, hyst, / +/)
+                if (threshold_count != 7 || hysteresis_count != 7) exit 1
+                previous_set = 0
+                for (i = 1; i <= threshold_count; i++) {
+                    if (hyst[i] !~ /^-?[0-9]+([.][0-9]+)?$/ || hyst[i] + 0 < 0) exit 1
+                    if (threshold[i] !~ /^-?[0-9]+([.][0-9]+)?$/) continue
+                    value = threshold[i] + 0
+                    if (previous_set && previous > value - (hyst[i] + 0)) exit 1
+                    previous = value
+                    previous_set = 1
+                }
+            }
+        ' || _overlap_free=no
+    done
+    if [ "$_overlap_free" = yes ]; then
+        ok "$2"
+    else
+        not_ok "$2"
+    fi
+}
+
 mkdir -p "$TEST_ROOT" || exit 2
 . "$LIB" || exit 2
 printf 'TAP version 13\n'
@@ -125,25 +168,23 @@ for _variant in pro xl; do
             continue
         fi
         assert_target_thresholds_ordered "$_out" "$_variant offset $_offset remains strictly ordered"
-        for _sensor in VIRTUAL-SKIN VIRTUAL-SKIN-HINT VIRTUAL-SKIN-SOC; do
+        assert_target_thresholds_non_overlapping "$_out" "$_variant offset $_offset respects HotHysteresis overlap limits"
+        for _sensor in $THERMAL_TARGET_SENSORS; do
             _shutdown=$(hot_threshold_slot_raw "$_stock" "$_sensor" 7)
-            case "$_shutdown" in
-                NAN|'"NAN"'|'') ;;
-                *) assert_eq "$_variant $_sensor shutdown $_offset" "$_shutdown" "$(hot_threshold_slot_raw "$_out" "$_sensor" 7)" ;;
-            esac
+            assert_eq "$_variant $_sensor shutdown $_offset" "$_shutdown" "$(hot_threshold_slot_raw "$_out" "$_sensor" 7)"
         done
         if [ "$_variant" = "pro" ]; then
             assert_eq "VIRTUAL-SKIN first threshold $_offset" "$((39 + _offset))" "$(first_hot_threshold "$_out" VIRTUAL-SKIN)"
             assert_eq "HINT first threshold $_offset" "$((37 + _offset))" "$(first_hot_threshold "$_out" VIRTUAL-SKIN-HINT)"
             assert_eq "CPU-HIGH first threshold $_offset" "$((41 + _offset))" "$(first_hot_threshold "$_out" VIRTUAL-SKIN-CPU-HIGH)"
             case "$_offset" in
-                -2) _skin_slot6=50; _soc_slot6=54 ;;
-                0)  _skin_slot6=52; _soc_slot6=56 ;;
-                2)  _skin_slot6=54; _soc_slot6=58 ;;
-                4|6) _skin_slot6=54.5; _soc_slot6=58.5 ;;
+                -2) _skin_slot6=50; _hint_slot6=50; _soc_slot6=54 ;;
+                0)  _skin_slot6=52; _hint_slot6=52; _soc_slot6=56 ;;
+                2|4|6) _skin_slot6=53.1; _hint_slot6=53; _soc_slot6=57.1 ;;
             esac
-            assert_eq "VIRTUAL-SKIN slot 6 remains ordered $_offset" "$_skin_slot6" "$(hot_threshold_slot "$_out" VIRTUAL-SKIN 6)"
-            assert_eq "SOC slot 6 remains ordered $_offset" "$_soc_slot6" "$(hot_threshold_slot "$_out" VIRTUAL-SKIN-SOC 6)"
+            assert_eq "VIRTUAL-SKIN slot 6 respects shutdown hysteresis $_offset" "$_skin_slot6" "$(hot_threshold_slot "$_out" VIRTUAL-SKIN 6)"
+            assert_eq "HINT slot 6 respects shutdown hysteresis $_offset" "$_hint_slot6" "$(hot_threshold_slot "$_out" VIRTUAL-SKIN-HINT 6)"
+            assert_eq "SOC slot 6 respects shutdown hysteresis $_offset" "$_soc_slot6" "$(hot_threshold_slot "$_out" VIRTUAL-SKIN-SOC 6)"
         fi
     done
 done

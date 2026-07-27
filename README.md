@@ -53,7 +53,7 @@ WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电�
 | 日常放宽 | +4°C | 41°C | 模块默认；靠近 SHUTDOWN 时安全收敛 |
 | 最大放宽 | +6°C | 43°C | 前置阈值目标 +6°C，最后安全阈值不平移 |
 
-偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前 6 个 severity 槽位先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。`+4/+6°C` 在接近 SHUTDOWN 时会向前限幅，至少保留 `0.5°C` 间隔，避免阈值相等或逆序导致 Thermal HAL 启动失败。
+偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前置 severity 先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。靠近 SHUTDOWN 时，生成器按 stock `HotHysteresis` 从后向前收窄，保证“前一档阈值 `<=` 下一档阈值减下一档 hysteresis”；只检查阈值递增并不足以保证 Pixel Thermal HAL 接受配置。
 
 WebUI 实时温度优先读取后台 worker 维护的 `.thermal_cache.json`，避免普通刷新被 `dumpsys thermalservice` 慢路径阻塞；当缓存缺失、无 `VIRTUAL-SKIN`、温度越界或连续异常时，会自动走 `fresh=1` 重建，连续异常后清除缓存再重建，避免坏缓存长期误导显示。
 
