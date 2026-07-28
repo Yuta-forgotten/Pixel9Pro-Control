@@ -57,11 +57,19 @@ cpu_profile_top_app_cpus() {
     esac
 }
 
-cpu_power_profile_l2_params() {
+cpu_profile_l2_params() {
     case "$1" in
         battery) printf '150 80' ;;
-        *) printf '200 100' ;;
+        default) printf '1024 308' ;;
+        performance|balanced) printf '200 100' ;;
+        *) return 1 ;;
     esac
+}
+
+# Compatibility alias for older callers. New code must derive L2 from the
+# effective CPU profile instead of reading the retired .power_profile file.
+cpu_power_profile_l2_params() {
+    cpu_profile_l2_params "$1"
 }
 
 cpu_profile_contract_json() {
@@ -82,9 +90,12 @@ cpu_profile_contract_json() {
         else
             _cpu_contract_response_json="null"
         fi
-        printf '"%s":{"response_ms":%s,"uclamp_cap":%s,"top_app_cpus":"%s"}' \
+        _cpu_contract_l2=$(cpu_profile_l2_params "$_cpu_contract_profile") || return 1
+        set -- $_cpu_contract_l2
+        [ "$#" -eq 2 ] || return 1
+        printf '"%s":{"response_ms":%s,"uclamp_cap":%s,"top_app_cpus":"%s","bg_uclamp_max":%s,"bg_group_throttle":%s}' \
             "$_cpu_contract_profile" "$_cpu_contract_response_json" \
-            "$_cpu_contract_cap" "$_cpu_contract_top"
+            "$_cpu_contract_cap" "$_cpu_contract_top" "$1" "$2"
     done
     printf '}}'
 }

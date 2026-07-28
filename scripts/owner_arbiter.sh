@@ -1,7 +1,8 @@
 #!/system/bin/sh
 #
 # Guarded scheduler-owner arbiter. A plain tick records the decision only;
-# apply-tick/apply performs the verified Pixel/UGT/fas-rs transition.
+# apply-tick/apply performs verified Pixel/fas-rs transitions. UGT changes are
+# boot-exclusive and are never mutated by this runtime arbiter.
 
 ACTION="${1:-tick}"
 APPLY_REQUESTED="no"
@@ -53,9 +54,7 @@ ARB_HISTORY_FILE="$STATE_DIR/.arbiter_history"
 LEASE_GAME_LIST="$FAS_ROOT/.lease_game_list"
 FAS_OWNER_FILE="$FAS_ROOT/.owner_state"
 FAS_LOG_FILE="$FAS_ROOT/fas_log.txt"
-POWERCFG_ENTRY="${OWNER_ARBITER_POWERCFG_ENTRY:-/data/powercfg.sh}"
 SCENE_PROFILE="${OWNER_ARBITER_SCENE_PROFILE:-/data/data/com.omarea.vtools/shared_prefs/games.xml}"
-UPERF_START_LOCK_DIR="$STATE_DIR/.uperf_start.lock"
 CPUFREQ_ROOT="${OWNER_ARBITER_CPUFREQ_ROOT:-/sys/devices/system/cpu/cpufreq}"
 UCLAMP_CAP_PATH="${OWNER_ARBITER_UCLAMP_CAP_PATH:-/proc/sys/kernel/sched_util_clamp_min}"
 SCHEDULER_INVENTORY_PATH="${SCHEDULER_INVENTORY_PATH:-$MODDIR/.scheduler_inventory}"
@@ -128,8 +127,19 @@ if [ ! -r "$MODDIR/scripts/cpu_profile_lib.sh" ] \
     echo "owner_arbiter: missing CPU profile contract" >&2
     exit 65
 fi
+if [ ! -r "$MODDIR/scripts/scheduler_boot_mode_lib.sh" ] \
+    || ! . "$MODDIR/scripts/scheduler_boot_mode_lib.sh" 2>/dev/null; then
+    echo "owner_arbiter: missing scheduler boot-mode contract" >&2
+    exit 65
+fi
+if [ ! -r "$MODDIR/scripts/scheduler_transition_guard_lib.sh" ] \
+    || ! . "$MODDIR/scripts/scheduler_transition_guard_lib.sh" 2>/dev/null; then
+    echo "owner_arbiter: missing scheduler transition guard" >&2
+    exit 65
+fi
 
 scheduler_owner_init "$MODDIR" "$FAS_ROOT"
+sbm_init "$MODDIR" "$FAS_ROOT"
 if ! so_migrate_state >/dev/null 2>&1; then
     echo "owner_arbiter: scheduler-owner state migration failed" >&2
     exit 66
@@ -411,13 +421,6 @@ process_alive() {
     ps -A 2>/dev/null | grep -E "(^|[[:space:]])${_oa_proc}([[:space:]]|$)" | grep -v grep >/dev/null 2>&1
 }
 
-pid_alive() {
-    case "$1" in
-        ''|*[!0-9]*) return 1 ;;
-    esac
-    [ -d "/proc/$1" ]
-}
-
 uperf_process_alive() {
     if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
         if [ -f "$TEST_RUNTIME_DIR/uperf_count" ]; then
@@ -438,64 +441,6 @@ fas_process_alive() {
         return
     fi
     process_alive "fas-rs"
-}
-
-acquire_uperf_start_lock() {
-    for _oa_i in 1 2 3 4 5; do
-        if mkdir "$UPERF_START_LOCK_DIR" 2>/dev/null; then
-            if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
-                _oa_lock_start=1
-            else
-                _oa_lock_start=$(sed 's/^[^)]*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}')
-            fi
-            if [ -z "$_oa_lock_start" ] \
-                || ! printf '%s\n' "$$" > "$UPERF_START_LOCK_DIR/pid" 2>/dev/null \
-                || ! printf '%s\n' "$_oa_lock_start" > "$UPERF_START_LOCK_DIR/start_ticks" 2>/dev/null; then
-                rm -f "$UPERF_START_LOCK_DIR/pid" "$UPERF_START_LOCK_DIR/start_ticks" 2>/dev/null
-                rmdir "$UPERF_START_LOCK_DIR" 2>/dev/null
-                return 1
-            fi
-            UPERF_START_LOCK_TICKS="$_oa_lock_start"
-            return 0
-        fi
-
-        _oa_lock_pid=$(cat "$UPERF_START_LOCK_DIR/pid" 2>/dev/null | tr -d ' \r\n\t')
-        _oa_lock_start=$(cat "$UPERF_START_LOCK_DIR/start_ticks" 2>/dev/null | tr -d ' \r\n\t')
-        if [ "$OWNER_ARBITER_TEST_MODE" = "1" ] && pid_alive "$_oa_lock_pid"; then
-            _oa_live_start=1
-        else
-            case "$_oa_lock_pid" in
-                ''|*[!0-9]*) _oa_live_start="" ;;
-                *) _oa_live_start=$(sed 's/^[^)]*) //' "/proc/$_oa_lock_pid/stat" 2>/dev/null | awk '{print $20}') ;;
-            esac
-        fi
-        _oa_lock_stale="no"
-        if ! pid_alive "$_oa_lock_pid"; then
-            _oa_lock_stale="yes"
-        elif [ -z "$_oa_lock_start" ] || [ -z "$_oa_live_start" ] \
-            || [ "$_oa_live_start" != "$_oa_lock_start" ]; then
-            _oa_lock_stale="yes"
-        fi
-
-        if [ "$_oa_lock_stale" = "yes" ]; then
-            rm -f "$UPERF_START_LOCK_DIR/pid" "$UPERF_START_LOCK_DIR/start_ticks" "$UPERF_START_LOCK_DIR/epoch" 2>/dev/null
-            rmdir "$UPERF_START_LOCK_DIR" 2>/dev/null || true
-            continue
-        fi
-        sleep 1
-    done
-    return 1
-}
-
-release_uperf_start_lock() {
-    _oa_lock_pid=$(cat "$UPERF_START_LOCK_DIR/pid" 2>/dev/null | tr -d ' \r\n\t')
-    _oa_lock_start=$(cat "$UPERF_START_LOCK_DIR/start_ticks" 2>/dev/null | tr -d ' \r\n\t')
-    [ "$_oa_lock_pid" = "$$" ] \
-        && [ -n "${UPERF_START_LOCK_TICKS:-}" ] \
-        && [ "$_oa_lock_start" = "$UPERF_START_LOCK_TICKS" ] || return 0
-    rm -f "$UPERF_START_LOCK_DIR/pid" "$UPERF_START_LOCK_DIR/start_ticks" "$UPERF_START_LOCK_DIR/epoch" 2>/dev/null
-    rmdir "$UPERF_START_LOCK_DIR" 2>/dev/null || true
-    UPERF_START_LOCK_TICKS=""
 }
 
 uperf_root_instance_count() {
@@ -534,49 +479,6 @@ uperf_root_instance_count() {
         ''|*[!0-9]*) printf '0' ;;
         *) printf '%s' "$_oa_roots" ;;
     esac
-}
-
-normalize_uperf_instances() {
-    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
-        return 0
-    fi
-    _oa_roots=$(uperf_root_instance_count)
-    if [ "$_oa_roots" -le 1 ] 2>/dev/null; then
-        return 0
-    fi
-
-    UPERF_NORMALIZED="yes"
-    killall uperf 2>/dev/null || true
-    for _oa_i in 1 2 3 4 5; do
-        sleep 1
-        _oa_roots=$(uperf_root_instance_count)
-        if [ "$_oa_roots" -le 1 ] 2>/dev/null; then
-            return 0
-        fi
-    done
-    return 2
-}
-
-uperf_storage_ready() {
-    [ "$OWNER_ARBITER_TEST_MODE" = "1" ] && return 0
-    [ "$(getprop sys.boot_completed 2>/dev/null | tr -d ' \r\n\t')" = "1" ] || return 1
-    [ -d /sdcard/Android ] || [ -d /storage/emulated/0/Android ]
-}
-
-uperf_single_instance_stable() {
-    # UGT's own boot service may resume immediately after credential storage is
-    # unlocked, while owner_arbiter can also be restoring UGT.  Do not return on
-    # the first `uperf` PID; wait a short settle window and reject duplicate
-    # root instances so the caller can normalize and retry.
-    for _oa_i in 1 2 3 4 5; do
-        sleep 1
-        uperf_process_alive || return 1
-        _oa_roots=$(uperf_root_instance_count)
-        if [ "$_oa_roots" -gt 1 ] 2>/dev/null; then
-            return 2
-        fi
-    done
-    return 0
 }
 
 write_sched_owner() {
@@ -839,144 +741,6 @@ resolve_fas_module_path() {
     printf '%s' "$_oa_path"
 }
 
-resolve_uperf_module_path() {
-    _oa_path="$UPERF_MODULE_PATH"
-    case "$_oa_path" in
-        ""|*";"*) _oa_path="/data/adb/modules/uperf" ;;
-    esac
-    if [ -d /data/adb/modules/uperf ]; then
-        _oa_path="/data/adb/modules/uperf"
-    else
-        case "$_oa_path" in
-            /data/adb/modules/*)
-                [ -d "$_oa_path" ] || _oa_path="/data/adb/modules/uperf"
-                ;;
-            *)
-                _oa_path="/data/adb/modules/uperf"
-                ;;
-        esac
-    fi
-    printf '%s' "$_oa_path"
-}
-
-ensure_powercfg_router() {
-    [ "$OWNER_ARBITER_TEST_MODE" = "1" ] && return 0
-    _oa_fas_mod=$(resolve_fas_module_path)
-    _oa_router="$_oa_fas_mod/vtools/powercfg.sh"
-    [ -f "$_oa_router" ] || return 0
-
-    if [ -f "$POWERCFG_ENTRY" ] && grep -q '/data/adb/fas_rs/.owner_state' "$POWERCFG_ENTRY" 2>/dev/null; then
-        return 0
-    fi
-
-    cp -f "$_oa_router" "$POWERCFG_ENTRY" 2>/dev/null || return 1
-    chmod 0755 "$POWERCFG_ENTRY" 2>/dev/null || true
-    return 0
-}
-
-stop_uperf() {
-    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
-        mkdir -p "$TEST_RUNTIME_DIR" 2>/dev/null || return 1
-        rm -f "$TEST_RUNTIME_DIR/uperf_alive" 2>/dev/null
-        [ -f "$TEST_RUNTIME_DIR/uperf_count" ] && printf '0\n' > "$TEST_RUNTIME_DIR/uperf_count" 2>/dev/null
-        return 0
-    fi
-    if ! uperf_process_alive; then
-        return 0
-    fi
-    killall uperf 2>/dev/null || true
-    for _oa_i in 1 2 3 4 5; do
-        uperf_process_alive || return 0
-        sleep 1
-    done
-    return 1
-}
-
-start_uperf() {
-    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
-        mkdir -p "$TEST_RUNTIME_DIR" 2>/dev/null || return 1
-        [ -f "$TEST_RUNTIME_DIR/fail_start_uperf" ] && return 1
-        [ -f "$TEST_RUNTIME_DIR/defer_start_uperf" ] && return 3
-        _oa_test_count=$(cat "$TEST_RUNTIME_DIR/uperf_count" 2>/dev/null | tr -d ' \r\n\t')
-        case "$_oa_test_count" in ''|*[!0-9]*) _oa_test_count=0 ;; esac
-        [ "$_oa_test_count" -gt 1 ] 2>/dev/null && UPERF_NORMALIZED="yes"
-        printf '1\n' > "$TEST_RUNTIME_DIR/uperf_alive" 2>/dev/null
-        [ -f "$TEST_RUNTIME_DIR/uperf_count" ] && printf '1\n' > "$TEST_RUNTIME_DIR/uperf_count" 2>/dev/null
-        return 0
-    fi
-    if ! uperf_storage_ready; then
-        return 3
-    fi
-
-    if ! acquire_uperf_start_lock; then
-        for _oa_i in 1 2 3 4 5 6 7 8; do
-            sleep 1
-            if uperf_process_alive; then
-                _oa_roots=$(uperf_root_instance_count)
-                if [ "$_oa_roots" -le 1 ] 2>/dev/null; then
-                    uperf_single_instance_stable
-                    _oa_stable=$?
-                    [ "$_oa_stable" -eq 0 ] && return 0
-                    [ "$_oa_stable" -eq 2 ] && break
-                else
-                    break
-                fi
-            fi
-        done
-        acquire_uperf_start_lock || return 1
-    fi
-
-    if uperf_process_alive; then
-        normalize_uperf_instances
-        _oa_norm=$?
-        if [ "$_oa_norm" -eq 0 ]; then
-            uperf_single_instance_stable
-            _oa_stable=$?
-            if [ "$_oa_stable" -eq 0 ]; then
-                release_uperf_start_lock
-                return 0
-            fi
-            if [ "$_oa_stable" -eq 2 ]; then
-                normalize_uperf_instances >/dev/null 2>&1 || true
-            fi
-        elif [ "$_oa_norm" -eq 2 ]; then
-            release_uperf_start_lock
-            return 1
-        fi
-    fi
-
-    _oa_uperf_mod=$(resolve_uperf_module_path)
-    if [ ! -f "$_oa_uperf_mod/script/initsvc.sh" ]; then
-        release_uperf_start_lock
-        return 1
-    fi
-
-    _oa_start_attempt=1
-    while [ "$_oa_start_attempt" -le 2 ] 2>/dev/null; do
-        sh "$_oa_uperf_mod/script/initsvc.sh" >/dev/null 2>&1 &
-        for _oa_i in 1 2 3 4 5 6 7 8; do
-            sleep 1
-            if uperf_process_alive; then
-                uperf_single_instance_stable
-                _oa_stable=$?
-                if [ "$_oa_stable" -eq 0 ]; then
-                    release_uperf_start_lock
-                    return 0
-                elif [ "$_oa_stable" -eq 2 ]; then
-                    normalize_uperf_instances >/dev/null 2>&1 || true
-                    break
-                else
-                    release_uperf_start_lock
-                    return 1
-                fi
-            fi
-        done
-        _oa_start_attempt=$((_oa_start_attempt + 1))
-    done
-    release_uperf_start_lock
-    return 1
-}
-
 stop_fas_rs() {
     if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
         mkdir -p "$TEST_RUNTIME_DIR" 2>/dev/null || return 1
@@ -1135,22 +899,6 @@ verify_pixel_baseline() {
     return 0
 }
 
-verify_external_baseline() {
-    [ "$(read_pixel_owner)" = "external" ] || return 1
-    fas_process_alive && return 1
-    [ "$(read_uclamp_cap)" = "$CPU_PROFILE_ECO_CAP" ] || return 1
-    _oa_external_state=$(cat "$FAS_OWNER_FILE" 2>/dev/null | tr -d '\r\n')
-    if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
-        uperf_process_alive || return 1
-        [ "$(uperf_root_instance_count)" -eq 1 ] 2>/dev/null || return 1
-        [ "$_oa_external_state" = "external:uperf" ] || return 1
-    else
-        uperf_process_alive && return 1
-        [ "$_oa_external_state" = "external:none" ] || return 1
-    fi
-    return 0
-}
-
 verify_fas_baseline() {
     [ "$(read_pixel_owner)" = "external" ] || return 1
     uperf_process_alive && return 1
@@ -1161,8 +909,8 @@ verify_fas_baseline() {
 }
 
 apply_pixel_baseline() {
-    if ! stop_uperf; then
-        APPLY_RESULT="failed_stop_uperf_for_pixel"
+    if uperf_process_alive; then
+        APPLY_RESULT="blocked_uperf_residue_for_pixel"
         return 1
     fi
     if ! stop_fas_rs; then
@@ -1212,112 +960,9 @@ apply_pixel_baseline() {
     return 0
 }
 
-fallback_to_pixel_runtime() {
-    _oa_fallback_reason="$1"
-    if apply_pixel_baseline >/dev/null 2>&1; then
-        APPLY_RESULT="${_oa_fallback_reason}_fallback_pixel"
-    else
-        APPLY_RESULT="${_oa_fallback_reason}_fallback_pixel_incomplete"
-    fi
-    return 1
-}
-
-apply_external_baseline() {
-    if ! stop_fas_rs; then
-        APPLY_RESULT="failed_stop_fas_rs_for_external"
-        return 1
-    fi
-
-    if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
-        if [ "$(read_pixel_owner)" != "external" ] || ! uperf_process_alive; then
-            if ! sh "$MODDIR/scripts/cpu_profile.sh" default "$MODDIR" force >/dev/null 2>&1; then
-                fallback_to_pixel_runtime "failed_prepare_uperf_default_profile"
-                return $?
-            fi
-        fi
-        start_uperf
-        _oa_start_uperf_rc=$?
-        if [ "$_oa_start_uperf_rc" -ne 0 ]; then
-            if [ "$_oa_start_uperf_rc" -eq 3 ]; then
-                if ! apply_uclamp_cap "$CPU_PROFILE_ECO_CAP"; then
-                    write_fas_owner_state "external:none:uclamp_failed" >/dev/null 2>&1 || true
-                    fallback_to_pixel_runtime "failed_verify_external_deferred_uclamp_cap"
-                    return $?
-                fi
-                if ! write_sched_owner external; then
-                    fallback_to_pixel_runtime "failed_write_external_owner"
-                    return $?
-                fi
-                APPLY_RESULT="deferred_start_uperf_storage_locked"
-                if ! write_fas_owner_state "external:uperf:deferred"; then
-                    fallback_to_pixel_runtime "failed_write_fas_owner_state"
-                    return $?
-                fi
-                return 0
-            fi
-            fallback_to_pixel_runtime "failed_start_uperf"
-            return $?
-        fi
-        ensure_powercfg_router >/dev/null 2>&1 || true
-        _oa_uperf_roots=$(uperf_root_instance_count)
-        if [ "$_oa_uperf_roots" -gt 1 ] 2>/dev/null; then
-            normalize_uperf_instances >/dev/null 2>&1 || true
-            start_uperf >/dev/null 2>&1 || {
-                fallback_to_pixel_runtime "failed_normalize_uperf_duplicates"
-                return $?
-            }
-            _oa_uperf_roots=$(uperf_root_instance_count)
-        fi
-        if [ "$_oa_uperf_roots" -ne 1 ] 2>/dev/null; then
-            stop_uperf >/dev/null 2>&1 || true
-            fallback_to_pixel_runtime "failed_verify_uperf_instance_count"
-            return $?
-        fi
-        if ! apply_uclamp_cap "$CPU_PROFILE_ECO_CAP"; then
-            stop_uperf >/dev/null 2>&1 || true
-            write_fas_owner_state "external:none:uclamp_failed" >/dev/null 2>&1 || true
-            fallback_to_pixel_runtime "failed_verify_uperf_idle_uclamp_cap"
-            return $?
-        fi
-        if ! write_sched_owner external; then
-            stop_uperf >/dev/null 2>&1 || true
-            fallback_to_pixel_runtime "failed_write_external_owner"
-            return $?
-        fi
-        if ! write_fas_owner_state "external:uperf"; then
-            stop_uperf >/dev/null 2>&1 || true
-            fallback_to_pixel_runtime "failed_write_fas_owner_state"
-            return $?
-        fi
-        if [ "$UPERF_NORMALIZED" = "yes" ]; then
-            APPLY_RESULT="applied_uperf_idle_normalized"
-        else
-            APPLY_RESULT="applied_uperf_idle"
-        fi
-    else
-        stop_uperf >/dev/null 2>&1 || true
-        if ! apply_uclamp_cap "$CPU_PROFILE_ECO_CAP"; then
-            fallback_to_pixel_runtime "failed_verify_external_none_uclamp_cap"
-            return $?
-        fi
-        if ! write_sched_owner external; then
-            fallback_to_pixel_runtime "failed_write_external_owner"
-            return $?
-        fi
-        if ! write_fas_owner_state "external:none"; then
-            fallback_to_pixel_runtime "failed_write_fas_owner_state"
-            return $?
-        fi
-        APPLY_RESULT="applied_external_idle_no_scheduler"
-    fi
-    return 0
-}
-
 restore_desired_baseline_after_failure() {
     _oa_restore_reason="$1"
-    if [ "$DESIRED_OWNER" = "external" ] && apply_external_baseline >/dev/null 2>&1; then
-        APPLY_RESULT="${_oa_restore_reason}_fallback_external"
-    elif apply_pixel_baseline >/dev/null 2>&1; then
+    if [ "$DESIRED_OWNER" = "pixel" ] && apply_pixel_baseline >/dev/null 2>&1; then
         APPLY_RESULT="${_oa_restore_reason}_fallback_pixel"
     else
         APPLY_RESULT="${_oa_restore_reason}_fallback_incomplete"
@@ -1325,8 +970,26 @@ restore_desired_baseline_after_failure() {
     return 1
 }
 
+owner_guard_begin() {
+    _oa_guard_key="$1"
+    stg_init "$FAS_ROOT/.owner_mutation_guard"
+    _oa_guard_now=$(now_epoch)
+    _oa_guard_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n\t')
+    [ -n "$_oa_guard_boot" ] || _oa_guard_boot=unknown
+    stg_begin_attempt "$_oa_guard_key" "$_oa_guard_boot" "$_oa_guard_now"
+    _oa_guard_rc=$?
+    if [ "$_oa_guard_rc" -ne 0 ]; then
+        stg_load
+        APPLY_RESULT="transition_latched:${STG_RESULT:-retry_budget_exhausted}"
+        return 1
+    fi
+    APPLY_MUTATION_GUARD_ACTIVE=yes
+    return 0
+}
+
 apply_owner_decision() {
     APPLY_STABLE_NOOP="no"
+    APPLY_MUTATION_GUARD_ACTIVE="no"
     if [ "$APPLY_ENABLED" != "yes" ]; then
         APPLY_RESULT="dry-run"
         return 0
@@ -1339,10 +1002,11 @@ apply_owner_decision() {
                 APPLY_STABLE_NOOP="yes"
                 return 0
             fi
-            if ! stop_uperf; then
-                APPLY_RESULT="failed_stop_uperf"
+            if uperf_process_alive; then
+                APPLY_RESULT="blocked_uperf_residue_for_fas"
                 return 1
             fi
+            owner_guard_begin "fas:${NEW_TARGET_PKG}" || return 1
 
             # Finish the runtime preflight before fas-rs can publish its game
             # owner.  UGT may leave a powersave governor behind, and exposing
@@ -1390,18 +1054,19 @@ apply_owner_decision() {
         PIXEL_NORMAL)
             case "$DESIRED_OWNER" in
                 external)
-                    if verify_external_baseline; then
-                        APPLY_RESULT="stable_external_noop"
-                        APPLY_STABLE_NOOP="yes"
-                    else
-                        apply_external_baseline || return 1
-                    fi
+                    APPLY_RESULT="ugt_boot_exclusive_noop"
+                    APPLY_STABLE_NOOP="yes"
                     ;;
                 pixel)
                     if verify_pixel_baseline; then
                         APPLY_RESULT="stable_pixel_noop"
                         APPLY_STABLE_NOOP="yes"
                     else
+                        if [ "$(read_pixel_owner)" = "pixel" ] && ! fas_process_alive; then
+                            APPLY_RESULT="profile_drift_health_required"
+                            return 1
+                        fi
+                        owner_guard_begin "pixel:$(read_valid_pixel_profile)" || return 1
                         apply_pixel_baseline || return 1
                     fi
                     ;;
@@ -1586,6 +1251,29 @@ if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
     EXTERNAL_SCHEDULER_KIND="test"
 fi
 
+# UGT is a boot-exclusive scheduler. Runtime ticks never start, stop, normalize,
+# or hand it to fas-rs. A mode change is staged by profile CGI and verified only
+# after reboot by scheduler_reconcile.sh.
+if [ "$DESIRED_OWNER" = "external" ]; then
+    NEW_STATE="UGT_EXCLUSIVE"
+    NEW_TARGET_PKG=""
+    NEW_TARGET_PID="0"
+    NEW_CANDIDATE_SINCE="0"
+    NEW_LEASE_START="0"
+    NEW_LAST_FOREGROUND="0"
+    NEW_PID_ABSENT_SINCE="0"
+    NEW_BASELINE_OWNER="external"
+    PROPOSED_OWNER="external"
+    REASON="ugt_boot_exclusive"
+    APPLY_RESULT="ugt_boot_exclusive_noop"
+    if [ "$CURRENT_OWNER" != "external" ]; then
+        APPLY_RESULT="ugt_pending_reboot"
+    fi
+    write_state || exit 74
+    append_history
+    exit 0
+fi
+
 FOCUS_PKG=$(foreground_package_name)
 FOCUS_PIDS=$(pkg_pids "$FOCUS_PKG")
 FOCUS_PID=$(first_word "$FOCUS_PIDS")
@@ -1712,6 +1400,19 @@ fi
 
 _oa_apply_rc=0
 apply_owner_decision >/dev/null 2>&1 || _oa_apply_rc=$?
+if [ "$APPLY_MUTATION_GUARD_ACTIVE" = "yes" ]; then
+    if [ "$_oa_apply_rc" -eq 0 ]; then
+        stg_record_success "$APPLY_RESULT" >/dev/null 2>&1 \
+            || { APPLY_RESULT="failed_owner_guard_success_commit"; _oa_apply_rc=74; }
+    else
+        _oa_guard_now=$(now_epoch)
+        stg_record_failure "$_oa_guard_now" "$APPLY_RESULT" >/dev/null 2>&1 || true
+        stg_load
+        if [ "$STG_TERMINAL" = "yes" ]; then
+            APPLY_RESULT="${APPLY_RESULT}_latched"
+        fi
+    fi
+fi
 if [ "$APPLY_STABLE_NOOP" = "yes" ] && state_snapshot_matches; then
     if [ "$_oa_transition_lock_acquired" -eq 1 ]; then
         so_release_transition_lock >/dev/null 2>&1 || true

@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # Pixel 9 Pro Tensor G4 CPU profile application.
-# 用法: sh cpu_profile.sh [performance|balanced|battery|default|status|enforce] [MODDIR] [force]
+# 用法: sh cpu_profile.sh [performance|balanced|battery|default|status|verify|enforce] [MODDIR] [force]
 #
 # 核心原理:
 #   - 不写 scaling_max_freq / scaling_min_freq (会被 thermal HAL 覆盖)
@@ -24,10 +24,8 @@
 #   不是"给任务发 util 信号"(内核文档 sched-util-clamp)。出厂 1024。
 #   performance/default=1024 放开 boost; balanced/battery=0 抑制 per-task boost。
 #
-# enforce 子命令:
-#   校验 vendor_sched 参数是否被 PowerHAL hint 覆盖, 仅在偏差时写回
-#   只做 procfs 读写 (cat + echo), 零 IPC, 零 wakelock
-#   亮屏时由 worker 每 15s 调用一次, 参数正确时无输出无日志
+# verify/enforce 子命令均为只读验证。v4.5.03 起不再周期性写回
+# vendor_sched；漂移由独立低频 health probe 报告，只有明确的新事务才写。
 PROFILE="${1:-default}"
 SCRIPT_DIR="${0%/*}"
 MODDIR="${2:-${SCRIPT_DIR%/scripts}}"
@@ -39,16 +37,30 @@ if [ ! -r "$CPU_PROFILE_LIB" ] || ! . "$CPU_PROFILE_LIB"; then
     exit 2
 fi
 
-CPU0="/sys/devices/system/cpu/cpu0/cpufreq"
-CPU4="/sys/devices/system/cpu/cpu4/cpufreq"
-CPU7="/sys/devices/system/cpu/cpu7/cpufreq"
-VENDOR_SCHED="/proc/vendor_sched"
-UCLAMP_CAP_MIN="/proc/sys/kernel/sched_util_clamp_min"
-POWER_PROFILE_FILE="$MODDIR/.power_profile"
+CPU0="${CPU_PROFILE_CPU0_ROOT:-/sys/devices/system/cpu/cpu0/cpufreq}"
+CPU4="${CPU_PROFILE_CPU4_ROOT:-/sys/devices/system/cpu/cpu4/cpufreq}"
+CPU7="${CPU_PROFILE_CPU7_ROOT:-/sys/devices/system/cpu/cpu7/cpufreq}"
+CPUSET_ROOT="${CPU_PROFILE_CPUSET_ROOT:-/dev/cpuset}"
+VENDOR_SCHED="${CPU_PROFILE_VENDOR_SCHED_ROOT:-/proc/vendor_sched}"
+UCLAMP_CAP_MIN="${CPU_PROFILE_UCLAMP_PATH:-/proc/sys/kernel/sched_util_clamp_min}"
 SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
+
+if [ "${CPU_PROFILE_TEST_MODE:-0}" = "1" ]; then
+    case "$CPU0:$CPU4:$CPU7:$CPUSET_ROOT:$VENDOR_SCHED:$UCLAMP_CAP_MIN" in
+        /sdcard/Download/Pixel9Pro-Control-TestLab/runtime/*|/tmp/pixel9pro_* ) ;;
+        *) echo "cpu_profile: unsafe test fixture paths" >&2; exit 64 ;;
+    esac
+fi
 
 write_required_value() {
     [ -e "$1" ] || return 1
+    if [ "${CPU_PROFILE_TEST_MODE:-0}" = "1" ] \
+        && [ -n "${CPU_PROFILE_FAIL_ONCE_PATH:-}" ] \
+        && [ "$1" = "$CPU_PROFILE_FAIL_ONCE_PATH" ] \
+        && [ -f "${CPU_PROFILE_FAIL_ONCE_MARKER:-}" ]; then
+        rm -f "$CPU_PROFILE_FAIL_ONCE_MARKER" 2>/dev/null
+        return 1
+    fi
     printf '%s\n' "$2" > "$1" 2>/dev/null || return 1
     _cpu_written=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
     [ "$_cpu_written" = "$2" ]
@@ -59,7 +71,15 @@ write_if_exists() {
     write_required_value "$1" "$2"
 }
 cpuset_write() {
-    write_required_value "/dev/cpuset/$1/cpus" "$2"
+    write_required_value "$CPUSET_ROOT/$1/cpus" "$2"
+}
+
+apply_profile_l2() {
+    _cpu_l2=$(cpu_profile_l2_params "$1") || return 1
+    set -- $_cpu_l2
+    [ "$#" -eq 2 ] || return 1
+    write_required_value "$VENDOR_SCHED/ug_bg_uclamp_max" "$1" \
+        && write_required_value "$VENDOR_SCHED/ug_bg_group_throttle" "$2"
 }
 
 # 系统默认档专用: 从只读 response_time_ms_nom 读取出厂节奏，再写入可调
@@ -121,7 +141,8 @@ apply_static_profile_contract() {
     [ "$#" -eq 3 ] || return 1
     apply_sched_pixel "$1" "$2" "$3" \
         && apply_uclamp_cap "$_cpu_cap" \
-        && apply_profile_cpus "$_cpu_profile"
+        && apply_profile_cpus "$_cpu_profile" \
+        && apply_profile_l2 "$_cpu_profile"
 }
 
 snapshot_cpu_runtime() {
@@ -135,16 +156,19 @@ snapshot_cpu_runtime() {
     _cpu_old_resp4=$(cat "$_cpu_resp4_path" 2>/dev/null | tr -d ' \n\r\t')
     _cpu_old_resp7=$(cat "$_cpu_resp7_path" 2>/dev/null | tr -d ' \n\r\t')
     _cpu_old_cap=$(cat "$UCLAMP_CAP_MIN" 2>/dev/null | tr -d ' \n\r\t')
-    _cpu_old_top=$(cat /dev/cpuset/top-app/cpus 2>/dev/null | tr -d ' \n\r\t')
-    _cpu_old_fg=$(cat /dev/cpuset/foreground/cpus 2>/dev/null | tr -d ' \n\r\t')
-    _cpu_old_bg=$(cat /dev/cpuset/background/cpus 2>/dev/null | tr -d ' \n\r\t')
-    _cpu_old_sysbg=$(cat /dev/cpuset/system-background/cpus 2>/dev/null | tr -d ' \n\r\t')
+    _cpu_old_top=$(cat "$CPUSET_ROOT/top-app/cpus" 2>/dev/null | tr -d ' \n\r\t')
+    _cpu_old_fg=$(cat "$CPUSET_ROOT/foreground/cpus" 2>/dev/null | tr -d ' \n\r\t')
+    _cpu_old_bg=$(cat "$CPUSET_ROOT/background/cpus" 2>/dev/null | tr -d ' \n\r\t')
+    _cpu_old_sysbg=$(cat "$CPUSET_ROOT/system-background/cpus" 2>/dev/null | tr -d ' \n\r\t')
+    _cpu_old_bg_uclamp=$(cat "$VENDOR_SCHED/ug_bg_uclamp_max" 2>/dev/null | tr -d ' \n\r\t')
+    _cpu_old_bg_throttle=$(cat "$VENDOR_SCHED/ug_bg_group_throttle" 2>/dev/null | tr -d ' \n\r\t')
     { [ "$_cpu_resp0_existed" -eq 0 ] || [ -n "$_cpu_old_resp0" ]; } \
         && { [ "$_cpu_resp4_existed" -eq 0 ] || [ -n "$_cpu_old_resp4" ]; } \
         && { [ "$_cpu_resp7_existed" -eq 0 ] || [ -n "$_cpu_old_resp7" ]; } \
         && [ -n "$_cpu_old_cap" ] && [ -n "$_cpu_old_top" ] \
         && [ -n "$_cpu_old_fg" ] && [ -n "$_cpu_old_bg" ] \
-        && [ -n "$_cpu_old_sysbg" ]
+        && [ -n "$_cpu_old_sysbg" ] && [ -n "$_cpu_old_bg_uclamp" ] \
+        && [ -n "$_cpu_old_bg_throttle" ]
 }
 
 restore_cpu_runtime() {
@@ -157,7 +181,40 @@ restore_cpu_runtime() {
     cpuset_write foreground "$_cpu_old_fg" || _cpu_restore_failed=1
     cpuset_write background "$_cpu_old_bg" || _cpu_restore_failed=1
     cpuset_write system-background "$_cpu_old_sysbg" || _cpu_restore_failed=1
+    write_required_value "$VENDOR_SCHED/ug_bg_uclamp_max" "$_cpu_old_bg_uclamp" || _cpu_restore_failed=1
+    write_required_value "$VENDOR_SCHED/ug_bg_group_throttle" "$_cpu_old_bg_throttle" || _cpu_restore_failed=1
     [ "$_cpu_restore_failed" -eq 0 ]
+}
+
+verify_profile_runtime() {
+    _cpu_verify_profile="$1"
+    _cpu_expected_cap=$(cpu_profile_uclamp_cap "$_cpu_verify_profile") || return 1
+    _cpu_expected_top=$(cpu_profile_top_app_cpus "$_cpu_verify_profile") || return 1
+    _cpu_expected_l2=$(cpu_profile_l2_params "$_cpu_verify_profile") || return 1
+    [ "$(cat "$UCLAMP_CAP_MIN" 2>/dev/null | tr -d ' \n\r\t')" = "$_cpu_expected_cap" ] || return 1
+    [ "$(cat "$CPUSET_ROOT/top-app/cpus" 2>/dev/null | tr -d ' \n\r\t')" = "$_cpu_expected_top" ] || return 1
+    [ "$(cat "$CPUSET_ROOT/foreground/cpus" 2>/dev/null | tr -d ' \n\r\t')" = "$CPU_PROFILE_FOREGROUND_CPUS" ] || return 1
+    [ "$(cat "$CPUSET_ROOT/background/cpus" 2>/dev/null | tr -d ' \n\r\t')" = "$CPU_PROFILE_BACKGROUND_CPUS" ] || return 1
+    [ "$(cat "$CPUSET_ROOT/system-background/cpus" 2>/dev/null | tr -d ' \n\r\t')" = "$CPU_PROFILE_BACKGROUND_CPUS" ] || return 1
+    set -- $_cpu_expected_l2
+    [ "$(cat "$VENDOR_SCHED/ug_bg_uclamp_max" 2>/dev/null | tr -d ' \n\r\t')" = "$1" ] || return 1
+    [ "$(cat "$VENDOR_SCHED/ug_bg_group_throttle" 2>/dev/null | tr -d ' \n\r\t')" = "$2" ] || return 1
+
+    _cpu_expected_response=$(cpu_profile_response_triplet "$_cpu_verify_profile") || return 1
+    if [ -n "$_cpu_expected_response" ]; then
+        set -- $_cpu_expected_response
+        for _cpu_verify_root in "$CPU0" "$CPU4" "$CPU7"; do
+            [ "$(cat "$_cpu_verify_root/sched_pixel/response_time_ms" 2>/dev/null | tr -d ' \n\r\t')" = "$1" ] || return 1
+            shift
+        done
+    else
+        for _cpu_verify_root in "$CPU0" "$CPU4" "$CPU7"; do
+            _cpu_verify_nom=$(cat "$_cpu_verify_root/sched_pixel/response_time_ms_nom" 2>/dev/null | tr -d ' \n\r\t')
+            [ -n "$_cpu_verify_nom" ] || return 1
+            [ "$(cat "$_cpu_verify_root/sched_pixel/response_time_ms" 2>/dev/null | tr -d ' \n\r\t')" = "$_cpu_verify_nom" ] || return 1
+        done
+    fi
+    return 0
 }
 
 profile_apply_failed() {
@@ -174,7 +231,7 @@ profile_apply_failed() {
 SCHED_OWNER=$(read_sched_owner)
 if [ "$SCHED_OWNER" = "external" ]; then
     case "$PROFILE" in
-        status) ;;
+        status|verify|enforce) ;;
         *)
             if [ "$FORCE_APPLY" != "force" ]; then
                 log -t pixel9pro_ctrl "CPU: skip $PROFILE, scheduler owner=external"
@@ -202,6 +259,7 @@ case "$PROFILE" in
         # Full cap restores ADPF/HBoost requests. response_time_ms changes ramp
         # timing but does not by itself force X4 participation.
         apply_static_profile_contract performance || profile_apply_failed
+        verify_profile_runtime performance || profile_apply_failed
         log -t pixel9pro_ctrl "CPU: PERFORMANCE [cap=$CPU_PROFILE_FULL_CAP, response $(cpu_profile_response_triplet performance)ms]"
         ;;
 
@@ -209,11 +267,13 @@ case "$PROFILE" in
         # Daily low-heat baseline: all CPUs remain eligible for top-app, while
         # the middle/prime clusters ramp later and per-task boost is capped.
         apply_static_profile_contract balanced || profile_apply_failed
+        verify_profile_runtime balanced || profile_apply_failed
         log -t pixel9pro_ctrl "CPU: BALANCED [top-app=$(cpu_profile_top_app_cpus balanced), response $(cpu_profile_response_triplet balanced)ms]"
         ;;
 
     battery)
         apply_static_profile_contract battery || profile_apply_failed
+        verify_profile_runtime battery || profile_apply_failed
         log -t pixel9pro_ctrl "CPU: BATTERY [top-app=$(cpu_profile_top_app_cpus battery), response $(cpu_profile_response_triplet battery)ms]"
         ;;
 
@@ -224,7 +284,22 @@ case "$PROFILE" in
         apply_sched_pixel_nominal || profile_apply_failed
         apply_uclamp_cap "$(cpu_profile_uclamp_cap default)" || profile_apply_failed
         apply_profile_cpus default || profile_apply_failed
+        apply_profile_l2 default || profile_apply_failed
+        verify_profile_runtime default || profile_apply_failed
         log -t pixel9pro_ctrl "CPU: DEFAULT (system stock: response=nom, cap=$CPU_PROFILE_FULL_CAP)"
+        ;;
+
+    verify|enforce)
+        _cpu_verify_target="${CPU_PROFILE_VERIFY_TARGET:-}"
+        [ -n "$_cpu_verify_target" ] \
+            || _cpu_verify_target=$(cat "$MODDIR/.current_profile" 2>/dev/null | tr -d ' \n\r\t')
+        _cpu_verify_target=$(cpu_profile_normalize_runtime "$_cpu_verify_target" balanced)
+        if verify_profile_runtime "$_cpu_verify_target"; then
+            printf 'VERIFIED:%s\n' "$_cpu_verify_target"
+            exit 0
+        fi
+        printf 'DRIFT:%s\n' "$_cpu_verify_target"
+        exit 5
         ;;
 
     status)
@@ -258,37 +333,15 @@ case "$PROFILE" in
         echo ""
         echo "=== cpuset ==="
         for set in top-app foreground background system-background; do
-            printf "%-18s %s\n" "$set" "$(cat /dev/cpuset/$set/cpus 2>/dev/null)"
+            printf "%-18s %s\n" "$set" "$(cat "$CPUSET_ROOT/$set/cpus" 2>/dev/null)"
         done
         echo ""
         echo "=== Thermal ==="
         dumpsys thermalservice 2>/dev/null | grep "Thermal Status:" | head -1
         ;;
 
-    enforce)
-        # ── vendor_sched 参数守护 ───────────────────────────────
-        # 只做 procfs 读写, 参数正确时零开销
-        # 注: sched_util_clamp_min 不被 PowerHAL 覆盖, 不在此守护 (由各档切换时管理)
-        _pp=$(cat "$POWER_PROFILE_FILE" 2>/dev/null | tr -d ' \n\r')
-        set -- $(cpu_power_profile_l2_params "$_pp")
-        _target_bg_uclamp="$1"
-        _target_bg_throttle="$2"
-        _cur_uclamp=$(cat "$VENDOR_SCHED/ug_bg_uclamp_max" 2>/dev/null | tr -d ' \n\r')
-        _cur_throttle=$(cat "$VENDOR_SCHED/ug_bg_group_throttle" 2>/dev/null | tr -d ' \n\r')
-        _fixed=0
-        if [ "$_cur_uclamp" != "$_target_bg_uclamp" ]; then
-            write_required_value "$VENDOR_SCHED/ug_bg_uclamp_max" "$_target_bg_uclamp" || exit 3
-            _fixed=1
-        fi
-        if [ "$_cur_throttle" != "$_target_bg_throttle" ]; then
-            write_required_value "$VENDOR_SCHED/ug_bg_group_throttle" "$_target_bg_throttle" || exit 3
-            _fixed=1
-        fi
-        [ "$_fixed" -eq 1 ] && log -t pixel9pro_ctrl "L2 enforce: restored bg_uclamp=$_target_bg_uclamp bg_throttle=$_target_bg_throttle"
-        ;;
-
     *)
-        echo "Usage: $0 [performance|balanced|battery|default|status|enforce]"
+        echo "Usage: $0 [performance|balanced|battery|default|status|verify|enforce]"
         exit 1
         ;;
 esac

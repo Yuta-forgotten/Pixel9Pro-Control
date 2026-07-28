@@ -26,6 +26,10 @@ if [ ! -r "$MODPATH/scripts/scheduler_owner_lib.sh" ] \
     ui_print "  ✗ 缺少调度所有权配置, 已中止安装"
     exit 1
 fi
+if [ ! -r "$MODPATH/scripts/scheduler_boot_mode_lib.sh" ]; then
+    ui_print "  ✗ 缺少调度启动模式配置, 已中止安装"
+    exit 1
+fi
 if [ ! -r "$MODPATH/scripts/runtime_defaults_lib.sh" ]; then
     ui_print "  ✗ 缺少运行默认值配置, 已中止安装"
     exit 1
@@ -99,20 +103,23 @@ choose_cpu_scheduling() {
     _sch_step="$1"
     detect_uperf_module 2>/dev/null || true
     detect_fas_rs_scheduler 2>/dev/null || true
+    if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
+        # UGT is boot-exclusive because its boot service mutates cpufreq sysfs.
+        # fas-rs handoff is available only after switching to a Pixel boot.
+        installer_write "$SCHED_OWNER_FILE" external
+        installer_write "$SCHED_OWNER_DESIRED_FILE" external
+        installer_write "$GAME_HANDOFF_POLICY_FILE" off
+        installer_write "$MODPATH/.profile_auto_reason" external_scheduler
+        ui_print "  $_sch_step CPU 调度: 检测到 ${UPERF_MODULE_NAME:-UGT}, 使用 UGT 独占启动模式"
+        [ "$FAS_RS_MODULE_ENABLED" = "yes" ] && ui_print "    fas-rs: 切换到 Pixel 启动模式后才可启用游戏接管"
+        ui_print ""
+        return
+    fi
+
     if [ "$FAS_RS_MODULE_ENABLED" = "yes" ]; then
         installer_write "$GAME_HANDOFF_POLICY_FILE" fas_rs
     else
         installer_write "$GAME_HANDOFF_POLICY_FILE" off
-    fi
-    if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
-        # UGT is a valid daily external baseline. fas-rs-only installations
-        # stay on Pixel daily scheduling and use the game handoff policy.
-        installer_write "$SCHED_OWNER_FILE" external
-        installer_write "$MODPATH/.profile_auto_reason" external_scheduler
-        ui_print "  $_sch_step CPU 调度: 检测到 ${UPERF_MODULE_NAME:-UGT}, 日常调度默认交其接管"
-        [ "$FAS_RS_MODULE_ENABLED" = "yes" ] && ui_print "    fas-rs: 命中游戏时临时接管，退出后恢复 UGT"
-        ui_print ""
-        return
     fi
 
     # Without UGT there is no valid daily external baseline. fas-rs, when
@@ -147,6 +154,7 @@ choose_cpu_scheduling() {
     case "$_sch_cur" in
         auto)
             installer_write "$SCHED_OWNER_FILE" pixel
+            installer_write "$SCHED_OWNER_DESIRED_FILE" pixel
             installer_write "$PROFILE_FILE" balanced
             installer_write "$PROFILE_MANUAL_FILE" balanced
             installer_write "$PROFILE_POLICY_FILE" auto
@@ -154,6 +162,7 @@ choose_cpu_scheduling() {
             ;;
         *)
             installer_write "$SCHED_OWNER_FILE" pixel
+            installer_write "$SCHED_OWNER_DESIRED_FILE" pixel
             installer_write "$PROFILE_FILE" "$_sch_cur"
             installer_write "$PROFILE_MANUAL_FILE" "$_sch_cur"
             installer_write "$PROFILE_POLICY_FILE" manual
@@ -522,7 +531,17 @@ installer_write "$OFFSET_FILE" "$offset"
 # the legacy arbiter could overwrite .cpu_sched_owner after that action.
 scheduler_owner_init "$MODPATH" "/data/adb/fas_rs"
 if so_migrate_state; then
-    ui_print "  CPU 调度意愿: $(so_read_desired_owner), 游戏接管: $(so_read_handoff_policy)"
+    detect_uperf_module 2>/dev/null || true
+    if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
+        installer_write "$SCHED_OWNER_DESIRED_FILE" external
+        installer_write "$SCHED_OWNER_FILE" external
+        installer_write "$GAME_HANDOFF_POLICY_FILE" off
+        ui_print "  CPU 启动模式: UGT 独占 (重启后验证)"
+    else
+        installer_write "$SCHED_OWNER_DESIRED_FILE" pixel
+        installer_write "$SCHED_OWNER_FILE" pixel
+        ui_print "  CPU 启动模式: Pixel (重启后验证), 游戏接管: $(so_read_handoff_policy)"
+    fi
 else
     if [ ! -f "$SCHED_OWNER_DESIRED_FILE" ]; then
         _desired_fallback=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')

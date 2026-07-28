@@ -28,6 +28,9 @@ const ntpCatalog = fs.readFileSync(path.join(root, 'config', 'ntp_servers.tsv'),
 const runtimeDefaults = fs.readFileSync(path.join(root, 'scripts', 'runtime_defaults_lib.sh'), 'utf8');
 const displayStateLib = fs.readFileSync(path.join(root, 'scripts', 'display_state_lib.sh'), 'utf8');
 const schedulerDetectLib = fs.readFileSync(path.join(root, 'scripts', 'scheduler_detect_lib.sh'), 'utf8');
+const schedulerBootLib = fs.readFileSync(path.join(root, 'scripts', 'scheduler_boot_mode_lib.sh'), 'utf8');
+const schedulerReconcile = fs.readFileSync(path.join(root, 'scripts', 'scheduler_reconcile.sh'), 'utf8');
+const schedulerGuard = fs.readFileSync(path.join(root, 'scripts', 'scheduler_transition_guard_lib.sh'), 'utf8');
 const basebandCustomize = fs.readFileSync(path.join(root, 'modules', 'pixel9pro_baseband_trial', 'customize.sh'), 'utf8');
 const moduleProp = fs.readFileSync(path.join(root, 'module.prop'), 'utf8');
 const versionsProp = fs.readFileSync(path.join(root, 'versions.prop'), 'utf8');
@@ -37,8 +40,9 @@ function assert(condition, message) {
 }
 
 const htmlContracts = [
-  [/<div class="preference-group" id="external-scheduler-controls" data-module-visible="ugt\|fas" hidden>/, 'external scheduler group must default hidden'],
+  [/<div class="preference-group" id="external-scheduler-controls">/, 'scheduler control group must remain visible for independent health state'],
   [/<div class="ctrl-row" id="sched-owner-row" data-module-visible="ugt" hidden>/, 'UGT daily owner row must require UGT'],
+  [/<div class="ctrl-row" id="scheduler-health-row">/, 'scheduler health row must be independent of optional UGT/fas-rs visibility'],
   [/<div class="ctrl-row" id="game-handoff-row" data-module-visible="fas" hidden>/, 'fas-rs handoff row must require fas-rs'],
   [/<div class="ctrl-row" id="owner-arbiter-row" data-module-visible="fas" hidden>/, 'fas-rs arbiter row must require fas-rs'],
   [/<article class="surface-card preference-card" id="baseband-card" data-module-visible="baseband" hidden>/, 'baseband card must default hidden'],
@@ -50,7 +54,7 @@ assert(app.includes('baseband: state.basebandInstalled && state.deviceModel === 
 assert(app.includes('ugt: state.uperfDetected') && app.includes('fas: state.fasRsDetected'), 'UGT/fas-rs visibility must use independent detection flags');
 assert(app.includes('if (!state.basebandInstalled)'), 'baseband detail fetch must be skipped when the module is absent');
 for (const transitionCopy of [
-  '正在停止旧调度器、恢复 CPU 基线并复读关键节点，通常需要数秒。',
+  '正在提交下次启动模式；当前 boot 不会热启动或热停止 UGT。',
   '正在更新 fas-rs 接管策略并核对当前 owner，通常需要数秒。',
   '正在复读前台场景、owner 和关键调度节点，通常需要数秒。',
   '正在应用 profile 并复读关键调度节点，通常需要数秒。',
@@ -59,8 +63,8 @@ for (const transitionCopy of [
   assert(app.includes(transitionCopy), `current strategy transition copy is missing: ${transitionCopy}`);
 }
 assert(app.includes('function isCurrentStrategyBusy()'), 'current strategy controls must share one busy guard');
-assert(app.includes('refs.gameHandoffToggleBtn.disabled = strategyBusy'), 'game handoff must be locked during any strategy transition');
-assert(app.includes('refs.profilePolicyManualBtn.disabled = strategyBusy'), 'profile policy must be locked during any strategy transition');
+assert(app.includes('refs.gameHandoffToggleBtn.disabled = strategyBusy || !isVerifiedPixelBoot()'), 'game handoff must require a verified Pixel boot');
+assert(app.includes('refs.profilePolicyManualBtn.disabled = strategyBusy || !isVerifiedPixelBoot()'), 'profile policy must require a verified Pixel boot');
 
 for (const phrase of ['日常推荐', '性能更积极', '适合日常', '日常常用', '温度控制最稳妥', '机身更凉']) {
   assert(!html.includes(phrase) && !app.includes(phrase), `thermal UI must not contain recommendation copy: ${phrase}`);
@@ -90,6 +94,18 @@ assert(ntpCgi.includes('ntp_config_validate') && service.includes('ntp_config_va
 assert(!app.includes('const SWAP_OPTIMIZED') && !swapCgi.includes('OPT_SWAPPINESS='), 'VM presets must come from vm_profile_lib.sh');
 assert(swapCgi.includes('. "$VM_PROFILE_LIB"') && app.includes('data.zram_target'), 'VM CGI and UI must consume the shared VM contract');
 assert(cpuProfile.includes('. "$CPU_PROFILE_LIB"') && ownerArbiter.includes('. "$MODDIR/scripts/cpu_profile_lib.sh"'), 'CPU apply and owner verification must share one profile contract');
+assert(cpuProfile.includes('apply_profile_l2') && cpuProfile.includes('verify_profile_runtime'), 'CPU and L2 must be one verified profile transaction');
+assert(!service.includes('cpu_profile.sh" enforce') && !service.includes('POWER_PROFILE_FILE'), 'service must not retain the legacy 15-second L2 writer or .power_profile SoT');
+assert(!ownerArbiter.includes('start_uperf()') && !ownerArbiter.includes('stop_uperf()'), 'owner arbiter must never hot-start or hot-stop UGT');
+assert(ownerArbiter.includes('UGT_EXCLUSIVE') && ownerArbiter.includes('ugt_boot_exclusive_noop'), 'owner arbiter must expose UGT as observation-only boot mode');
+assert(schedulerBootLib.includes('module "$_sbm_apd_action"') && schedulerBootLib.includes('pending_reboot_to_'), 'boot-mode contract must stage UGT through APatch and publish pending reboot');
+assert(schedulerReconcile.includes('SBM_MAX_WRITE_ATTEMPTS') && schedulerReconcile.includes('sr_verify_profile_stable'), 'scheduler reconcile must bound writes and verify stability');
+assert(schedulerGuard.includes('retry_budget_exhausted') && schedulerGuard.includes('STG_TERMINAL=yes'), 'scheduler transition guard must latch a final retry result');
+assert(service.includes('scheduler_reconcile.sh" health') && service.includes('SBM_HEALTH_INTERVAL_S'), 'service must run the independent low-frequency read-only health worker');
+assert(app.includes('refs.schedulerHealthRow.hidden = false'), 'scheduler health UI must not be coupled to optional UGT visibility');
+assert(schedulerBootLib.includes('sbm_commit_terminal_bounded') && schedulerBootLib.includes('SBM_TERMINAL_FILE'), 'scheduler terminal state must have bounded primary commits and a fallback channel');
+assert(schedulerReconcile.includes('sr_publish_owner_transaction') && schedulerReconcile.includes('SR_OWNER_ROLLBACK_OK'), 'boot owner publication must be transactional and report rollback state');
+assert(profileCgi.includes('scheduler_boot') && profileCgi.includes('sbm_stage_mode'), 'profile API must expose and stage boot-mode state');
 assert(!ownerArbiter.includes('_oa_resp="16 40 200"'), 'owner arbiter must not duplicate CPU response triplets');
 assert(!ownerArbiter.includes('command -v detect_'), 'owner arbiter must require its scheduler-detection contract');
 assert((ownerArbiter.match(/detect_external_scheduler 2>\/dev\/null/g) || []).length === 1, 'owner arbiter must scan external schedulers once per tick');
@@ -112,8 +128,8 @@ assert(customize.includes('UECAP_DISABLED_REASON="uecap_unsupported_device"'), '
 assert(basebandCustomize.includes('[ "$device" != "caiman" ]'), 'baseband submodule must reject non-caiman devices');
 assert(!service.includes('# v4.'), 'service.sh must not contain a release changelog');
 assert(!fs.existsSync(path.join(root, 'system.prop')), 'empty system.prop must not be packaged');
-assert(moduleProp.includes('version=v4.5.02') && moduleProp.includes('versionCode=107'), 'release version must be v4.5.02 / 107');
-for (const component of ['webui=4.5.02', 'scheduler=4.5.02', 'core=4.5.02']) {
+assert(moduleProp.includes('version=v4.5.03') && moduleProp.includes('versionCode=108'), 'release version must be v4.5.03 / 108');
+for (const component of ['webui=4.5.03', 'scheduler=4.5.03', 'core=4.5.03']) {
   assert(versionsProp.includes(component), `component version is stale: ${component}`);
 }
 assert(commonCgi.includes("'413 Payload Too Large'") && commonCgi.includes('JSON object required'), 'all write CGI must share bounded JSON-object parsing');

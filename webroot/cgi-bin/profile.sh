@@ -22,7 +22,10 @@ SCHEDULER_INVENTORY_PATH="${SCHEDULER_INVENTORY_PATH:-$MODDIR/.scheduler_invento
     || json_error '500 Internal Server Error' 'scheduler owner contract not found'
 [ -r "$MODDIR/scripts/cpu_profile_lib.sh" ] && . "$MODDIR/scripts/cpu_profile_lib.sh" \
     || json_error '500 Internal Server Error' 'CPU profile contract not found'
+[ -r "$MODDIR/scripts/scheduler_boot_mode_lib.sh" ] && . "$MODDIR/scripts/scheduler_boot_mode_lib.sh" \
+    || json_error '500 Internal Server Error' 'scheduler boot-mode contract not found'
 scheduler_owner_init "$MODDIR" "$FAS_ROOT"
+sbm_init "$MODDIR" "$FAS_ROOT"
 so_migrate_state >/dev/null 2>&1 \
     || json_error '500 Internal Server Error' 'scheduler owner state migration failed'
 
@@ -217,6 +220,13 @@ emit_profile_state() {
     _profile_surface_note=""
     _cpu_contract=$(cpu_profile_contract_json) \
         || json_error '500 Internal Server Error' 'CPU profile contract serialization failed'
+    sbm_load_state
+    _scheduler_health_status=$(sbm_state_value "$SBM_HEALTH_FILE" status 2>/dev/null)
+    _scheduler_health_reason=$(sbm_state_value "$SBM_HEALTH_FILE" reason 2>/dev/null)
+    _scheduler_health_checked=$(sbm_state_value "$SBM_HEALTH_FILE" checked_epoch 2>/dev/null)
+    _scheduler_health_profile_verified=$(sbm_state_value "$SBM_HEALTH_FILE" profile_verified 2>/dev/null)
+    _scheduler_health_cpufreq=$(sbm_state_value "$SBM_HEALTH_FILE" cpufreq_permissions 2>/dev/null)
+    _scheduler_health_powerhal=$(sbm_state_value "$SBM_HEALTH_FILE" powerhal_failures 2>/dev/null)
     if [ "$_sched_effective_owner" = "external" ]; then
         _profile_surface="delegated"
         _profile_surface_stale=true
@@ -256,6 +266,16 @@ emit_profile_state() {
         "$(json_escape "$_effective_scheduler_kind")" "$(json_escape "$_effective_scheduler_mode")" \
         "$(json_escape "$_profile_surface")" "$_profile_surface_stale" "$(json_escape "$_profile_surface_note")"
     printf ',"cpu_contract":%s' "$_cpu_contract"
+    printf ',"scheduler_boot":{"target_mode":"%s","effective_mode":"%s","phase":"%s","final":"%s","ok":"%s","result":"%s","reason":"%s","attempts":%s,"reboot_required":"%s","auto_repair_used":"%s","staged_boot_id":"%s","observed_boot_id":"%s"}' \
+        "$(json_escape "$SBM_TARGET_MODE")" "$(json_escape "$SBM_EFFECTIVE_MODE")" \
+        "$(json_escape "$SBM_PHASE")" "$(json_escape "$SBM_FINAL")" "$(json_escape "$SBM_OK")" \
+        "$(json_escape "$SBM_RESULT")" "$(json_escape "$SBM_REASON")" "${SBM_ATTEMPTS:-0}" \
+        "$(json_escape "$SBM_REBOOT_REQUIRED")" "$(json_escape "$SBM_AUTO_REPAIR_USED")" \
+        "$(json_escape "$SBM_STAGED_BOOT_ID")" "$(json_escape "$SBM_OBSERVED_BOOT_ID")"
+    printf ',"scheduler_health":{"status":"%s","reason":"%s","checked_epoch":"%s","profile_verified":"%s","cpufreq_permissions":"%s","powerhal_failures":"%s"}' \
+        "$(json_escape "$_scheduler_health_status")" "$(json_escape "$_scheduler_health_reason")" \
+        "$(json_escape "$_scheduler_health_checked")" "$(json_escape "$_scheduler_health_profile_verified")" \
+        "$(json_escape "$_scheduler_health_cpufreq")" "$(json_escape "$_scheduler_health_powerhal")"
 }
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
@@ -268,6 +288,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     newpolicy=$(printf '%s' "$body" | sed -n 's/.*"policy"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
     newowner=$(printf '%s' "$body" | sed -n 's/.*"sched_owner"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
     newhandoff=$(printf '%s' "$body" | sed -n 's/.*"game_handoff"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
+    scheduler_action=$(printf '%s' "$body" | sed -n 's/.*"scheduler_action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
 
     case "$newprof" in
         ''|balanced|battery|default) ;;
@@ -286,47 +307,79 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         ''|fas_rs|off) ;;
         *) json_error '400 Bad Request' 'invalid game handoff policy' ;;
     esac
+    case "$scheduler_action" in
+        ''|cancel_pending|retry) ;;
+        *) json_error '400 Bad Request' 'invalid scheduler action' ;;
+    esac
+
+    if [ "$scheduler_action" = "cancel_pending" ]; then
+        acquire_profile_scheduler_lock
+        if sbm_cancel_pending; then
+            release_profile_scheduler_lock
+            json_headers
+            printf '{"ok":true,"accepted":true,"final":true,'
+            emit_profile_state
+            printf '}\n'
+            exit 0
+        fi
+        _cancel_rc=$?
+        release_profile_scheduler_lock
+        json_headers
+        printf '{"ok":false,"accepted":false,"final":true,"error":"cancel failed (rc=%s)",' "$_cancel_rc"
+        emit_profile_state
+        printf '}\n'
+        exit 0
+    fi
+
+    if [ "$scheduler_action" = "retry" ]; then
+        sbm_load_state
+        case "$SBM_PHASE" in failed|blocked) ;; *) json_error '409 Conflict' 'scheduler retry requires a terminal failed state' ;; esac
+        _retry_rc=0
+        sh "$MODDIR/scripts/scheduler_reconcile.sh" retry "$MODDIR" >/dev/null 2>&1 || _retry_rc=$?
+        sbm_load_state
+        json_headers
+        if [ "$_retry_rc" -eq 0 ] && [ "$SBM_PHASE" = "success" ]; then
+            printf '{"ok":true,"accepted":true,"final":true,'
+        else
+            printf '{"ok":false,"accepted":true,"final":true,"error":"scheduler retry reached terminal failure",'
+        fi
+        emit_profile_state
+        printf '}\n'
+        exit 0
+    fi
 
     if [ -n "$newowner" ]; then
-        _old_desired=$(read_valid_desired_sched_owner)
-        _reason_existed=0
-        [ -e "$PROFILE_AUTO_REASON_FILE" ] && _reason_existed=1
-        _old_owner_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null)
-        so_write_desired_owner "$newowner" \
-            || json_error '500 Internal Server Error' 'failed to persist desired scheduler owner'
-        _owner_reason="${newowner}_scheduler"
-        if ! cgi_atomic_write "$PROFILE_AUTO_REASON_FILE" "$_owner_reason"; then
-            _owner_rollback_ok=1
-            so_write_desired_owner "$_old_desired" >/dev/null 2>&1 || _owner_rollback_ok=0
-            cgi_restore_file "$PROFILE_AUTO_REASON_FILE" "$_reason_existed" "$_old_owner_reason" \
-                >/dev/null 2>&1 || _owner_rollback_ok=0
-            if [ "$_owner_rollback_ok" -eq 1 ]; then
-                json_error '500 Internal Server Error' 'failed to persist scheduler transition reason; previous owner restored'
-            fi
-            json_error '500 Internal Server Error' 'failed to persist scheduler transition reason and rollback was incomplete'
+        _target_mode=pixel
+        [ "$newowner" = "external" ] && _target_mode=ugt
+        detect_external_scheduler 2>/dev/null || true
+        if [ "$_target_mode" = "ugt" ] && [ "$UPERF_DETECTED" != "yes" ]; then
+            json_error '409 Conflict' 'UGT is not installed'
         fi
-        append_profile_history "$(read_valid_profile "$PROFILE_FILE" 'balanced')" "$_owner_reason"
-        _reconcile_rc=0
-        reconcile_owner_now || _reconcile_rc=$?
-        _apply_result=$(read_arbiter_value apply_result)
-        _effective=$(read_valid_sched_owner)
-        _state=$(read_arbiter_value state)
+        case "$UPERF_MODULE_ID" in ''|*[!A-Za-z0-9._-]*) ;; *) SBM_UPERF_ID="$UPERF_MODULE_ID" ;; esac
+        acquire_profile_scheduler_lock
+        _stage_rc=0
+        sbm_stage_mode "$_target_mode" || _stage_rc=$?
+        release_profile_scheduler_lock
         json_headers
-        case "$_apply_result" in
-            failed_*|transition_busy) _transition_ok=false ;;
-            *) _transition_ok=true ;;
-        esac
-        [ "$_reconcile_rc" -eq 0 ] || _transition_ok=false
-        if [ "$_state" != "FAS_LEASED_GAME" ] && [ "$_state" != "EXIT_HOLD" ] && [ "$_effective" != "$newowner" ]; then
-            _transition_ok=false
+        if [ "$_stage_rc" -eq 0 ]; then
+            printf '{"ok":true,"accepted":true,"final":false,'
+        elif [ "$_stage_rc" -eq 79 ]; then
+            printf '{"ok":true,"accepted":true,"final":true,'
+        elif [ "$_stage_rc" -eq 81 ]; then
+            printf '{"ok":false,"accepted":false,"final":false,"error":"cancel the existing pending scheduler change first",'
+        else
+            printf '{"ok":false,"accepted":false,"final":true,"error":"scheduler mode staging failed (rc=%s)",' "$_stage_rc"
         fi
-        printf '{"ok":%s,' "$_transition_ok"
         emit_profile_state
         printf '}\n'
         exit 0
     fi
 
     if [ -n "$newhandoff" ]; then
+        sbm_load_state
+        if [ "$SBM_PHASE" != "success" ] || [ "$SBM_EFFECTIVE_MODE" != "pixel" ]; then
+            json_error '409 Conflict' 'fas-rs handoff requires a verified Pixel boot mode'
+        fi
         so_write_handoff_policy "$newhandoff" \
             || json_error '500 Internal Server Error' 'failed to persist game handoff policy'
         _reconcile_rc=0
@@ -336,6 +389,15 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         case "$_apply_result" in failed_*|transition_busy) _transition_ok=false ;; *) _transition_ok=true ;; esac
         [ "$_reconcile_rc" -eq 0 ] || _transition_ok=false
         printf '{"ok":%s,' "$_transition_ok"
+        emit_profile_state
+        printf '}\n'
+        exit 0
+    fi
+
+    sbm_load_state
+    if [ "$SBM_PHASE" != "success" ] || [ "$SBM_EFFECTIVE_MODE" != "pixel" ]; then
+        json_headers
+        printf '{"ok":false,"error":"Pixel scheduler is not in a verified writable state",'
         emit_profile_state
         printf '}\n'
         exit 0

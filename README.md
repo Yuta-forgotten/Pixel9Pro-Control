@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- Release candidate: `v4.5.02`
-- versionCode: `107`
-- Asset: `pixel9pro_control_v4.5.02.zip`
+- Release candidate: `v4.5.03`
+- versionCode: `108`
+- Asset: `pixel9pro_control_v4.5.03.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -23,9 +23,9 @@
 
 ### CPU 调度 / 外部调度接管
 
-本模块内置 Pixel 原厂调度参数微调。UGT 可作为日常 `external` baseline；fas-rs 只在命中目标游戏时临时接管，退出后恢复用户选择的 Pixel 或 UGT 日常 baseline。本项目不打包、不改写 UGT / fas-rs，只做只读探测和有验证的调度让权。
+本模块内置 Pixel 原厂调度参数微调。Pixel 与 UGT 是互斥的启动模式：切到 UGT 或完全退出 UGT 都先提交下次 boot 状态，再重启验证；当前 boot 不热启动、不热停止、也不归一化 UGT。fas-rs 只允许在已验证的 Pixel boot 内按游戏临时接管，退出后恢复 Pixel profile。
 
-WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电→均衡→系统默认）；性能优先降为内部基线，需要游戏级线程调度请切到 `external`，由 UGT / fas-rs / 外部调度接管。
+WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电→均衡→系统默认）；性能优先降为内部基线。UGT 通过独占启动模式提供另一套日常调度，fas-rs 只在 verified Pixel boot 内按游戏临时接管。
 
 | 模式 (WebUI 顺序) | top-app | response_time_ms (小/中/大) | uclamp.min cap | 说明 |
 |------|---------|------|------|------|
@@ -37,11 +37,13 @@ WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电�
 - 调度通过 `cpuset` 和 `sched_pixel response_time_ms` 控制；不直接写 `scaling_max_freq`
 - `foreground/cpus` 会被 framework 重置到 `0-6`，模块主要托管 `top-app/background/system-background`
 - 自动模式以均衡为日常底座，温度持续偏高时收口至省电，回落后恢复；死区设有粘滞，避免边界来回抖动
-- `.sched_owner_desired=pixel|external` 保存用户的日常选择，`.cpu_sched_owner` 只表示当前实际 owner；fas-rs 游戏 lease 不覆盖用户意愿
+- `.scheduler_boot_state` 区分 pending / verifying / success / failed；`.sched_owner_desired` 与 `.cpu_sched_owner` 只在重启后验证通过时提交，fas-rs 游戏 lease 不覆盖启动模式
 - Pixel 日常调度下仍可启用 fas-rs 游戏临时接管：命中游戏时 `effective=external`，退出后恢复原 Pixel auto/manual 状态
-- 日常选择为 `external` 时，普通应用恢复 UGT；若 UGT 未启用则保持 `external:none` 并明确告警，不会把 fas-rs 误当作日常调度器，也不会擅自回写 Pixel 或 `balanced`
+- UGT boot 为 observation-only：owner worker 不会启动/停止 UGT，也不会在 UGT 上叠加 fas-rs
+- CPU、cpuset、uclamp cap 与 vendor_sched L2 同属一个 profile 事务；省电 L2 为 `150/80`，均衡/性能为 `200/100`，系统默认恢复 `1024/308`
+- 自动写入最多 3 次且受 30 秒 deadline 约束，随后发布最终成功/失败；独立 300 秒 health 只读调度节点，首次 Pixel drift 最多触发一次有界 repair
 
-当实际 `.cpu_sched_owner=external` 时，本模块跳过常规 profile/auto/enforce 写入；owner 事务层只在 Pixel/FAS handoff 边界清理 UGT 残留、恢复 cpufreq 基线并复读验证。温控、ZRAM、NR/SIM2、UECap 与 WebUI 始终由本模块负责。
+当实际 `.cpu_sched_owner=external` 时，本模块跳过 profile/auto 写入并保持 UGT 独占；从 UGT 回到 Pixel 必须先由 Root 管理器禁用 UGT、重启，再通过 UGT 进程、cpufreq 权限、PowerHAL 日志和完整 profile 复读门禁。温控、ZRAM、NR/SIM2、UECap 与 WebUI 始终由本模块负责。
 
 ### 温控阈值 (5 档)
 
@@ -111,25 +113,26 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 | [`pixel9pro_baseband_trial`](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/download/v4.3.11/pixel9pro_baseband_trial_v1.0.1.zip) | 本项目可选基带模块 | 基于 [Sun_Dream（酷安）](https://www.coolapk.com/u/1281808) 的 PLMN / CarrierSettings 设计；提供 China MCFG、APN 与 VoLTE/VoNR/WFC 配置 |
 | Uperf Game Turbo / fas-rs / 其它外部调度器 | 第三方或独立外部调度模块 | CPU scene 调度、输入/前台/游戏线程调度、frame-aware 调度、per-app 性能模式；由各自上游独立维护 |
 
-- 只安装控制模块：温控/ZRAM/NR/SIM2/UECap/WebUI 正常工作；CPU 调度默认由本模块管理，也可手动设为 `external` 停用
+- 只安装控制模块：温控/ZRAM/NR/SIM2/UECap/WebUI 正常工作；CPU 调度由本模块管理
 - 只安装基带模块：单独刷入 `pixel9pro_baseband_trial_v1.0.1.zip`，VoLTE/VoNR 自动生效，UECap 保持原厂
 - 控制模块 + 基带模块：WebUI 检测并展示基带模块状态；UECap 由控制模块管理，CarrierSettings / MCFG 由基带模块提供
-- 控制模块 + UGT / fas-rs：WebUI 的“日常选择”决定普通应用使用 Pixel 或 UGT；“游戏接管”可让 fas-rs 只在命中游戏时临时接管
-- 三者都安装：推荐边界为 Pixel9Pro-Control 管理日常 baseline、fas-rs 管理指定游戏 lease，基带模块负责运营商配置增强
+- 控制模块 + UGT：Pixel/UGT 双向切换均在重启后生效；APatch 可由 WebUI staging，KernelSU/Magisk 需在各自 Root 管理器启停 UGT 后重启
+- 控制模块 + fas-rs：仅在 Pixel boot 内可开启游戏临时接管，退出后恢复 Pixel 日常 profile
+- 三者都安装：UGT boot 独占调度；切回已验证的 Pixel boot 后，才可选择 fas-rs 游戏 lease；基带模块独立负责运营商配置增强
 
 **基带模块兼容性**：`pixel9pro_baseband_trial` 中的 CarrierSettings / MCFG 基于中国运营商配置，安装器只允许 `caiman`。控制模块的 UECap binarypb 同样基于 Pixel 9 Pro (Exynos 5400 modem) 固件定制；`komodo` 安装时会移除该 payload 和切换脚本并保持 stock，不能用 caiman 文件代替。
 
 **外部调度协同说明**：Uperf Game Turbo、fas-rs 等为外部调度项目，本项目只识别设备上已经存在的模块，不提供下载、推荐或安装引导。
 
-**可选模块按需显示**：WebUI 仅在检测到 UGT 时显示日常 UGT 接管控制，仅在检测到 fas-rs 时显示游戏 handoff / arbiter 控制；两者同时存在时组合显示。`pixel9pro_baseband_trial` 未安装、已禁用或待移除时，基带配置卡完全隐藏。首次安装只报告 UGT、fas-rs 与本项目基带模块是否已检测到，不提供下载、推荐或第三方安装引导。单独残留的 `/data/adb/fas_rs` 状态目录不再被当成 fas-rs 已安装。
+**可选模块按需显示**：WebUI 仅在检测到 UGT 时显示启动模式切换，仅在检测到 fas-rs 时显示游戏 handoff / arbiter 控制；独立调度健康状态始终可见，不依赖任一可选模块。`pixel9pro_baseband_trial` 未安装、已禁用或待移除时，基带配置卡完全隐藏。首次安装只报告 UGT、fas-rs 与本项目基带模块是否已检测到，不提供下载、推荐或第三方安装引导。单独残留的 `/data/adb/fas_rs` 状态目录不再被当成 fas-rs 已安装。
 
-**owner arbiter**：`scripts/owner_arbiter.sh` 的普通 `tick` 只记录决策；创建 `/data/adb/fas_rs/.arbiter_apply` 或执行 `apply-tick` / `apply` 才执行事务切换。普通应用只恢复 `.sched_owner_desired`；命中 fas-rs 游戏时停止 UGT、进入 `FAS_LEASED_GAME`，退出后按 desired 精确恢复 Pixel 或 UGT。切换共用 `.owner_transition.lock`，Pixel 接管会停止 UGT/fas-rs、恢复 cpufreq baseline、重新应用当前 profile 并复读 cap/cpuset/response；FAS 启动失败也按 desired 回滚。UGT→fas-rs 必须先修复 powersave/cpufreq residue 并验证 cap=1024，随后才启动 fas-rs 和发布游戏 owner，避免 owner 已显示接管但运行面尚未就绪的假 active 窗口。cap 契约为 Pixel `balanced/battery=0`、UGT 日常 `=0`、fas-rs 游戏 lease `=1024`（Google 出厂上限，允许完整 boost）；退出游戏后恢复 desired baseline 并再次复读。Pixel `default/performance` 仍遵循对应 profile 的出厂/性能语义 `=1024`。这里只写 `sched_util_clamp_min`，不会覆盖 ThermalHAL 独立使用的 `uclamp.max` 热保护。`.arbiter_state` 同时记录 `desired_owner`、effective owner、handoff policy、lease、transition result、`uclamp_cap_current/expected/verified`、重复 UGT 归一与 cpufreq/ThermalHAL 复读结果。UGT enabled 但 desired=Pixel 时不得自行启动；desired=external 但 UGT disabled 时明确进入 `external:none`。
+**owner arbiter**：`scripts/owner_arbiter.sh` 只在 verified Pixel boot 启动。Pixel idle 先只读复读 baseline；稳定时不重放 profile。命中 fas-rs 游戏时按 `cpufreq restore → cap=1024 复读 → start fas-rs → publish game owner` 的顺序进入 `FAS_LEASED_GAME`，退出后停止 fas-rs 并恢复当前 Pixel profile。每个 transition key 在同一 boot 最多写 3 次/30 秒，终态失败后不会被 5 秒 tick 重开。UGT boot 直接发布 `UGT_EXCLUSIVE` observation，不进入任何运行时 start/stop/normalize 或 fas-rs handoff。
 
 **owner arbiter cpufreq 恢复边界**：低频残留恢复只在 `FAS_LEASED_GAME` / `EXIT_HOLD` 且 ThermalHAL CPU cooling 未激活时尝试。恢复时从 `scaling_available_governors` 保留空格匹配 `sched_pixel` 或 `schedutil`，再按“打开 `scaling_max_freq` 到 `cpuinfo_max_freq` → 切 governor → 再写 max → 等待 `ARB_CPUFREQ_RESTORE_SETTLE_S`（默认 2 秒）→ 复读验证”的顺序执行；首次复读失败只做一轮 guarded retry，并在日志中同时记录 `first_after` 与 `retry_after`。如果仍失败，状态会保持 `cpufreq_restore_failed=yes`，这代表存在 PowerHAL / Scene object / cpufreq QoS 等外层写入者或平台限制，不能用循环抢写 sysfs 当作修复。
 
 **B93 WZRY handoff 闭环**：v4.4.35 将 cpufreq restore 调整为完整事务：先把 `scaling_min_freq` 恢复到 `cpuinfo_min_freq`，再打开 max、切回 `sched_pixel/schedutil`，最后复写 min/max；新 fas-rs lease 不再被旧 idle-owner restore timestamp 压住。配合 Pixel 9 Pro Scheduler `v4.9.1-pixel9pro.19` 的 base governor restore 与 WZRY policy7 floor，真实 WZRY clean wireless/discharge gate 已 PASS，policy7 max 恢复到 `3105000` 且不再出现 `policy7_max_too_low` blocker。
 
-**owner arbiter worker**：`service.sh` 会启动独立 owner arbiter worker，而不是只依赖统一 standby worker。屏幕交互态以 `cmd deviceidle get screen` 为主真值；AOD 的 `mWakefulness=Dozing` / `mScreenState=DOZE` 必须归为非交互态，DRM `enabled` 只表示 encoder 仍连接，绝不能单独证明亮屏。非交互或状态未知时 owner 在 scheduler 检测、前台 `dumpsys` 和任何调度写入前退出。亮屏默认每 5 秒观察一次；稳定 Pixel、UGT 或 fas-rs baseline 复读一致后不重放 profile、不改 `.arbiter_state`、不追加 history。外部模块静态 inventory 只在 service 启动或显式 fresh 时扫描，热路径只刷新进程、mode 与 owner runtime。息屏前 6 分钟默认 15 秒复读交互态，之后最长暂停 3600 秒并每 30 秒检查是否重新亮屏。可用环境变量 `OWNER_ARBITER_FAST_ON` / `OWNER_ARBITER_FAST_OFF` / `OWNER_ARBITER_OFF_GRACE_S` / `OWNER_ARBITER_OFF_PAUSE_S` / `OWNER_ARBITER_PAUSE_POLL_S` 调整轮询与暂停窗口。
+**owner arbiter worker**：`service.sh` 仅在 scheduler boot state=`success/pixel` 时启动独立 owner worker。屏幕交互态以 `cmd deviceidle get screen` 为主真值；AOD 的 `mWakefulness=Dozing` / `mScreenState=DOZE` 必须归为非交互态，DRM `enabled` 只表示 encoder 仍连接，绝不能单独证明亮屏。非交互或状态未知时 owner 在 scheduler 检测、前台 `dumpsys` 和任何调度写入前退出。亮屏默认每 5 秒观察一次；稳定 Pixel/fas-rs baseline 不重放 profile、不改 `.arbiter_state`、不追加 history。独立 scheduler health 每 300 秒只读控制面，不复用 AOD/Doze worker；一次 repair 达到终态后不会继续循环写。
 
 ### NTP 服务器选择
 
@@ -174,7 +177,7 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 2. KernelSU 用户需先安装 metamodule（如 `meta-overlayfs`）并重启
 3. APatch / KernelSU / Magisk → 模块 → 从存储安装
 4. **首次安装**：音量键交互向导，依次配置温控偏移、CPU 调度（检测到启用中的 UGT 时默认交其接管；否则四选一：均衡／省电／系统默认／自动）、UECap 档位（仅 APatch/KSU）、NR 降级、NTP
-5. **升级安装**：自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；若旧配置缺调度接管设置，仅在检测到启用中的 UGT 时设为日常 external，fas-rs 仍只作为游戏临时接管
+5. **升级安装**：自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel，fas-rs 仍只作为 verified Pixel boot 内的游戏临时接管
 6. 重启
 7. 打开 `http://127.0.0.1:6210` 验证
 

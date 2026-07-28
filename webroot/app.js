@@ -353,6 +353,11 @@ const state = {
   profileSurfaceStale: false,
   profileSurfaceNote: '',
   cpuContract: null,
+  schedulerBoot: {
+    targetMode: 'pixel', effectiveMode: 'unknown', phase: '', final: 'no', ok: 'pending',
+    result: '', reason: '', attempts: 0, rebootRequired: 'no', autoRepairUsed: 'no'
+  },
+  schedulerHealth: { status: '', reason: '', checkedEpoch: '', profileVerified: '', cpufreqPermissions: '', powerhalFailures: '' },
   autoReason: '',
   currentOffset: 4,
   swapMode: 'unknown',
@@ -409,6 +414,8 @@ const state = {
   lastClusters: null,
   pull: { y0: 0, active: false, dist: 0, busy: false },
   thermalModal: { pending: 4, prev: 4 },
+  rebootContext: 'thermal',
+  schedulerRetryBusy: false,
   tempChart: {
     timer: null,
     draw: null,
@@ -555,6 +562,12 @@ function initRefs() {
   refs.themeModal = $('modal-theme');
   refs.themeChoices = Array.from(document.querySelectorAll('[data-theme-option]'));
   refs.rebootModal = $('modal-reboot');
+  refs.rebootModalTitle = $('reboot-modal-title');
+  refs.rebootModalDesc = $('reboot-modal-desc');
+  refs.schedulerHealthRow = $('scheduler-health-row');
+  refs.schedulerHealthLabel = $('scheduler-health-label');
+  refs.schedulerRetryBtn = $('scheduler-retry-btn');
+  refs.schedulerRetryLabel = $('scheduler-retry-label');
   refs.detailModal = $('modal-detail');
   refs.detailTitle = $('detail-title');
   refs.detailBody = $('detail-body');
@@ -838,9 +851,18 @@ function closeThemeSheet(){
   queueNextPoll(POLL_MIN_DELAY_MS);
 }
 
-function openRebootModal(pending, prev) {
+function openRebootModal(pending, prev, context = 'thermal') {
+  state.rebootContext = context;
   state.thermalModal.pending = pending;
   state.thermalModal.prev = prev;
+  if (context === 'scheduler') {
+    const target = state.schedulerBoot.targetMode === 'ugt' ? 'UGT 独占模式' : 'Pixel 调度模式';
+    refs.rebootModalTitle.textContent = `切换到${target}`;
+    refs.rebootModalDesc.textContent = `启动状态已提交。重启后才会进入${target}并完成最终验证。`;
+  } else {
+    refs.rebootModalTitle.textContent = '温控服务未能自动重启';
+    refs.rebootModalDesc.textContent = '温控阈值已保存，但当前无法在线重启 thermal 服务。重启手机后新配置才会生效。';
+  }
   refs.rebootModal.classList.add('open');
   pushModalState('reboot');
   queueNextPoll(computeNextPollDelay());
@@ -850,7 +872,7 @@ function closeRebootModal() {
   refs.rebootModal.classList.remove('open');
   popModalIfTop('reboot');
   queueNextPoll(POLL_MIN_DELAY_MS);
-  showToast('已保存，重启手机后生效');
+  showToast(state.rebootContext === 'scheduler' ? '切换已提交，重启后验证' : '已保存，重启手机后生效');
 }
 
 function openDetail(title, html) {
@@ -1554,23 +1576,31 @@ function getExternalSchedulerStateText() {
 }
 
 function getSchedulerStatusText() {
+  const boot = state.schedulerBoot;
+  if (boot.phase === 'pending_reboot') return `等待重启到${boot.targetMode === 'ugt' ? ' UGT 独占' : ' Pixel'}模式`;
+  if (boot.phase === 'blocked' || boot.phase === 'failed') return `调度切换失败 · ${boot.reason || boot.result || '状态未通过验证'}`;
+  if (boot.phase === 'verifying' || boot.phase === 'applying') return `正在验证 ${boot.targetMode === 'ugt' ? 'UGT' : 'Pixel'} 启动模式`;
+  if (boot.phase === 'success' && boot.effectiveMode === 'ugt') return 'UGT 独占模式 · 已验证';
+  if (boot.phase === 'success' && boot.effectiveMode === 'pixel') return 'Pixel 调度模式 · 已验证';
   const name = getEffectiveSchedulerName();
-  const desired = state.schedOwner === 'external' ? '日常 External' : '日常 Pixel';
+  const desired = state.schedOwner === 'external' ? 'UGT 启动模式' : 'Pixel 启动模式';
   if (state.schedEffectiveOwner === 'external') {
     if (!hasExternalScheduler()) return `${desired} · 当前无外部调度器运行`;
     const lease = state.effectiveSchedulerKind === 'fas_rs' && (state.arbiterState === 'FAS_LEASED_GAME' || state.arbiterState === 'EXIT_HOLD');
     const current = isExternalSchedulerActive() ? `${name} 接管${getEffectiveSchedulerModeText()}` : `${name} ${getExternalSchedulerStateText()}`;
     return `${desired} · 当前 ${current}${lease ? '（游戏临时接管）' : ''}`;
   }
-  return state.schedOwner === 'external' ? '日常 External · 当前 Pixel（等待协调）' : '日常 Pixel · 当前 Pixel9Pro-Control';
+  return state.schedOwner === 'external' ? 'UGT 模式等待重启验证' : 'Pixel 调度模式 · 当前 Pixel9Pro-Control';
 }
 
 function getSchedulerToggleText() {
   if (state.schedOwnerBusy) return '切换中…';
-  if (state.schedOwner === 'external') {
-    return hasExternalScheduler() ? '本模块覆盖接管' : '启用本模块调度';
-  }
-  return hasExternalScheduler() ? '不覆盖外部调度' : '停用本模块调度';
+  if (state.schedulerBoot.phase === 'pending_reboot') return '取消切换';
+  return state.schedulerBoot.effectiveMode === 'ugt' ? '切换到 Pixel' : '切换到 UGT';
+}
+
+function isVerifiedPixelBoot() {
+  return state.schedulerBoot.phase === 'success' && state.schedulerBoot.effectiveMode === 'pixel';
 }
 
 function isCurrentStrategyBusy() {
@@ -1578,7 +1608,8 @@ function isCurrentStrategyBusy() {
     || state.profilePolicyBusy
     || state.schedOwnerBusy
     || state.gameHandoffBusy
-    || state.ownerArbiterBusy;
+    || state.ownerArbiterBusy
+    || state.schedulerRetryBusy;
 }
 
 function getSchedulerExternalDesc() {
@@ -1615,9 +1646,9 @@ function syncOptionalModuleUi() {
   });
   if (refs.externalSchedulerHelp) {
     if (available.ugt && available.fas) {
-      refs.externalSchedulerHelp.textContent = ' 已检测到 UGT 与 fas-rs：UGT 可作为日常调度，fas-rs 仅在命中游戏时临时接管。';
+      refs.externalSchedulerHelp.textContent = ' 已检测到 UGT 与 fas-rs：UGT 使用独占启动模式；fas-rs 仅在已验证的 Pixel 模式内临时接管。';
     } else if (available.ugt) {
-      refs.externalSchedulerHelp.textContent = ' 已检测到 UGT，可在日常 Pixel 调度与 UGT 之间切换。';
+      refs.externalSchedulerHelp.textContent = ' 已检测到 UGT；Pixel 与 UGT 为重启后生效的互斥启动模式。';
     } else if (available.fas) {
       refs.externalSchedulerHelp.textContent = ' 已检测到 fas-rs，可在命中游戏时临时接管，退出后恢复 Pixel 日常调度。';
     } else {
@@ -1637,10 +1668,20 @@ function syncOwnerArbiterUi() {
       refs.gameHandoffLabel.textContent = enabled
         ? '命中游戏时 fas-rs 临时接管，退出后恢复日常选择'
         : 'fas-rs 游戏临时接管已关闭';
-      refs.gameHandoffToggleBtn.disabled = strategyBusy;
+      refs.gameHandoffToggleBtn.disabled = strategyBusy || !isVerifiedPixelBoot();
       refs.gameHandoffToggleBtn.className = `tiny-btn${enabled ? ' tonal' : ''}`;
       refs.gameHandoffToggleLabel.textContent = state.gameHandoffBusy ? '切换中…' : (enabled ? '关闭' : '启用');
     }
+  }
+  if (refs.schedulerHealthRow) {
+    refs.schedulerHealthRow.hidden = false;
+    const health = state.schedulerHealth;
+    refs.schedulerHealthLabel.textContent = health.status === 'healthy'
+      ? '控制面健康'
+      : health.status === 'drift' ? `检测到漂移 · ${health.reason || 'profile 不一致'}`
+        : health.status === 'blocked' ? `已阻断 · ${health.reason || '外部残留'}` : '等待健康检查';
+    refs.schedulerRetryBtn.disabled = strategyBusy || state.schedulerRetryBusy || !['failed', 'blocked'].includes(state.schedulerBoot.phase);
+    refs.schedulerRetryLabel.textContent = state.schedulerRetryBusy ? '验证中…' : '重新验证';
   }
   if (!refs.ownerArbiterRow) return;
   const available = state.fasRsDetected;
@@ -1659,7 +1700,7 @@ function syncCurrentStrategyTransitionCopy() {
   let detail = '';
   if (state.schedOwnerBusy) {
     title = '正在切换调度接管';
-    detail = '正在停止旧调度器、恢复 CPU 基线并复读关键节点，通常需要数秒。';
+    detail = '正在提交下次启动模式；当前 boot 不会热启动或热停止 UGT。';
   } else if (state.gameHandoffBusy) {
     title = '正在切换游戏接管';
     detail = '正在更新 fas-rs 接管策略并核对当前 owner，通常需要数秒。';
@@ -1684,7 +1725,8 @@ function syncProfileUi() {
   const isAuto = state.profilePolicy === 'auto';
   const isExternal = state.schedEffectiveOwner === 'external';
   const effectiveName = getEffectiveSchedulerName();
-  const strategyBusy = isCurrentStrategyBusy();
+  const schedulerPending = ['pending_reboot', 'verifying', 'applying'].includes(state.schedulerBoot.phase);
+  const strategyBusy = isCurrentStrategyBusy() || schedulerPending;
   if (isExternal) {
     refs.topbarProfileChip.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? `${effectiveName} 接管` : '外部调度未启用') : '调度让权';
     refs.perfCurrentName.textContent = hasExternalScheduler()
@@ -1700,7 +1742,7 @@ function syncProfileUi() {
     refs.profilePolicyAutoBtn.disabled = true;
     refs.schedOwnerLabel.textContent = getSchedulerStatusText();
     refs.schedOwnerToggleBtn.className = 'tiny-btn primary';
-    refs.schedOwnerToggleBtn.disabled = strategyBusy || (!isUperfEnabled() && state.schedOwner !== 'external');
+    refs.schedOwnerToggleBtn.disabled = isCurrentStrategyBusy() || !state.uperfDetected;
     refs.schedOwnerToggleLabel.textContent = getSchedulerToggleText();
     refs.hero.className = 'hero-card mode-game';
     setStaticHtml(refs.heroIcon, PROFILES.performance.hero);
@@ -1722,17 +1764,17 @@ function syncProfileUi() {
   refs.perfPolicyDesc.textContent = hasExternalScheduler() ? `${pixelPolicyDesc} ${getSchedulerPixelDesc()}` : pixelPolicyDesc;
   refs.profilePolicyManualBtn.className = `seg-btn${!isAuto ? ' active' : ''}`;
   refs.profilePolicyAutoBtn.className = `seg-btn${isAuto ? ' active' : ''}`;
-  refs.profilePolicyManualBtn.disabled = strategyBusy;
-  refs.profilePolicyAutoBtn.disabled = strategyBusy;
+  refs.profilePolicyManualBtn.disabled = strategyBusy || !isVerifiedPixelBoot();
+  refs.profilePolicyAutoBtn.disabled = strategyBusy || !isVerifiedPixelBoot();
   refs.schedOwnerLabel.textContent = getSchedulerStatusText();
   refs.schedOwnerToggleBtn.className = 'tiny-btn';
-  refs.schedOwnerToggleBtn.disabled = strategyBusy || (!isUperfEnabled() && state.schedOwner !== 'external');
+  refs.schedOwnerToggleBtn.disabled = isCurrentStrategyBusy() || !state.uperfDetected;
   refs.schedOwnerToggleLabel.textContent = getSchedulerToggleText();
   refs.hero.className = `hero-card ${profile.modeClass}`;
   setStaticHtml(refs.heroIcon, profile.hero);
   refs.heroMode.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
   document.querySelectorAll('.profile-option').forEach((card) => {
-    card.classList.toggle('disabled', strategyBusy);
+    card.classList.toggle('disabled', strategyBusy || !isVerifiedPixelBoot());
     card.classList.toggle('selected', card.dataset.profile === state.currentProfile);
   });
   syncCurrentStrategyTransitionCopy();
@@ -1808,6 +1850,27 @@ function applyProfileState(data) {
   state.profileSurfaceNote = typeof data.profile_surface_note === 'string' ? data.profile_surface_note : '';
   if (data.cpu_contract && typeof data.cpu_contract === 'object' && data.cpu_contract.profiles) {
     state.cpuContract = data.cpu_contract;
+  }
+  if (data.scheduler_boot && typeof data.scheduler_boot === 'object') {
+    state.schedulerBoot = {
+      targetMode: data.scheduler_boot.target_mode === 'ugt' ? 'ugt' : 'pixel',
+      effectiveMode: ['pixel', 'ugt'].includes(data.scheduler_boot.effective_mode) ? data.scheduler_boot.effective_mode : 'unknown',
+      phase: typeof data.scheduler_boot.phase === 'string' ? data.scheduler_boot.phase : '',
+      final: typeof data.scheduler_boot.final === 'string' ? data.scheduler_boot.final : 'no',
+      ok: typeof data.scheduler_boot.ok === 'string' ? data.scheduler_boot.ok : 'pending',
+      result: typeof data.scheduler_boot.result === 'string' ? data.scheduler_boot.result : '',
+      reason: typeof data.scheduler_boot.reason === 'string' ? data.scheduler_boot.reason : '',
+      attempts: Number(data.scheduler_boot.attempts) || 0,
+      rebootRequired: typeof data.scheduler_boot.reboot_required === 'string' ? data.scheduler_boot.reboot_required : 'no',
+      autoRepairUsed: typeof data.scheduler_boot.auto_repair_used === 'string' ? data.scheduler_boot.auto_repair_used : 'no'
+    };
+  }
+  if (data.scheduler_health && typeof data.scheduler_health === 'object') {
+    state.schedulerHealth = {
+      status: data.scheduler_health.status || '', reason: data.scheduler_health.reason || '',
+      checkedEpoch: data.scheduler_health.checked_epoch || '', profileVerified: data.scheduler_health.profile_verified || '',
+      cpufreqPermissions: data.scheduler_health.cpufreq_permissions || '', powerhalFailures: data.scheduler_health.powerhal_failures || ''
+    };
   }
   state.autoReason = typeof data.auto_reason === 'string' ? data.auto_reason : '';
   syncProfileUi();
@@ -4404,12 +4467,16 @@ async function setProfilePolicy(policy) {
 
 async function toggleSchedOwner() {
   if (isCurrentStrategyBusy()) return;
-  const nextOwner = state.schedOwner === 'external' ? 'pixel' : 'external';
+  if (state.schedulerBoot.phase === 'pending_reboot') {
+    await cancelSchedulerChange();
+    return;
+  }
+  const nextOwner = state.schedulerBoot.effectiveMode === 'ugt' ? 'pixel' : 'external';
   state.schedOwnerBusy = true;
   syncProfileUi();
   const actionText = nextOwner === 'external'
-    ? (hasExternalScheduler() ? '不覆盖外部调度，交出 CPU 调度…' : '停用本模块 CPU 调度…')
-    : (hasExternalScheduler() ? '本模块覆盖接管 CPU 调度…' : '启用本模块 CPU 调度…');
+    ? '提交 UGT 独占启动模式…'
+    : '提交 Pixel 调度启动模式…';
   appendLog(actionText, 'dim');
   refs.logCard.classList.add('open');
   try {
@@ -4420,20 +4487,16 @@ async function toggleSchedOwner() {
       timeoutMs: 25000
     });
     if (typeof data.sched_owner === 'string') applyProfileState(data);
-    if (data.ok) {
-      showToast(nextOwner === 'external'
-        ? (hasExternalScheduler() ? '已不覆盖外部调度' : '已停用本模块调度')
-        : (hasExternalScheduler() ? '本模块已覆盖接管' : '已启用本模块调度'));
+    if (data.ok && data.final === false) {
+      showToast('启动模式已提交，重启后验证');
       appendLog(nextOwner === 'external'
-        ? (hasExternalScheduler()
-          ? `不覆盖 ${getExternalSchedulerName()}：本模块停止写 CPU 调度节点`
-          : '本模块 CPU 调度已停用：保留系统/外部调度现状')
-        : `本模块调度已启用：${PROFILES[state.currentProfile].name}`, 'ok');
-      refreshCpu();
+        ? 'UGT 已设为下次启动独占调度；当前 boot 不启动 UGT'
+        : 'UGT 已设为下次启动禁用；重启后验证 Pixel 控制面', 'warn');
+      openRebootModal(null, null, 'scheduler');
     } else {
-      const detail = data.arbiter_apply_result || data.error || '状态复读未通过';
+      const detail = data.scheduler_boot?.reason || data.error || '启动状态提交失败';
       showToast(`切换未完成：${detail}`);
-      appendLog(`Owner 已记录为 ${nextOwner}，但运行态未通过复读：${detail}`, 'err');
+      appendLog(`启动模式未提交：${detail}`, 'err');
     }
   } catch (err) {
     showToast('请求失败，检查服务是否运行');
@@ -4444,8 +4507,61 @@ async function toggleSchedOwner() {
   }
 }
 
+async function cancelSchedulerChange() {
+  if (isCurrentStrategyBusy()) return;
+  state.schedOwnerBusy = true;
+  syncProfileUi();
+  try {
+    const data = await apiFetch(API.profile, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduler_action: 'cancel_pending' }), timeoutMs: 25000
+    });
+    if (data.scheduler_boot) applyProfileState(data);
+    if (data.ok) {
+      refs.rebootModal.classList.remove('open');
+      showToast('已取消待重启切换');
+      appendLog('调度启动模式已恢复到本次 boot 的状态', 'ok');
+    } else {
+      showToast(`取消失败：${data.error || data.scheduler_boot?.reason || '未知'}`);
+      appendLog(data.error || '取消待重启切换失败', 'err');
+    }
+  } catch (err) {
+    showToast('请求失败，检查服务是否运行');
+    appendLog(String(err), 'err');
+  } finally {
+    state.schedOwnerBusy = false;
+    syncProfileUi();
+  }
+}
+
+async function retrySchedulerValidation() {
+  if (isCurrentStrategyBusy()) return;
+  state.schedulerRetryBusy = true;
+  syncProfileUi();
+  try {
+    const data = await apiFetch(API.profile, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduler_action: 'retry' }), timeoutMs: 45000
+    });
+    if (data.scheduler_boot) applyProfileState(data);
+    if (data.ok) {
+      showToast('调度控制面验证通过');
+      appendLog(`调度终态：${data.scheduler_boot?.result || 'success'}`, 'ok');
+    } else {
+      showToast(`验证失败：${data.scheduler_boot?.reason || data.error || '未知'}`);
+      appendLog(`调度终态失败：${data.scheduler_boot?.result || data.error || 'unknown'}`, 'err');
+    }
+  } catch (err) {
+    showToast('请求失败，检查服务是否运行');
+    appendLog(String(err), 'err');
+  } finally {
+    state.schedulerRetryBusy = false;
+    syncProfileUi();
+  }
+}
+
 async function toggleGameHandoff() {
-  if (isCurrentStrategyBusy() || !state.fasRsDetected) return;
+  if (isCurrentStrategyBusy() || !state.fasRsDetected || !isVerifiedPixelBoot()) return;
   const nextPolicy = state.gameHandoffPolicy === 'fas_rs' ? 'off' : 'fas_rs';
   state.gameHandoffBusy = true;
   syncProfileUi();
@@ -4569,6 +4685,14 @@ async function rebootDevice() {
       timeoutMs: 8000
     });
   } catch (_) {}
+}
+
+async function cancelPendingRebootChange() {
+  if (state.rebootContext === 'scheduler') {
+    await cancelSchedulerChange();
+  } else {
+    await cancelThermalChange();
+  }
 }
 
 async function toggleSwapMode() {
@@ -4755,6 +4879,7 @@ function bindStaticEvents() {
   $('theme-open-btn').addEventListener('click', openThemeSheet);
   $('refresh-all-btn').addEventListener('click', doFullRefresh);
   $('sched-owner-toggle-btn').addEventListener('click', toggleSchedOwner);
+  $('scheduler-retry-btn').addEventListener('click', retrySchedulerValidation);
   $('game-handoff-toggle-btn').addEventListener('click', toggleGameHandoff);
   $('owner-arbiter-tick-btn').addEventListener('click', triggerOwnerArbiter);
   $('swap-toggle-btn').addEventListener('click', toggleSwapMode);
@@ -4798,7 +4923,7 @@ function bindStaticEvents() {
   $('detail-close-x').addEventListener('click', closeDetailModal);
   $('reboot-now-btn').addEventListener('click', rebootDevice);
   $('reboot-later-btn').addEventListener('click', closeRebootModal);
-  $('reboot-cancel-btn').addEventListener('click', cancelThermalChange);
+  $('reboot-cancel-btn').addEventListener('click', cancelPendingRebootChange);
   $('open-cpu-detail-btn').addEventListener('click', () => {
     const contract = state.cpuContract;
     const profileContract = contract?.profiles?.[state.currentProfile];

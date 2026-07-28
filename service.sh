@@ -22,7 +22,6 @@ GAME_HANDOFF_POLICY_FILE="$MODDIR/.game_handoff_policy"
 SIM2_AUTO_FILE="$MODDIR/.sim2_auto_manage"
 IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
-POWER_PROFILE_FILE="$MODDIR/.power_profile"
 SCHEDULER_INVENTORY_PATH="$MODDIR/.scheduler_inventory"
 
 [ -r "$MODDIR/scripts/runtime_defaults_lib.sh" ] \
@@ -51,6 +50,12 @@ cmd() {
 [ -r "$MODDIR/scripts/scheduler_owner_lib.sh" ] \
     && . "$MODDIR/scripts/scheduler_owner_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: scheduler owner contract missing"; exit 1; }
+[ -r "$MODDIR/scripts/scheduler_boot_mode_lib.sh" ] \
+    && . "$MODDIR/scripts/scheduler_boot_mode_lib.sh" 2>/dev/null \
+    || { log -t pixel9pro_ctrl "ERROR: scheduler boot-mode contract missing"; exit 1; }
+[ -r "$MODDIR/scripts/scheduler_transition_guard_lib.sh" ] \
+    && . "$MODDIR/scripts/scheduler_transition_guard_lib.sh" 2>/dev/null \
+    || { log -t pixel9pro_ctrl "ERROR: scheduler transition guard missing"; exit 1; }
 CPU_PROFILE_AVAILABLE=0
 if [ -r "$MODDIR/scripts/cpu_profile_lib.sh" ]; then
     . "$MODDIR/scripts/cpu_profile_lib.sh" 2>/dev/null && CPU_PROFILE_AVAILABLE=1
@@ -67,6 +72,7 @@ if [ -r "$MODDIR/scripts/vm_profile_lib.sh" ]; then
     . "$MODDIR/scripts/vm_profile_lib.sh" 2>/dev/null && VM_PROFILE_AVAILABLE=1
 fi
 scheduler_owner_init "$MODDIR" "/data/adb/fas_rs"
+sbm_init "$MODDIR" "/data/adb/fas_rs"
 so_migrate_state >/dev/null 2>&1 \
     || log -t pixel9pro_ctrl "WARNING: scheduler-owner state migration failed"
 detect_external_scheduler_fresh >/dev/null 2>&1
@@ -270,12 +276,6 @@ manage_sim2_radio() {
 
 VENDOR_SCHED="/proc/vendor_sched"
 
-_power_profile_params() {
-    _pp=$(cat "$POWER_PROFILE_FILE" 2>/dev/null | tr -d ' \n\r')
-    [ "$CPU_PROFILE_AVAILABLE" -eq 1 ] || return 1
-    cpu_power_profile_l2_params "$_pp"
-}
-
 apply_l1_persistent_limits() {
     # L1: 官方 API 后台限制 — persistent, 从配置文件读取包名策略
     # 文件: .bg_restrict_list (pkg|policy|delay_min), .bg_restrict_enabled (on/off)
@@ -320,25 +320,6 @@ apply_l1_persistent_limits() {
 
     log -t pixel9pro_ctrl "L1: bg restrict applied=$_count failed=$_failed"
     [ "$_failed" -eq 0 ]
-}
-
-apply_l2_vendor_sched() {
-    # L2: vendor_sched 后台 CPU 限制 — volatile, 需要 enforce 守护
-    _params=$(_power_profile_params) || {
-        log -t pixel9pro_ctrl "WARNING: CPU profile contract missing, skipped L2 restore"
-        return 1
-    }
-    _bg_uclamp=$(echo "$_params" | cut -d' ' -f1)
-    _bg_throttle=$(echo "$_params" | cut -d' ' -f2)
-    if printf '%s\n' "$_bg_uclamp" > "$VENDOR_SCHED/ug_bg_uclamp_max" 2>/dev/null \
-        && printf '%s\n' "$_bg_throttle" > "$VENDOR_SCHED/ug_bg_group_throttle" 2>/dev/null \
-        && [ "$(cat "$VENDOR_SCHED/ug_bg_uclamp_max" 2>/dev/null | tr -d ' \n\r\t')" = "$_bg_uclamp" ] \
-        && [ "$(cat "$VENDOR_SCHED/ug_bg_group_throttle" 2>/dev/null | tr -d ' \n\r\t')" = "$_bg_throttle" ]; then
-        log -t pixel9pro_ctrl "L2: vendor_sched bg_uclamp_max=$_bg_uclamp bg_throttle=$_bg_throttle"
-        return 0
-    fi
-    log -t pixel9pro_ctrl "WARNING: failed to apply or verify L2 vendor_sched params"
-    return 1
 }
 
 valid_profile() {
@@ -482,6 +463,22 @@ apply_profile_state() {
         return 0
     fi
 
+    _profile_guard_file="$MODDIR/.profile_transition_guard"
+    stg_init "$_profile_guard_file"
+    _profile_guard_now=$(date +%s 2>/dev/null || echo 0)
+    _profile_guard_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n\t')
+    [ -n "$_profile_guard_boot" ] || _profile_guard_boot=unknown
+    stg_begin_attempt "profile:${_target}" "$_profile_guard_boot" "$_profile_guard_now"
+    _profile_guard_rc=$?
+    if [ "$_profile_guard_rc" -ne 0 ]; then
+        if [ "$_profile_guard_rc" -eq 77 ] || [ "$_profile_guard_rc" -eq 78 ]; then
+            log -t pixel9pro_ctrl "WARNING: CPU profile transition latched: $_target (${STG_RESULT:-retry_budget_exhausted})"
+        else
+            log -t pixel9pro_ctrl "ERROR: CPU profile transition guard failed: $_target (rc=$_profile_guard_rc)"
+        fi
+        return 1
+    fi
+
     if ! profile_lock_acquire; then
         log -t pixel9pro_ctrl "CPU profile busy, skip auto switch -> $_target ($_reason)"
         return 1
@@ -504,16 +501,27 @@ apply_profile_state() {
             else
                 log -t pixel9pro_ctrl "ERROR: CPU profile state commit failed and rollback to $_previous_profile was incomplete"
             fi
+            _profile_guard_now=$(date +%s 2>/dev/null || echo 0)
+            stg_record_failure "$_profile_guard_now" state_commit_failed >/dev/null 2>&1 || true
             profile_lock_release
             return 1
         fi
         append_profile_history "$_target" "$_reason"
+        stg_record_success "applied:${_target}" >/dev/null 2>&1 \
+            || log -t pixel9pro_ctrl "WARNING: failed to commit profile transition success"
         log -t pixel9pro_ctrl "CPU profile applied: $_target ($_reason)"
         profile_lock_release
         return 0
     fi
 
-    log -t pixel9pro_ctrl "WARNING: failed to apply CPU profile $_target ($_reason): ${_result:-unknown}"
+    _profile_guard_now=$(date +%s 2>/dev/null || echo 0)
+    stg_record_failure "$_profile_guard_now" "${_result:-unknown}" >/dev/null 2>&1 || true
+    stg_load
+    if [ "$STG_TERMINAL" = "yes" ]; then
+        log -t pixel9pro_ctrl "ERROR: CPU profile transition failed final: $_target (${STG_RESULT:-unknown})"
+    else
+        log -t pixel9pro_ctrl "WARNING: failed to apply CPU profile $_target; bounded retry pending (${STG_ATTEMPTS}/${STG_MAX_ATTEMPTS})"
+    fi
     profile_lock_release
     return 1
 }
@@ -700,11 +708,8 @@ fi
 log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: boot policy restore completed; warnings above remain authoritative"
 
 # ──────────────────────────────────────────────────────────
-# 2.5 三层功耗优化 (L1-L2, boot 阶段一次性应用)
-#     L3 (response_time_ms) 由后续 cpu_profile.sh 管理
+# 2.5 持久后台策略。CPU/L2 由同一 profile transaction 应用。
 # ──────────────────────────────────────────────────────────
-[ -f "$POWER_PROFILE_FILE" ] || runtime_write_value "$POWER_PROFILE_FILE" balanced \
-    || log -t pixel9pro_ctrl "WARNING: failed to initialize power profile state"
 [ -f "$SCHED_OWNER_FILE" ] || runtime_write_value "$SCHED_OWNER_FILE" pixel \
     || log -t pixel9pro_ctrl "WARNING: failed to initialize scheduler owner state"
 [ -f "$SCHED_OWNER_DESIRED_FILE" ] || runtime_write_value "$SCHED_OWNER_DESIRED_FILE" "$(read_valid_sched_owner)" \
@@ -712,11 +717,6 @@ log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: boot policy restore completed; warn
 [ -f "$GAME_HANDOFF_POLICY_FILE" ] || runtime_write_value "$GAME_HANDOFF_POLICY_FILE" off \
     || log -t pixel9pro_ctrl "WARNING: failed to initialize game handoff policy"
 apply_l1_persistent_limits
-if [ "$(read_valid_sched_owner)" = "external" ]; then
-    log -t pixel9pro_ctrl "L2: skipped, scheduler owner=external"
-else
-    apply_l2_vendor_sched
-fi
 
 # 延迟复写：NTP 服务器和扫描类设置可能在用户解锁后被系统回写。
 (
@@ -732,7 +732,7 @@ fi
 ) &
 
 # ──────────────────────────────────────────────────────────
-# 3. 应用 CPU 调度方案 (cpuset + sched_pixel 参数)
+# 3. 有界恢复 CPU 调度方案 (CPU + cpuset + cap + vendor_sched L2)
 # ──────────────────────────────────────────────────────────
 PROFILE=$(read_valid_profile "$PROFILE_FILE" 'balanced')
 [ -f "$PROFILE_MANUAL_FILE" ] || runtime_write_value "$PROFILE_MANUAL_FILE" "$PROFILE" \
@@ -741,19 +741,14 @@ PROFILE=$(read_valid_profile "$PROFILE_FILE" 'balanced')
     || log -t pixel9pro_ctrl "WARNING: failed to initialize profile policy"
 [ -f "$PROFILE_AUTO_REASON_FILE" ] || runtime_write_value "$PROFILE_AUTO_REASON_FILE" manual_policy \
     || log -t pixel9pro_ctrl "WARNING: failed to initialize profile reason"
-if [ "$(read_valid_sched_owner)" = "external" ]; then
-    log -t pixel9pro_ctrl "CPU profile skipped: scheduler owner=external"
-elif [ "$CPU_PROFILE_AVAILABLE" -ne 1 ]; then
+if [ "$CPU_PROFILE_AVAILABLE" -ne 1 ]; then
     log -t pixel9pro_ctrl "WARNING: CPU profile contract missing, skipped profile restore"
 else
-    if ! profile_lock_acquire; then
-        log -t pixel9pro_ctrl "WARNING: scheduler transition busy, skipped boot profile restore"
-    elif sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" "$MODDIR" 2>/dev/null; then
-        log -t pixel9pro_ctrl "CPU profile applied: $PROFILE"
-        profile_lock_release
+    if sh "$MODDIR/scripts/scheduler_reconcile.sh" boot "$MODDIR" >/dev/null 2>&1; then
+        log -t pixel9pro_ctrl "Scheduler boot reconcile completed"
     else
-        log -t pixel9pro_ctrl "WARNING: CPU profile restore failed: $PROFILE"
-        profile_lock_release
+        _scheduler_boot_rc=$?
+        log -t pixel9pro_ctrl "ERROR: scheduler boot reconcile reached a terminal failure (rc=$_scheduler_boot_rc)"
     fi
 fi
 ensure_profile_history_baseline
@@ -761,6 +756,8 @@ ensure_profile_history_baseline
 # Owner arbiter needs a faster wake->game reaction than the main standby
 # worker can provide after it enters the 600s deep-standby sleep.  Keep this
 # loop cheap while screen-off and only run top-app/window IPC when display is on.
+sbm_load_state
+if [ "$SBM_PHASE" = "success" ] && [ "$SBM_EFFECTIVE_MODE" = "pixel" ]; then
 (
     _owner_arbiter_fast_on="${OWNER_ARBITER_FAST_ON:-$OWNER_ARBITER_DEFAULT_SCREEN_ON_POLL_S}"
     _owner_arbiter_fast_off="${OWNER_ARBITER_FAST_OFF:-$OWNER_ARBITER_DEFAULT_SCREEN_OFF_POLL_S}"
@@ -815,6 +812,29 @@ ensure_profile_history_baseline
     done
 ) &
 log -t pixel9pro_ctrl "Owner arbiter worker started"
+else
+    log -t pixel9pro_ctrl "Owner arbiter worker disabled: scheduler boot state=${SBM_PHASE:-unknown}/${SBM_EFFECTIVE_MODE:-unknown}"
+fi
+
+# Fixed-interval scheduler health worker. The health action is scheduler-node
+# read-only. A first Pixel drift may enqueue one bounded repair generation;
+# after that generation reaches a terminal state, later probes never write.
+(
+    while true; do
+        sleep "$SBM_HEALTH_INTERVAL_S"
+        sh "$MODDIR/scripts/scheduler_reconcile.sh" health "$MODDIR" >/dev/null 2>&1
+        _scheduler_health_rc=$?
+        if [ "$_scheduler_health_rc" -eq 5 ]; then
+            sbm_load_state
+            if [ "$SBM_EFFECTIVE_MODE" = "pixel" ] \
+                && [ "$SBM_AUTO_REPAIR_USED" != "yes" ] \
+                && [ "$SBM_PHASE" = "success" ]; then
+                sh "$MODDIR/scripts/scheduler_reconcile.sh" repair "$MODDIR" >/dev/null 2>&1 || true
+            fi
+        fi
+    done
+) &
+log -t pixel9pro_ctrl "Scheduler read-only health worker started (${SBM_HEALTH_INTERVAL_S}s)"
 
 # ──────────────────────────────────────────────────────────
 # 4. 统一后台工作循环 (Doze 友好)
@@ -1190,6 +1210,14 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
         _now=$(date +%s 2>/dev/null || echo 0)
         _cycle_count=$((_cycle_count + 1))
         _sched_owner=$(read_valid_sched_owner)
+        sbm_load_state
+        _scheduler_profile_writable=0
+        if [ "$SBM_PHASE" = "success" ] && [ "$SBM_EFFECTIVE_MODE" = "pixel" ] \
+            && [ "$_sched_owner" = "pixel" ]; then
+            _scheduler_profile_writable=1
+        else
+            _sched_owner=external
+        fi
 
         # DeviceIdle tracks user interactivity across ON/AOD/OFF. DRM enabled
         # only identifies an attached encoder and remains enabled during DOZE.
@@ -1234,12 +1262,6 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
                 manage_sim2_radio
                 _sim2_check_count=0
             fi
-        fi
-
-        # --- L2 enforce: 亮屏时每周期校验 vendor_sched 参数 ---
-        # 只做 procfs 读写, 零 IPC, 零 wakelock. 参数正确时无操作。
-        if [ "$_screen" = "on" ] && [ "$_sched_owner" != "external" ]; then
-            sh "$MODDIR/scripts/cpu_profile.sh" enforce "$MODDIR" 2>/dev/null
         fi
 
         # --- NR screen-off switch ---
@@ -1374,8 +1396,10 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
                 _auto_charge_hot_since=0
                 _auto_charge_cool_since=0
                 _active_profile=$(read_valid_profile "$PROFILE_FILE" "$_active_profile")
-                runtime_write_value "$PROFILE_AUTO_REASON_FILE" external_scheduler >/dev/null 2>&1 \
-                    || log -t pixel9pro_ctrl "WARNING: failed to persist external scheduler reason"
+                if [ "$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null | tr -d ' \r\n\t')" != "external_scheduler" ]; then
+                    runtime_write_value "$PROFILE_AUTO_REASON_FILE" external_scheduler >/dev/null 2>&1 \
+                        || log -t pixel9pro_ctrl "WARNING: failed to persist external scheduler reason"
+                fi
             elif [ "$_profile_policy" = "manual" ]; then
                 _auto_hot_since=0
                 _auto_cool_since=0

@@ -40,11 +40,12 @@ check_eq 'balanced eco cap' 0 "$(cpu_profile_uclamp_cap balanced)"
 check_eq 'battery excludes prime CPU' 0-6 "$(cpu_profile_top_app_cpus battery)"
 check_eq 'balanced L2 params' '200 100' "$(cpu_power_profile_l2_params balanced)"
 check_eq 'battery L2 params' '150 80' "$(cpu_power_profile_l2_params battery)"
+check_eq 'default restores stock L2 params' '1024 308' "$(cpu_profile_l2_params default)"
 _contract_json=$(cpu_profile_contract_json)
 check_contains 'JSON contract exposes balanced runtime values' "$_contract_json" \
-    '"balanced":{"response_ms":[16,40,200],"uclamp_cap":0,"top_app_cpus":"0-7"}'
+    '"balanced":{"response_ms":[16,40,200],"uclamp_cap":0,"top_app_cpus":"0-7","bg_uclamp_max":200,"bg_group_throttle":100}'
 check_contains 'JSON contract keeps default response dynamic' "$_contract_json" \
-    '"default":{"response_ms":null,"uclamp_cap":1024,"top_app_cpus":"0-7"}'
+    '"default":{"response_ms":null,"uclamp_cap":1024,"top_app_cpus":"0-7","bg_uclamp_max":1024,"bg_group_throttle":308}'
 
 printf '1..%s\n' "$TOTAL"
 printf '# pass=%s fail=%s\n' "$PASS" "$FAIL"
