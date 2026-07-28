@@ -20,6 +20,8 @@ new_case() {
     SCHEDULER_FAS_RUNTIME_ROOT="$CASE_ROOT/fas_runtime"
     SCHEDULER_FAS_MODE_PATH="$CASE_ROOT/dev_fas_mode"
     SCHEDULER_TEST_RUNTIME_ROOT="$CASE_ROOT/processes"
+    SCHEDULER_INVENTORY_PATH="$CASE_ROOT/scheduler_inventory"
+    SCHEDULER_TEST_SCAN_COUNTER_PATH="$CASE_ROOT/module_prop_scans"
     SCHEDULER_TEST_MODE=1
     mkdir -p "$SCHEDULER_MODULES_ROOT" "$SCHEDULER_MODULES_UPDATE_ROOT" \
         "$SCHEDULER_FAS_RUNTIME_ROOT" "$SCHEDULER_TEST_RUNTIME_ROOT" || exit 2
@@ -56,7 +58,7 @@ assert_eq 'disabled fas-rs module is not enabled' no "$FAS_RS_MODULE_ENABLED"
 
 new_case ugt_only
 write_module uperf uperf 'Uperf Game Turbo'
-detect_external_scheduler
+detect_external_scheduler_fresh
 assert_eq 'UGT-only fixture detects UGT' yes "$UPERF_DETECTED"
 assert_eq 'UGT-only fixture does not detect fas-rs' no "$FAS_RS_DETECTED"
 assert_eq 'UGT-only external kind is uperf' uperf "$EXTERNAL_SCHEDULER_KIND"
@@ -64,7 +66,7 @@ assert_eq 'UGT-only external kind is uperf' uperf "$EXTERNAL_SCHEDULER_KIND"
 new_case both_modules
 write_module uperf uperf 'Uperf Game Turbo'
 write_module fas_rs fas_rs 'fas-rs'
-detect_external_scheduler
+detect_external_scheduler_fresh
 assert_eq 'combined fixture detects UGT' yes "$UPERF_DETECTED"
 assert_eq 'combined fixture detects fas-rs' yes "$FAS_RS_DETECTED"
 
@@ -74,6 +76,25 @@ printf 'balance\n' > "$SCHEDULER_FAS_MODE_PATH"
 detect_fas_rs_scheduler
 assert_eq 'live fas-rs process exposes runtime UI' yes "$FAS_RS_DETECTED"
 assert_eq 'live fas-rs process is active' yes "$FAS_RS_ACTIVE"
+
+new_case cached_inventory
+write_module uperf uperf 'Uperf Game Turbo'
+detect_external_scheduler_fresh
+_t_fresh_scans=$(cat "$SCHEDULER_TEST_SCAN_COUNTER_PATH")
+detect_external_scheduler
+_t_cached_scans=$(cat "$SCHEDULER_TEST_SCAN_COUNTER_PATH")
+assert_eq 'cached runtime refresh does not rescan module.prop' "$_t_fresh_scans" "$_t_cached_scans"
+assert_eq 'cached runtime refresh keeps UGT visible' yes "$UPERF_DETECTED"
+
+printf 'schema=broken\n' > "$SCHEDULER_INVENTORY_PATH"
+if detect_external_scheduler; then _t_cache_rc=0; else _t_cache_rc=$?; fi
+assert_eq 'corrupt inventory fails closed' 2 "$_t_cache_rc"
+assert_eq 'corrupt inventory does not trigger discovery scan' "$_t_cached_scans" "$(cat "$SCHEDULER_TEST_SCAN_COUNTER_PATH")"
+assert_eq 'corrupt inventory exposes invalid status' invalid "$SCHEDULER_INVENTORY_STATUS"
+
+detect_external_scheduler_fresh
+assert_eq 'explicit fresh discovery rebuilds corrupt inventory' ready "$SCHEDULER_INVENTORY_STATUS"
+assert_eq 'rebuilt inventory restores UGT detection' yes "$UPERF_DETECTED"
 
 printf '1..%s\n' "$TOTAL"
 printf '# pass=%s fail=%s root=%s\n' "$PASS" "$FAIL" "$TEST_ROOT"

@@ -31,6 +31,11 @@ if [ ! -r "$MODPATH/scripts/runtime_defaults_lib.sh" ]; then
     exit 1
 fi
 . "$MODPATH/scripts/runtime_defaults_lib.sh" || exit 1
+if [ ! -r "$MODPATH/scripts/display_state_lib.sh" ] \
+    || ! . "$MODPATH/scripts/display_state_lib.sh"; then
+    ui_print "  ✗ 缺少屏幕状态配置, 已中止安装"
+    exit 1
+fi
 
 installer_write() {
     if runtime_write_value "$1" "$2"; then

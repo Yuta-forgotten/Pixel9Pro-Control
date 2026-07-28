@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- Release: `v4.5.01`
-- versionCode: `106`
-- Asset: `pixel9pro_control_v4.5.01.zip`
+- Release candidate: `v4.5.02`
+- versionCode: `107`
+- Asset: `pixel9pro_control_v4.5.02.zip`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -129,7 +129,7 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 
 **B93 WZRY handoff 闭环**：v4.4.35 将 cpufreq restore 调整为完整事务：先把 `scaling_min_freq` 恢复到 `cpuinfo_min_freq`，再打开 max、切回 `sched_pixel/schedutil`，最后复写 min/max；新 fas-rs lease 不再被旧 idle-owner restore timestamp 压住。配合 Pixel 9 Pro Scheduler `v4.9.1-pixel9pro.19` 的 base governor restore 与 WZRY policy7 floor，真实 WZRY clean wireless/discharge gate 已 PASS，policy7 max 恢复到 `3105000` 且不再出现 `policy7_max_too_low` blocker。
 
-**owner arbiter worker**：`service.sh` 会启动独立 owner arbiter worker，而不是只依赖统一 standby worker。统一 worker 在息屏 deep standby 下可能睡 600 秒；独立 worker 亮屏后默认每 5 秒执行一次 `owner_arbiter.sh tick "$MODDIR" on`。息屏后只读 DRM `enabled` 做低成本观察，前 6 分钟默认 15 秒一次；超过 6 分钟后进入长暂停（默认 3600 秒），但长暂停内部按 `OWNER_ARBITER_PAUSE_POLL_S`（默认 30 秒）只复读 DRM 并在亮屏后提前退出，不跑 window/top-app IPC，避免长睡导致 owner 状态滞留在旧前台。可用环境变量 `OWNER_ARBITER_FAST_ON` / `OWNER_ARBITER_FAST_OFF` / `OWNER_ARBITER_OFF_GRACE_S` / `OWNER_ARBITER_OFF_PAUSE_S` / `OWNER_ARBITER_PAUSE_POLL_S` 调整亮屏轮询、息屏短观察、进入暂停前宽限、长暂停上限和长暂停内 DRM 复读间隔。
+**owner arbiter worker**：`service.sh` 会启动独立 owner arbiter worker，而不是只依赖统一 standby worker。屏幕交互态以 `cmd deviceidle get screen` 为主真值；AOD 的 `mWakefulness=Dozing` / `mScreenState=DOZE` 必须归为非交互态，DRM `enabled` 只表示 encoder 仍连接，绝不能单独证明亮屏。非交互或状态未知时 owner 在 scheduler 检测、前台 `dumpsys` 和任何调度写入前退出。亮屏默认每 5 秒观察一次；稳定 Pixel、UGT 或 fas-rs baseline 复读一致后不重放 profile、不改 `.arbiter_state`、不追加 history。外部模块静态 inventory 只在 service 启动或显式 fresh 时扫描，热路径只刷新进程、mode 与 owner runtime。息屏前 6 分钟默认 15 秒复读交互态，之后最长暂停 3600 秒并每 30 秒检查是否重新亮屏。可用环境变量 `OWNER_ARBITER_FAST_ON` / `OWNER_ARBITER_FAST_OFF` / `OWNER_ARBITER_OFF_GRACE_S` / `OWNER_ARBITER_OFF_PAUSE_S` / `OWNER_ARBITER_PAUSE_POLL_S` 调整轮询与暂停窗口。
 
 ### NTP 服务器选择
 

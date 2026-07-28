@@ -58,6 +58,8 @@ SCENE_PROFILE="${OWNER_ARBITER_SCENE_PROFILE:-/data/data/com.omarea.vtools/share
 UPERF_START_LOCK_DIR="$STATE_DIR/.uperf_start.lock"
 CPUFREQ_ROOT="${OWNER_ARBITER_CPUFREQ_ROOT:-/sys/devices/system/cpu/cpufreq}"
 UCLAMP_CAP_PATH="${OWNER_ARBITER_UCLAMP_CAP_PATH:-/proc/sys/kernel/sched_util_clamp_min}"
+SCHEDULER_INVENTORY_PATH="${SCHEDULER_INVENTORY_PATH:-$MODDIR/.scheduler_inventory}"
+SCHEDULER_FAS_RUNTIME_ROOT="${SCHEDULER_FAS_RUNTIME_ROOT:-$FAS_ROOT}"
 if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
     case "$STATE_DIR" in
         /tmp/*)
@@ -160,9 +162,37 @@ read_game_handoff_policy() {
     so_read_handoff_policy
 }
 
-state_get() {
+load_previous_state() {
+    PREV_STATE=""
+    PREV_TARGET_PKG=""
+    PREV_TARGET_PID="0"
+    PREV_CANDIDATE_SINCE="0"
+    PREV_LEASE_START="0"
+    PREV_LAST_FOREGROUND="0"
+    PREV_PID_ABSENT_SINCE="0"
+    PREV_BASELINE_OWNER=""
+    PREV_DESIRED_OWNER=""
+    PREV_HANDOFF_POLICY=""
+    PREV_CPUFREQ_RESTORE_LEASE="0"
+    PREV_CPUFREQ_RESTORE_EPOCH="0"
     [ -s "$ARB_STATE_FILE" ] || return 0
-    sed -n "s/^$1=//p" "$ARB_STATE_FILE" 2>/dev/null | head -n 1 | tr -d '\r'
+
+    while IFS='=' read -r _oa_state_key _oa_state_value; do
+        case "$_oa_state_key" in
+            state) PREV_STATE="$_oa_state_value" ;;
+            target_pkg) PREV_TARGET_PKG="$_oa_state_value" ;;
+            target_pid) PREV_TARGET_PID="$_oa_state_value" ;;
+            candidate_since) PREV_CANDIDATE_SINCE="$_oa_state_value" ;;
+            lease_start) PREV_LEASE_START="$_oa_state_value" ;;
+            last_foreground) PREV_LAST_FOREGROUND="$_oa_state_value" ;;
+            pid_absent_since) PREV_PID_ABSENT_SINCE="$_oa_state_value" ;;
+            baseline_owner) PREV_BASELINE_OWNER="$_oa_state_value" ;;
+            desired_owner) PREV_DESIRED_OWNER="$_oa_state_value" ;;
+            game_handoff_policy) PREV_HANDOFF_POLICY="$_oa_state_value" ;;
+            cpufreq_restore_lease) PREV_CPUFREQ_RESTORE_LEASE="$_oa_state_value" ;;
+            cpufreq_restore_epoch) PREV_CPUFREQ_RESTORE_EPOCH="$_oa_state_value" ;;
+        esac
+    done < "$ARB_STATE_FILE"
 }
 
 first_word() {
@@ -190,6 +220,11 @@ pkg_pids() {
 
 foreground_package_name() {
     if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
+        if [ -n "${OWNER_ARBITER_TEST_FOREGROUND_COUNTER_PATH:-}" ]; then
+            _oa_focus_count=$(cat "$OWNER_ARBITER_TEST_FOREGROUND_COUNTER_PATH" 2>/dev/null | tr -d ' \r\n\t')
+            case "$_oa_focus_count" in ''|*[!0-9]*) _oa_focus_count=0 ;; esac
+            printf '%s\n' $((_oa_focus_count + 1)) > "$OWNER_ARBITER_TEST_FOREGROUND_COUNTER_PATH" 2>/dev/null || true
+        fi
         printf '%s' "${OWNER_ARBITER_TEST_FOCUS_PKG:-com.android.launcher}"
         return
     fi
@@ -1073,16 +1108,18 @@ verify_pixel_baseline() {
     [ "$(read_pixel_owner)" = "pixel" ] || return 1
     uperf_process_alive && return 1
     fas_process_alive && return 1
-    [ "$OWNER_ARBITER_TEST_MODE" = "1" ] && return 0
 
     _oa_profile=$(read_valid_pixel_profile)
     _oa_expected_cap=$(cpu_profile_uclamp_cap "$_oa_profile") || return 1
+    [ "$(read_uclamp_cap)" = "$_oa_expected_cap" ] || return 1
+    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
+        [ ! -f "$TEST_RUNTIME_DIR/pixel_baseline_drift" ]
+        return
+    fi
     _oa_expected_top=$(cpu_profile_top_app_cpus "$_oa_profile") || return 1
     _oa_resp=$(cpu_profile_response_triplet "$_oa_profile") || return 1
 
-    _oa_cap=$(read_uclamp_cap)
     _oa_top=$(cat /dev/cpuset/top-app/cpus 2>/dev/null | tr -d ' \n\r\t')
-    [ "$_oa_cap" = "$_oa_expected_cap" ] || return 1
     [ "$_oa_top" = "$_oa_expected_top" ] || return 1
 
     if [ -n "$_oa_resp" ]; then
@@ -1096,6 +1133,31 @@ verify_pixel_baseline() {
         done
     fi
     return 0
+}
+
+verify_external_baseline() {
+    [ "$(read_pixel_owner)" = "external" ] || return 1
+    fas_process_alive && return 1
+    [ "$(read_uclamp_cap)" = "$CPU_PROFILE_ECO_CAP" ] || return 1
+    _oa_external_state=$(cat "$FAS_OWNER_FILE" 2>/dev/null | tr -d '\r\n')
+    if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
+        uperf_process_alive || return 1
+        [ "$(uperf_root_instance_count)" -eq 1 ] 2>/dev/null || return 1
+        [ "$_oa_external_state" = "external:uperf" ] || return 1
+    else
+        uperf_process_alive && return 1
+        [ "$_oa_external_state" = "external:none" ] || return 1
+    fi
+    return 0
+}
+
+verify_fas_baseline() {
+    [ "$(read_pixel_owner)" = "external" ] || return 1
+    uperf_process_alive && return 1
+    fas_process_alive || return 1
+    [ "$(read_uclamp_cap)" = "$CPU_PROFILE_FULL_CAP" ] || return 1
+    [ -n "$NEW_TARGET_PKG" ] || return 1
+    [ "$(cat "$FAS_OWNER_FILE" 2>/dev/null | tr -d '\r\n')" = "fas-rs:game:$NEW_TARGET_PKG" ]
 }
 
 apply_pixel_baseline() {
@@ -1264,15 +1326,19 @@ restore_desired_baseline_after_failure() {
 }
 
 apply_owner_decision() {
+    APPLY_STABLE_NOOP="no"
     if [ "$APPLY_ENABLED" != "yes" ]; then
         APPLY_RESULT="dry-run"
         return 0
     fi
 
-    ensure_powercfg_router || APPLY_RESULT="warn_powercfg_router_failed"
-
     case "$NEW_STATE" in
         FAS_LEASED_GAME|EXIT_HOLD)
+            if verify_fas_baseline; then
+                APPLY_RESULT="stable_fas_noop"
+                APPLY_STABLE_NOOP="yes"
+                return 0
+            fi
             if ! stop_uperf; then
                 APPLY_RESULT="failed_stop_uperf"
                 return 1
@@ -1323,8 +1389,22 @@ apply_owner_decision() {
             ;;
         PIXEL_NORMAL)
             case "$DESIRED_OWNER" in
-                external) apply_external_baseline || return 1 ;;
-                pixel) apply_pixel_baseline || return 1 ;;
+                external)
+                    if verify_external_baseline; then
+                        APPLY_RESULT="stable_external_noop"
+                        APPLY_STABLE_NOOP="yes"
+                    else
+                        apply_external_baseline || return 1
+                    fi
+                    ;;
+                pixel)
+                    if verify_pixel_baseline; then
+                        APPLY_RESULT="stable_pixel_noop"
+                        APPLY_STABLE_NOOP="yes"
+                    else
+                        apply_pixel_baseline || return 1
+                    fi
+                    ;;
                 *) APPLY_RESULT="failed_invalid_desired_owner"; return 1 ;;
             esac
             ;;
@@ -1333,6 +1413,20 @@ apply_owner_decision() {
             ;;
     esac
     return 0
+}
+
+state_snapshot_matches() {
+    [ -s "$ARB_STATE_FILE" ] || return 1
+    [ "$NEW_STATE" = "$PREV_STATE" ] \
+        && [ "$NEW_TARGET_PKG" = "$PREV_TARGET_PKG" ] \
+        && [ "$NEW_TARGET_PID" = "$PREV_TARGET_PID" ] \
+        && [ "$NEW_CANDIDATE_SINCE" = "$PREV_CANDIDATE_SINCE" ] \
+        && [ "$NEW_LEASE_START" = "$PREV_LEASE_START" ] \
+        && [ "$NEW_LAST_FOREGROUND" = "$PREV_LAST_FOREGROUND" ] \
+        && [ "$NEW_PID_ABSENT_SINCE" = "$PREV_PID_ABSENT_SINCE" ] \
+        && [ "$NEW_BASELINE_OWNER" = "$PREV_BASELINE_OWNER" ] \
+        && [ "$DESIRED_OWNER" = "$PREV_DESIRED_OWNER" ] \
+        && [ "$HANDOFF_POLICY" = "$PREV_HANDOFF_POLICY" ]
 }
 
 write_state() {
@@ -1423,16 +1517,14 @@ NOW=$(now_epoch)
 CURRENT_OWNER=$(read_pixel_owner)
 DESIRED_OWNER=$(read_desired_owner)
 HANDOFF_POLICY=$(read_game_handoff_policy)
-PREV_STATE=$(state_get state)
-PREV_TARGET_PKG=$(state_get target_pkg)
-PREV_TARGET_PID=$(state_get target_pid)
-PREV_CANDIDATE_SINCE=$(num_or_zero "$(state_get candidate_since)")
-PREV_LEASE_START=$(num_or_zero "$(state_get lease_start)")
-PREV_LAST_FOREGROUND=$(num_or_zero "$(state_get last_foreground)")
-PREV_PID_ABSENT_SINCE=$(num_or_zero "$(state_get pid_absent_since)")
-PREV_BASELINE_OWNER=$(state_get baseline_owner)
-PREV_CPUFREQ_RESTORE_LEASE=$(num_or_zero "$(state_get cpufreq_restore_lease)")
-PREV_CPUFREQ_RESTORE_EPOCH=$(num_or_zero "$(state_get cpufreq_restore_epoch)")
+load_previous_state
+PREV_TARGET_PID=$(num_or_zero "$PREV_TARGET_PID")
+PREV_CANDIDATE_SINCE=$(num_or_zero "$PREV_CANDIDATE_SINCE")
+PREV_LEASE_START=$(num_or_zero "$PREV_LEASE_START")
+PREV_LAST_FOREGROUND=$(num_or_zero "$PREV_LAST_FOREGROUND")
+PREV_PID_ABSENT_SINCE=$(num_or_zero "$PREV_PID_ABSENT_SINCE")
+PREV_CPUFREQ_RESTORE_LEASE=$(num_or_zero "$PREV_CPUFREQ_RESTORE_LEASE")
+PREV_CPUFREQ_RESTORE_EPOCH=$(num_or_zero "$PREV_CPUFREQ_RESTORE_EPOCH")
 case "$PREV_BASELINE_OWNER" in external|pixel) ;; *) PREV_BASELINE_OWNER="$DESIRED_OWNER" ;; esac
 
 NEW_STATE="PIXEL_NORMAL"
@@ -1451,6 +1543,14 @@ FOCUS_PID="0"
 GAME_SOURCE="none"
 GAME_MATCH="no"
 
+case "$SCREEN_STATE" in
+    on) ;;
+    *)
+        printf '%s\n' "screen_${SCREEN_STATE}_noop"
+        exit 0
+        ;;
+esac
+
 if [ -f "$ARB_DISABLE_FILE" ]; then
     NEW_STATE="ARB_DISABLED"
     NEW_TARGET_PKG="$PREV_TARGET_PKG"
@@ -1464,24 +1564,16 @@ if [ -f "$ARB_DISABLE_FILE" ]; then
     write_state || exit 74
     append_history
     exit 0
-elif [ "$SCREEN_STATE" != "on" ] && [ "$SCREEN_STATE" != "unknown" ]; then
-    NEW_STATE="${PREV_STATE:-PIXEL_NORMAL}"
-    NEW_TARGET_PKG="$PREV_TARGET_PKG"
-    NEW_TARGET_PID="$PREV_TARGET_PID"
-    NEW_CANDIDATE_SINCE="$PREV_CANDIDATE_SINCE"
-    NEW_LEASE_START="$PREV_LEASE_START"
-    NEW_LAST_FOREGROUND="$PREV_LAST_FOREGROUND"
-    NEW_PID_ABSENT_SINCE="$PREV_PID_ABSENT_SINCE"
-    PROPOSED_OWNER="$CURRENT_OWNER"
-    REASON="screen_off_noop"
-    write_state || exit 74
-    append_history
-    exit 0
 fi
 
 # One pass populates UGT, fas-rs, and the selected external scheduler. No
 # external scheduler is a valid state, so a no-match return does not abort.
 detect_external_scheduler 2>/dev/null
+_oa_detect_rc=$?
+if [ "$_oa_detect_rc" -gt 1 ] 2>/dev/null; then
+    printf '%s\n' "scheduler_inventory_${SCHEDULER_INVENTORY_STATUS}_noop"
+    exit 78
+fi
 if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
     UPERF_DETECTED="${OWNER_ARBITER_TEST_UPERF_DETECTED:-yes}"
     UPERF_MODULE_ENABLED="${OWNER_ARBITER_TEST_UPERF_ENABLED:-yes}"
@@ -1620,6 +1712,13 @@ fi
 
 _oa_apply_rc=0
 apply_owner_decision >/dev/null 2>&1 || _oa_apply_rc=$?
+if [ "$APPLY_STABLE_NOOP" = "yes" ] && state_snapshot_matches; then
+    if [ "$_oa_transition_lock_acquired" -eq 1 ]; then
+        so_release_transition_lock >/dev/null 2>&1 || true
+    fi
+    trap - EXIT INT TERM
+    exit 0
+fi
 if ! write_state; then
     log -t pixel9pro_ctrl "ERROR: owner arbiter state commit failed"
     _oa_apply_rc=74

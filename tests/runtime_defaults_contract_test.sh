@@ -29,6 +29,9 @@ printf 'TAP version 13\n'
 check_eq 'NR screen-off delay contract' 300 "$NR_SCREEN_OFF_DELAY_S"
 check_eq 'NR restore cooldown contract' 600 "$NR_RESTORE_COOLDOWN_S"
 check_eq 'NR LTE mode contract' 9 "$NR_LTE_MODE"
+check_eq 'owner screen-on poll contract' 5 "$OWNER_ARBITER_DEFAULT_SCREEN_ON_POLL_S"
+check_eq 'owner screen-off poll contract' 15 "$OWNER_ARBITER_DEFAULT_SCREEN_OFF_POLL_S"
+check_eq 'owner long-pause poll contract' 30 "$OWNER_ARBITER_DEFAULT_PAUSE_POLL_S"
 marker="$TEST_ROOT/sim_marker"
 if runtime_set_sim_count_state "$marker" 1 disabled 2; then ok 'SIM transaction applies'; else not_ok 'SIM transaction applies'; fi
 check_eq 'SIM transaction commits marker' disabled "$(cat "$marker")"

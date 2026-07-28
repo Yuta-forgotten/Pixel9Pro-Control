@@ -3,9 +3,12 @@
 # fas-rs is detected; the runtime arbiter still owns all transition checks.
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
 require_loopback
+SCHEDULER_INVENTORY_PATH="${SCHEDULER_INVENTORY_PATH:-$MODDIR/.scheduler_inventory}"
 
 [ -r "$MODDIR/scripts/scheduler_detect_lib.sh" ] && . "$MODDIR/scripts/scheduler_detect_lib.sh" \
     || json_error '500 Internal Server Error' 'scheduler detection contract not found'
+[ -r "$MODDIR/scripts/display_state_lib.sh" ] && . "$MODDIR/scripts/display_state_lib.sh" \
+    || json_error '500 Internal Server Error' 'display state contract not found'
 require_json_post
 require_token
 acquire_lock "owner_arbiter"
@@ -27,12 +30,10 @@ if [ ! -f "$MODDIR/scripts/owner_arbiter.sh" ]; then
     json_error '503 Service Unavailable' 'owner arbiter script missing'
 fi
 
-_screen="on"
-_drm=$(cat /sys/class/drm/card0-DSI-1/enabled 2>/dev/null | tr -d ' \r\n\t')
-case "$_drm" in
-    disabled) _screen="off" ;;
-    enabled) _screen="on" ;;
-esac
+display_state_read >/dev/null 2>&1 || true
+_display_state="$DISPLAY_STATE"
+_display_source="$DISPLAY_STATE_SOURCE"
+_screen=$(display_state_legacy_screen)
 
 _out=$(OWNER_ARBITER_FAS_ROOT="$FAS_ROOT" \
     sh "$MODDIR/scripts/owner_arbiter.sh" apply-tick "$MODDIR" "$_screen" 2>&1)
@@ -41,9 +42,11 @@ _state=$(cat "$FAS_ROOT/.arbiter_state" 2>/dev/null)
 
 json_headers
 if [ "$_rc" -eq 0 ]; then
-    printf '{"ok":true,"screen":"%s","output":"%s","state":"%s"}\n' \
-        "$(json_escape "$_screen")" "$(json_escape "$_out")" "$(json_escape "$_state")"
+    printf '{"ok":true,"screen":"%s","screen_source":"%s","output":"%s","state":"%s"}\n' \
+        "$(json_escape "$_display_state")" "$(json_escape "$_display_source")" \
+        "$(json_escape "$_out")" "$(json_escape "$_state")"
 else
-    printf '{"ok":false,"error":"owner arbiter tick failed","screen":"%s","output":"%s","state":"%s"}\n' \
-        "$(json_escape "$_screen")" "$(json_escape "$_out")" "$(json_escape "$_state")"
+    printf '{"ok":false,"error":"owner arbiter tick failed","screen":"%s","screen_source":"%s","output":"%s","state":"%s"}\n' \
+        "$(json_escape "$_display_state")" "$(json_escape "$_display_source")" \
+        "$(json_escape "$_out")" "$(json_escape "$_state")"
 fi

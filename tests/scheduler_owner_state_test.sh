@@ -45,6 +45,10 @@ state_value() {
     sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n 1 | tr -d '\r'
 }
 
+file_signature() {
+    if [ -f "$1" ]; then cksum "$1" | awk '{print $1 ":" $2}'; else printf 'missing'; fi
+}
+
 new_fixture() {
     _t_name="$1"
     _t_desired="$2"
@@ -58,12 +62,33 @@ new_fixture() {
     cp "$SOURCE_ROOT/scripts/scheduler_owner_lib.sh" "$MOD/scripts/scheduler_owner_lib.sh" || exit 2
     cp "$SOURCE_ROOT/scripts/scheduler_detect_lib.sh" "$MOD/scripts/scheduler_detect_lib.sh" || exit 2
     cp "$SOURCE_ROOT/scripts/cpu_profile_lib.sh" "$MOD/scripts/cpu_profile_lib.sh" || exit 2
-    printf '%s\n' '#!/system/bin/sh' '[ ! -f "${0%/*}/../.fail_cpu_profile" ] || exit 1' 'exit 0' > "$MOD/scripts/cpu_profile.sh"
+    printf '%s\n' \
+        '#!/system/bin/sh' \
+        '_root="${0%/*}/.."' \
+        '_count=$(cat "$_root/.cpu_profile_calls" 2>/dev/null)' \
+        'case "$_count" in ""|*[!0-9]*) _count=0 ;; esac' \
+        'printf "%s\n" $((_count + 1)) > "$_root/.cpu_profile_calls"' \
+        'rm -f "$_root/../fas/.test_runtime/pixel_baseline_drift"' \
+        '[ ! -f "$_root/.fail_cpu_profile" ] || exit 1' \
+        'exit 0' > "$MOD/scripts/cpu_profile.sh"
     printf '%s\n' "$_t_desired" > "$MOD/.sched_owner_desired"
     printf '%s\n' "$_t_effective" > "$MOD/.cpu_sched_owner"
     printf '%s\n' "$_t_handoff" > "$MOD/.game_handoff_policy"
     printf '%s\n' 'balanced' > "$MOD/.current_profile"
     printf '0\n' > "$FAS/uclamp_cap"
+    cat > "$MOD/.scheduler_inventory" <<'EOF'
+schema=1
+uperf_detected=no
+uperf_id=
+uperf_name=
+uperf_path=
+uperf_source=
+fas_detected=no
+fas_id=
+fas_name=
+fas_path=
+fas_source=
+EOF
     cat > "$FAS/games.toml" <<'EOF'
 [config]
 scene_game_list = false
@@ -86,6 +111,15 @@ run_tick() {
     OWNER_ARBITER_TEST_FOCUS_PKG="$_t_focus" \
     OWNER_ARBITER_TEST_UPERF_ENABLED="${OWNER_ARBITER_TEST_UPERF_ENABLED:-yes}" \
     OWNER_ARBITER_TEST_THERMAL_COOLING_ACTIVE="${OWNER_ARBITER_TEST_THERMAL_COOLING_ACTIVE:-no}" \
+    OWNER_ARBITER_TEST_FOREGROUND_COUNTER_PATH="$FAS/.test_runtime/foreground_calls" \
+    SCHEDULER_INVENTORY_PATH="$MOD/.scheduler_inventory" \
+    SCHEDULER_MODULES_ROOT="$FIXTURE/modules" \
+    SCHEDULER_MODULES_UPDATE_ROOT="$FIXTURE/modules_update" \
+    SCHEDULER_FAS_RUNTIME_ROOT="$FAS" \
+    SCHEDULER_FAS_MODE_PATH="$FIXTURE/fas_mode" \
+    SCHEDULER_TEST_RUNTIME_ROOT="$FAS/.test_runtime" \
+    SCHEDULER_TEST_MODE=1 \
+    SO_TRANSITION_LOCK_MAX_ATTEMPTS="${SO_TRANSITION_LOCK_MAX_ATTEMPTS:-1}" \
     ARB_ENTER_DEBOUNCE_S=0 \
     ARB_MIN_LEASE_S=0 \
     ARB_PID_ABSENT_CONFIRM_S=0 \
@@ -264,6 +298,62 @@ OWNER_ARBITER_TEST_UPERF_ENABLED=no run_tick com.android.launcher
 assert_eq 'external-none preserves External effective' external "$(cat "$MOD/.cpu_sched_owner")"
 assert_eq 'external-none reports no scheduler' external:none "$(cat "$FAS/.owner_state")"
 assert_no_file 'external-none does not start UGT' "$FAS/.test_runtime/uperf_alive"
+
+# Stable Pixel ticks are observations only: no profile replay, state rewrite,
+# or history append. A single injected drift is repaired once.
+new_fixture stable_pixel pixel pixel off
+run_tick com.android.launcher
+_stable_state_sig=$(file_signature "$FAS/.arbiter_state")
+_stable_history_sig=$(file_signature "$FAS/.arbiter_history")
+_t_i=0
+while [ "$_t_i" -lt 10 ]; do
+    run_tick com.android.launcher || not_ok 'stable Pixel tick succeeds'
+    _t_i=$((_t_i + 1))
+done
+assert_no_file 'stable Pixel does not replay cpu_profile' "$MOD/.cpu_profile_calls"
+assert_eq 'stable Pixel preserves arbiter state content' "$_stable_state_sig" "$(file_signature "$FAS/.arbiter_state")"
+assert_eq 'stable Pixel preserves arbiter history content' "$_stable_history_sig" "$(file_signature "$FAS/.arbiter_history")"
+
+touch "$FAS/.test_runtime/pixel_baseline_drift"
+run_tick com.android.launcher
+assert_eq 'one Pixel drift triggers one profile repair' 1 "$(cat "$MOD/.cpu_profile_calls")"
+_drift_history_sig=$(file_signature "$FAS/.arbiter_history")
+run_tick com.android.launcher
+assert_eq 'repaired Pixel baseline stays no-op' 1 "$(cat "$MOD/.cpu_profile_calls")"
+assert_eq 'post-repair stable tick does not append history' "$_drift_history_sig" "$(file_signature "$FAS/.arbiter_history")"
+
+# Noninteractive states must exit before scheduler discovery, foreground IPC,
+# transition locking, or CPU mutation.
+new_fixture noninteractive pixel pixel fas_rs
+run_tick com.example.game off
+run_tick com.example.game doze
+run_tick com.example.game unknown
+assert_no_file 'noninteractive ticks skip foreground detection' "$FAS/.test_runtime/foreground_calls"
+assert_no_file 'noninteractive ticks skip cpu_profile mutation' "$MOD/.cpu_profile_calls"
+assert_no_file 'noninteractive ticks do not create arbiter state' "$FAS/.arbiter_state"
+assert_no_file 'noninteractive ticks do not append arbiter history' "$FAS/.arbiter_history"
+
+# A fully reconciled External baseline is also a stable observation.
+new_fixture stable_external external external off
+printf '1\n' > "$FAS/.test_runtime/uperf_alive"
+printf 'external:uperf\n' > "$FAS/.owner_state"
+run_tick com.android.launcher
+_external_state_sig=$(file_signature "$FAS/.arbiter_state")
+_external_history_sig=$(file_signature "$FAS/.arbiter_history")
+run_tick com.android.launcher
+assert_no_file 'stable External does not replay cpu_profile' "$MOD/.cpu_profile_calls"
+assert_eq 'stable External preserves arbiter state' "$_external_state_sig" "$(file_signature "$FAS/.arbiter_state")"
+assert_eq 'stable External preserves arbiter history' "$_external_history_sig" "$(file_signature "$FAS/.arbiter_history")"
+
+# A live transition lock blocks mutation; stale-lock recovery is covered above.
+new_fixture busy_transition_lock pixel external off
+mkdir -p "$FAS/.owner_transition.lock"
+printf '%s\n' "$$" > "$FAS/.owner_transition.lock/pid"
+_t_parent_start=$(sed 's/^.*) //' "/proc/$$/stat" | awk '{print $20}')
+printf '%s\n' "$_t_parent_start" > "$FAS/.owner_transition.lock/start_ticks"
+if run_tick com.android.launcher; then _t_busy_rc=0; else _t_busy_rc=$?; fi
+assert_eq 'live transition lock returns busy' 75 "$_t_busy_rc"
+assert_no_file 'busy transition lock prevents profile mutation' "$MOD/.cpu_profile_calls"
 
 printf '1..%s\n' "$TOTAL"
 printf '# pass=%s fail=%s root=%s\n' "$PASS" "$FAIL" "$TEST_ROOT"

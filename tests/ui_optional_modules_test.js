@@ -26,6 +26,8 @@ const cpuProfile = fs.readFileSync(path.join(root, 'scripts', 'cpu_profile.sh'),
 const ownerArbiter = fs.readFileSync(path.join(root, 'scripts', 'owner_arbiter.sh'), 'utf8');
 const ntpCatalog = fs.readFileSync(path.join(root, 'config', 'ntp_servers.tsv'), 'utf8');
 const runtimeDefaults = fs.readFileSync(path.join(root, 'scripts', 'runtime_defaults_lib.sh'), 'utf8');
+const displayStateLib = fs.readFileSync(path.join(root, 'scripts', 'display_state_lib.sh'), 'utf8');
+const schedulerDetectLib = fs.readFileSync(path.join(root, 'scripts', 'scheduler_detect_lib.sh'), 'utf8');
 const basebandCustomize = fs.readFileSync(path.join(root, 'modules', 'pixel9pro_baseband_trial', 'customize.sh'), 'utf8');
 const moduleProp = fs.readFileSync(path.join(root, 'module.prop'), 'utf8');
 const versionsProp = fs.readFileSync(path.join(root, 'versions.prop'), 'utf8');
@@ -91,6 +93,11 @@ assert(cpuProfile.includes('. "$CPU_PROFILE_LIB"') && ownerArbiter.includes('. "
 assert(!ownerArbiter.includes('_oa_resp="16 40 200"'), 'owner arbiter must not duplicate CPU response triplets');
 assert(!ownerArbiter.includes('command -v detect_'), 'owner arbiter must require its scheduler-detection contract');
 assert((ownerArbiter.match(/detect_external_scheduler 2>\/dev\/null/g) || []).length === 1, 'owner arbiter must scan external schedulers once per tick');
+assert(service.includes('display_state_read') && ownerArbiterCgi.includes('display_state_read') && customize.includes('scripts/display_state_lib.sh'), 'service, installer, and owner CGI must share the display-state contract');
+assert(displayStateLib.includes('deviceidle get screen') && displayStateLib.includes('DRM enabled'), 'display-state contract must use DeviceIdle and document the DRM boundary');
+assert(!/enabled\)\s+_[A-Za-z0-9_]*screen=["']?on/.test(service + ownerArbiterCgi), 'DRM enabled must never directly prove an interactive screen');
+assert(schedulerDetectLib.includes('detect_external_scheduler_fresh()') && schedulerDetectLib.includes('scheduler_load_inventory()'), 'scheduler detection must separate fresh discovery from cached runtime refresh');
+assert(service.includes('detect_external_scheduler_fresh') && ownerArbiter.includes('SCHEDULER_INVENTORY_PATH'), 'service must build scheduler inventory and owner hot path must consume it');
 assert(profileCgi.includes('cpu_profile_contract_json') && app.includes('state.cpuContract'), 'WebUI CPU values must come from the backend profile contract');
 assert(cpuProfileLib.includes('cpu_profile_contract_json()'), 'CPU profile library must serialize its runtime contract');
 assert(runtimeDefaults.includes('SIM2_AUTO_DEFAULT="on"'), 'SIM2 default must be defined by the runtime defaults contract');
@@ -105,8 +112,8 @@ assert(customize.includes('UECAP_DISABLED_REASON="uecap_unsupported_device"'), '
 assert(basebandCustomize.includes('[ "$device" != "caiman" ]'), 'baseband submodule must reject non-caiman devices');
 assert(!service.includes('# v4.'), 'service.sh must not contain a release changelog');
 assert(!fs.existsSync(path.join(root, 'system.prop')), 'empty system.prop must not be packaged');
-assert(moduleProp.includes('version=v4.5.01') && moduleProp.includes('versionCode=106'), 'release version must be v4.5.01 / 106');
-for (const component of ['webui=4.5.01', 'scheduler=4.5.01', 'core=4.5.01']) {
+assert(moduleProp.includes('version=v4.5.02') && moduleProp.includes('versionCode=107'), 'release version must be v4.5.02 / 107');
+for (const component of ['webui=4.5.02', 'scheduler=4.5.02', 'core=4.5.02']) {
   assert(versionsProp.includes(component), `component version is stale: ${component}`);
 }
 assert(commonCgi.includes("'413 Payload Too Large'") && commonCgi.includes('JSON object required'), 'all write CGI must share bounded JSON-object parsing');

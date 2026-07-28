@@ -23,10 +23,14 @@ SIM2_AUTO_FILE="$MODDIR/.sim2_auto_manage"
 IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
 POWER_PROFILE_FILE="$MODDIR/.power_profile"
+SCHEDULER_INVENTORY_PATH="$MODDIR/.scheduler_inventory"
 
 [ -r "$MODDIR/scripts/runtime_defaults_lib.sh" ] \
     && . "$MODDIR/scripts/runtime_defaults_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: runtime defaults contract missing"; exit 1; }
+[ -r "$MODDIR/scripts/display_state_lib.sh" ] \
+    && . "$MODDIR/scripts/display_state_lib.sh" 2>/dev/null \
+    || { log -t pixel9pro_ctrl "ERROR: display state contract missing"; exit 1; }
 [ -r "$MODDIR/scripts/nr_mode_lib.sh" ] \
     && . "$MODDIR/scripts/nr_mode_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: NR mode contract missing"; exit 1; }
@@ -65,6 +69,11 @@ fi
 scheduler_owner_init "$MODDIR" "/data/adb/fas_rs"
 so_migrate_state >/dev/null 2>&1 \
     || log -t pixel9pro_ctrl "WARNING: scheduler-owner state migration failed"
+detect_external_scheduler_fresh >/dev/null 2>&1
+_scheduler_inventory_rc=$?
+if [ "$_scheduler_inventory_rc" -gt 1 ] 2>/dev/null; then
+    log -t pixel9pro_ctrl "WARNING: scheduler inventory refresh failed"
+fi
 
 detect_root_impl() {
     if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
@@ -454,54 +463,11 @@ ensure_profile_history_baseline() {
 }
 
 profile_lock_acquire() {
-    _plock="$LOCKDIR_BASE/profile.lock"
-    mkdir -p "$LOCKDIR_BASE" 2>/dev/null || return 1
-    if mkdir "$_plock" 2>/dev/null; then
-        _lock_start=$(sed 's/^[^)]*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}')
-        [ -n "$_lock_start" ] \
-            && printf '%s\n' "$$" > "$_plock/pid" 2>/dev/null \
-            && printf '%s\n' "$_lock_start" > "$_plock/start_ticks" 2>/dev/null \
-            || { rm -f "$_plock/pid" "$_plock/start_ticks" 2>/dev/null; rmdir "$_plock" 2>/dev/null; return 1; }
-        PROFILE_LOCK_START_TICKS="$_lock_start"
-        return 0
-    fi
-    _lock_pid=$(cat "$_plock/pid" 2>/dev/null | tr -d ' \n\r\t')
-    _lock_start=$(cat "$_plock/start_ticks" 2>/dev/null | tr -d ' \n\r\t')
-    case "$_lock_pid" in
-        ''|*[!0-9]*) _lock_live_start="" ;;
-        *) _lock_live_start=$(sed 's/^[^)]*) //' "/proc/$_lock_pid/stat" 2>/dev/null | awk '{print $20}') ;;
-    esac
-    if [ -z "$_lock_pid" ] || [ -z "$_lock_start" ] \
-        || ! kill -0 "$_lock_pid" 2>/dev/null \
-        || [ -z "$_lock_live_start" ] || [ "$_lock_live_start" != "$_lock_start" ]; then
-        rm -f "$_plock/pid" "$_plock/start_ticks" 2>/dev/null
-        rmdir "$_plock" 2>/dev/null
-        if mkdir "$_plock" 2>/dev/null; then
-            _lock_start=$(sed 's/^[^)]*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}')
-            if [ -n "$_lock_start" ] \
-                && printf '%s\n' "$$" > "$_plock/pid" 2>/dev/null \
-                && printf '%s\n' "$_lock_start" > "$_plock/start_ticks" 2>/dev/null; then
-                PROFILE_LOCK_START_TICKS="$_lock_start"
-                return 0
-            fi
-            rm -f "$_plock/pid" "$_plock/start_ticks" 2>/dev/null
-            rmdir "$_plock" 2>/dev/null
-        fi
-    fi
-    return 1
+    so_acquire_transition_lock
 }
 
 profile_lock_release() {
-    _plock="$LOCKDIR_BASE/profile.lock"
-    _lock_pid=$(cat "$_plock/pid" 2>/dev/null | tr -d ' \n\r\t')
-    _lock_start=$(cat "$_plock/start_ticks" 2>/dev/null | tr -d ' \n\r\t')
-    if [ "$_lock_pid" = "$$" ] \
-        && [ -n "${PROFILE_LOCK_START_TICKS:-}" ] \
-        && [ "$_lock_start" = "$PROFILE_LOCK_START_TICKS" ]; then
-        rm -f "$_plock/pid" "$_plock/start_ticks" 2>/dev/null
-        rmdir "$_plock" 2>/dev/null
-    fi
-    PROFILE_LOCK_START_TICKS=""
+    so_release_transition_lock
 }
 
 apply_profile_state() {
@@ -780,10 +746,14 @@ if [ "$(read_valid_sched_owner)" = "external" ]; then
 elif [ "$CPU_PROFILE_AVAILABLE" -ne 1 ]; then
     log -t pixel9pro_ctrl "WARNING: CPU profile contract missing, skipped profile restore"
 else
-    if sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" "$MODDIR" 2>/dev/null; then
+    if ! profile_lock_acquire; then
+        log -t pixel9pro_ctrl "WARNING: scheduler transition busy, skipped boot profile restore"
+    elif sh "$MODDIR/scripts/cpu_profile.sh" "$PROFILE" "$MODDIR" 2>/dev/null; then
         log -t pixel9pro_ctrl "CPU profile applied: $PROFILE"
+        profile_lock_release
     else
         log -t pixel9pro_ctrl "WARNING: CPU profile restore failed: $PROFILE"
+        profile_lock_release
     fi
 fi
 ensure_profile_history_baseline
@@ -792,11 +762,11 @@ ensure_profile_history_baseline
 # worker can provide after it enters the 600s deep-standby sleep.  Keep this
 # loop cheap while screen-off and only run top-app/window IPC when display is on.
 (
-    _owner_arbiter_fast_on="${OWNER_ARBITER_FAST_ON:-5}"
-    _owner_arbiter_fast_off="${OWNER_ARBITER_FAST_OFF:-15}"
-    _owner_arbiter_off_grace_s="${OWNER_ARBITER_OFF_GRACE_S:-360}"
-    _owner_arbiter_off_pause_s="${OWNER_ARBITER_OFF_PAUSE_S:-3600}"
-    _owner_arbiter_pause_poll_s="${OWNER_ARBITER_PAUSE_POLL_S:-30}"
+    _owner_arbiter_fast_on="${OWNER_ARBITER_FAST_ON:-$OWNER_ARBITER_DEFAULT_SCREEN_ON_POLL_S}"
+    _owner_arbiter_fast_off="${OWNER_ARBITER_FAST_OFF:-$OWNER_ARBITER_DEFAULT_SCREEN_OFF_POLL_S}"
+    _owner_arbiter_off_grace_s="${OWNER_ARBITER_OFF_GRACE_S:-$OWNER_ARBITER_DEFAULT_SCREEN_OFF_GRACE_S}"
+    _owner_arbiter_off_pause_s="${OWNER_ARBITER_OFF_PAUSE_S:-$OWNER_ARBITER_DEFAULT_SCREEN_OFF_PAUSE_S}"
+    _owner_arbiter_pause_poll_s="${OWNER_ARBITER_PAUSE_POLL_S:-$OWNER_ARBITER_DEFAULT_PAUSE_POLL_S}"
     case "$_owner_arbiter_fast_on" in ''|*[!0-9]*) _owner_arbiter_fast_on=5 ;; esac
     case "$_owner_arbiter_fast_off" in ''|*[!0-9]*) _owner_arbiter_fast_off=15 ;; esac
     case "$_owner_arbiter_off_grace_s" in ''|*[!0-9]*) _owner_arbiter_off_grace_s=360 ;; esac
@@ -812,19 +782,8 @@ ensure_profile_history_baseline
 
     while true; do
         _owner_arbiter_now=$(date +%s 2>/dev/null || echo 0)
-        _oa_drm_en=$(cat /sys/class/drm/card0-DSI-1/enabled 2>/dev/null)
-        case "$_oa_drm_en" in
-            enabled) _oa_screen="on" ;;
-            disabled) _oa_screen="off" ;;
-            *)
-                _oa_scr=$(dumpsys display 2>/dev/null | grep "mScreenState=" | head -1 | sed 's/.*mScreenState=//' | tr -d ' ')
-                [ -z "$_oa_scr" ] && _oa_scr=$(dumpsys power 2>/dev/null | grep "mWakefulness=" | head -1 | sed 's/.*mWakefulness=//' | tr -d ' ')
-                case "$_oa_scr" in
-                    OFF|Dozing|Asleep) _oa_screen="off" ;;
-                    *) _oa_screen="on" ;;
-                esac
-                ;;
-        esac
+        display_state_read >/dev/null 2>&1 || true
+        _oa_screen=$(display_state_legacy_screen)
 
         if [ "$_oa_screen" = "on" ] && [ -f "$MODDIR/scripts/owner_arbiter.sh" ]; then
             _owner_arbiter_screen_off_since=0
@@ -843,8 +802,8 @@ ensure_profile_history_baseline
                 fi
                 _owner_arbiter_pause_until=$((_owner_arbiter_now + _owner_arbiter_off_pause_s))
                 while true; do
-                    _oa_drm_en=$(cat /sys/class/drm/card0-DSI-1/enabled 2>/dev/null)
-                    [ "$_oa_drm_en" = "enabled" ] && break
+                    display_state_read >/dev/null 2>&1 || true
+                    [ "$DISPLAY_STATE_INTERACTIVE" = "yes" ] && break
                     _owner_arbiter_now=$(date +%s 2>/dev/null || echo 0)
                     [ "$_owner_arbiter_now" -ge "$_owner_arbiter_pause_until" ] 2>/dev/null && break
                     sleep "$_owner_arbiter_pause_poll_s"
@@ -1232,24 +1191,11 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
         _cycle_count=$((_cycle_count + 1))
         _sched_owner=$(read_valid_sched_owner)
 
-        # --- Single screen state check per cycle (sysfs first, IPC-free) ---
-        # DRM dpms 是 legacy 属性，仅在 full modeset 时更新 (drm_atomic_helper.c)。
-        # Exynos DECON 走 self-refresh 路径不触发 modeset → dpms 永远停在 Off。
-        # enabled 检查 encoder 连接状态，每次 atomic commit 无条件更新，可靠。
-        _drm_en=$(cat /sys/class/drm/card0-DSI-1/enabled 2>/dev/null)
-        case "$_drm_en" in
-            enabled) _screen="on" ;;
-            disabled) _screen="off" ;;
-            *)
-                # sysfs 路径异常或早期 boot 阶段：降级到原 IPC 路径
-                _scr=$(dumpsys display 2>/dev/null | grep "mScreenState=" | head -1 | sed 's/.*mScreenState=//' | tr -d ' ')
-                [ -z "$_scr" ] && _scr=$(dumpsys power 2>/dev/null | grep "mWakefulness=" | head -1 | sed 's/.*mWakefulness=//' | tr -d ' ')
-                case "$_scr" in
-                    OFF|Dozing|Asleep) _screen="off" ;;
-                    *) _screen="on" ;;
-                esac
-                ;;
-        esac
+        # DeviceIdle tracks user interactivity across ON/AOD/OFF. DRM enabled
+        # only identifies an attached encoder and remains enabled during DOZE.
+        display_state_read >/dev/null 2>&1 || true
+        _screen=$(display_state_legacy_screen)
+        [ "$_screen" != "unknown" ] || _screen="off"
         _idle_isolate=$(read_onoff_file "$IDLE_ISOLATE_FILE" "$IDLE_ISOLATE_DEFAULT")
         _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" "$SIM2_AUTO_DEFAULT")
         _screen_off_isolate=0

@@ -145,8 +145,11 @@ so_initialize_transition_lock() {
 }
 
 so_acquire_transition_lock() {
+    _so_max_attempts="${SO_TRANSITION_LOCK_MAX_ATTEMPTS:-8}"
+    case "$_so_max_attempts" in ''|*[!0-9]*) _so_max_attempts=8 ;; esac
+    [ "$_so_max_attempts" -ge 1 ] 2>/dev/null || _so_max_attempts=1
     _so_attempt=1
-    while [ "$_so_attempt" -le 8 ] 2>/dev/null; do
+    while [ "$_so_attempt" -le "$_so_max_attempts" ] 2>/dev/null; do
         if mkdir "$SO_TRANSITION_LOCK_DIR" 2>/dev/null; then
             so_initialize_transition_lock
             return $?
@@ -163,8 +166,8 @@ so_acquire_transition_lock() {
             rmdir "$SO_TRANSITION_LOCK_DIR" 2>/dev/null || true
             continue
         fi
-        sleep 1
         _so_attempt=$((_so_attempt + 1))
+        [ "$_so_attempt" -gt "$_so_max_attempts" ] 2>/dev/null || sleep 1
     done
     return 1
 }

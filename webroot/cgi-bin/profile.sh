@@ -14,6 +14,7 @@ SCHED_OWNER_DESIRED_FILE="$MODDIR/.sched_owner_desired"
 GAME_HANDOFF_POLICY_FILE="$MODDIR/.game_handoff_policy"
 FAS_ROOT="${PIXEL9PRO_FAS_ROOT:-/data/adb/fas_rs}"
 ARBITER_STATE_FILE="$FAS_ROOT/.arbiter_state"
+SCHEDULER_INVENTORY_PATH="${SCHEDULER_INVENTORY_PATH:-$MODDIR/.scheduler_inventory}"
 
 [ -r "$MODDIR/scripts/scheduler_detect_lib.sh" ] && . "$MODDIR/scripts/scheduler_detect_lib.sh" \
     || json_error '500 Internal Server Error' 'scheduler detection contract not found'
@@ -24,6 +25,29 @@ ARBITER_STATE_FILE="$FAS_ROOT/.arbiter_state"
 scheduler_owner_init "$MODDIR" "$FAS_ROOT"
 so_migrate_state >/dev/null 2>&1 \
     || json_error '500 Internal Server Error' 'scheduler owner state migration failed'
+
+PROFILE_SCHEDULER_LOCKED=0
+
+release_profile_scheduler_lock() {
+    if [ "$PROFILE_SCHEDULER_LOCKED" -eq 1 ]; then
+        so_release_transition_lock >/dev/null 2>&1 || true
+        PROFILE_SCHEDULER_LOCKED=0
+    fi
+}
+
+profile_request_cleanup() {
+    release_profile_scheduler_lock
+    release_lock
+}
+
+acquire_profile_scheduler_lock() {
+    so_acquire_transition_lock \
+        || json_error '409 Conflict' 'scheduler transition busy'
+    PROFILE_SCHEDULER_LOCKED=1
+    trap 'profile_request_cleanup' EXIT
+    trap 'profile_request_cleanup; exit 130' INT
+    trap 'profile_request_cleanup; exit 143' TERM
+}
 
 read_valid_profile() {
     _prof=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
@@ -328,6 +352,14 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         exit 0
     fi
 
+    acquire_profile_scheduler_lock
+    if [ "$(read_valid_sched_owner)" = "external" ]; then
+        release_profile_scheduler_lock
+        json_headers
+        printf '{"ok":false,"error":"本模块 CPU 调度未启用"}\n'
+        exit 0
+    fi
+
     if [ -n "$newprof" ]; then
         _old_active=$(read_valid_profile "$PROFILE_FILE" balanced)
         _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$newprof" "$MODDIR" 2>/dev/null)
@@ -350,6 +382,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             rollback_profile_runtime_or_error "$_old_active"
         fi
         append_profile_history "$newprof" "manual_selected"
+        release_profile_scheduler_lock
         json_headers
         printf '{"ok":true,'
         emit_profile_state
@@ -387,6 +420,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             json_error '400 Bad Request' 'missing profile, policy, scheduler owner, or game handoff policy'
             ;;
     esac
+    release_profile_scheduler_lock
     json_headers
     printf '{"ok":true,'
     emit_profile_state
