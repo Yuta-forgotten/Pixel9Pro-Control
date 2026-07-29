@@ -10,6 +10,22 @@ ok() { TOTAL=$((TOTAL + 1)); PASS=$((PASS + 1)); printf 'ok %s - %s\n' "$TOTAL" 
 not_ok() { TOTAL=$((TOTAL + 1)); FAIL=$((FAIL + 1)); printf 'not ok %s - %s\n' "$TOTAL" "$1"; }
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else not_ok "$1 expected=$2 actual=$3"; fi; }
 state_value() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n 1 | tr -d '\r'; }
+file_signature() { if [ -f "$1" ]; then cksum "$1" | awk '{print $1 ":" $2}'; else printf missing; fi; }
+
+create_live_lock() {
+    mkdir -p "$FAS/.owner_transition.lock" || return 1
+    printf '%s\n' "$$" > "$FAS/.owner_transition.lock/pid"
+    _t_lock_start=$(sed 's/^.*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}')
+    printf '%s\n' "$_t_lock_start" > "$FAS/.owner_transition.lock/start_ticks"
+    cat /proc/sys/kernel/random/boot_id > "$FAS/.owner_transition.lock/boot_id"
+    printf '%s\n' "$(date +%s)" > "$FAS/.owner_transition.lock/epoch"
+}
+
+remove_test_lock() {
+    rm -f "$FAS/.owner_transition.lock/pid" "$FAS/.owner_transition.lock/start_ticks" \
+        "$FAS/.owner_transition.lock/boot_id" "$FAS/.owner_transition.lock/epoch"
+    rmdir "$FAS/.owner_transition.lock" 2>/dev/null || true
+}
 
 MOD="$TEST_ROOT/mod"
 FAS="$TEST_ROOT/fas"
@@ -22,8 +38,9 @@ BOOT_ID="$TEST_ROOT/boot_id"
 UGT_COUNT="$TEST_ROOT/ugt_count"
 PERMISSION="$TEST_ROOT/permission"
 POWERHAL="$TEST_ROOT/powerhal"
+FAS_ALIVE="$TEST_ROOT/fas_alive"
 mkdir -p "$MOD/scripts" "$FAS" "$RUNTIME" || exit 2
-for _t_script in scheduler_owner_lib.sh scheduler_boot_mode_lib.sh scheduler_reconcile.sh runtime_defaults_lib.sh cpu_profile_lib.sh cpu_profile.sh; do
+for _t_script in scheduler_owner_lib.sh scheduler_boot_mode_lib.sh scheduler_reconcile.sh scheduler_detect_lib.sh runtime_defaults_lib.sh cpu_profile_lib.sh cpu_profile.sh; do
     cp "$SOURCE_ROOT/scripts/$_t_script" "$MOD/scripts/" || exit 2
 done
 
@@ -66,9 +83,12 @@ SBM_BOOT_ID_PATH="$BOOT_ID"
 SBM_TEST_UPERF_COUNT_FILE="$UGT_COUNT"
 SBM_TEST_CPUFREQ_PERMISSION_FILE="$PERMISSION"
 SBM_TEST_POWERHAL_FAILURE_FILE="$POWERHAL"
+SBM_TEST_FAS_ALIVE_FILE="$FAS_ALIVE"
 SBM_TEST_NOW=100
 SBM_STATE_COMMIT_RETRY_SLEEP_S=0
-export SBM_TEST_MODE SBM_APD_BIN SBM_BOOT_ID_PATH SBM_TEST_UPERF_COUNT_FILE SBM_TEST_CPUFREQ_PERMISSION_FILE SBM_TEST_POWERHAL_FAILURE_FILE SBM_TEST_NOW SBM_STATE_COMMIT_RETRY_SLEEP_S
+SBM_HEALTH_RECHECK_DELAY_S=0
+SO_TRANSITION_LOCK_INIT_GRACE_S=5
+export SBM_TEST_MODE SBM_APD_BIN SBM_BOOT_ID_PATH SBM_TEST_UPERF_COUNT_FILE SBM_TEST_CPUFREQ_PERMISSION_FILE SBM_TEST_POWERHAL_FAILURE_FILE SBM_TEST_FAS_ALIVE_FILE SBM_TEST_NOW SBM_STATE_COMMIT_RETRY_SLEEP_S SBM_HEALTH_RECHECK_DELAY_S SO_TRANSITION_LOCK_INIT_GRACE_S
 sbm_init "$MOD" "$FAS"
 
 printf 'TAP version 13\n'
@@ -124,6 +144,26 @@ sbm_load_state
 assert_eq 'terminal fallback publishes UGT success after primary commit exhaustion' active_ugt "$SBM_RESULT"
 assert_eq 'terminal fallback is explicitly recorded' yes "$(state_value "$MOD/.scheduler_terminal_state" fallback)"
 
+# A verified UGT boot may temporarily hand a matched game to fas-rs. Health
+# must defer while the exact lease is live, rather than reapplying or failing
+# the idle UGT control-plane contract.
+printf '0\n' > "$UGT_COUNT"
+touch "$FAS_ALIVE"
+printf 'fas-rs:game:com.example.game\n' > "$FAS/.owner_state"
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" \
+sh "$MOD/scripts/scheduler_reconcile.sh" health "$MOD" >/dev/null 2>&1
+assert_eq 'UGT health defers while fas-rs owns the game lease' 7 "$?"
+assert_eq 'UGT fas-rs lease defer reason is explicit' fas_rs_runtime_lease "$(state_value "$MOD/.scheduler_health_state" reason)"
+sbm_load_state
+assert_eq 'UGT fas-rs lease keeps verified boot state' success "$SBM_PHASE"
+rm -f "$FAS_ALIVE"
+printf '1\n' > "$UGT_COUNT"
+printf 'external:uperf:baseline\n' > "$FAS/.owner_state"
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" \
+sh "$MOD/scripts/scheduler_reconcile.sh" health "$MOD" >/dev/null 2>&1
+assert_eq 'restored UGT baseline health succeeds' 0 "$?"
+assert_eq 'restored UGT baseline health reason is explicit' ugt_baseline_verified "$(state_value "$MOD/.scheduler_health_state" reason)"
+
 # Stage Pixel without stopping UGT in the current boot, then verify a clean next boot.
 if sbm_stage_mode pixel; then ok 'Pixel mode stages without hot-stopping UGT'; else not_ok 'Pixel mode stages without hot-stopping UGT'; fi
 assert_eq 'Pixel stage leaves current UGT process untouched' 1 "$(cat "$UGT_COUNT")"
@@ -163,7 +203,123 @@ assert_eq 'Pixel boot publishes desired owner after reboot' pixel "$(cat "$MOD/.
 assert_eq 'Pixel boot publishes effective owner after verification' pixel "$(cat "$MOD/.cpu_sched_owner")"
 assert_eq 'Pixel battery L2 is atomic with profile' '150/80' "$(cat "$VENDOR/ug_bg_uclamp_max")/$(cat "$VENDOR/ug_bg_group_throttle")"
 
-# Health is read-only; the first explicit repair consumes the only auto budget.
+# A retry that cannot acquire the shared lock must not publish a generation or
+# overwrite the last verified terminal state.
+create_live_lock || exit 2
+_t_boot_sig=$(file_signature "$MOD/.scheduler_boot_state")
+SO_TRANSITION_LOCK_MAX_ATTEMPTS=1 SO_TRANSITION_LOCK_RETRY_SLEEP_S=0 \
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" sh "$MOD/scripts/scheduler_reconcile.sh" retry "$MOD" >/dev/null 2>&1
+assert_eq 'busy retry returns a bounded transition-busy status' 75 "$?"
+assert_eq 'busy retry preserves the verified boot generation' "$_t_boot_sig" "$(file_signature "$MOD/.scheduler_boot_state")"
+remove_test_lock
+
+# A healthy repair request is a no-op and does not consume the only repair.
+_t_boot_sig=$(file_signature "$MOD/.scheduler_boot_state")
+SBM_VERIFY_SAMPLES=1 SBM_VERIFY_INTERVAL_S=0 SBM_RETRY_SLEEP_S=0 \
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" sh "$MOD/scripts/scheduler_reconcile.sh" repair "$MOD" >/dev/null 2>&1
+assert_eq 'healthy repair exits successfully without mutation' 0 "$?"
+assert_eq 'healthy repair does not rewrite boot state' "$_t_boot_sig" "$(file_signature "$MOD/.scheduler_boot_state")"
+sbm_load_state
+assert_eq 'healthy repair does not consume auto-repair budget' no "$SBM_AUTO_REPAIR_USED"
+assert_eq 'healthy repair publishes explicit no-op health' repair_not_needed "$(state_value "$MOD/.scheduler_health_state" reason)"
+
+# Health defers while either a complete or initializing transition lock is
+# active, and the read-only path never mutates scheduler nodes or lock files.
+printf '1\n' > "$POWERHAL"
+create_live_lock || exit 2
+_t_before=$(cat "$VENDOR/ug_bg_uclamp_max")
+_t_health_sig=$(file_signature "$MOD/.scheduler_health_state")
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" sh "$MOD/scripts/scheduler_reconcile.sh" health "$MOD" >/dev/null 2>&1
+assert_eq 'health defers while a live transition owns the lock' 7 "$?"
+assert_eq 'live-lock health does not overwrite the last stable health state' "$_t_health_sig" "$(file_signature "$MOD/.scheduler_health_state")"
+assert_eq 'live-lock health does not write scheduler nodes' "$_t_before" "$(cat "$VENDOR/ug_bg_uclamp_max")"
+remove_test_lock
+printf '0\n' > "$POWERHAL"
+
+mkdir -p "$FAS/.owner_transition.lock"
+printf '%s\n' "$(date +%s)" > "$FAS/.owner_transition.lock/epoch"
+_t_health_sig=$(file_signature "$MOD/.scheduler_health_state")
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" sh "$MOD/scripts/scheduler_reconcile.sh" health "$MOD" >/dev/null 2>&1
+assert_eq 'health defers during lock metadata initialization' 7 "$?"
+assert_eq 'initializing-lock health does not race the active transition state' "$_t_health_sig" "$(file_signature "$MOD/.scheduler_health_state")"
+rm -f "$FAS/.owner_transition.lock/epoch"
+rmdir "$FAS/.owner_transition.lock" || exit 2
+
+mkdir -p "$FAS/.owner_transition.lock"
+printf '1\n' > "$FAS/.owner_transition.lock/epoch"
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" sh "$MOD/scripts/scheduler_reconcile.sh" health "$MOD" >/dev/null 2>&1
+assert_eq 'expired incomplete lock does not defer healthy probing' 0 "$?"
+assert_eq 'read-only health preserves expired lock metadata' 1 "$(cat "$FAS/.owner_transition.lock/epoch")"
+rm -f "$FAS/.owner_transition.lock/epoch"
+rmdir "$FAS/.owner_transition.lock" || exit 2
+
+# Health and status do not run the writable owner-state migration path.
+rm -f "$MOD/.game_handoff_policy"
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" sh "$MOD/scripts/scheduler_reconcile.sh" health "$MOD" >/dev/null 2>&1
+assert_eq 'health does not recreate missing owner state' no "$([ -e "$MOD/.game_handoff_policy" ] && printf yes || printf no)"
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" sh "$MOD/scripts/scheduler_reconcile.sh" status "$MOD" >/dev/null 2>&1
+assert_eq 'status does not recreate missing owner state' no "$([ -e "$MOD/.game_handoff_policy" ] && printf yes || printf no)"
+printf 'off\n' > "$MOD/.game_handoff_policy"
+
+# A busy repair leaves the successful boot generation and repair budget intact.
+create_live_lock || exit 2
+_t_boot_sig=$(file_signature "$MOD/.scheduler_boot_state")
+_t_health_sig=$(file_signature "$MOD/.scheduler_health_state")
+SO_TRANSITION_LOCK_MAX_ATTEMPTS=1 SO_TRANSITION_LOCK_RETRY_SLEEP_S=0 \
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" sh "$MOD/scripts/scheduler_reconcile.sh" repair "$MOD" >/dev/null 2>&1
+assert_eq 'busy repair returns a bounded transition-busy status' 75 "$?"
+assert_eq 'busy repair does not replace successful boot state' "$_t_boot_sig" "$(file_signature "$MOD/.scheduler_boot_state")"
+assert_eq 'busy repair does not overwrite stable health state' "$_t_health_sig" "$(file_signature "$MOD/.scheduler_health_state")"
+sbm_load_state
+assert_eq 'busy repair does not consume auto-repair budget' no "$SBM_AUTO_REPAIR_USED"
+remove_test_lock
+
+# A resident fas-rs process is normal in Pixel idle and must not defer health.
+printf '1\n' > "$FAS_ALIVE"
+printf 'fas-rs:running\n' > "$FAS/.owner_state"
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" sh "$MOD/scripts/scheduler_reconcile.sh" health "$MOD" >/dev/null 2>&1
+assert_eq 'resident idle fas-rs keeps Pixel health readable' 0 "$?"
+assert_eq 'resident idle fas-rs does not claim a runtime lease' healthy "$(state_value "$MOD/.scheduler_health_state" status)"
+
+# A temporary fas-rs lease is an external effective owner inside Pixel boot.
+# Health and repair must defer instead of replaying the Pixel profile.
+printf 'external\n' > "$MOD/.cpu_sched_owner"
+printf 'fas-rs:game:com.example.game\n' > "$FAS/.owner_state"
+_t_before=$(cat "$VENDOR/ug_bg_uclamp_max")
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" sh "$MOD/scripts/scheduler_reconcile.sh" health "$MOD" >/dev/null 2>&1
+assert_eq 'health defers while fas-rs owns the runtime scheduler' 7 "$?"
+assert_eq 'fas-rs lease defer reason is explicit' fas_rs_runtime_lease "$(state_value "$MOD/.scheduler_health_state" reason)"
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" sh "$MOD/scripts/scheduler_reconcile.sh" repair "$MOD" >/dev/null 2>&1
+assert_eq 'repair refuses to fight an external effective owner' 77 "$?"
+assert_eq 'external-owner health and repair leave scheduler nodes untouched' "$_t_before" "$(cat "$VENDOR/ug_bg_uclamp_max")"
+printf 'pixel\n' > "$MOD/.cpu_sched_owner"
+printf 'fas-rs:running\n' > "$FAS/.owner_state"
+
+# A one-sample mismatch is rechecked before drift is published.
+cp "$MOD/scripts/cpu_profile.sh" "$MOD/scripts/cpu_profile.real.sh" || exit 2
+cat > "$MOD/scripts/cpu_profile.sh" <<'EOF'
+#!/system/bin/sh
+_wrapper_dir="${0%/*}"
+if [ "$1" = "verify" ]; then
+    _wrapper_count=$(cat "$_wrapper_dir/../.health_verify_calls" 2>/dev/null)
+    case "$_wrapper_count" in ''|*[!0-9]*) _wrapper_count=0 ;; esac
+    _wrapper_count=$((_wrapper_count + 1))
+    printf '%s\n' "$_wrapper_count" > "$_wrapper_dir/../.health_verify_calls"
+    [ "$_wrapper_count" -gt 1 ] || exit 1
+fi
+exec sh "$_wrapper_dir/cpu_profile.real.sh" "$@"
+EOF
+_t_before=$(cat "$VENDOR/ug_bg_uclamp_max")
+SCHEDULER_RECONCILE_FAS_ROOT="$FAS" sh "$MOD/scripts/scheduler_reconcile.sh" health "$MOD" >/dev/null 2>&1
+assert_eq 'transient profile mismatch clears on read-only recheck' 0 "$?"
+assert_eq 'transient mismatch health reason is explicit' transient_mismatch_cleared "$(state_value "$MOD/.scheduler_health_state" reason)"
+assert_eq 'transient mismatch performs two read-only verifies' 2 "$(cat "$MOD/.health_verify_calls")"
+assert_eq 'transient mismatch recheck does not write scheduler nodes' "$_t_before" "$(cat "$VENDOR/ug_bg_uclamp_max")"
+cp "$MOD/scripts/cpu_profile.real.sh" "$MOD/scripts/cpu_profile.sh" || exit 2
+rm -f "$MOD/scripts/cpu_profile.real.sh" "$MOD/.health_verify_calls"
+
+# A stable drift is read-only; the first explicit repair consumes the only
+# auto budget and later drift cannot reopen writes.
 printf '200\n' > "$VENDOR/ug_bg_uclamp_max"
 _t_before=$(cat "$VENDOR/ug_bg_uclamp_max")
 SCHEDULER_RECONCILE_FAS_ROOT="$FAS" sh "$MOD/scripts/scheduler_reconcile.sh" health "$MOD" >/dev/null 2>&1

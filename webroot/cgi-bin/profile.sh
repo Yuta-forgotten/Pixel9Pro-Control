@@ -24,12 +24,14 @@ SCHEDULER_INVENTORY_PATH="${SCHEDULER_INVENTORY_PATH:-$MODDIR/.scheduler_invento
     || json_error '500 Internal Server Error' 'CPU profile contract not found'
 [ -r "$MODDIR/scripts/scheduler_boot_mode_lib.sh" ] && . "$MODDIR/scripts/scheduler_boot_mode_lib.sh" \
     || json_error '500 Internal Server Error' 'scheduler boot-mode contract not found'
+[ -r "$MODDIR/scripts/scheduler_transition_guard_lib.sh" ] && . "$MODDIR/scripts/scheduler_transition_guard_lib.sh" \
+    || json_error '500 Internal Server Error' 'scheduler transition guard not found'
 scheduler_owner_init "$MODDIR" "$FAS_ROOT"
 sbm_init "$MODDIR" "$FAS_ROOT"
-so_migrate_state >/dev/null 2>&1 \
-    || json_error '500 Internal Server Error' 'scheduler owner state migration failed'
 
 PROFILE_SCHEDULER_LOCKED=0
+PROFILE_REQUEST_LOCK_MAX_ATTEMPTS="${PROFILE_REQUEST_LOCK_MAX_ATTEMPTS:-3}"
+PROFILE_REQUEST_LOCK_RETRY_SLEEP_S="${PROFILE_REQUEST_LOCK_RETRY_SLEEP_S:-1}"
 
 release_profile_scheduler_lock() {
     if [ "$PROFILE_SCHEDULER_LOCKED" -eq 1 ]; then
@@ -44,12 +46,39 @@ profile_request_cleanup() {
 }
 
 acquire_profile_scheduler_lock() {
+    SO_TRANSITION_LOCK_MAX_ATTEMPTS="$PROFILE_REQUEST_LOCK_MAX_ATTEMPTS"
+    SO_TRANSITION_LOCK_RETRY_SLEEP_S="$PROFILE_REQUEST_LOCK_RETRY_SLEEP_S"
     so_acquire_transition_lock \
         || json_error '409 Conflict' 'scheduler transition busy'
     PROFILE_SCHEDULER_LOCKED=1
     trap 'profile_request_cleanup' EXIT
     trap 'profile_request_cleanup; exit 130' INT
     trap 'profile_request_cleanup; exit 143' TERM
+    so_migrate_state >/dev/null 2>&1 \
+        || json_error '500 Internal Server Error' 'scheduler owner state migration failed'
+}
+
+require_locked_pixel_scheduler() {
+    sbm_load_state
+    if [ "$SBM_PHASE" != "success" ] || [ "$SBM_EFFECTIVE_MODE" != "pixel" ] \
+        || [ "$(read_valid_sched_owner)" != "pixel" ]; then
+        json_error '409 Conflict' 'Pixel scheduler is not in a verified writable state'
+    fi
+}
+
+require_locked_verified_baseline() {
+    sbm_load_state
+    _locked_desired_owner=$(so_read_desired_owner)
+    _locked_expected_mode=$(sbm_owner_to_mode "$_locked_desired_owner")
+    if [ "$SBM_PHASE" != "success" ] \
+        || [ "$SBM_EFFECTIVE_MODE" != "$_locked_expected_mode" ]; then
+        json_error '409 Conflict' 'scheduler baseline is not in a verified state'
+    fi
+}
+
+reset_auto_profile_guard() {
+    stg_init "$MODDIR/.profile_transition_guard"
+    stg_reset || json_error '500 Internal Server Error' 'failed to reset automatic profile retry state'
 }
 
 read_valid_profile() {
@@ -83,8 +112,14 @@ read_arbiter_value() {
 }
 
 reconcile_owner_now() {
+    if [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = "1" ] \
+        && [ -n "${PIXEL9PRO_TEST_RECONCILE_RC:-}" ]; then
+        case "$PIXEL9PRO_TEST_RECONCILE_RC" in 0|1|75|78) return "$PIXEL9PRO_TEST_RECONCILE_RC" ;; esac
+        return 1
+    fi
     [ -f "$MODDIR/scripts/owner_arbiter.sh" ] || return 1
-    sh "$MODDIR/scripts/owner_arbiter.sh" apply-tick "$MODDIR" on >/dev/null 2>&1
+    SO_TRANSITION_LOCK_MAX_ATTEMPTS=1 SO_TRANSITION_LOCK_RETRY_SLEEP_S=0 \
+        sh "$MODDIR/scripts/owner_arbiter.sh" apply-tick "$MODDIR" on >/dev/null 2>&1
 }
 
 commit_profile_state() {
@@ -173,6 +208,74 @@ append_profile_history() {
     fi
 }
 
+# Mutation responses only publish state that has already been verified and
+# committed by the current request.  Full scheduler discovery and contract
+# serialization remain on GET so a completed write cannot be reported as a
+# client timeout while unrelated read-only details are still being assembled.
+emit_profile_mutation_state() {
+    _mutation_active=$(read_valid_profile "$PROFILE_FILE" 'balanced')
+    _mutation_manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" "$_mutation_active")
+    _mutation_policy=$(read_valid_policy)
+    _mutation_sched_owner=$(read_valid_desired_sched_owner)
+    _mutation_effective_owner=$(read_valid_sched_owner)
+    _mutation_handoff=$(read_valid_handoff_policy)
+    _mutation_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null | tr -d '\r')
+
+    printf '"state_scope":"profile_mutation","profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","sched_effective_owner":"%s","game_handoff_policy":"%s","auto_reason":"%s"' \
+        "$_mutation_active" "$_mutation_manual" "$_mutation_policy" \
+        "$_mutation_sched_owner" "$_mutation_effective_owner" "$_mutation_handoff" \
+        "$(json_escape "$_mutation_reason")"
+    emit_profile_transition_state
+}
+
+emit_profile_transition_state() {
+    stg_init "$MODDIR/.profile_transition_guard"
+    stg_load
+    printf ',"profile_transition":{"key":"%s","attempts":%s,"first_epoch":"%s","deadline_epoch":"%s","terminal":"%s","ok":"%s","result":"%s"}' \
+        "$(json_escape "$STG_KEY")" "${STG_ATTEMPTS:-0}" \
+        "$(json_escape "$STG_FIRST_EPOCH")" "$(json_escape "$STG_DEADLINE_EPOCH")" \
+        "$(json_escape "$STG_TERMINAL")" "$(json_escape "$STG_OK")" "$(json_escape "$STG_RESULT")"
+}
+
+emit_profile_arbiter_state() {
+    printf ',"arbiter_state":"%s","arbiter_apply_result":"%s","arbiter_reason":"%s"' \
+        "$(json_escape "$(read_arbiter_value state)")" \
+        "$(json_escape "$(read_arbiter_value apply_result)")" \
+        "$(json_escape "$(read_arbiter_value reason)")"
+}
+
+emit_scheduler_boot_state() {
+    sbm_load_state
+    printf ',"scheduler_boot":{"target_mode":"%s","effective_mode":"%s","phase":"%s","final":"%s","ok":"%s","result":"%s","reason":"%s","attempts":%s,"reboot_required":"%s","auto_repair_used":"%s","staged_boot_id":"%s","observed_boot_id":"%s"}' \
+        "$(json_escape "$SBM_TARGET_MODE")" "$(json_escape "$SBM_EFFECTIVE_MODE")" \
+        "$(json_escape "$SBM_PHASE")" "$(json_escape "$SBM_FINAL")" "$(json_escape "$SBM_OK")" \
+        "$(json_escape "$SBM_RESULT")" "$(json_escape "$SBM_REASON")" "${SBM_ATTEMPTS:-0}" \
+        "$(json_escape "$SBM_REBOOT_REQUIRED")" "$(json_escape "$SBM_AUTO_REPAIR_USED")" \
+        "$(json_escape "$SBM_STAGED_BOOT_ID")" "$(json_escape "$SBM_OBSERVED_BOOT_ID")"
+}
+
+emit_scheduler_health_state() {
+    _health_status=$(sbm_state_value "$SBM_HEALTH_FILE" status 2>/dev/null)
+    _health_reason=$(sbm_state_value "$SBM_HEALTH_FILE" reason 2>/dev/null)
+    _health_checked=$(sbm_state_value "$SBM_HEALTH_FILE" checked_epoch 2>/dev/null)
+    _health_profile_verified=$(sbm_state_value "$SBM_HEALTH_FILE" profile_verified 2>/dev/null)
+    _health_cpufreq=$(sbm_state_value "$SBM_HEALTH_FILE" cpufreq_permissions 2>/dev/null)
+    _health_powerhal=$(sbm_state_value "$SBM_HEALTH_FILE" powerhal_failures 2>/dev/null)
+    if so_transition_lock_is_active; then
+        _health_status=deferred
+        _health_reason=transition_in_progress
+        _health_checked=$(date +%s 2>/dev/null || printf '0')
+        _health_profile_verified=unknown
+    fi
+    printf ',"scheduler_health":{"status":"%s","reason":"%s","checked_epoch":"%s","profile_verified":"%s","cpufreq_permissions":"%s","powerhal_failures":"%s"}' \
+        "$(json_escape "$_health_status")" \
+        "$(json_escape "$_health_reason")" \
+        "$(json_escape "$_health_checked")" \
+        "$(json_escape "$_health_profile_verified")" \
+        "$(json_escape "$_health_cpufreq")" \
+        "$(json_escape "$_health_powerhal")"
+}
+
 emit_profile_state() {
     _active=$(read_valid_profile "$PROFILE_FILE" 'balanced')
     _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" "$_active")
@@ -221,12 +324,6 @@ emit_profile_state() {
     _cpu_contract=$(cpu_profile_contract_json) \
         || json_error '500 Internal Server Error' 'CPU profile contract serialization failed'
     sbm_load_state
-    _scheduler_health_status=$(sbm_state_value "$SBM_HEALTH_FILE" status 2>/dev/null)
-    _scheduler_health_reason=$(sbm_state_value "$SBM_HEALTH_FILE" reason 2>/dev/null)
-    _scheduler_health_checked=$(sbm_state_value "$SBM_HEALTH_FILE" checked_epoch 2>/dev/null)
-    _scheduler_health_profile_verified=$(sbm_state_value "$SBM_HEALTH_FILE" profile_verified 2>/dev/null)
-    _scheduler_health_cpufreq=$(sbm_state_value "$SBM_HEALTH_FILE" cpufreq_permissions 2>/dev/null)
-    _scheduler_health_powerhal=$(sbm_state_value "$SBM_HEALTH_FILE" powerhal_failures 2>/dev/null)
     if [ "$_sched_effective_owner" = "external" ]; then
         _profile_surface="delegated"
         _profile_surface_stale=true
@@ -245,7 +342,7 @@ emit_profile_state() {
         fi
     fi
 
-    printf '"profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","sched_effective_owner":"%s","game_handoff_policy":"%s","arbiter_state":"%s","arbiter_apply_result":"%s","arbiter_reason":"%s","auto_reason":"%s","last_profile_change":"%s","uperf_detected":%s,"uperf_module_id":"%s","uperf_module_name":"%s","uperf_module_path":"%s","uperf_module_source":"%s","uperf_module_state":"%s","uperf_module_enabled":"%s","uperf_process_alive":"%s","uperf_active":"%s","fas_rs_detected":%s,"fas_rs_module_id":"%s","fas_rs_module_name":"%s","fas_rs_module_path":"%s","fas_rs_module_source":"%s","fas_rs_module_state":"%s","fas_rs_module_enabled":"%s","fas_rs_owner_state":"%s","fas_rs_mode":"%s","fas_rs_process_alive":"%s","fas_rs_runtime_state":"%s","fas_rs_active":"%s","external_scheduler_detected":%s,"external_scheduler_active":%s,"external_scheduler_id":"%s","external_scheduler_name":"%s","external_scheduler_kind":"%s","external_scheduler_path":"%s","external_scheduler_source":"%s","external_scheduler_state":"%s","external_scheduler_enabled":"%s","effective_scheduler_owner":"%s","effective_scheduler_name":"%s","effective_scheduler_kind":"%s","effective_scheduler_mode":"%s","profile_surface":"%s","profile_surface_stale":%s,"profile_surface_note":"%s"' \
+    printf '"profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","sched_effective_owner":"%s","game_handoff_policy":"%s","arbiter_state":"%s","arbiter_apply_result":"%s","arbiter_reason":"%s","auto_reason":"%s","last_profile_change":"%s","uperf_detected":%s,"uperf_module_id":"%s","uperf_module_name":"%s","uperf_module_path":"%s","uperf_module_source":"%s","uperf_module_state":"%s","uperf_module_enabled":"%s","uperf_process_alive":"%s","uperf_active":"%s","fas_rs_detected":%s,"fas_rs_module_id":"%s","fas_rs_module_name":"%s","fas_rs_module_path":"%s","fas_rs_module_source":"%s","fas_rs_module_state":"%s","fas_rs_module_enabled":"%s","fas_rs_owner_state":"%s","fas_rs_mode":"%s","fas_rs_process_alive":"%s","fas_rs_runtime_state":"%s","fas_rs_runtime_owner_active":"%s","fas_rs_runtime_target":"%s","fas_rs_active":"%s","external_scheduler_detected":%s,"external_scheduler_active":%s,"external_scheduler_id":"%s","external_scheduler_name":"%s","external_scheduler_kind":"%s","external_scheduler_path":"%s","external_scheduler_source":"%s","external_scheduler_state":"%s","external_scheduler_enabled":"%s","effective_scheduler_owner":"%s","effective_scheduler_name":"%s","effective_scheduler_kind":"%s","effective_scheduler_mode":"%s","profile_surface":"%s","profile_surface_stale":%s,"profile_surface_note":"%s"' \
         "$_active" "$_manual" "$_policy" "$_sched_owner" "$_sched_effective_owner" "$_game_handoff_policy" \
         "$(json_escape "$_arbiter_state")" "$(json_escape "$_arbiter_apply_result")" "$(json_escape "$_arbiter_reason")" \
         "$(json_escape "$_reason")" "$(json_escape "$_last_profile_change")" \
@@ -257,7 +354,8 @@ emit_profile_state() {
         "$(json_escape "$FAS_RS_MODULE_PATH")" "$(json_escape "$FAS_RS_MODULE_SOURCE")" \
         "$(json_escape "$FAS_RS_MODULE_STATE")" "$(json_escape "$FAS_RS_MODULE_ENABLED")" \
         "$(json_escape "$FAS_RS_OWNER_STATE")" "$(json_escape "$FAS_RS_MODE")" \
-        "$(json_escape "$FAS_RS_PROCESS_ALIVE")" "$(json_escape "$FAS_RS_RUNTIME_STATE")" "$(json_escape "$FAS_RS_ACTIVE")" \
+        "$(json_escape "$FAS_RS_PROCESS_ALIVE")" "$(json_escape "$FAS_RS_RUNTIME_STATE")" \
+        "$(json_escape "$FAS_RS_RUNTIME_OWNER_ACTIVE")" "$(json_escape "$FAS_RS_RUNTIME_TARGET")" "$(json_escape "$FAS_RS_ACTIVE")" \
         "$_external_scheduler_detected" "$_external_scheduler_active" "$(json_escape "$EXTERNAL_SCHEDULER_ID")" \
         "$(json_escape "$EXTERNAL_SCHEDULER_NAME")" "$(json_escape "$EXTERNAL_SCHEDULER_KIND")" \
         "$(json_escape "$EXTERNAL_SCHEDULER_PATH")" "$(json_escape "$EXTERNAL_SCHEDULER_SOURCE")" \
@@ -272,10 +370,8 @@ emit_profile_state() {
         "$(json_escape "$SBM_RESULT")" "$(json_escape "$SBM_REASON")" "${SBM_ATTEMPTS:-0}" \
         "$(json_escape "$SBM_REBOOT_REQUIRED")" "$(json_escape "$SBM_AUTO_REPAIR_USED")" \
         "$(json_escape "$SBM_STAGED_BOOT_ID")" "$(json_escape "$SBM_OBSERVED_BOOT_ID")"
-    printf ',"scheduler_health":{"status":"%s","reason":"%s","checked_epoch":"%s","profile_verified":"%s","cpufreq_permissions":"%s","powerhal_failures":"%s"}' \
-        "$(json_escape "$_scheduler_health_status")" "$(json_escape "$_scheduler_health_reason")" \
-        "$(json_escape "$_scheduler_health_checked")" "$(json_escape "$_scheduler_health_profile_verified")" \
-        "$(json_escape "$_scheduler_health_cpufreq")" "$(json_escape "$_scheduler_health_powerhal")"
+    emit_scheduler_health_state
+    emit_profile_transition_state
 }
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
@@ -318,7 +414,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             release_profile_scheduler_lock
             json_headers
             printf '{"ok":true,"accepted":true,"final":true,'
-            emit_profile_state
+            emit_profile_mutation_state
+            emit_scheduler_boot_state
             printf '}\n'
             exit 0
         fi
@@ -326,7 +423,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         release_profile_scheduler_lock
         json_headers
         printf '{"ok":false,"accepted":false,"final":true,"error":"cancel failed (rc=%s)",' "$_cancel_rc"
-        emit_profile_state
+        emit_profile_mutation_state
+        emit_scheduler_boot_state
         printf '}\n'
         exit 0
     fi
@@ -340,10 +438,13 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         json_headers
         if [ "$_retry_rc" -eq 0 ] && [ "$SBM_PHASE" = "success" ]; then
             printf '{"ok":true,"accepted":true,"final":true,'
+        elif [ "$_retry_rc" -eq 75 ]; then
+            printf '{"ok":false,"accepted":false,"final":true,"error":"scheduler transition busy",'
         else
             printf '{"ok":false,"accepted":true,"final":true,"error":"scheduler retry reached terminal failure",'
         fi
-        emit_profile_state
+        emit_profile_mutation_state
+        emit_scheduler_boot_state
         printf '}\n'
         exit 0
     fi
@@ -370,26 +471,52 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         else
             printf '{"ok":false,"accepted":false,"final":true,"error":"scheduler mode staging failed (rc=%s)",' "$_stage_rc"
         fi
-        emit_profile_state
+        emit_profile_mutation_state
+        emit_scheduler_boot_state
         printf '}\n'
         exit 0
     fi
 
     if [ -n "$newhandoff" ]; then
-        sbm_load_state
-        if [ "$SBM_PHASE" != "success" ] || [ "$SBM_EFFECTIVE_MODE" != "pixel" ]; then
-            json_error '409 Conflict' 'fas-rs handoff requires a verified Pixel boot mode'
+        acquire_profile_scheduler_lock
+        require_locked_verified_baseline
+        if [ "$newhandoff" = "fas_rs" ]; then
+            detect_external_scheduler 2>/dev/null || true
+            [ "$FAS_RS_DETECTED" = "yes" ] && [ "$FAS_RS_MODULE_ENABLED" = "yes" ] \
+                || json_error '409 Conflict' 'fas-rs is not installed or enabled'
         fi
-        so_write_handoff_policy "$newhandoff" \
+        _old_handoff=$(read_valid_handoff_policy)
+        _old_handoff_source=$(so_read_handoff_source)
+        so_write_handoff_preference "$newhandoff" user \
             || json_error '500 Internal Server Error' 'failed to persist game handoff policy'
+        stg_init "$FAS_ROOT/.owner_mutation_guard"
+        if ! stg_reset; then
+            if so_write_handoff_preference "$_old_handoff" "$_old_handoff_source" \
+                && [ "$(read_valid_handoff_policy)" = "$_old_handoff" ] \
+                && [ "$(so_read_handoff_source)" = "$_old_handoff_source" ]; then
+                json_error '500 Internal Server Error' 'failed to reset game handoff retry state; previous policy restored'
+            fi
+            json_error '500 Internal Server Error' 'failed to reset game handoff retry state and rollback was incomplete'
+        fi
+        release_profile_scheduler_lock
         _reconcile_rc=0
         reconcile_owner_now || _reconcile_rc=$?
         _apply_result=$(read_arbiter_value apply_result)
         json_headers
-        case "$_apply_result" in failed_*|transition_busy) _transition_ok=false ;; *) _transition_ok=true ;; esac
-        [ "$_reconcile_rc" -eq 0 ] || _transition_ok=false
-        printf '{"ok":%s,' "$_transition_ok"
-        emit_profile_state
+        if [ "$_reconcile_rc" -eq 75 ] || [ "$_apply_result" = "transition_busy" ]; then
+            printf '{"ok":true,"accepted":true,"final":false,"pending_reason":"scheduler transition busy",'
+        elif [ "$_reconcile_rc" -eq 0 ]; then
+            case "$_apply_result" in
+                failed_*|transition_latched:*)
+                    printf '{"ok":false,"accepted":true,"final":true,"error":"scheduler handoff reached terminal failure",'
+                    ;;
+                *) printf '{"ok":true,"accepted":true,"final":true,' ;;
+            esac
+        else
+            printf '{"ok":false,"accepted":true,"final":true,"error":"scheduler handoff reached terminal failure (rc=%s)",' "$_reconcile_rc"
+        fi
+        emit_profile_mutation_state
+        emit_profile_arbiter_state
         printf '}\n'
         exit 0
     fi
@@ -398,7 +525,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     if [ "$SBM_PHASE" != "success" ] || [ "$SBM_EFFECTIVE_MODE" != "pixel" ]; then
         json_headers
         printf '{"ok":false,"error":"Pixel scheduler is not in a verified writable state",'
-        emit_profile_state
+        emit_profile_mutation_state
+        emit_scheduler_boot_state
         printf '}\n'
         exit 0
     fi
@@ -415,14 +543,10 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     fi
 
     acquire_profile_scheduler_lock
-    if [ "$(read_valid_sched_owner)" = "external" ]; then
-        release_profile_scheduler_lock
-        json_headers
-        printf '{"ok":false,"error":"本模块 CPU 调度未启用"}\n'
-        exit 0
-    fi
+    require_locked_pixel_scheduler
 
     if [ -n "$newprof" ]; then
+        reset_auto_profile_guard
         _old_active=$(read_valid_profile "$PROFILE_FILE" balanced)
         _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$newprof" "$MODDIR" 2>/dev/null)
         _rc=$?
@@ -446,14 +570,15 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         append_profile_history "$newprof" "manual_selected"
         release_profile_scheduler_lock
         json_headers
-        printf '{"ok":true,'
-        emit_profile_state
+        printf '{"ok":true,"accepted":true,"final":true,'
+        emit_profile_mutation_state
         printf '}\n'
         exit 0
     fi
 
     case "$newpolicy" in
         auto)
+            reset_auto_profile_guard
             _active=$(read_valid_profile "$PROFILE_FILE" 'balanced')
             _old_active="$_active"
             _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" balanced)
@@ -469,6 +594,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             append_profile_history "$_target" "auto_enabled"
             ;;
         manual)
+            reset_auto_profile_guard
             _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'balanced')
             _old_active=$(read_valid_profile "$PROFILE_FILE" balanced)
             _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_manual" "$MODDIR" 2>/dev/null)
@@ -484,13 +610,20 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     esac
     release_profile_scheduler_lock
     json_headers
-    printf '{"ok":true,'
-    emit_profile_state
+    printf '{"ok":true,"accepted":true,"final":true,'
+    emit_profile_mutation_state
     printf '}\n'
 elif [ "$REQUEST_METHOD" = "GET" ]; then
     json_headers
     printf '{'
-    emit_profile_state
+    case "&${QUERY_STRING:-}&" in
+        *'&compact=1&'*)
+            emit_profile_mutation_state
+            emit_scheduler_boot_state
+            emit_scheduler_health_state
+            ;;
+        *) emit_profile_state ;;
+    esac
     printf '}\n'
 else
     json_error '405 Method Not Allowed' 'GET or POST only'

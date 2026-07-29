@@ -141,6 +141,27 @@ scheduler_process_alive() {
     ps -A 2>/dev/null | grep -E "(^|[[:space:]])${_sd_proc}([[:space:]]|$)" | grep -v grep >/dev/null 2>&1
 }
 
+# fas-rs is resident throughout a verified Pixel boot.  A live process only
+# proves residency; runtime ownership requires an exact, valid game lease.
+scheduler_fas_owner_target() {
+    _sd_owner_state="$1"
+    case "$_sd_owner_state" in
+        fas-rs:game:*) _sd_owner_target=${_sd_owner_state#fas-rs:game:} ;;
+        *) return 1 ;;
+    esac
+    case "$_sd_owner_target" in
+        ''|.*|*.|*[!A-Za-z0-9._-]*) return 1 ;;
+        *.*) ;;
+        *) return 1 ;;
+    esac
+    printf '%s' "$_sd_owner_target"
+}
+
+scheduler_fas_owner_lease_active() {
+    [ "$2" = "yes" ] || return 1
+    scheduler_fas_owner_target "$1" >/dev/null 2>&1
+}
+
 is_uperf_module_prop() {
     _sd_prop="$1"
     _sd_id=$(read_module_prop_value id "$_sd_prop")
@@ -277,20 +298,11 @@ refresh_fas_rs_runtime() {
         FAS_RS_MODE=$(head -n 1 "$SCHEDULER_FAS_MODE_PATH" 2>/dev/null | tr -d ' \r\n\t')
         FAS_RS_DETECTED="yes"
     fi
-    if [ -n "$FAS_RS_OWNER_STATE" ]; then
-        case "$FAS_RS_OWNER_STATE" in
-            fas-rs:game:*)
-                FAS_RS_RUNTIME_TARGET="${FAS_RS_OWNER_STATE#fas-rs:game:}"
-                if [ -n "$FAS_RS_MODE" ] || [ "$FAS_RS_PROCESS_ALIVE" = "yes" ]; then
-                    FAS_RS_RUNTIME_OWNER_ACTIVE="yes"
-                fi
-                ;;
-            *running*|*game*|*fas-rs*)
-                if [ -n "$FAS_RS_MODE" ] || [ "$FAS_RS_PROCESS_ALIVE" = "yes" ]; then
-                    FAS_RS_RUNTIME_OWNER_ACTIVE="yes"
-                fi
-                ;;
-        esac
+    if _sd_fas_target=$(scheduler_fas_owner_target "$FAS_RS_OWNER_STATE" 2>/dev/null); then
+        FAS_RS_RUNTIME_TARGET="$_sd_fas_target"
+        if scheduler_fas_owner_lease_active "$FAS_RS_OWNER_STATE" "$FAS_RS_PROCESS_ALIVE"; then
+            FAS_RS_RUNTIME_OWNER_ACTIVE="yes"
+        fi
     fi
 
     # The control module also owns /data/adb/fas_rs arbiter state. A runtime
@@ -310,25 +322,20 @@ refresh_fas_rs_runtime() {
         FAS_RS_RUNTIME_STATE="disabled_marker"
         FAS_RS_MODULE_ENABLED="no"
         FAS_RS_ACTIVE="no"
-    elif [ "$FAS_RS_PROCESS_ALIVE" = "yes" ]; then
-        FAS_RS_RUNTIME_STATE="running"
+    elif [ "$FAS_RS_RUNTIME_OWNER_ACTIVE" = "yes" ]; then
+        FAS_RS_RUNTIME_STATE="game_lease_active"
         FAS_RS_MODULE_ENABLED="yes"
         FAS_RS_ACTIVE="yes"
+    elif [ "$FAS_RS_PROCESS_ALIVE" = "yes" ]; then
+        FAS_RS_RUNTIME_STATE="resident_idle"
+        FAS_RS_MODULE_ENABLED="yes"
+        FAS_RS_ACTIVE="no"
+    elif [ -n "$FAS_RS_RUNTIME_TARGET" ]; then
+        FAS_RS_RUNTIME_STATE="stale_game_lease"
+        FAS_RS_ACTIVE="no"
     elif [ -n "$FAS_RS_OWNER_STATE" ]; then
-        case "$FAS_RS_OWNER_STATE" in
-            *running*|*game*|*fas-rs*)
-                FAS_RS_RUNTIME_STATE="$FAS_RS_OWNER_STATE"
-                FAS_RS_MODULE_ENABLED="yes"
-                # .owner_state is a desired/last-owner marker and can be stale
-                # after a crash, force-stop, or handoff interruption.  Only the
-                # live fas-rs process proves runtime activity.
-                FAS_RS_ACTIVE="no"
-                ;;
-            *)
-                FAS_RS_RUNTIME_STATE="$FAS_RS_OWNER_STATE"
-                FAS_RS_ACTIVE="no"
-                ;;
-        esac
+        FAS_RS_RUNTIME_STATE="stale_owner_state"
+        FAS_RS_ACTIVE="no"
     elif [ "$FAS_RS_MODULE_ENABLED" = "yes" ]; then
         FAS_RS_RUNTIME_STATE="module_enabled"
         FAS_RS_ACTIVE="no"

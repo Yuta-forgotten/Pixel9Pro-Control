@@ -75,7 +75,36 @@ printf '1\n' > "$SCHEDULER_TEST_RUNTIME_ROOT/fas-rs_alive"
 printf 'balance\n' > "$SCHEDULER_FAS_MODE_PATH"
 detect_fas_rs_scheduler
 assert_eq 'live fas-rs process exposes runtime UI' yes "$FAS_RS_DETECTED"
-assert_eq 'live fas-rs process is active' yes "$FAS_RS_ACTIVE"
+assert_eq 'live fas-rs process is resident' yes "$FAS_RS_PROCESS_ALIVE"
+assert_eq 'resident fas-rs without a lease is not active owner' no "$FAS_RS_ACTIVE"
+assert_eq 'resident fas-rs exposes idle runtime state' resident_idle "$FAS_RS_RUNTIME_STATE"
+assert_eq 'resident fas-rs has no active runtime owner' no "$FAS_RS_RUNTIME_OWNER_ACTIVE"
+
+new_case live_fas_game_lease
+printf '1\n' > "$SCHEDULER_TEST_RUNTIME_ROOT/fas-rs_alive"
+printf 'balance\n' > "$SCHEDULER_FAS_MODE_PATH"
+printf 'fas-rs:game:com.example.game\n' > "$SCHEDULER_FAS_RUNTIME_ROOT/.owner_state"
+detect_external_scheduler_fresh
+assert_eq 'live fas-rs game lease is active owner' yes "$FAS_RS_ACTIVE"
+assert_eq 'live fas-rs game lease publishes runtime owner active' yes "$FAS_RS_RUNTIME_OWNER_ACTIVE"
+assert_eq 'live fas-rs game lease exposes target package' com.example.game "$FAS_RS_RUNTIME_TARGET"
+assert_eq 'live fas-rs game lease selects external fas-rs owner' fas_rs "$EXTERNAL_SCHEDULER_KIND"
+assert_eq 'live fas-rs game lease marks external scheduler active' yes "$EXTERNAL_SCHEDULER_ACTIVE"
+
+new_case stale_fas_game_lease
+write_module fas_rs fas_rs 'fas-rs'
+printf 'fas-rs:game:com.example.game\n' > "$SCHEDULER_FAS_RUNTIME_ROOT/.owner_state"
+detect_external_scheduler_fresh
+assert_eq 'stale fas-rs game marker is not active without process' no "$FAS_RS_ACTIVE"
+assert_eq 'stale fas-rs game marker is reported explicitly' stale_game_lease "$FAS_RS_RUNTIME_STATE"
+assert_eq 'stale fas-rs game marker does not claim external owner' no "$EXTERNAL_SCHEDULER_ACTIVE"
+
+new_case invalid_fas_game_lease
+printf '1\n' > "$SCHEDULER_TEST_RUNTIME_ROOT/fas-rs_alive"
+printf 'fas-rs:game:not a package\n' > "$SCHEDULER_FAS_RUNTIME_ROOT/.owner_state"
+detect_fas_rs_scheduler
+assert_eq 'invalid fas-rs game marker stays resident-only' no "$FAS_RS_ACTIVE"
+assert_eq 'invalid fas-rs game marker has no runtime target' '' "$FAS_RS_RUNTIME_TARGET"
 
 new_case cached_inventory
 write_module uperf uperf 'Uperf Game Turbo'

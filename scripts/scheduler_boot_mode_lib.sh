@@ -1,8 +1,10 @@
 #!/system/bin/sh
 
-# Boot-exclusive scheduler contract. UGT may mutate persistent sysfs runtime
-# state during its boot service, so Pixel <-> UGT changes are staged through
-# the root manager and become effective only after a reboot.
+# Reboot-selected daily baseline contract. UGT may mutate persistent sysfs
+# runtime state during its boot service, so Pixel <-> UGT baseline changes are
+# staged through the root manager and become effective only after a reboot.
+# This does not prohibit a bounded fas-rs game lease inside either verified
+# baseline; that runtime lease is owned by owner_arbiter.sh.
 
 SBM_SCHEMA=1
 SBM_MAX_WRITE_ATTEMPTS="${SBM_MAX_WRITE_ATTEMPTS:-3}"
@@ -13,6 +15,7 @@ SBM_VERIFY_INTERVAL_S="${SBM_VERIFY_INTERVAL_S:-5}"
 SBM_BOOT_VERIFY_ATTEMPTS="${SBM_BOOT_VERIFY_ATTEMPTS:-9}"
 SBM_BOOT_VERIFY_INTERVAL_S="${SBM_BOOT_VERIFY_INTERVAL_S:-10}"
 SBM_HEALTH_INTERVAL_S="${SBM_HEALTH_INTERVAL_S:-300}"
+SBM_HEALTH_RECHECK_DELAY_S="${SBM_HEALTH_RECHECK_DELAY_S:-2}"
 SBM_STATE_COMMIT_ATTEMPTS="${SBM_STATE_COMMIT_ATTEMPTS:-3}"
 SBM_STATE_COMMIT_RETRY_SLEEP_S="${SBM_STATE_COMMIT_RETRY_SLEEP_S:-1}"
 SBM_LOGCAT_MAX_LINES="${SBM_LOGCAT_MAX_LINES:-2000}"

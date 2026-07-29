@@ -16,6 +16,7 @@ OWNER_ARBITER_DEFAULT_SCREEN_OFF_POLL_S=15
 OWNER_ARBITER_DEFAULT_SCREEN_OFF_GRACE_S=360
 OWNER_ARBITER_DEFAULT_SCREEN_OFF_PAUSE_S=3600
 OWNER_ARBITER_DEFAULT_PAUSE_POLL_S=30
+UNIFIED_SCREEN_WAKE_RECHECK_S=30
 
 runtime_write_value() {
     _runtime_path="$1"
@@ -30,6 +31,16 @@ runtime_write_value() {
     fi
     rm -f "$_runtime_tmp" 2>/dev/null
     return 1
+}
+
+runtime_write_value_if_changed() {
+    _runtime_path="$1"
+    _runtime_value="$2"
+    if [ -f "$_runtime_path" ]; then
+        _runtime_current=$(cat "$_runtime_path" 2>/dev/null)
+        [ "$_runtime_current" = "$_runtime_value" ] && return 0
+    fi
+    runtime_write_value "$_runtime_path" "$_runtime_value"
 }
 
 runtime_read_onoff() {

@@ -1,8 +1,9 @@
 #!/system/bin/sh
 #
 # Guarded scheduler-owner arbiter. A plain tick records the decision only;
-# apply-tick/apply performs verified Pixel/fas-rs transitions. UGT changes are
-# boot-exclusive and are never mutated by this runtime arbiter.
+# apply-tick/apply performs verified baseline/fas-rs transitions. Pixel/UGT
+# baseline selection is reboot-only; inside a verified boot, fas-rs may take a
+# temporary game lease and then restore the same baseline.
 
 ACTION="${1:-tick}"
 APPLY_REQUESTED="no"
@@ -54,7 +55,10 @@ ARB_HISTORY_FILE="$STATE_DIR/.arbiter_history"
 LEASE_GAME_LIST="$FAS_ROOT/.lease_game_list"
 FAS_OWNER_FILE="$FAS_ROOT/.owner_state"
 FAS_LOG_FILE="$FAS_ROOT/fas_log.txt"
+POWERCFG_ENTRY="${OWNER_ARBITER_POWERCFG_ENTRY:-/data/powercfg.sh}"
+POWERCFG_ENTRY_EXECUTABLE_REQUIRED="${OWNER_ARBITER_POWERCFG_ENTRY_EXECUTABLE_REQUIRED:-yes}"
 SCENE_PROFILE="${OWNER_ARBITER_SCENE_PROFILE:-/data/data/com.omarea.vtools/shared_prefs/games.xml}"
+UPERF_START_LOCK_DIR="$STATE_DIR/.uperf_start.lock"
 CPUFREQ_ROOT="${OWNER_ARBITER_CPUFREQ_ROOT:-/sys/devices/system/cpu/cpufreq}"
 UCLAMP_CAP_PATH="${OWNER_ARBITER_UCLAMP_CAP_PATH:-/proc/sys/kernel/sched_util_clamp_min}"
 SCHEDULER_INVENTORY_PATH="${SCHEDULER_INVENTORY_PATH:-$MODDIR/.scheduler_inventory}"
@@ -72,6 +76,11 @@ if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
 fi
 
 write_fas_owner_state() {
+    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ] \
+        && [ -f "$TEST_RUNTIME_DIR/fail_write_fas_owner_once" ]; then
+        rm -f "$TEST_RUNTIME_DIR/fail_write_fas_owner_once" 2>/dev/null
+        return 1
+    fi
     so_atomic_write "$FAS_OWNER_FILE" "$1"
 }
 
@@ -97,14 +106,23 @@ CPUFREQ_RESTORE_CONTEXT="scheduler_handoff"
 UCLAMP_CAP_CURRENT="unknown"
 UCLAMP_CAP_EXPECTED="unknown"
 UCLAMP_CAP_VERIFIED="unknown"
-if [ "$APPLY_REQUESTED" = "yes" ]; then
-    APPLY_ENABLED="yes"
-elif [ -f "$ARB_APPLY_FILE" ]; then
+FAS_STARTED_BY_TRANSACTION="no"
+FAS_STARTED_PID=""
+FAS_STARTED_START_TICKS=""
+
+read_runtime_apply_enabled() {
+    [ -f "$ARB_APPLY_FILE" ] || { printf 'no'; return 0; }
     _oa_apply_value=$(cat "$ARB_APPLY_FILE" 2>/dev/null | tr -d ' \r\n\t')
     case "$_oa_apply_value" in
-        0|off|false|no) APPLY_ENABLED="no" ;;
-        *) APPLY_ENABLED="yes" ;;
+        0|off|false|no) printf 'no' ;;
+        *) printf 'yes' ;;
     esac
+}
+
+if [ "$APPLY_REQUESTED" = "yes" ]; then
+    APPLY_ENABLED="yes"
+elif [ "$(read_runtime_apply_enabled)" = "yes" ]; then
+    APPLY_ENABLED="yes"
 fi
 if [ "$APPLY_ENABLED" = "yes" ]; then
     DRY_RUN_FLAG="0"
@@ -140,10 +158,6 @@ fi
 
 scheduler_owner_init "$MODDIR" "$FAS_ROOT"
 sbm_init "$MODDIR" "$FAS_ROOT"
-if ! so_migrate_state >/dev/null 2>&1; then
-    echo "owner_arbiter: scheduler-owner state migration failed" >&2
-    exit 66
-fi
 
 now_epoch() {
     date +%s 2>/dev/null || echo 0
@@ -183,8 +197,16 @@ load_previous_state() {
     PREV_BASELINE_OWNER=""
     PREV_DESIRED_OWNER=""
     PREV_HANDOFF_POLICY=""
+    PREV_EFFECTIVE_OWNER=""
+    PREV_PROPOSED_OWNER=""
+    PREV_REASON=""
+    PREV_APPLY_ENABLED=""
+    PREV_APPLY_RESULT=""
     PREV_CPUFREQ_RESTORE_LEASE="0"
     PREV_CPUFREQ_RESTORE_EPOCH="0"
+    PREV_BASELINE_UCLAMP_CAP="unknown"
+    PREV_LEASE_FAS_PID="0"
+    PREV_LEASE_FAS_START_TICKS="0"
     [ -s "$ARB_STATE_FILE" ] || return 0
 
     while IFS='=' read -r _oa_state_key _oa_state_value; do
@@ -198,9 +220,17 @@ load_previous_state() {
             pid_absent_since) PREV_PID_ABSENT_SINCE="$_oa_state_value" ;;
             baseline_owner) PREV_BASELINE_OWNER="$_oa_state_value" ;;
             desired_owner) PREV_DESIRED_OWNER="$_oa_state_value" ;;
+            effective_owner) PREV_EFFECTIVE_OWNER="$_oa_state_value" ;;
+            proposed_owner) PREV_PROPOSED_OWNER="$_oa_state_value" ;;
+            reason) PREV_REASON="$_oa_state_value" ;;
+            apply_enabled) PREV_APPLY_ENABLED="$_oa_state_value" ;;
+            apply_result) PREV_APPLY_RESULT="$_oa_state_value" ;;
             game_handoff_policy) PREV_HANDOFF_POLICY="$_oa_state_value" ;;
             cpufreq_restore_lease) PREV_CPUFREQ_RESTORE_LEASE="$_oa_state_value" ;;
             cpufreq_restore_epoch) PREV_CPUFREQ_RESTORE_EPOCH="$_oa_state_value" ;;
+            baseline_uclamp_cap) PREV_BASELINE_UCLAMP_CAP="$_oa_state_value" ;;
+            lease_fas_pid) PREV_LEASE_FAS_PID="$_oa_state_value" ;;
+            lease_fas_start_ticks) PREV_LEASE_FAS_START_TICKS="$_oa_state_value" ;;
         esac
     done < "$ARB_STATE_FILE"
 }
@@ -415,10 +445,48 @@ package_matches_fas_target() {
     return 1
 }
 
+fas_handoff_available() {
+    [ "$FAS_RS_DETECTED" = "yes" ] || return 1
+    [ "$FAS_RS_MODULE_ENABLED" = "yes" ] || return 1
+    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
+        [ ! -f "$TEST_RUNTIME_DIR/fas_payload_incomplete" ] || return 1
+        return 0
+    fi
+    [ "$FAS_RS_MODULE_SOURCE" = "modules" ] || return 1
+    [ "$(scheduler_module_state "$FAS_RS_MODULE_PATH" "$FAS_RS_MODULE_SOURCE")" = "active" ] || return 1
+    [ -f "$FAS_RS_MODULE_PATH/fas-rs" ] || return 1
+    [ -s "$FAS_RS_MODULE_PATH/games.toml" ] || return 1
+    _oa_payload_router="$FAS_RS_MODULE_PATH/vtools/powercfg.sh"
+    [ -s "$_oa_payload_router" ] || return 1
+    grep -q '/data/adb/fas_rs/.owner_state' "$_oa_payload_router" 2>/dev/null || return 1
+    sh -n "$_oa_payload_router" >/dev/null 2>&1 || return 1
+    return 0
+}
+
 process_alive() {
     _oa_proc="$1"
     pidof "$_oa_proc" >/dev/null 2>&1 && return 0
     ps -A 2>/dev/null | grep -E "(^|[[:space:]])${_oa_proc}([[:space:]]|$)" | grep -v grep >/dev/null 2>&1
+}
+
+pid_alive() {
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    [ -d "/proc/$1" ]
+}
+
+process_start_ticks() {
+    _oa_pid="$1"
+    case "$_oa_pid" in ''|*[!0-9]*) return 1 ;; esac
+    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
+        _oa_test_pid=$(cat "$TEST_RUNTIME_DIR/fas_pid" 2>/dev/null | tr -d ' \r\n\t')
+        [ -n "$_oa_test_pid" ] || _oa_test_pid=4242
+        [ "$_oa_pid" = "$_oa_test_pid" ] || return 1
+        _oa_test_ticks=$(cat "$TEST_RUNTIME_DIR/fas_start_ticks" 2>/dev/null | tr -d ' \r\n\t')
+        case "$_oa_test_ticks" in ''|*[!0-9]*) _oa_test_ticks=100 ;; esac
+        printf '%s' "$_oa_test_ticks"
+        return 0
+    fi
+    sed 's/^[^)]*) //' "/proc/$_oa_pid/stat" 2>/dev/null | awk '{print $20}'
 }
 
 uperf_process_alive() {
@@ -441,6 +509,43 @@ fas_process_alive() {
         return
     fi
     process_alive "fas-rs"
+}
+
+fas_process_pids() {
+    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
+        fas_process_alive || return 0
+        _oa_test_pid=$(cat "$TEST_RUNTIME_DIR/fas_pid" 2>/dev/null | tr -d ' \r\n\t')
+        [ -n "$_oa_test_pid" ] || _oa_test_pid=4242
+        printf '%s' "$_oa_test_pid"
+        return 0
+    fi
+    pidof fas-rs 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g;s/^ //;s/ $//'
+}
+
+fas_primary_pid() {
+    _oa_pids=$(fas_process_pids)
+    first_word "$_oa_pids"
+}
+
+fas_identity_matches() {
+    _oa_pid="$1"
+    _oa_start="$2"
+    case "$_oa_pid:$_oa_start" in
+        *[!0-9:]*|:*|*:) return 1 ;;
+    esac
+    fas_process_alive || return 1
+    _oa_live_start=$(process_start_ticks "$_oa_pid")
+    [ -n "$_oa_live_start" ] && [ "$_oa_live_start" = "$_oa_start" ]
+}
+
+fas_game_lease_target() {
+    _oa_fas_owner=$(cat "$FAS_OWNER_FILE" 2>/dev/null | tr -d '\r\n')
+    scheduler_fas_owner_target "$_oa_fas_owner"
+}
+
+fas_game_lease_active() {
+    fas_process_alive || return 1
+    fas_game_lease_target >/dev/null 2>&1
 }
 
 uperf_root_instance_count() {
@@ -481,6 +586,104 @@ uperf_root_instance_count() {
     esac
 }
 
+acquire_uperf_start_lock() {
+    for _oa_i in 1 2 3 4 5; do
+        if mkdir "$UPERF_START_LOCK_DIR" 2>/dev/null; then
+            if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
+                _oa_lock_start=1
+            else
+                _oa_lock_start=$(sed 's/^[^)]*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}')
+            fi
+            _oa_lock_boot=$(so_current_boot_id 2>/dev/null)
+            if [ -z "$_oa_lock_start" ] || [ -z "$_oa_lock_boot" ] \
+                || ! printf '%s\n' "$$" > "$UPERF_START_LOCK_DIR/pid" 2>/dev/null \
+                || ! printf '%s\n' "$_oa_lock_start" > "$UPERF_START_LOCK_DIR/start_ticks" 2>/dev/null \
+                || ! printf '%s\n' "$_oa_lock_boot" > "$UPERF_START_LOCK_DIR/boot_id" 2>/dev/null; then
+                rm -f "$UPERF_START_LOCK_DIR/pid" "$UPERF_START_LOCK_DIR/start_ticks" \
+                    "$UPERF_START_LOCK_DIR/boot_id" 2>/dev/null
+                rmdir "$UPERF_START_LOCK_DIR" 2>/dev/null
+                return 1
+            fi
+            UPERF_START_LOCK_TICKS="$_oa_lock_start"
+            UPERF_START_LOCK_BOOT_ID="$_oa_lock_boot"
+            return 0
+        fi
+
+        _oa_lock_pid=$(cat "$UPERF_START_LOCK_DIR/pid" 2>/dev/null | tr -d ' \r\n\t')
+        _oa_lock_start=$(cat "$UPERF_START_LOCK_DIR/start_ticks" 2>/dev/null | tr -d ' \r\n\t')
+        _oa_lock_boot=$(cat "$UPERF_START_LOCK_DIR/boot_id" 2>/dev/null | tr -d ' \r\n\t')
+        _oa_current_boot=$(so_current_boot_id 2>/dev/null)
+        if [ "$OWNER_ARBITER_TEST_MODE" = "1" ] && pid_alive "$_oa_lock_pid"; then
+            _oa_live_start=1
+        else
+            case "$_oa_lock_pid" in
+                ''|*[!0-9]*) _oa_live_start="" ;;
+                *) _oa_live_start=$(sed 's/^[^)]*) //' "/proc/$_oa_lock_pid/stat" 2>/dev/null | awk '{print $20}') ;;
+            esac
+        fi
+        if [ -z "$_oa_current_boot" ] || [ "$_oa_lock_boot" != "$_oa_current_boot" ] \
+            || ! pid_alive "$_oa_lock_pid" \
+            || [ -z "$_oa_lock_start" ] || [ -z "$_oa_live_start" ] \
+            || [ "$_oa_live_start" != "$_oa_lock_start" ]; then
+            rm -f "$UPERF_START_LOCK_DIR/pid" "$UPERF_START_LOCK_DIR/start_ticks" \
+                "$UPERF_START_LOCK_DIR/boot_id" 2>/dev/null
+            rmdir "$UPERF_START_LOCK_DIR" 2>/dev/null || true
+            continue
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+release_uperf_start_lock() {
+    _oa_lock_pid=$(cat "$UPERF_START_LOCK_DIR/pid" 2>/dev/null | tr -d ' \r\n\t')
+    _oa_lock_start=$(cat "$UPERF_START_LOCK_DIR/start_ticks" 2>/dev/null | tr -d ' \r\n\t')
+    _oa_lock_boot=$(cat "$UPERF_START_LOCK_DIR/boot_id" 2>/dev/null | tr -d ' \r\n\t')
+    [ "$_oa_lock_pid" = "$$" ] \
+        && [ -n "${UPERF_START_LOCK_TICKS:-}" ] \
+        && [ "$_oa_lock_start" = "$UPERF_START_LOCK_TICKS" ] \
+        && [ -n "${UPERF_START_LOCK_BOOT_ID:-}" ] \
+        && [ "$_oa_lock_boot" = "$UPERF_START_LOCK_BOOT_ID" ] || return 0
+    rm -f "$UPERF_START_LOCK_DIR/pid" "$UPERF_START_LOCK_DIR/start_ticks" \
+        "$UPERF_START_LOCK_DIR/boot_id" 2>/dev/null
+    rmdir "$UPERF_START_LOCK_DIR" 2>/dev/null || true
+    UPERF_START_LOCK_TICKS=""
+    UPERF_START_LOCK_BOOT_ID=""
+}
+
+normalize_uperf_instances() {
+    _oa_roots=$(uperf_root_instance_count)
+    [ "$_oa_roots" -gt 1 ] 2>/dev/null || return 0
+    UPERF_NORMALIZED="yes"
+    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
+        printf '1\n' > "$TEST_RUNTIME_DIR/uperf_count" 2>/dev/null || return 1
+        printf '1\n' > "$TEST_RUNTIME_DIR/uperf_alive" 2>/dev/null || return 1
+        return 0
+    fi
+    killall uperf 2>/dev/null || true
+    for _oa_i in 1 2 3 4 5; do
+        sleep 1
+        [ "$(uperf_root_instance_count)" -le 1 ] 2>/dev/null && return 0
+    done
+    return 2
+}
+
+uperf_storage_ready() {
+    [ "$OWNER_ARBITER_TEST_MODE" = "1" ] && return 0
+    [ "$(getprop sys.boot_completed 2>/dev/null | tr -d ' \r\n\t')" = "1" ] || return 1
+    [ -d /sdcard/Android ] || [ -d /storage/emulated/0/Android ]
+}
+
+uperf_single_instance_stable() {
+    for _oa_i in 1 2 3 4 5; do
+        sleep 1
+        uperf_process_alive || return 1
+        _oa_roots=$(uperf_root_instance_count)
+        [ "$_oa_roots" -le 1 ] 2>/dev/null || return 2
+    done
+    return 0
+}
+
 write_sched_owner() {
     _oa_target="$1"
     case "$_oa_target" in
@@ -488,6 +691,11 @@ write_sched_owner() {
         *) return 1 ;;
     esac
 
+    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ] \
+        && [ -f "$TEST_RUNTIME_DIR/fail_write_sched_owner_once" ]; then
+        rm -f "$TEST_RUNTIME_DIR/fail_write_sched_owner_once" 2>/dev/null
+        return 1
+    fi
     if [ "$(read_pixel_owner)" = "$_oa_target" ]; then
         return 0
     fi
@@ -741,37 +949,328 @@ resolve_fas_module_path() {
     printf '%s' "$_oa_path"
 }
 
-stop_fas_rs() {
+resolve_uperf_module_path() {
+    _oa_path="$UPERF_MODULE_PATH"
+    case "$_oa_path" in
+        ""|*";"*) _oa_path="/data/adb/modules/uperf" ;;
+    esac
+    if [ -d /data/adb/modules/uperf ]; then
+        _oa_path="/data/adb/modules/uperf"
+    else
+        case "$_oa_path" in
+            /data/adb/modules/*) [ -d "$_oa_path" ] || _oa_path="/data/adb/modules/uperf" ;;
+            *) _oa_path="/data/adb/modules/uperf" ;;
+        esac
+    fi
+    printf '%s' "$_oa_path"
+}
+
+ensure_powercfg_router() {
     if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
         mkdir -p "$TEST_RUNTIME_DIR" 2>/dev/null || return 1
-        rm -f "$TEST_RUNTIME_DIR/fas_alive" 2>/dev/null
-        return
-    fi
-    if ! fas_process_alive; then
+        _oa_router_calls=$(cat "$TEST_RUNTIME_DIR/powercfg_router_calls" 2>/dev/null | tr -d ' \r\n\t')
+        case "$_oa_router_calls" in ''|*[!0-9]*) _oa_router_calls=0 ;; esac
+        printf '%s\n' $((_oa_router_calls + 1)) > "$TEST_RUNTIME_DIR/powercfg_router_calls" 2>/dev/null || return 1
+        [ ! -f "$TEST_RUNTIME_DIR/fail_powercfg_router" ] || return 1
+        printf 'ready\n' > "$TEST_RUNTIME_DIR/powercfg_router_ready" 2>/dev/null || return 1
         return 0
     fi
-    killall fas-rs 2>/dev/null || true
+    _oa_fas_mod=$(resolve_fas_module_path)
+    _oa_router="$_oa_fas_mod/vtools/powercfg.sh"
+    [ -s "$_oa_router" ] || return 1
+    grep -q '/data/adb/fas_rs/.owner_state' "$_oa_router" 2>/dev/null || return 1
+    sh -n "$_oa_router" >/dev/null 2>&1 || return 1
+    _oa_router_hash=$(sha256sum "$_oa_router" 2>/dev/null | awk '{print $1}')
+    case "$_oa_router_hash" in ''|*[!0-9a-fA-F]*) return 1 ;; esac
+
+    case "$POWERCFG_ENTRY_EXECUTABLE_REQUIRED" in
+        yes|no) ;;
+        *) return 1 ;;
+    esac
+
+    _oa_entry_hash=$(sha256sum "$POWERCFG_ENTRY" 2>/dev/null | awk '{print $1}')
+    if [ "$_oa_entry_hash" = "$_oa_router_hash" ]; then
+        if [ "$POWERCFG_ENTRY_EXECUTABLE_REQUIRED" = "no" ] || [ -x "$POWERCFG_ENTRY" ]; then
+            return 0
+        fi
+    fi
+
+    [ ! -e "$POWERCFG_ENTRY" ] || [ -f "$POWERCFG_ENTRY" ] || return 1
+    _oa_router_tmp="${POWERCFG_ENTRY}.pixel9pro_control.$$"
+    _oa_router_backup="${POWERCFG_ENTRY}.pixel9pro_control.prev.$$"
+    _oa_router_old_existed=no
+    _oa_router_old_hash=""
+    _oa_router_old_mode=""
+    if [ -f "$POWERCFG_ENTRY" ]; then
+        _oa_router_old_existed=yes
+        _oa_router_old_hash=$(sha256sum "$POWERCFG_ENTRY" 2>/dev/null | awk '{print $1}')
+        _oa_router_old_mode=$(stat -c '%a' "$POWERCFG_ENTRY" 2>/dev/null | tr -d ' \r\n\t')
+        case "$_oa_router_old_hash:$_oa_router_old_mode" in
+            *[!0-9a-fA-F:]*|:*|*:) return 1 ;;
+        esac
+        cp -p "$POWERCFG_ENTRY" "$_oa_router_backup" 2>/dev/null || return 1
+    fi
+
+    _oa_router_installed=no
+    if cp "$_oa_router" "$_oa_router_tmp" 2>/dev/null \
+        && { [ "$POWERCFG_ENTRY_EXECUTABLE_REQUIRED" = "no" ] || chmod 0755 "$_oa_router_tmp" 2>/dev/null; } \
+        && { [ "$POWERCFG_ENTRY_EXECUTABLE_REQUIRED" = "no" ] || [ -x "$_oa_router_tmp" ]; } \
+        && sh -n "$_oa_router_tmp" >/dev/null 2>&1 \
+        && [ "$(sha256sum "$_oa_router_tmp" 2>/dev/null | awk '{print $1}')" = "$_oa_router_hash" ] \
+        && mv -f "$_oa_router_tmp" "$POWERCFG_ENTRY" 2>/dev/null \
+        && { [ "$POWERCFG_ENTRY_EXECUTABLE_REQUIRED" = "no" ] || [ -x "$POWERCFG_ENTRY" ]; } \
+        && [ "$(sha256sum "$POWERCFG_ENTRY" 2>/dev/null | awk '{print $1}')" = "$_oa_router_hash" ]; then
+        _oa_router_installed=yes
+    fi
+
+    if [ "$_oa_router_installed" = "yes" ]; then
+        rm -f "$_oa_router_backup" 2>/dev/null
+        return 0
+    fi
+
+    rm -f "$_oa_router_tmp" 2>/dev/null
+    _oa_router_rollback_ok=no
+    if [ "$_oa_router_old_existed" = "yes" ]; then
+        if mv -f "$_oa_router_backup" "$POWERCFG_ENTRY" 2>/dev/null \
+            && chmod "$_oa_router_old_mode" "$POWERCFG_ENTRY" 2>/dev/null \
+            && [ "$(sha256sum "$POWERCFG_ENTRY" 2>/dev/null | awk '{print $1}')" = "$_oa_router_old_hash" ]; then
+            _oa_router_rollback_ok=yes
+        fi
+    else
+        rm -f "$POWERCFG_ENTRY" 2>/dev/null
+        [ ! -e "$POWERCFG_ENTRY" ] && _oa_router_rollback_ok=yes
+    fi
+    rm -f "$_oa_router_backup" 2>/dev/null
+    [ "$_oa_router_rollback_ok" = "yes" ] || APPLY_RESULT="failed_powercfg_router_rollback_incomplete"
+    return 1
+}
+
+stop_uperf() {
+    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
+        mkdir -p "$TEST_RUNTIME_DIR" 2>/dev/null || return 1
+        [ -f "$TEST_RUNTIME_DIR/fail_stop_uperf" ] && return 1
+        rm -f "$TEST_RUNTIME_DIR/uperf_alive" 2>/dev/null
+        [ -f "$TEST_RUNTIME_DIR/uperf_count" ] && printf '0\n' > "$TEST_RUNTIME_DIR/uperf_count" 2>/dev/null
+        return 0
+    fi
+    uperf_process_alive || return 0
+    killall uperf 2>/dev/null || true
     for _oa_i in 1 2 3 4 5; do
-        fas_process_alive || return 0
+        uperf_process_alive || return 0
+        sleep 1
+    done
+    return 1
+}
+
+start_uperf() {
+    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
+        mkdir -p "$TEST_RUNTIME_DIR" 2>/dev/null || return 1
+        acquire_uperf_start_lock || return 1
+        if [ -f "$TEST_RUNTIME_DIR/fail_start_uperf" ]; then
+            release_uperf_start_lock
+            return 1
+        fi
+        if [ -f "$TEST_RUNTIME_DIR/defer_start_uperf" ]; then
+            release_uperf_start_lock
+            return 3
+        fi
+        _oa_test_alive_before=no
+        [ -f "$TEST_RUNTIME_DIR/uperf_alive" ] && _oa_test_alive_before=yes
+        _oa_test_count_file_before=no
+        [ -f "$TEST_RUNTIME_DIR/uperf_count" ] && _oa_test_count_file_before=yes
+        _oa_test_count=$(cat "$TEST_RUNTIME_DIR/uperf_count" 2>/dev/null | tr -d ' \r\n\t')
+        case "$_oa_test_count" in ''|*[!0-9]*) _oa_test_count=0 ;; esac
+        _oa_test_normalized_before="$UPERF_NORMALIZED"
+        [ "$_oa_test_count" -gt 1 ] 2>/dev/null && UPERF_NORMALIZED="yes"
+        if ! printf '1\n' > "$TEST_RUNTIME_DIR/uperf_alive" 2>/dev/null; then
+            release_uperf_start_lock
+            return 1
+        fi
+        _oa_test_count_write_ok=yes
+        if [ -f "$TEST_RUNTIME_DIR/fail_write_uperf_count_once" ]; then
+            rm -f "$TEST_RUNTIME_DIR/fail_write_uperf_count_once" 2>/dev/null
+            _oa_test_count_write_ok=no
+        elif [ "$_oa_test_count_file_before" = "yes" ] \
+            && ! printf '1\n' > "$TEST_RUNTIME_DIR/uperf_count" 2>/dev/null; then
+            _oa_test_count_write_ok=no
+        fi
+        if [ "$_oa_test_count_write_ok" != "yes" ]; then
+            if [ "$_oa_test_alive_before" = "yes" ]; then
+                printf '1\n' > "$TEST_RUNTIME_DIR/uperf_alive" 2>/dev/null || true
+            else
+                rm -f "$TEST_RUNTIME_DIR/uperf_alive" 2>/dev/null
+            fi
+            if [ "$_oa_test_count_file_before" = "yes" ]; then
+                printf '%s\n' "$_oa_test_count" > "$TEST_RUNTIME_DIR/uperf_count" 2>/dev/null || true
+            else
+                rm -f "$TEST_RUNTIME_DIR/uperf_count" 2>/dev/null
+            fi
+            UPERF_NORMALIZED="$_oa_test_normalized_before"
+            release_uperf_start_lock
+            return 1
+        fi
+        release_uperf_start_lock
+        return 0
+    fi
+    uperf_storage_ready || return 3
+
+    if ! acquire_uperf_start_lock; then
+        for _oa_i in 1 2 3 4 5 6 7 8; do
+            sleep 1
+            if uperf_process_alive; then
+                _oa_roots=$(uperf_root_instance_count)
+                if [ "$_oa_roots" -le 1 ] 2>/dev/null; then
+                    uperf_single_instance_stable
+                    _oa_stable=$?
+                    [ "$_oa_stable" -eq 0 ] && return 0
+                    [ "$_oa_stable" -eq 2 ] && break
+                else
+                    break
+                fi
+            fi
+        done
+        acquire_uperf_start_lock || return 1
+    fi
+
+    if uperf_process_alive; then
+        normalize_uperf_instances
+        _oa_norm=$?
+        if [ "$_oa_norm" -eq 0 ]; then
+            uperf_single_instance_stable
+            _oa_stable=$?
+            if [ "$_oa_stable" -eq 0 ]; then
+                release_uperf_start_lock
+                return 0
+            fi
+            [ "$_oa_stable" -eq 2 ] && normalize_uperf_instances >/dev/null 2>&1 || true
+        elif [ "$_oa_norm" -eq 2 ]; then
+            release_uperf_start_lock
+            return 1
+        fi
+    fi
+
+    _oa_uperf_mod=$(resolve_uperf_module_path)
+    _oa_uperf_lib="$_oa_uperf_mod/script/libuperf.sh"
+    if [ ! -f "$_oa_uperf_lib" ]; then
+        release_uperf_start_lock
+        return 1
+    fi
+
+    _oa_start_attempt=1
+    while [ "$_oa_start_attempt" -le 2 ] 2>/dev/null; do
+        # Runtime restore only calls UGT's process lifecycle helper.  Replaying
+        # initsvc.sh would also rerun platform_special/miui_migt/powercfg_once
+        # and append another router entry on every game exit.
+        sh -c '. "$0"; uperf_start' "$_oa_uperf_lib" >/dev/null 2>&1 &
+        for _oa_i in 1 2 3 4 5 6 7 8; do
+            sleep 1
+            if uperf_process_alive; then
+                uperf_single_instance_stable
+                _oa_stable=$?
+                if [ "$_oa_stable" -eq 0 ]; then
+                    release_uperf_start_lock
+                    return 0
+                elif [ "$_oa_stable" -eq 2 ]; then
+                    normalize_uperf_instances >/dev/null 2>&1 || true
+                    break
+                else
+                    release_uperf_start_lock
+                    return 1
+                fi
+            fi
+        done
+        _oa_start_attempt=$((_oa_start_attempt + 1))
+    done
+    release_uperf_start_lock
+    return 1
+}
+
+fas_pid_is_ours() {
+    _oa_pid="$1"
+    _oa_start="$2"
+    fas_identity_matches "$_oa_pid" "$_oa_start" || return 1
+    [ "$OWNER_ARBITER_TEST_MODE" = "1" ] && return 0
+    _oa_comm=$(cat "/proc/$_oa_pid/comm" 2>/dev/null | tr -d ' \r\n\t')
+    [ "$_oa_comm" = "fas-rs" ]
+}
+
+cleanup_fas_started_by_transaction() {
+    [ "$FAS_STARTED_BY_TRANSACTION" = "yes" ] || return 0
+    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
+        fas_pid_is_ours "$FAS_STARTED_PID" "$FAS_STARTED_START_TICKS" || return 0
+        rm -f "$TEST_RUNTIME_DIR/fas_alive" "$TEST_RUNTIME_DIR/fas_pid" \
+            "$TEST_RUNTIME_DIR/fas_start_ticks" 2>/dev/null
+        FAS_STARTED_BY_TRANSACTION="no"
+        FAS_STARTED_PID=""
+        FAS_STARTED_START_TICKS=""
+        return
+    fi
+    if ! fas_pid_is_ours "$FAS_STARTED_PID" "$FAS_STARTED_START_TICKS"; then
+        FAS_STARTED_BY_TRANSACTION="no"
+        FAS_STARTED_PID=""
+        FAS_STARTED_START_TICKS=""
+        return 0
+    fi
+    kill "$FAS_STARTED_PID" 2>/dev/null || return 1
+    for _oa_i in 1 2 3 4 5; do
+        if ! fas_pid_is_ours "$FAS_STARTED_PID" "$FAS_STARTED_START_TICKS"; then
+            FAS_STARTED_BY_TRANSACTION="no"
+            FAS_STARTED_PID=""
+            FAS_STARTED_START_TICKS=""
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+stop_fas_lease_instance() {
+    _oa_pid="$1"
+    _oa_start="$2"
+    if ! fas_identity_matches "$_oa_pid" "$_oa_start"; then
+        fas_process_alive && return 2
+        return 0
+    fi
+    if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
+        [ -f "$TEST_RUNTIME_DIR/fail_stop_fas" ] && return 1
+        rm -f "$TEST_RUNTIME_DIR/fas_alive" "$TEST_RUNTIME_DIR/fas_pid" \
+            "$TEST_RUNTIME_DIR/fas_start_ticks" 2>/dev/null
+        fas_process_alive && return 1
+        return 0
+    fi
+    kill "$_oa_pid" 2>/dev/null || return 1
+    for _oa_i in 1 2 3 4 5; do
+        if ! fas_identity_matches "$_oa_pid" "$_oa_start"; then
+            fas_process_alive && return 2
+            return 0
+        fi
         sleep 1
     done
     return 1
 }
 
 start_fas_rs() {
+    if fas_process_alive; then
+        return 0
+    fi
     if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
         mkdir -p "$TEST_RUNTIME_DIR" 2>/dev/null || return 1
         [ -f "$TEST_RUNTIME_DIR/fail_start_fas" ] && return 1
+        _oa_start_count=$(cat "$TEST_RUNTIME_DIR/fas_start_calls" 2>/dev/null | tr -d ' \r\n\t')
+        case "$_oa_start_count" in ''|*[!0-9]*) _oa_start_count=0 ;; esac
+        printf '%s\n' $((_oa_start_count + 1)) > "$TEST_RUNTIME_DIR/fas_start_calls" 2>/dev/null || return 1
         if [ -f "$TEST_RUNTIME_DIR/require_cap_before_start_fas" ]; then
             _oa_test_cap=$(cat "$UCLAMP_CAP_PATH" 2>/dev/null | tr -d ' \r\n\t')
             printf '%s\n' "$_oa_test_cap" > "$TEST_RUNTIME_DIR/cap_at_fas_start" 2>/dev/null
             [ "$_oa_test_cap" = "$CPU_PROFILE_FULL_CAP" ] || return 1
         fi
-        printf '1\n' > "$TEST_RUNTIME_DIR/fas_alive" 2>/dev/null
+        printf '1\n' > "$TEST_RUNTIME_DIR/fas_alive" 2>/dev/null || return 1
+        printf '4242\n' > "$TEST_RUNTIME_DIR/fas_pid" 2>/dev/null || return 1
+        printf '100\n' > "$TEST_RUNTIME_DIR/fas_start_ticks" 2>/dev/null || return 1
+        FAS_STARTED_BY_TRANSACTION="yes"
+        FAS_STARTED_PID="4242"
+        FAS_STARTED_START_TICKS="100"
         return
-    fi
-    if fas_process_alive; then
-        return 0
     fi
 
     _oa_fas_mod=$(resolve_fas_module_path)
@@ -785,9 +1284,15 @@ start_fas_rs() {
     mkdir -p "$FAS_ROOT" 2>/dev/null || return 1
     write_fas_owner_state "fas-rs:starting-arbiter" || return 1
     RUST_BACKTRACE=1 nohup "$_oa_fas_bin" run "$_oa_fas_std_conf" >>"$FAS_LOG_FILE" 2>&1 &
+    _oa_spawn_pid=$!
+    case "$_oa_spawn_pid" in ''|*[!0-9]*) return 1 ;; esac
+    FAS_STARTED_BY_TRANSACTION="yes"
+    FAS_STARTED_PID="$_oa_spawn_pid"
+    FAS_STARTED_START_TICKS=$(process_start_ticks "$_oa_spawn_pid")
+    case "$FAS_STARTED_START_TICKS" in ''|*[!0-9]*) return 1 ;; esac
     for _oa_i in 1 2 3 4 5; do
         sleep 1
-        fas_process_alive && return 0
+        fas_pid_is_ours "$FAS_STARTED_PID" "$FAS_STARTED_START_TICKS" && return 0
     done
     return 1
 }
@@ -847,9 +1352,9 @@ refresh_uclamp_state() {
             FAS_LEASED_GAME|EXIT_HOLD)
                 UCLAMP_CAP_EXPECTED="$CPU_PROFILE_FULL_CAP"
                 ;;
-            PIXEL_NORMAL)
-                if [ "$DESIRED_OWNER" = "external" ]; then
-                    UCLAMP_CAP_EXPECTED="$CPU_PROFILE_ECO_CAP"
+            BASELINE_NORMAL|GAME_CANDIDATE)
+                if [ "$NEW_BASELINE_OWNER" = "external" ]; then
+                    UCLAMP_CAP_EXPECTED="ugt_owned"
                 else
                     UCLAMP_CAP_EXPECTED=$(expected_pixel_uclamp_cap)
                 fi
@@ -871,7 +1376,7 @@ refresh_uclamp_state() {
 verify_pixel_baseline() {
     [ "$(read_pixel_owner)" = "pixel" ] || return 1
     uperf_process_alive && return 1
-    fas_process_alive && return 1
+    fas_game_lease_target >/dev/null 2>&1 && return 1
 
     _oa_profile=$(read_valid_pixel_profile)
     _oa_expected_cap=$(cpu_profile_uclamp_cap "$_oa_profile") || return 1
@@ -899,13 +1404,44 @@ verify_pixel_baseline() {
     return 0
 }
 
+uclamp_cap_is_valid() {
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$1" -ge 0 ] 2>/dev/null && [ "$1" -le 1024 ] 2>/dev/null
+}
+
+capture_ugt_baseline_cap() {
+    _oa_cap=$(read_uclamp_cap)
+    uclamp_cap_is_valid "$_oa_cap" || return 1
+    NEW_BASELINE_UCLAMP_CAP="$_oa_cap"
+    return 0
+}
+
+verify_ugt_baseline() {
+    _oa_expected_cap="${1:-unknown}"
+    [ "$(read_pixel_owner)" = "external" ] || return 1
+    [ "$UPERF_MODULE_ENABLED" = "yes" ] || return 1
+    uperf_process_alive || return 1
+    [ "$(uperf_root_instance_count)" -eq 1 ] 2>/dev/null || return 1
+    fas_process_alive && return 1
+    _oa_external_state=$(cat "$FAS_OWNER_FILE" 2>/dev/null | tr -d '\r\n')
+    case "$_oa_external_state" in external:uperf|external:uperf:*) ;; *) return 1 ;; esac
+    if uclamp_cap_is_valid "$_oa_expected_cap"; then
+        [ "$(read_uclamp_cap)" = "$_oa_expected_cap" ] || return 1
+    fi
+    return 0
+}
+
 verify_fas_baseline() {
     [ "$(read_pixel_owner)" = "external" ] || return 1
     uperf_process_alive && return 1
     fas_process_alive || return 1
     [ "$(read_uclamp_cap)" = "$CPU_PROFILE_FULL_CAP" ] || return 1
     [ -n "$NEW_TARGET_PKG" ] || return 1
-    [ "$(cat "$FAS_OWNER_FILE" 2>/dev/null | tr -d '\r\n')" = "fas-rs:game:$NEW_TARGET_PKG" ]
+    [ "$(cat "$FAS_OWNER_FILE" 2>/dev/null | tr -d '\r\n')" = "fas-rs:game:$NEW_TARGET_PKG" ] || return 1
+    if [ "$NEW_BASELINE_OWNER" = "external" ]; then
+        fas_identity_matches "$NEW_LEASE_FAS_PID" "$NEW_LEASE_FAS_START_TICKS" || return 1
+    fi
+    return 0
 }
 
 apply_pixel_baseline() {
@@ -913,11 +1449,6 @@ apply_pixel_baseline() {
         APPLY_RESULT="blocked_uperf_residue_for_pixel"
         return 1
     fi
-    if ! stop_fas_rs; then
-        APPLY_RESULT="failed_stop_fas_rs_for_pixel"
-        return 1
-    fi
-
     restore_pixel_cpufreq_floor
     if ! apply_current_pixel_profile; then
         APPLY_RESULT="failed_apply_pixel_profile"
@@ -938,6 +1469,17 @@ apply_pixel_baseline() {
         APPLY_RESULT="failed_write_fas_owner_state"
         return 1
     fi
+    NEW_STATE="BASELINE_NORMAL"
+    NEW_TARGET_PKG=""
+    NEW_TARGET_PID="0"
+    NEW_CANDIDATE_SINCE="0"
+    NEW_LEASE_START="0"
+    NEW_LAST_FOREGROUND="0"
+    NEW_PID_ABSENT_SINCE="0"
+    NEW_BASELINE_OWNER="pixel"
+    NEW_BASELINE_UCLAMP_CAP="$_oa_pixel_cap"
+    NEW_LEASE_FAS_PID="0"
+    NEW_LEASE_FAS_START_TICKS="0"
     if [ "$CPUFREQ_THERMAL_COOLING_ACTIVE" = "yes" ]; then
         APPLY_RESULT="deferred_pixel_cpufreq_thermal_cooling"
         return 0
@@ -960,9 +1502,134 @@ apply_pixel_baseline() {
     return 0
 }
 
+start_and_publish_ugt_baseline() {
+    _oa_expected_cap="$1"
+    uclamp_cap_is_valid "$_oa_expected_cap" || return 1
+    ensure_powercfg_router || return 1
+    # Restore the exact pre-lease cap while no scheduler process is active,
+    # then hand control to UGT.  Once uperf is live, Control does not keep
+    # rewriting the cap or fight UGT's own mode policy.
+    if ! apply_uclamp_cap "$_oa_expected_cap"; then
+        return 1
+    fi
+    start_uperf || return $?
+    write_sched_owner external || return 1
+    write_fas_owner_state "external:uperf" || return 1
+    verify_ugt_baseline unknown
+}
+
+record_current_fas_lease_identity() {
+    _oa_pid=$(fas_primary_pid)
+    case "$_oa_pid" in ''|*[!0-9]*) return 1 ;; esac
+    _oa_start=$(process_start_ticks "$_oa_pid")
+    case "$_oa_start" in ''|*[!0-9]*) return 1 ;; esac
+    fas_identity_matches "$_oa_pid" "$_oa_start" || return 1
+    NEW_LEASE_FAS_PID="$_oa_pid"
+    NEW_LEASE_FAS_START_TICKS="$_oa_start"
+    return 0
+}
+
+rollback_to_fas_lease() {
+    _oa_reason="$1"
+    _oa_pkg="$2"
+    stop_uperf >/dev/null 2>&1 || true
+    restore_fas_rs_cpufreq_floor
+    if [ "$CPUFREQ_RESTORE_FAILED" = "yes" ] \
+        || ! apply_uclamp_cap "$CPU_PROFILE_FULL_CAP" \
+        || ! start_fas_rs \
+        || ! record_current_fas_lease_identity \
+        || ! write_sched_owner external \
+        || ! write_fas_owner_state "fas-rs:game:$_oa_pkg"; then
+        APPLY_RESULT="${_oa_reason}_fallback_incomplete"
+        return 1
+    fi
+    NEW_STATE="EXIT_HOLD"
+    NEW_TARGET_PKG="$_oa_pkg"
+    [ -n "$NEW_TARGET_PID" ] || NEW_TARGET_PID="0"
+    [ "$NEW_LEASE_START" -gt 0 ] 2>/dev/null || NEW_LEASE_START="$NOW"
+    [ "$NEW_LAST_FOREGROUND" -gt 0 ] 2>/dev/null || NEW_LAST_FOREGROUND="$NOW"
+    NEW_BASELINE_OWNER="external"
+    APPLY_RESULT="${_oa_reason}_fallback_fas"
+    return 1
+}
+
+apply_ugt_baseline() {
+    _oa_restore_pkg="$PREV_TARGET_PKG"
+    [ -n "$_oa_restore_pkg" ] || _oa_restore_pkg="$NEW_TARGET_PKG"
+    _oa_saved_cap="$NEW_BASELINE_UCLAMP_CAP"
+    uclamp_cap_is_valid "$_oa_saved_cap" || {
+        APPLY_RESULT="failed_missing_ugt_baseline_cap"
+        return 1
+    }
+
+    stop_fas_lease_instance "$NEW_LEASE_FAS_PID" "$NEW_LEASE_FAS_START_TICKS"
+    _oa_stop_fas_rc=$?
+    if [ "$_oa_stop_fas_rc" -ne 0 ]; then
+        if [ "$_oa_stop_fas_rc" -eq 2 ]; then
+            APPLY_RESULT="failed_stop_exact_fas_lease_conflict"
+        else
+            APPLY_RESULT="failed_stop_exact_fas_lease"
+        fi
+        return 1
+    fi
+
+    if ! start_and_publish_ugt_baseline "$_oa_saved_cap"; then
+        _oa_ugt_restore_result="failed_restore_ugt_baseline"
+        stop_uperf >/dev/null 2>&1 || true
+        rollback_to_fas_lease "$_oa_ugt_restore_result" "$_oa_restore_pkg"
+        return $?
+    fi
+
+    NEW_STATE="BASELINE_NORMAL"
+    NEW_TARGET_PKG=""
+    NEW_TARGET_PID="0"
+    NEW_CANDIDATE_SINCE="0"
+    NEW_LEASE_START="0"
+    NEW_LAST_FOREGROUND="0"
+    NEW_PID_ABSENT_SINCE="0"
+    NEW_BASELINE_OWNER="external"
+    NEW_LEASE_FAS_PID="0"
+    NEW_LEASE_FAS_START_TICKS="0"
+    APPLY_RESULT="applied_ugt_idle_restored"
+    return 0
+}
+
+restore_ugt_after_failed_entry() {
+    _oa_restore_reason="$1"
+    _oa_restore_pkg="$2"
+    cleanup_fas_started_by_transaction >/dev/null 2>&1 || true
+    if fas_process_alive; then
+        rollback_to_fas_lease "${_oa_restore_reason}_ugt_restore_blocked" "$_oa_restore_pkg"
+        return $?
+    fi
+    if start_and_publish_ugt_baseline "$NEW_BASELINE_UCLAMP_CAP"; then
+        NEW_STATE="BASELINE_NORMAL"
+        NEW_TARGET_PKG=""
+        NEW_TARGET_PID="0"
+        NEW_CANDIDATE_SINCE="0"
+        NEW_LEASE_START="0"
+        NEW_LAST_FOREGROUND="0"
+        NEW_PID_ABSENT_SINCE="0"
+        NEW_BASELINE_OWNER="external"
+        NEW_LEASE_FAS_PID="0"
+        NEW_LEASE_FAS_START_TICKS="0"
+        APPLY_RESULT="${_oa_restore_reason}_fallback_ugt"
+        return 1
+    fi
+    stop_uperf >/dev/null 2>&1 || true
+    rollback_to_fas_lease "${_oa_restore_reason}_ugt_restore_failed" "$_oa_restore_pkg"
+    return $?
+}
+
 restore_desired_baseline_after_failure() {
     _oa_restore_reason="$1"
-    if [ "$DESIRED_OWNER" = "pixel" ] && apply_pixel_baseline >/dev/null 2>&1; then
+    _oa_restore_pkg="${2:-$NEW_TARGET_PKG}"
+    if [ "$NEW_BASELINE_OWNER" = "external" ]; then
+        restore_ugt_after_failed_entry "$_oa_restore_reason" "$_oa_restore_pkg"
+        return $?
+    fi
+    cleanup_fas_started_by_transaction >/dev/null 2>&1 || true
+    if apply_pixel_baseline >/dev/null 2>&1; then
         APPLY_RESULT="${_oa_restore_reason}_fallback_pixel"
     else
         APPLY_RESULT="${_oa_restore_reason}_fallback_incomplete"
@@ -979,12 +1646,28 @@ owner_guard_begin() {
     stg_begin_attempt "$_oa_guard_key" "$_oa_guard_boot" "$_oa_guard_now"
     _oa_guard_rc=$?
     if [ "$_oa_guard_rc" -ne 0 ]; then
-        stg_load
-        APPLY_RESULT="transition_latched:${STG_RESULT:-retry_budget_exhausted}"
+        if [ "$_oa_guard_rc" -eq 74 ]; then
+            APPLY_RESULT="failed_owner_guard_attempt_commit"
+        else
+            stg_load
+            APPLY_RESULT="transition_latched:${STG_RESULT:-retry_budget_exhausted}"
+        fi
         return 1
     fi
     APPLY_MUTATION_GUARD_ACTIVE=yes
     return 0
+}
+
+owner_guard_is_terminal() {
+    _oa_guard_key="$1"
+    stg_init "$FAS_ROOT/.owner_mutation_guard"
+    stg_load
+    _oa_guard_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n\t')
+    [ -n "$_oa_guard_boot" ] || _oa_guard_boot=unknown
+    [ "$STG_TERMINAL" = "yes" ] \
+        && [ "$STG_OK" = "no" ] \
+        && [ "$STG_KEY" = "$_oa_guard_key" ] \
+        && [ "$STG_BOOT_ID" = "$_oa_guard_boot" ]
 }
 
 apply_owner_decision() {
@@ -1002,11 +1685,50 @@ apply_owner_decision() {
                 APPLY_STABLE_NOOP="yes"
                 return 0
             fi
-            if uperf_process_alive; then
+
+            if [ "$NEW_BASELINE_OWNER" = "external" ]; then
+                case "$PREV_STATE" in
+                    FAS_LEASED_GAME|EXIT_HOLD)
+                        if ! fas_identity_matches "$NEW_LEASE_FAS_PID" "$NEW_LEASE_FAS_START_TICKS"; then
+                            APPLY_RESULT="failed_fas_lease_identity_mismatch"
+                            return 1
+                        fi
+                        ;;
+                    *)
+                        verify_ugt_baseline unknown || {
+                            APPLY_RESULT="ugt_baseline_drift_health_required"
+                            APPLY_STABLE_NOOP="yes"
+                            return 1
+                        }
+                        capture_ugt_baseline_cap || {
+                            APPLY_RESULT="failed_capture_ugt_baseline_cap"
+                            return 1
+                        }
+                        ;;
+                esac
+            elif uperf_process_alive; then
                 APPLY_RESULT="blocked_uperf_residue_for_fas"
+                APPLY_STABLE_NOOP="yes"
                 return 1
             fi
-            owner_guard_begin "fas:${NEW_TARGET_PKG}" || return 1
+
+            owner_guard_begin "fas:${NEW_BASELINE_OWNER}:${NEW_TARGET_PKG}" || return 1
+            if ! ensure_powercfg_router; then
+                APPLY_RESULT="failed_prepare_powercfg_router"
+                return 1
+            fi
+            if [ "$NEW_BASELINE_OWNER" = "external" ] \
+                && [ "$PREV_STATE" != "FAS_LEASED_GAME" ] \
+                && [ "$PREV_STATE" != "EXIT_HOLD" ]; then
+                if ! stop_uperf; then
+                    APPLY_RESULT="failed_stop_ugt_for_fas"
+                    return 1
+                fi
+                uperf_process_alive && {
+                    APPLY_RESULT="failed_verify_ugt_stopped_for_fas"
+                    return 1
+                }
+            fi
 
             # Finish the runtime preflight before fas-rs can publish its game
             # owner.  UGT may leave a powersave governor behind, and exposing
@@ -1027,18 +1749,25 @@ apply_owner_decision() {
             if ! start_fas_rs; then
                 _oa_failed_result="failed_start_fas_rs"
                 write_fas_owner_state "fallback:fas_start_failed:$DESIRED_OWNER" >/dev/null 2>&1 || true
-                restore_desired_baseline_after_failure "$_oa_failed_result"
+                restore_desired_baseline_after_failure "$_oa_failed_result" "$NEW_TARGET_PKG"
+                return $?
+            fi
+            if [ "$NEW_BASELINE_OWNER" = "external" ] \
+                && ! record_current_fas_lease_identity; then
+                restore_desired_baseline_after_failure "failed_capture_fas_lease_identity" "$NEW_TARGET_PKG"
                 return $?
             fi
             if ! write_sched_owner external; then
-                stop_fas_rs >/dev/null 2>&1 || true
-                restore_desired_baseline_after_failure "failed_write_external_owner"
+                restore_desired_baseline_after_failure "failed_write_external_owner" "$NEW_TARGET_PKG"
                 return $?
             fi
             if [ -z "$NEW_TARGET_PKG" ] \
                 || ! write_fas_owner_state "fas-rs:game:$NEW_TARGET_PKG"; then
-                stop_fas_rs >/dev/null 2>&1 || true
-                restore_desired_baseline_after_failure "failed_write_fas_owner_state"
+                restore_desired_baseline_after_failure "failed_write_fas_owner_state" "$NEW_TARGET_PKG"
+                return $?
+            fi
+            if ! verify_fas_baseline; then
+                restore_desired_baseline_after_failure "failed_verify_fas_rs_game" "$NEW_TARGET_PKG"
                 return $?
             fi
             if [ "$CPUFREQ_RESTORE_VERIFIED" = "yes" ]; then
@@ -1051,22 +1780,35 @@ apply_owner_decision() {
                 APPLY_RESULT="applied_fas_rs_game"
             fi
             ;;
-        PIXEL_NORMAL)
-            case "$DESIRED_OWNER" in
+        BASELINE_NORMAL)
+            case "$NEW_BASELINE_OWNER" in
                 external)
-                    APPLY_RESULT="ugt_boot_exclusive_noop"
-                    APPLY_STABLE_NOOP="yes"
+                    if verify_ugt_baseline unknown; then
+                        APPLY_RESULT="stable_ugt_noop"
+                        APPLY_STABLE_NOOP="yes"
+                    elif [ "$PREV_STATE" = "FAS_LEASED_GAME" ] \
+                        || [ "$PREV_STATE" = "EXIT_HOLD" ] \
+                        || fas_game_lease_active; then
+                        owner_guard_begin "baseline:external:${NEW_BASELINE_UCLAMP_CAP}" || return 1
+                        apply_ugt_baseline || return 1
+                    else
+                        APPLY_RESULT="ugt_baseline_drift_health_required"
+                        APPLY_STABLE_NOOP="yes"
+                        return 1
+                    fi
                     ;;
                 pixel)
                     if verify_pixel_baseline; then
                         APPLY_RESULT="stable_pixel_noop"
                         APPLY_STABLE_NOOP="yes"
                     else
-                        if [ "$(read_pixel_owner)" = "pixel" ] && ! fas_process_alive; then
+                        if [ "$(read_pixel_owner)" = "pixel" ] \
+                            && ! fas_game_lease_active; then
                             APPLY_RESULT="profile_drift_health_required"
+                            APPLY_STABLE_NOOP="yes"
                             return 1
                         fi
-                        owner_guard_begin "pixel:$(read_valid_pixel_profile)" || return 1
+                        owner_guard_begin "baseline:pixel:$(read_valid_pixel_profile)" || return 1
                         apply_pixel_baseline || return 1
                     fi
                     ;;
@@ -1090,7 +1832,15 @@ state_snapshot_matches() {
         && [ "$NEW_LAST_FOREGROUND" = "$PREV_LAST_FOREGROUND" ] \
         && [ "$NEW_PID_ABSENT_SINCE" = "$PREV_PID_ABSENT_SINCE" ] \
         && [ "$NEW_BASELINE_OWNER" = "$PREV_BASELINE_OWNER" ] \
+        && [ "$NEW_BASELINE_UCLAMP_CAP" = "$PREV_BASELINE_UCLAMP_CAP" ] \
+        && [ "$NEW_LEASE_FAS_PID" = "$PREV_LEASE_FAS_PID" ] \
+        && [ "$NEW_LEASE_FAS_START_TICKS" = "$PREV_LEASE_FAS_START_TICKS" ] \
         && [ "$DESIRED_OWNER" = "$PREV_DESIRED_OWNER" ] \
+        && [ "$CURRENT_OWNER" = "$PREV_EFFECTIVE_OWNER" ] \
+        && [ "$PROPOSED_OWNER" = "$PREV_PROPOSED_OWNER" ] \
+        && [ "$REASON" = "$PREV_REASON" ] \
+        && [ "$APPLY_ENABLED" = "$PREV_APPLY_ENABLED" ] \
+        && [ "$APPLY_RESULT" = "$PREV_APPLY_RESULT" ] \
         && [ "$HANDOFF_POLICY" = "$PREV_HANDOFF_POLICY" ]
 }
 
@@ -1107,6 +1857,9 @@ write_state() {
         printf 'last_foreground=%s\n' "$NEW_LAST_FOREGROUND"
         printf 'pid_absent_since=%s\n' "$NEW_PID_ABSENT_SINCE"
         printf 'baseline_owner=%s\n' "$NEW_BASELINE_OWNER"
+        printf 'baseline_uclamp_cap=%s\n' "$NEW_BASELINE_UCLAMP_CAP"
+        printf 'lease_fas_pid=%s\n' "$NEW_LEASE_FAS_PID"
+        printf 'lease_fas_start_ticks=%s\n' "$NEW_LEASE_FAS_START_TICKS"
         printf 'desired_owner=%s\n' "$DESIRED_OWNER"
         printf 'effective_owner=%s\n' "$(read_pixel_owner)"
         printf 'game_handoff_policy=%s\n' "$HANDOFF_POLICY"
@@ -1190,9 +1943,12 @@ PREV_LAST_FOREGROUND=$(num_or_zero "$PREV_LAST_FOREGROUND")
 PREV_PID_ABSENT_SINCE=$(num_or_zero "$PREV_PID_ABSENT_SINCE")
 PREV_CPUFREQ_RESTORE_LEASE=$(num_or_zero "$PREV_CPUFREQ_RESTORE_LEASE")
 PREV_CPUFREQ_RESTORE_EPOCH=$(num_or_zero "$PREV_CPUFREQ_RESTORE_EPOCH")
+PREV_LEASE_FAS_PID=$(num_or_zero "$PREV_LEASE_FAS_PID")
+PREV_LEASE_FAS_START_TICKS=$(num_or_zero "$PREV_LEASE_FAS_START_TICKS")
 case "$PREV_BASELINE_OWNER" in external|pixel) ;; *) PREV_BASELINE_OWNER="$DESIRED_OWNER" ;; esac
+uclamp_cap_is_valid "$PREV_BASELINE_UCLAMP_CAP" || PREV_BASELINE_UCLAMP_CAP="unknown"
 
-NEW_STATE="PIXEL_NORMAL"
+NEW_STATE="BASELINE_NORMAL"
 NEW_TARGET_PKG=""
 NEW_TARGET_PID="0"
 NEW_CANDIDATE_SINCE="0"
@@ -1200,6 +1956,17 @@ NEW_LEASE_START="0"
 NEW_LAST_FOREGROUND="0"
 NEW_PID_ABSENT_SINCE="0"
 NEW_BASELINE_OWNER="$DESIRED_OWNER"
+if [ "$PREV_BASELINE_OWNER" = "$DESIRED_OWNER" ] \
+    && uclamp_cap_is_valid "$PREV_BASELINE_UCLAMP_CAP"; then
+    NEW_BASELINE_UCLAMP_CAP="$PREV_BASELINE_UCLAMP_CAP"
+elif [ "$DESIRED_OWNER" = "external" ]; then
+    NEW_BASELINE_UCLAMP_CAP=$(read_uclamp_cap)
+else
+    NEW_BASELINE_UCLAMP_CAP=$(expected_pixel_uclamp_cap)
+fi
+uclamp_cap_is_valid "$NEW_BASELINE_UCLAMP_CAP" || NEW_BASELINE_UCLAMP_CAP="unknown"
+NEW_LEASE_FAS_PID="$PREV_LEASE_FAS_PID"
+NEW_LEASE_FAS_START_TICKS="$PREV_LEASE_FAS_START_TICKS"
 PROPOSED_OWNER="$DESIRED_OWNER"
 REASON="no_target_focus"
 FOCUS_PKG=""
@@ -1224,10 +1991,35 @@ if [ -f "$ARB_DISABLE_FILE" ]; then
     NEW_LEASE_START="$PREV_LEASE_START"
     NEW_LAST_FOREGROUND="$PREV_LAST_FOREGROUND"
     NEW_PID_ABSENT_SINCE="$PREV_PID_ABSENT_SINCE"
+    NEW_BASELINE_OWNER="$PREV_BASELINE_OWNER"
+    NEW_BASELINE_UCLAMP_CAP="$PREV_BASELINE_UCLAMP_CAP"
+    NEW_LEASE_FAS_PID="$PREV_LEASE_FAS_PID"
+    NEW_LEASE_FAS_START_TICKS="$PREV_LEASE_FAS_START_TICKS"
     PROPOSED_OWNER="$CURRENT_OWNER"
     REASON="arbiter_disabled"
+    APPLY_RESULT="arbiter_disabled_noop"
+    state_snapshot_matches && exit 0
+    if ! so_acquire_transition_lock; then
+        exit 75
+    fi
+    trap 'so_release_transition_lock >/dev/null 2>&1 || true' EXIT
+    trap 'so_release_transition_lock >/dev/null 2>&1 || true; exit 130' INT
+    trap 'so_release_transition_lock >/dev/null 2>&1 || true; exit 143' TERM
+    [ -f "$ARB_DISABLE_FILE" ] || exit 0
+    sbm_load_state
+    _oa_disabled_mode=$(sbm_owner_to_mode "$DESIRED_OWNER")
+    [ "$SBM_PHASE" = "success" ] && [ "$SBM_EFFECTIVE_MODE" = "$_oa_disabled_mode" ] || exit 0
+    so_migrate_state >/dev/null 2>&1 || exit 66
+    _oa_disabled_desired=$(read_desired_owner)
+    _oa_disabled_effective=$(read_pixel_owner)
+    _oa_disabled_handoff=$(read_game_handoff_policy)
+    [ "$_oa_disabled_desired" = "$DESIRED_OWNER" ] \
+        && [ "$_oa_disabled_effective" = "$CURRENT_OWNER" ] \
+        && [ "$_oa_disabled_handoff" = "$HANDOFF_POLICY" ] || exit 0
     write_state || exit 74
     append_history
+    so_release_transition_lock >/dev/null 2>&1 || true
+    trap - EXIT INT TERM
     exit 0
 fi
 
@@ -1251,26 +2043,10 @@ if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
     EXTERNAL_SCHEDULER_KIND="test"
 fi
 
-# UGT is a boot-exclusive scheduler. Runtime ticks never start, stop, normalize,
-# or hand it to fas-rs. A mode change is staged by profile CGI and verified only
-# after reboot by scheduler_reconcile.sh.
-if [ "$DESIRED_OWNER" = "external" ]; then
-    NEW_STATE="UGT_EXCLUSIVE"
-    NEW_TARGET_PKG=""
-    NEW_TARGET_PID="0"
-    NEW_CANDIDATE_SINCE="0"
-    NEW_LEASE_START="0"
-    NEW_LAST_FOREGROUND="0"
-    NEW_PID_ABSENT_SINCE="0"
-    NEW_BASELINE_OWNER="external"
-    PROPOSED_OWNER="external"
-    REASON="ugt_boot_exclusive"
-    APPLY_RESULT="ugt_boot_exclusive_noop"
-    if [ "$CURRENT_OWNER" != "external" ]; then
-        APPLY_RESULT="ugt_pending_reboot"
-    fi
-    write_state || exit 74
-    append_history
+sbm_load_state
+_oa_verified_mode=$(sbm_owner_to_mode "$DESIRED_OWNER")
+if [ "$SBM_PHASE" != "success" ] || [ "$SBM_EFFECTIVE_MODE" != "$_oa_verified_mode" ]; then
+    printf '%s\n' "scheduler_boot_${SBM_PHASE:-unknown}_${SBM_EFFECTIVE_MODE:-unknown}_noop"
     exit 0
 fi
 
@@ -1279,21 +2055,21 @@ FOCUS_PIDS=$(pkg_pids "$FOCUS_PKG")
 FOCUS_PID=$(first_word "$FOCUS_PIDS")
 [ -n "$FOCUS_PID" ] || FOCUS_PID="0"
 
-if [ "$HANDOFF_POLICY" = "fas_rs" ] && package_matches_fas_target "$FOCUS_PKG"; then
-    GAME_MATCH="yes"
-elif [ "$HANDOFF_POLICY" != "fas_rs" ]; then
+if [ "$HANDOFF_POLICY" = "fas_rs" ]; then
+    if fas_handoff_available; then
+        package_matches_fas_target "$FOCUS_PKG" && GAME_MATCH="yes"
+    else
+        GAME_SOURCE="fas_module_unavailable"
+    fi
+else
     GAME_SOURCE="handoff_off"
 fi
 
 if [ "$HANDOFF_POLICY" != "fas_rs" ] && { [ "$PREV_STATE" = "FAS_LEASED_GAME" ] || [ "$PREV_STATE" = "EXIT_HOLD" ] || [ "$PREV_STATE" = "GAME_CANDIDATE" ]; }; then
-    NEW_STATE="PIXEL_NORMAL"
-    NEW_TARGET_PKG=""
-    NEW_TARGET_PID="0"
-    NEW_CANDIDATE_SINCE="0"
-    NEW_LEASE_START="0"
-    NEW_LAST_FOREGROUND="0"
-    NEW_PID_ABSENT_SINCE="0"
-    PROPOSED_OWNER="$DESIRED_OWNER"
+    NEW_STATE="BASELINE_NORMAL"
+    NEW_BASELINE_OWNER="$PREV_BASELINE_OWNER"
+    NEW_BASELINE_UCLAMP_CAP="$PREV_BASELINE_UCLAMP_CAP"
+    PROPOSED_OWNER="$PREV_BASELINE_OWNER"
     REASON="game_handoff_disabled"
 elif [ "$GAME_MATCH" = "yes" ]; then
     NEW_TARGET_PKG="$FOCUS_PKG"
@@ -1312,7 +2088,8 @@ elif [ "$GAME_MATCH" = "yes" ]; then
         NEW_STATE="FAS_LEASED_GAME"
         if [ "$PREV_TARGET_PKG" = "$FOCUS_PKG" ] && [ "$PREV_LEASE_START" -gt 0 ] 2>/dev/null; then
             NEW_LEASE_START="$PREV_LEASE_START"
-            NEW_BASELINE_OWNER="$DESIRED_OWNER"
+            NEW_BASELINE_OWNER="$PREV_BASELINE_OWNER"
+            NEW_BASELINE_UCLAMP_CAP="$PREV_BASELINE_UCLAMP_CAP"
         else
             NEW_LEASE_START="$NOW"
             NEW_BASELINE_OWNER="$DESIRED_OWNER"
@@ -1344,14 +2121,10 @@ elif [ -n "$PREV_TARGET_PKG" ] && { [ "$PREV_STATE" = "FAS_LEASED_GAME" ] || [ "
         fi
         _oa_absent_elapsed=$((NOW - NEW_PID_ABSENT_SINCE))
         if [ "$_oa_absent_elapsed" -ge "$PID_ABSENT_CONFIRM_S" ] 2>/dev/null; then
-            NEW_STATE="PIXEL_NORMAL"
-            NEW_TARGET_PKG=""
-            NEW_TARGET_PID="0"
-            NEW_CANDIDATE_SINCE="0"
-            NEW_LEASE_START="0"
-            NEW_LAST_FOREGROUND="0"
-            NEW_PID_ABSENT_SINCE="0"
-            PROPOSED_OWNER="$DESIRED_OWNER"
+            NEW_STATE="BASELINE_NORMAL"
+            NEW_BASELINE_OWNER="$PREV_BASELINE_OWNER"
+            NEW_BASELINE_UCLAMP_CAP="$PREV_BASELINE_UCLAMP_CAP"
+            PROPOSED_OWNER="$PREV_BASELINE_OWNER"
             REASON="target_pid_absent"
         else
             NEW_STATE="EXIT_HOLD"
@@ -1371,31 +2144,101 @@ elif [ -n "$PREV_TARGET_PKG" ] && { [ "$PREV_STATE" = "FAS_LEASED_GAME" ] || [ "
             PROPOSED_OWNER="external"
             REASON="recent_foreground_hold"
         else
-            NEW_STATE="PIXEL_NORMAL"
-            NEW_TARGET_PKG=""
-            NEW_TARGET_PID="0"
-            NEW_CANDIDATE_SINCE="0"
-            NEW_LEASE_START="0"
-            NEW_LAST_FOREGROUND="0"
-            NEW_PID_ABSENT_SINCE="0"
-            PROPOSED_OWNER="$DESIRED_OWNER"
+            NEW_STATE="BASELINE_NORMAL"
+            NEW_BASELINE_OWNER="$PREV_BASELINE_OWNER"
+            NEW_BASELINE_UCLAMP_CAP="$PREV_BASELINE_UCLAMP_CAP"
+            PROPOSED_OWNER="$PREV_BASELINE_OWNER"
             REASON="exit_idle_expired"
         fi
     fi
+fi
+
+if [ "$APPLY_ENABLED" = "yes" ]; then
+    case "$NEW_STATE" in
+        FAS_LEASED_GAME|EXIT_HOLD)
+            if verify_fas_baseline; then
+                APPLY_RESULT="stable_fas_noop"
+                APPLY_STABLE_NOOP="yes"
+                state_snapshot_matches && exit 0
+            elif uperf_process_alive; then
+                APPLY_RESULT="blocked_uperf_residue_for_fas"
+                APPLY_STABLE_NOOP="yes"
+                state_snapshot_matches && exit 0
+            fi
+            ;;
+        BASELINE_NORMAL)
+            if [ "$DESIRED_OWNER" = "pixel" ]; then
+                if verify_pixel_baseline; then
+                    APPLY_RESULT="stable_pixel_noop"
+                    APPLY_STABLE_NOOP="yes"
+                    state_snapshot_matches && exit 0
+                elif [ "$CURRENT_OWNER" = "pixel" ] \
+                    && ! uperf_process_alive && ! fas_game_lease_active; then
+                    APPLY_RESULT="profile_drift_health_required"
+                    APPLY_STABLE_NOOP="yes"
+                    state_snapshot_matches && exit 0
+                fi
+            fi
+            ;;
+    esac
+fi
+
+_oa_prelock_guard_key=""
+case "$NEW_STATE" in
+    FAS_LEASED_GAME|EXIT_HOLD)
+        _oa_prelock_guard_key="fas:${NEW_BASELINE_OWNER}:${NEW_TARGET_PKG}"
+        ;;
+    BASELINE_NORMAL)
+        case "$NEW_BASELINE_OWNER" in
+            external)
+                if [ "$PREV_STATE" = "FAS_LEASED_GAME" ] \
+                    || [ "$PREV_STATE" = "EXIT_HOLD" ] \
+                    || fas_game_lease_active; then
+                    _oa_prelock_guard_key="baseline:external:${NEW_BASELINE_UCLAMP_CAP}"
+                fi
+                ;;
+            pixel)
+                if [ "$CURRENT_OWNER" != "pixel" ] \
+                    || fas_game_lease_target >/dev/null 2>&1; then
+                    _oa_prelock_guard_key="baseline:pixel:$(read_valid_pixel_profile)"
+                fi
+                ;;
+        esac
+        ;;
+esac
+if [ -n "$_oa_prelock_guard_key" ] \
+    && owner_guard_is_terminal "$_oa_prelock_guard_key"; then
+    exit 78
 fi
 
 _oa_transition_lock_acquired=0
 if [ "$APPLY_ENABLED" = "yes" ]; then
     if ! so_acquire_transition_lock; then
         APPLY_RESULT="transition_busy"
-        write_state || exit 74
-        append_history
         exit 75
     fi
     _oa_transition_lock_acquired=1
     trap 'so_release_transition_lock >/dev/null 2>&1 || true' EXIT
     trap 'so_release_transition_lock >/dev/null 2>&1 || true; exit 130' INT
     trap 'so_release_transition_lock >/dev/null 2>&1 || true; exit 143' TERM
+
+    so_migrate_state >/dev/null 2>&1 || exit 66
+    sbm_load_state
+    _oa_locked_desired=$(read_desired_owner)
+    _oa_locked_effective=$(read_pixel_owner)
+    _oa_locked_handoff=$(read_game_handoff_policy)
+    _oa_locked_mode=$(sbm_owner_to_mode "$_oa_locked_desired")
+    if [ "$SBM_PHASE" != "success" ] || [ "$SBM_EFFECTIVE_MODE" != "$_oa_locked_mode" ] \
+        || [ "$_oa_locked_desired" != "$DESIRED_OWNER" ] \
+        || [ "$_oa_locked_effective" != "$CURRENT_OWNER" ] \
+        || [ "$_oa_locked_handoff" != "$HANDOFF_POLICY" ] \
+        || { [ "$APPLY_REQUESTED" != "yes" ] && [ "$(read_runtime_apply_enabled)" != "yes" ]; } \
+        || [ -f "$ARB_DISABLE_FILE" ]; then
+        APPLY_RESULT=decision_superseded
+        so_release_transition_lock >/dev/null 2>&1 || true
+        trap - EXIT INT TERM
+        exit 0
+    fi
 fi
 
 _oa_apply_rc=0
@@ -1406,10 +2249,17 @@ if [ "$APPLY_MUTATION_GUARD_ACTIVE" = "yes" ]; then
             || { APPLY_RESULT="failed_owner_guard_success_commit"; _oa_apply_rc=74; }
     else
         _oa_guard_now=$(now_epoch)
-        stg_record_failure "$_oa_guard_now" "$APPLY_RESULT" >/dev/null 2>&1 || true
-        stg_load
-        if [ "$STG_TERMINAL" = "yes" ]; then
-            APPLY_RESULT="${APPLY_RESULT}_latched"
+        _oa_guard_commit_rc=0
+        stg_record_failure "$_oa_guard_now" "$APPLY_RESULT" >/dev/null 2>&1 \
+            || _oa_guard_commit_rc=$?
+        if [ "$_oa_guard_commit_rc" -eq 74 ]; then
+            APPLY_RESULT="${APPLY_RESULT}_guard_terminal_unavailable"
+            _oa_apply_rc=74
+        else
+            stg_load
+            if [ "$STG_TERMINAL" = "yes" ]; then
+                APPLY_RESULT="${APPLY_RESULT}_latched"
+            fi
         fi
     fi
 fi

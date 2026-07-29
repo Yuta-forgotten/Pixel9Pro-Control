@@ -8,14 +8,17 @@ ACTION="${1:-boot}"
 MODDIR="${2:-${0%/scripts/scheduler_reconcile.sh}}"
 FAS_ROOT="${SCHEDULER_RECONCILE_FAS_ROOT:-/data/adb/fas_rs}"
 
-for _sr_lib in runtime_defaults_lib.sh scheduler_owner_lib.sh scheduler_boot_mode_lib.sh cpu_profile_lib.sh; do
+for _sr_lib in runtime_defaults_lib.sh scheduler_owner_lib.sh scheduler_boot_mode_lib.sh scheduler_detect_lib.sh cpu_profile_lib.sh; do
     [ -r "$MODDIR/scripts/$_sr_lib" ] || { echo "scheduler_reconcile: missing $_sr_lib" >&2; exit 65; }
     . "$MODDIR/scripts/$_sr_lib" 2>/dev/null || exit 65
 done
 
 scheduler_owner_init "$MODDIR" "$FAS_ROOT"
 sbm_init "$MODDIR" "$FAS_ROOT"
-so_migrate_state >/dev/null 2>&1 || exit 66
+case "$ACTION" in
+    health|status|boot|repair|retry) ;;
+    *) echo "Usage: $0 [boot|health|repair|retry|status] [MODDIR]" >&2; exit 64 ;;
+esac
 
 sr_record_health() {
     SBM_HEALTH_BOOT_ID=$(sbm_boot_id)
@@ -206,21 +209,111 @@ sr_resolve_mode() {
     esac
 }
 
+sr_health_snapshot() {
+    printf '%s|%s|%s|%s|%s|%s' \
+        "$(so_read_desired_owner)" \
+        "$(so_read_effective_owner)" \
+        "$(cat "$MODDIR/.current_profile" 2>/dev/null | tr -d ' \r\n\t')" \
+        "$(sbm_state_value "$SBM_STATE_FILE" transition_id 2>/dev/null)" \
+        "$(sbm_state_value "$SBM_STATE_FILE" phase 2>/dev/null)" \
+        "$(sbm_state_value "$SBM_STATE_FILE" effective_mode 2>/dev/null)"
+}
+
+sr_health_verify_stable() {
+    SR_HEALTH_DEFER_REASON=""
+    if so_transition_lock_is_active; then
+        SR_HEALTH_DEFER_REASON=transition_in_progress
+        return 7
+    fi
+    _sr_health_before=$(sr_health_snapshot)
+    _sr_health_verify_rc=0
+    sh "$MODDIR/scripts/cpu_profile.sh" verify "$MODDIR" >/dev/null 2>&1 || _sr_health_verify_rc=$?
+    _sr_health_after=$(sr_health_snapshot)
+    if so_transition_lock_is_active; then
+        SR_HEALTH_DEFER_REASON=transition_in_progress
+        return 7
+    fi
+    if [ "$_sr_health_before" != "$_sr_health_after" ]; then
+        SR_HEALTH_DEFER_REASON=state_changed_during_probe
+        return 7
+    fi
+    [ "$_sr_health_verify_rc" -eq 0 ] && return 0
+    return 5
+}
+
 sr_health_only() {
     _sr_mode=$(sbm_owner_to_mode "$(so_read_desired_owner)")
-    if ! sbm_probe_control_plane "$_sr_mode"; then
+    if so_transition_lock_is_active; then
+        return 7
+    fi
+
+    # A valid fas-rs game lease temporarily replaces either daily baseline.
+    # Health must not probe the idle Pixel/UGT contract while that lease owns
+    # the runtime scheduler; simultaneous UGT+fas-rs processes remain a real
+    # conflict and therefore continue into the normal blocked probe path.
+    _sr_effective_owner=$(so_read_effective_owner)
+    _sr_fas_owner_state=$(cat "$FAS_ROOT/.owner_state" 2>/dev/null | tr -d '\r\n')
+    if sbm_fas_process_alive; then _sr_fas_alive=yes; else _sr_fas_alive=no; fi
+    _sr_ugt_roots=$(sbm_uperf_root_instances)
+    if [ "$_sr_effective_owner" = "external" ] \
+        && [ "$_sr_ugt_roots" = "0" ] \
+        && scheduler_fas_owner_lease_active "$_sr_fas_owner_state" "$_sr_fas_alive"; then
+        SBM_PROBE_FAS_ALIVE="$_sr_fas_alive"
+        SBM_PROBE_UGT_ROOTS="$_sr_ugt_roots"
+        sr_record_health "$_sr_mode" deferred fas_rs_runtime_lease unknown
+        return 7
+    fi
+
+    _sr_control_before=$(sr_health_snapshot)
+    _sr_probe_rc=0
+    sbm_probe_control_plane "$_sr_mode" || _sr_probe_rc=$?
+    _sr_control_after=$(sr_health_snapshot)
+    if so_transition_lock_is_active; then
+        return 7
+    fi
+    if [ "$_sr_control_before" != "$_sr_control_after" ]; then
+        return 7
+    fi
+    if [ "$_sr_probe_rc" -ne 0 ]; then
         sr_record_health "$_sr_mode" blocked "$SBM_PROBE_REASON" no >/dev/null 2>&1 || true
         return 6
     fi
     if [ "$_sr_mode" = "pixel" ]; then
-        if sh "$MODDIR/scripts/cpu_profile.sh" verify "$MODDIR" >/dev/null 2>&1; then
-            sr_record_health pixel healthy verified yes
-            return 0
+        if [ "$_sr_effective_owner" != "pixel" ]; then
+            _sr_external_reason=effective_owner_external
+            sr_record_health pixel deferred "$_sr_external_reason" unknown
+            return 7
         fi
-        sr_record_health pixel drift profile_contract_mismatch no
-        return 5
+        sr_health_verify_stable
+        _sr_health_rc=$?
+        case "$_sr_health_rc" in
+            0)
+                sr_record_health pixel healthy verified yes
+                return 0
+                ;;
+            7)
+                return 7
+                ;;
+        esac
+
+        sleep "$SBM_HEALTH_RECHECK_DELAY_S"
+        sr_health_verify_stable
+        _sr_health_rc=$?
+        case "$_sr_health_rc" in
+            0)
+                sr_record_health pixel healthy transient_mismatch_cleared yes
+                return 0
+                ;;
+            7)
+                return 7
+                ;;
+            *)
+                sr_record_health pixel drift profile_contract_mismatch no
+                return 5
+                ;;
+        esac
     fi
-    sr_record_health ugt healthy ugt_boot_exclusive unknown
+    sr_record_health ugt healthy ugt_baseline_verified unknown
     return 0
 }
 
@@ -246,24 +339,49 @@ case "$_sr_mode" in
 esac
 if [ "$ACTION" = "repair" ]; then
     sbm_load_state
+    [ "$_sr_mode" = "pixel" ] || exit 77
     [ "$SBM_AUTO_REPAIR_USED" != "yes" ] || exit 77
-    [ "$SBM_PHASE" != "failed" ] && [ "$SBM_PHASE" != "blocked" ] || exit 77
+    [ "$SBM_PHASE" = "success" ] && [ "$SBM_EFFECTIVE_MODE" = "pixel" ] || exit 77
+    [ "$(so_read_desired_owner)" = "pixel" ] && [ "$(so_read_effective_owner)" = "pixel" ] || exit 77
 fi
 
-sr_prepare_generation "$_sr_mode" "$ACTION" || exit 74
 if ! so_acquire_transition_lock; then
-    sr_commit_terminal failed no transition_busy scheduler_transition_lock_busy no >/dev/null 2>&1 || true
     exit 75
 fi
 trap 'so_release_transition_lock >/dev/null 2>&1 || true' EXIT
 trap 'so_release_transition_lock >/dev/null 2>&1 || true; exit 130' INT
 trap 'so_release_transition_lock >/dev/null 2>&1 || true; exit 143' TERM
+so_migrate_state >/dev/null 2>&1 || exit 66
+
+if [ "$ACTION" = "repair" ]; then
+    sbm_load_state
+    [ "$SBM_AUTO_REPAIR_USED" != "yes" ] || exit 77
+    [ "$SBM_PHASE" = "success" ] && [ "$SBM_EFFECTIVE_MODE" = "pixel" ] || exit 77
+    [ "$(so_read_desired_owner)" = "pixel" ] && [ "$(so_read_effective_owner)" = "pixel" ] || exit 77
+    if ! sbm_probe_control_plane pixel; then
+        sr_record_health pixel blocked "$SBM_PROBE_REASON" no >/dev/null 2>&1 || true
+        exit 6
+    fi
+    if sh "$MODDIR/scripts/cpu_profile.sh" verify "$MODDIR" >/dev/null 2>&1; then
+        sr_record_health pixel healthy repair_not_needed yes >/dev/null 2>&1 || true
+        exit 0
+    fi
+    sr_prepare_generation pixel repair || exit 74
+else
+    _sr_locked_mode=$(sr_resolve_mode) || exit 66
+    case "$_sr_locked_mode" in
+        __same_boot_pending__|__same_boot_success__) exit 0 ;;
+        __same_boot_failure__) exit 77 ;;
+    esac
+    _sr_mode="$_sr_locked_mode"
+    sr_prepare_generation "$_sr_mode" "$ACTION" || exit 74
+fi
 
 if [ "$_sr_mode" = "ugt" ]; then
     _sr_check=1
     while [ "$_sr_check" -le "$SBM_BOOT_VERIFY_ATTEMPTS" ] 2>/dev/null; do
         if sbm_probe_control_plane ugt; then
-            if ! sr_publish_owner_transaction external 'external:uperf:boot-exclusive'; then
+            if ! sr_publish_owner_transaction external 'external:uperf:baseline'; then
                 _sr_publish_reason=state_commit_failed:rollback_incomplete
                 _sr_publish_result=failed_publish_ugt_effective_rollback_incomplete
                 [ "$SR_OWNER_ROLLBACK_OK" = "yes" ] \
@@ -273,7 +391,7 @@ if [ "$_sr_mode" = "ugt" ]; then
                 exit 1
             fi
             SBM_EFFECTIVE_MODE=ugt
-            sr_record_health ugt healthy ugt_boot_exclusive unknown >/dev/null 2>&1 || true
+            sr_record_health ugt healthy ugt_baseline_verified unknown >/dev/null 2>&1 || true
             sr_commit_terminal success yes active_ugt ugt_boot_verified no
             exit $?
         fi

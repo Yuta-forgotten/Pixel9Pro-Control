@@ -12,6 +12,7 @@ PROFILE_MANUAL_FILE="$MODPATH/.profile_manual"
 SCHED_OWNER_FILE="$MODPATH/.cpu_sched_owner"
 SCHED_OWNER_DESIRED_FILE="$MODPATH/.sched_owner_desired"
 GAME_HANDOFF_POLICY_FILE="$MODPATH/.game_handoff_policy"
+GAME_HANDOFF_SOURCE_FILE="$MODPATH/.game_handoff_source"
 DEVICE_FILE="$MODPATH/.device_variant"
 
 OLDDIR="/data/adb/modules/pixel9pro_control"
@@ -104,14 +105,20 @@ choose_cpu_scheduling() {
     detect_uperf_module 2>/dev/null || true
     detect_fas_rs_scheduler 2>/dev/null || true
     if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
-        # UGT is boot-exclusive because its boot service mutates cpufreq sysfs.
-        # fas-rs handoff is available only after switching to a Pixel boot.
+        # UGT is the reboot-selected daily baseline.  If fas-rs is installed,
+        # game leases temporarily stop UGT and restore the same UGT baseline.
         installer_write "$SCHED_OWNER_FILE" external
         installer_write "$SCHED_OWNER_DESIRED_FILE" external
-        installer_write "$GAME_HANDOFF_POLICY_FILE" off
+        if [ "$FAS_RS_MODULE_ENABLED" = "yes" ]; then
+            installer_write "$GAME_HANDOFF_POLICY_FILE" fas_rs
+        else
+            installer_write "$GAME_HANDOFF_POLICY_FILE" off
+        fi
+        installer_write "$GAME_HANDOFF_SOURCE_FILE" default
         installer_write "$MODPATH/.profile_auto_reason" external_scheduler
-        ui_print "  $_sch_step CPU 调度: 检测到 ${UPERF_MODULE_NAME:-UGT}, 使用 UGT 独占启动模式"
-        [ "$FAS_RS_MODULE_ENABLED" = "yes" ] && ui_print "    fas-rs: 切换到 Pixel 启动模式后才可启用游戏接管"
+        ui_print "  $_sch_step CPU 调度: 检测到 ${UPERF_MODULE_NAME:-UGT}, 使用 UGT 日常基线"
+        [ "$FAS_RS_MODULE_ENABLED" = "yes" ] \
+            && ui_print "    fas-rs: 命中游戏时临时接管, 退出后恢复 UGT"
         ui_print ""
         return
     fi
@@ -121,6 +128,7 @@ choose_cpu_scheduling() {
     else
         installer_write "$GAME_HANDOFF_POLICY_FILE" off
     fi
+    installer_write "$GAME_HANDOFF_SOURCE_FILE" default
 
     # Without UGT there is no valid daily external baseline. fas-rs, when
     # present, remains a game-only temporary handoff.
@@ -299,7 +307,7 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
                .swap_mode .swap_custom .ntp_server .uecap_mode .uecap_manual_mode \
                .uecap_policy .uecap_reason .sim2_radio_off \
                .nr_saved_mode .webui_theme \
-               .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .cpu_sched_owner .sched_owner_desired .game_handoff_policy \
+               .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .cpu_sched_owner .sched_owner_desired .game_handoff_policy .game_handoff_source \
                .thermal_history .power_history .power_session; do
         if [ -f "$OLDDIR/$_sf" ]; then
             cp "$OLDDIR/$_sf" "$MODPATH/$_sf" 2>/dev/null \
@@ -532,11 +540,20 @@ installer_write "$OFFSET_FILE" "$offset"
 scheduler_owner_init "$MODPATH" "/data/adb/fas_rs"
 if so_migrate_state; then
     detect_uperf_module 2>/dev/null || true
+    detect_fas_rs_scheduler 2>/dev/null || true
+    _handoff_source=$(so_read_handoff_source)
+    if [ "$_handoff_source" != "user" ]; then
+        _handoff_default=off
+        [ "$FAS_RS_MODULE_ENABLED" = "yes" ] && _handoff_default=fas_rs
+        if ! so_write_handoff_preference "$_handoff_default" default; then
+            ui_print "  ✗ 无法提交游戏接管默认值, 已中止安装"
+            exit 1
+        fi
+    fi
     if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
         installer_write "$SCHED_OWNER_DESIRED_FILE" external
         installer_write "$SCHED_OWNER_FILE" external
-        installer_write "$GAME_HANDOFF_POLICY_FILE" off
-        ui_print "  CPU 启动模式: UGT 独占 (重启后验证)"
+        ui_print "  CPU 启动模式: UGT 日常基线 (重启后验证), 游戏接管: $(so_read_handoff_policy)"
     else
         installer_write "$SCHED_OWNER_DESIRED_FILE" pixel
         installer_write "$SCHED_OWNER_FILE" pixel
@@ -551,6 +568,7 @@ else
         installer_write "$SCHED_OWNER_DESIRED_FILE" "$_desired_fallback"
     fi
     [ -f "$GAME_HANDOFF_POLICY_FILE" ] || installer_write "$GAME_HANDOFF_POLICY_FILE" off
+    [ -f "$GAME_HANDOFF_SOURCE_FILE" ] || installer_write "$GAME_HANDOFF_SOURCE_FILE" legacy
     ui_print "  ⚠ CPU 调度状态迁移失败, 已使用安全兼容值"
 fi
 

@@ -454,13 +454,66 @@ profile_lock_release() {
 apply_profile_state() {
     _target="$1"
     _reason="$2"
+    _expected_policy="${3:-}"
+    PROFILE_APPLY_OUTCOME=failed
 
     [ "$CPU_PROFILE_AVAILABLE" -eq 1 ] || return 1
     valid_profile "$_target" || return 1
+    case "$_expected_policy" in ''|manual|auto) ;; *) return 1 ;; esac
 
-    if [ "$(read_valid_sched_owner)" = "external" ]; then
-        log -t pixel9pro_ctrl "CPU profile skipped: scheduler owner=external ($_target/$_reason)"
+    _prelocked_policy=$(read_valid_profile_policy)
+    _prelocked_profile=$(read_valid_profile "$PROFILE_FILE" balanced)
+    _prelocked_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null)
+    _prelocked_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n\t')
+    [ -n "$_prelocked_boot" ] || _prelocked_boot=unknown
+    if [ "$_prelocked_profile" = "$_target" ] \
+        && [ "$_prelocked_reason" = "$_reason" ] \
+        && { [ -z "$_expected_policy" ] || [ "$_prelocked_policy" = "$_expected_policy" ]; }; then
+        PROFILE_APPLY_OUTCOME=already_applied
         return 0
+    fi
+    stg_init "$MODDIR/.profile_transition_guard"
+    stg_load
+    if [ "$STG_TERMINAL" = "yes" ] \
+        && [ "$STG_BOOT_ID" = "$_prelocked_boot" ] \
+        && [ "$STG_KEY" = "profile:${_prelocked_policy}:${_prelocked_profile}->${_target}" ]; then
+        PROFILE_APPLY_OUTCOME=latched
+        return 78
+    fi
+
+    if ! profile_lock_acquire; then
+        PROFILE_APPLY_OUTCOME=busy
+        log -t pixel9pro_ctrl "CPU profile busy, skip auto switch -> $_target ($_reason)"
+        return 75
+    fi
+
+    sbm_load_state
+    _locked_owner=$(read_valid_sched_owner)
+    _locked_policy=$(read_valid_profile_policy)
+    _previous_profile=$(read_valid_profile "$PROFILE_FILE" balanced)
+    _previous_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null)
+    if [ "$SBM_PHASE" != "success" ] || [ "$SBM_EFFECTIVE_MODE" != "pixel" ] \
+        || [ "$_locked_owner" != "pixel" ]; then
+        PROFILE_APPLY_OUTCOME=superseded_owner
+        log -t pixel9pro_ctrl "CPU profile decision superseded: scheduler not writable ($_target/$_reason)"
+        profile_lock_release
+        return 76
+    fi
+    if [ -n "$_expected_policy" ] && [ "$_locked_policy" != "$_expected_policy" ]; then
+        PROFILE_APPLY_OUTCOME=superseded_policy
+        log -t pixel9pro_ctrl "CPU profile decision superseded: policy=$_locked_policy expected=$_expected_policy ($_target/$_reason)"
+        profile_lock_release
+        return 76
+    fi
+    if [ "$_previous_profile" = "$_target" ]; then
+        if runtime_write_value_if_changed "$PROFILE_AUTO_REASON_FILE" "$_reason"; then
+            PROFILE_APPLY_OUTCOME=already_applied
+            profile_lock_release
+            return 0
+        fi
+        log -t pixel9pro_ctrl "WARNING: failed to update profile reason for stable $_target"
+        profile_lock_release
+        return 1
     fi
 
     _profile_guard_file="$MODDIR/.profile_transition_guard"
@@ -468,30 +521,26 @@ apply_profile_state() {
     _profile_guard_now=$(date +%s 2>/dev/null || echo 0)
     _profile_guard_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n\t')
     [ -n "$_profile_guard_boot" ] || _profile_guard_boot=unknown
-    stg_begin_attempt "profile:${_target}" "$_profile_guard_boot" "$_profile_guard_now"
+    stg_begin_attempt "profile:${_locked_policy}:${_previous_profile}->${_target}" "$_profile_guard_boot" "$_profile_guard_now"
     _profile_guard_rc=$?
     if [ "$_profile_guard_rc" -ne 0 ]; then
-        if [ "$_profile_guard_rc" -eq 77 ] || [ "$_profile_guard_rc" -eq 78 ]; then
-            log -t pixel9pro_ctrl "WARNING: CPU profile transition latched: $_target (${STG_RESULT:-retry_budget_exhausted})"
+        if [ "$_profile_guard_rc" -eq 74 ]; then
+            PROFILE_APPLY_OUTCOME=guard_commit_failed
+            log -t pixel9pro_ctrl "ERROR: CPU profile transition guard could not persist an attempt: $_previous_profile -> $_target"
         else
-            log -t pixel9pro_ctrl "ERROR: CPU profile transition guard failed: $_target (rc=$_profile_guard_rc)"
+            PROFILE_APPLY_OUTCOME=latched
+            log -t pixel9pro_ctrl "WARNING: CPU profile transition latched: $_previous_profile -> $_target (${STG_RESULT:-retry_budget_exhausted})"
         fi
+        profile_lock_release
         return 1
     fi
 
-    if ! profile_lock_acquire; then
-        log -t pixel9pro_ctrl "CPU profile busy, skip auto switch -> $_target ($_reason)"
-        return 1
-    fi
-
-    _previous_profile=$(read_valid_profile "$PROFILE_FILE" balanced)
-    _previous_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null)
     _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_target" "$MODDIR" 2>/dev/null)
     _rc=$?
 
     if [ "$_rc" -eq 0 ]; then
         if ! runtime_write_value "$PROFILE_FILE" "$_target" \
-            || ! runtime_write_value "$PROFILE_AUTO_REASON_FILE" "$_reason"; then
+            || ! runtime_write_value_if_changed "$PROFILE_AUTO_REASON_FILE" "$_reason"; then
             _profile_rollback_ok=1
             runtime_write_value "$PROFILE_FILE" "$_previous_profile" >/dev/null 2>&1 || _profile_rollback_ok=0
             runtime_write_value "$PROFILE_AUTO_REASON_FILE" "$_previous_reason" >/dev/null 2>&1 || _profile_rollback_ok=0
@@ -507,15 +556,27 @@ apply_profile_state() {
             return 1
         fi
         append_profile_history "$_target" "$_reason"
-        stg_record_success "applied:${_target}" >/dev/null 2>&1 \
-            || log -t pixel9pro_ctrl "WARNING: failed to commit profile transition success"
+        if stg_record_success "applied:${_target}" >/dev/null 2>&1; then
+            PROFILE_APPLY_OUTCOME=applied
+        else
+            PROFILE_APPLY_OUTCOME=applied_guard_terminal_unavailable
+            log -t pixel9pro_ctrl "ERROR: CPU profile applied but its guard terminal state could not be persisted"
+        fi
         log -t pixel9pro_ctrl "CPU profile applied: $_target ($_reason)"
         profile_lock_release
         return 0
     fi
 
     _profile_guard_now=$(date +%s 2>/dev/null || echo 0)
-    stg_record_failure "$_profile_guard_now" "${_result:-unknown}" >/dev/null 2>&1 || true
+    _profile_guard_commit_rc=0
+    stg_record_failure "$_profile_guard_now" "${_result:-unknown}" >/dev/null 2>&1 \
+        || _profile_guard_commit_rc=$?
+    if [ "$_profile_guard_commit_rc" -eq 74 ]; then
+        PROFILE_APPLY_OUTCOME=guard_terminal_unavailable
+        log -t pixel9pro_ctrl "ERROR: CPU profile failed and its guard terminal state could not be persisted"
+        profile_lock_release
+        return 74
+    fi
     stg_load
     if [ "$STG_TERMINAL" = "yes" ]; then
         log -t pixel9pro_ctrl "ERROR: CPU profile transition failed final: $_target (${STG_RESULT:-unknown})"
@@ -748,7 +809,11 @@ else
         log -t pixel9pro_ctrl "Scheduler boot reconcile completed"
     else
         _scheduler_boot_rc=$?
-        log -t pixel9pro_ctrl "ERROR: scheduler boot reconcile reached a terminal failure (rc=$_scheduler_boot_rc)"
+        if [ "$_scheduler_boot_rc" -eq 75 ]; then
+            log -t pixel9pro_ctrl "WARNING: scheduler boot reconcile deferred by an active transition"
+        else
+            log -t pixel9pro_ctrl "ERROR: scheduler boot reconcile reached a terminal failure (rc=$_scheduler_boot_rc)"
+        fi
     fi
 fi
 ensure_profile_history_baseline
@@ -757,8 +822,14 @@ ensure_profile_history_baseline
 # worker can provide after it enters the 600s deep-standby sleep.  Keep this
 # loop cheap while screen-off and only run top-app/window IPC when display is on.
 sbm_load_state
-if [ "$SBM_PHASE" = "success" ] && [ "$SBM_EFFECTIVE_MODE" = "pixel" ]; then
+if [ "$SBM_PHASE" = "success" ] \
+    && { [ "$SBM_EFFECTIVE_MODE" = "pixel" ] || [ "$SBM_EFFECTIVE_MODE" = "ugt" ]; }; then
 (
+    # Periodic observation never waits behind a user or boot transaction. A
+    # later tick recomputes foreground and owner state from scratch.
+    SO_TRANSITION_LOCK_MAX_ATTEMPTS=1
+    SO_TRANSITION_LOCK_RETRY_SLEEP_S=0
+    export SO_TRANSITION_LOCK_MAX_ATTEMPTS SO_TRANSITION_LOCK_RETRY_SLEEP_S
     _owner_arbiter_fast_on="${OWNER_ARBITER_FAST_ON:-$OWNER_ARBITER_DEFAULT_SCREEN_ON_POLL_S}"
     _owner_arbiter_fast_off="${OWNER_ARBITER_FAST_OFF:-$OWNER_ARBITER_DEFAULT_SCREEN_OFF_POLL_S}"
     _owner_arbiter_off_grace_s="${OWNER_ARBITER_OFF_GRACE_S:-$OWNER_ARBITER_DEFAULT_SCREEN_OFF_GRACE_S}"
@@ -811,7 +882,7 @@ if [ "$SBM_PHASE" = "success" ] && [ "$SBM_EFFECTIVE_MODE" = "pixel" ]; then
         fi
     done
 ) &
-log -t pixel9pro_ctrl "Owner arbiter worker started"
+log -t pixel9pro_ctrl "Owner arbiter worker started for verified ${SBM_EFFECTIVE_MODE} baseline"
 else
     log -t pixel9pro_ctrl "Owner arbiter worker disabled: scheduler boot state=${SBM_PHASE:-unknown}/${SBM_EFFECTIVE_MODE:-unknown}"
 fi
@@ -861,6 +932,11 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
 (
     . "$MODDIR/webroot/cgi-bin/_thermal_cache.sh"
 
+    # Automatic profile decisions are disposable. If another scheduler
+    # transaction owns the lock, skip this decision and recompute next cycle.
+    SO_TRANSITION_LOCK_MAX_ATTEMPTS=1
+    SO_TRANSITION_LOCK_RETRY_SLEEP_S=0
+
     _cleanup_nr() {
         if [ "$_nr_state" = "lte" ] && [ -n "$_nr_key" ]; then
             _nr_restore=$(nr_mode_read_saved "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" 2>/dev/null)
@@ -892,11 +968,36 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
             printf 'idle_isolate=%s\n' "${10}"
             printf 'sim2_auto_manage=%s\n' "${11}"
             printf 'cycle_count=%s\n' "${12}"
+            printf 'wake_recheck_secs=%s\n' "$UNIFIED_SCREEN_WAKE_RECHECK_S"
         } > "$_diag_tmp" 2>/dev/null \
             && mv "$_diag_tmp" "$STANDBY_DIAG_FILE" 2>/dev/null \
             && [ -f "$STANDBY_DIAG_FILE" ] && return 0
         rm -f "$_diag_tmp" 2>/dev/null
         return 1
+    }
+
+    _sleep_until_worker_cycle() {
+        _sleep_remaining="$1"
+        _sleep_recheck="$UNIFIED_SCREEN_WAKE_RECHECK_S"
+        case "$_sleep_remaining" in ''|*[!0-9]*|0) return 0 ;; esac
+        case "$_sleep_recheck" in ''|*[!0-9]*|0) _sleep_recheck=30 ;; esac
+
+        if [ "${_screen:-off}" = "on" ] || [ "$_sleep_remaining" -le "$_sleep_recheck" ] 2>/dev/null; then
+            sleep "$_sleep_remaining"
+            return 0
+        fi
+
+        while [ "$_sleep_remaining" -gt 0 ] 2>/dev/null; do
+            _sleep_chunk="$_sleep_recheck"
+            [ "$_sleep_chunk" -le "$_sleep_remaining" ] 2>/dev/null || _sleep_chunk="$_sleep_remaining"
+            sleep "$_sleep_chunk"
+            _sleep_remaining=$((_sleep_remaining - _sleep_chunk))
+            [ "$_sleep_remaining" -gt 0 ] 2>/dev/null || break
+
+            display_state_read >/dev/null 2>&1 || true
+            [ "$DISPLAY_STATE_INTERACTIVE" = "yes" ] && return 0
+        done
+        return 0
     }
 
     _read_odpm_uws() {
@@ -1209,6 +1310,7 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
     while true; do
         _now=$(date +%s 2>/dev/null || echo 0)
         _cycle_count=$((_cycle_count + 1))
+        _active_profile=$(read_valid_profile "$PROFILE_FILE" "$_active_profile")
         _sched_owner=$(read_valid_sched_owner)
         sbm_load_state
         _scheduler_profile_writable=0
@@ -1396,17 +1498,13 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
                 _auto_charge_hot_since=0
                 _auto_charge_cool_since=0
                 _active_profile=$(read_valid_profile "$PROFILE_FILE" "$_active_profile")
-                if [ "$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null | tr -d ' \r\n\t')" != "external_scheduler" ]; then
-                    runtime_write_value "$PROFILE_AUTO_REASON_FILE" external_scheduler >/dev/null 2>&1 \
-                        || log -t pixel9pro_ctrl "WARNING: failed to persist external scheduler reason"
-                fi
             elif [ "$_profile_policy" = "manual" ]; then
                 _auto_hot_since=0
                 _auto_cool_since=0
                 _auto_charge_hot_since=0
                 _auto_charge_cool_since=0
-                if [ "$_screen" = "on" ] && [ "$_active_profile" != "$_manual_profile" ]; then
-                    if apply_profile_state "$_manual_profile" "manual_policy"; then
+                if [ "$_screen" = "on" ]; then
+                    if apply_profile_state "$_manual_profile" "manual_policy" manual; then
                         _active_profile="$_manual_profile"
                     fi
                 fi
@@ -1483,24 +1581,14 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
                 fi
 
                 if [ -n "$_target_profile" ]; then
-                    if [ "$_active_profile" != "$_target_profile" ]; then
-                        if apply_profile_state "$_target_profile" "$_target_reason"; then
-                            _active_profile="$_target_profile"
-                        fi
-                    else
-                        runtime_write_value "$PROFILE_AUTO_REASON_FILE" "$_target_reason" >/dev/null 2>&1 \
-                            || log -t pixel9pro_ctrl "WARNING: failed to update profile reason: $_target_reason"
+                    if apply_profile_state "$_target_profile" "$_target_reason" auto; then
+                        _active_profile="$_target_profile"
                     fi
                 fi
             else
                 # --- 息屏深度待机: 不做前台探测 / 自动调度 ---
-                if [ "$_active_profile" != "balanced" ]; then
-                    if apply_profile_state "balanced" "deep_standby_reset"; then
-                        _active_profile="balanced"
-                    fi
-                elif [ "$_just_off" -eq 1 ]; then
-                    runtime_write_value "$PROFILE_AUTO_REASON_FILE" deep_standby_reset >/dev/null 2>&1 \
-                        || log -t pixel9pro_ctrl "WARNING: failed to persist deep-standby profile reason"
+                if apply_profile_state "balanced" "deep_standby_reset" auto; then
+                    _active_profile="balanced"
                 fi
                 _auto_hot_since=0
                 _auto_cool_since=0
@@ -1537,7 +1625,7 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
         _diag_profile_policy=$(read_valid_profile_policy)
         _write_standby_diag_state "$_now" "$_screen" "$_worker_mode" "$_next_sleep_secs" "$_burst_effective" "$_nr_enabled" "$_nr_state" "$_diag_profile_policy" "$_active_profile" "$_idle_isolate" "$_sim2_auto" "$_cycle_count" \
             || log -t pixel9pro_ctrl "WARNING: failed to persist standby diagnostics"
-        sleep "$_next_sleep_secs"
+        _sleep_until_worker_cycle "$_next_sleep_secs"
     done
 ) &
 log -t pixel9pro_ctrl "Unified background worker started (Doze-friendly)"
