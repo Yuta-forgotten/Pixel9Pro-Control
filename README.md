@@ -135,8 +135,6 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 
 **owner arbiter cpufreq 恢复边界**：低频残留恢复只在 `FAS_LEASED_GAME` / `EXIT_HOLD` 且 ThermalHAL CPU cooling 未激活时尝试。恢复时从 `scaling_available_governors` 保留空格匹配 `sched_pixel` 或 `schedutil`，再按“打开 `scaling_max_freq` 到 `cpuinfo_max_freq` → 切 governor → 再写 max → 等待 `ARB_CPUFREQ_RESTORE_SETTLE_S`（默认 2 秒）→ 复读验证”的顺序执行；首次复读失败只做一轮 guarded retry，并在日志中同时记录 `first_after` 与 `retry_after`。如果仍失败，状态会保持 `cpufreq_restore_failed=yes`，这代表存在 PowerHAL / Scene object / cpufreq QoS 等外层写入者或平台限制，不能用循环抢写 sysfs 当作修复。
 
-**B93 WZRY handoff 闭环**：v4.4.35 将 cpufreq restore 调整为完整事务：先把 `scaling_min_freq` 恢复到 `cpuinfo_min_freq`，再打开 max、切回 `sched_pixel/schedutil`，最后复写 min/max；新 fas-rs lease 不再被旧 idle-owner restore timestamp 压住。配合 Pixel 9 Pro Scheduler `v4.9.1-pixel9pro.19` 的 base governor restore 与 WZRY policy7 floor，真实 WZRY clean wireless/discharge gate 已 PASS，policy7 max 恢复到 `3105000` 且不再出现 `policy7_max_too_low` blocker。
-
 **owner arbiter worker**：`service.sh` 在 scheduler boot state=`success/pixel|ugt` 时启动独立 owner worker。屏幕交互态以 `cmd deviceidle get screen` 为主真值；AOD 的 `mWakefulness=Dozing` / `mScreenState=DOZE` 必须归为非交互态，DRM `enabled` 只表示 encoder 仍连接，绝不能单独证明亮屏。非交互或状态未知时 owner 在 scheduler detection、状态迁移、前台 `dumpsys` 和任何调度写入前退出。亮屏默认每 5 秒观察一次；稳定 baseline、重复 disabled 状态和失败 terminal 都不重放参数、不改 `.arbiter_state`、不追加 history。独立 scheduler health 每 300 秒只读控制面；有效 fas-rs lease 在 Pixel/UGT 两种 baseline 下都只发布 deferred，不触发 baseline repair。
 
 ### NTP 服务器选择
