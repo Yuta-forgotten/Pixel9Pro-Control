@@ -1,8 +1,87 @@
 // CPU profile、调度 owner 与临时游戏接管功能。
 'use strict';
+(() => {
+const state = {
+  currentProfile: 'unknown',
+  manualProfile: 'balanced',
+  profilePolicy: 'manual',
+  schedOwner: 'pixel',
+  schedEffectiveOwner: 'pixel',
+  gameHandoffPolicy: 'off',
+  arbiterState: '',
+  arbiterApplyResult: '',
+  arbiterReason: '',
+  uperfDetected: false,
+  uperfModuleId: '',
+  uperfModuleName: '',
+  uperfModulePath: '',
+  uperfModuleSource: '',
+  uperfModuleState: '',
+  uperfModuleEnabled: 'no',
+  uperfProcessAlive: 'no',
+  uperfActive: 'no',
+  fasRsDetected: false,
+  fasRsModuleId: '',
+  fasRsModuleName: '',
+  fasRsModulePath: '',
+  fasRsModuleSource: '',
+  fasRsModuleState: '',
+  fasRsModuleEnabled: 'no',
+  fasRsOwnerState: '',
+  fasRsMode: '',
+  fasRsProcessAlive: 'no',
+  fasRsRuntimeState: '',
+  fasRsRuntimeOwnerActive: 'no',
+  fasRsRuntimeTarget: '',
+  fasRsActive: 'no',
+  externalSchedulerDetected: false,
+  externalSchedulerActive: false,
+  externalSchedulerId: '',
+  externalSchedulerName: '',
+  externalSchedulerKind: '',
+  externalSchedulerPath: '',
+  externalSchedulerSource: '',
+  externalSchedulerState: '',
+  externalSchedulerEnabled: 'no',
+  effectiveSchedulerOwner: 'pixel',
+  effectiveSchedulerName: 'Pixel9Pro-Control',
+  effectiveSchedulerKind: 'pixel',
+  effectiveSchedulerMode: '',
+  profileSurface: 'authoritative',
+  profileSurfaceStale: false,
+  profileSurfaceNote: '',
+  cpuContract: null,
+  schedulerBoot: {
+    targetMode: 'pixel', effectiveMode: 'unknown', phase: '', final: 'no', ok: 'pending',
+    result: '', reason: '', attempts: 0, rebootRequired: 'no', autoRepairUsed: 'no'
+  },
+  schedulerHealth: { status: '', reason: '', checkedEpoch: '', profileVerified: '', cpufreqPermissions: '', powerhalFailures: '' },
+  profileTransition: { key: '', attempts: 0, firstEpoch: '', deadlineEpoch: '', terminal: 'no', ok: 'pending', result: '' },
+  autoReason: '',
+  cpuBusy: false,
+  profileApplyBusy: false,
+  profilePolicyBusy: false,
+  schedOwnerBusy: false,
+  gameHandoffBusy: false,
+  ownerArbiterBusy: false,
+  schedulerRetryBusy: false,
+  cpuRows: null,
+  homeCpuRows: null,
+  lastClusters: null
+};
+
+const core = () => requireFeature('core');
+const apiFetch = (...args) => core().apiFetch(...args);
+const appendLog = (...args) => core().appendLog(...args);
+const escapeHtml = (...args) => core().escapeHtml(...args);
+const showToast = (...args) => core().showToast(...args);
+const setStaticHtml = (...args) => requireFeature('ui').setStaticHtml(...args);
+const openRebootModal = (...args) => requireFeature('ui').openRebootModal(...args);
+const syncHeroDesc = () => requireFeature('thermal').syncHeroDesc();
+
 function buildProfileDetail(key) {
   const profile = PROFILES[key] || PROFILES.unknown;
-  const contract = state.profile.cpuContract;
+  const contract = state.cpuContract;
   const values = contract?.profiles?.[key];
   let html = `<b>${profile.name}</b><br><br>${profile.detail}`;
   if (!values || !contract) return `${html}<br><br>运行参数尚未读取。`;
@@ -15,8 +94,7 @@ function buildProfileDetail(key) {
   return html;
 }
 
-// 内存优化详情按 state.memory.swapData 实时生成: 数字取自当前值, 解释随取值自适应,
-// 手动改参后重新打开即反映当前 ZRAM / VM 方案 (不再硬编码)
+// 共享布尔值兼容 CGI 的 true/yes/1 表达；profile state 仍只保留在本模块私有 scope。
 function boolValue(value) {
   return value === true || value === 'true' || value === 'yes' || value === 1 || value === '1';
 }
@@ -27,40 +105,40 @@ function formatSchedValue(value, unit) {
 }
 
 function getUperfName() {
-  return state.profile.uperfModuleName || state.profile.uperfModuleId || 'Uperf Game Turbo';
+  return state.uperfModuleName || state.uperfModuleId || 'Uperf Game Turbo';
 }
 
 function getUperfStateText() {
   if (isUperfActive()) return '运行中';
-  switch (state.profile.uperfModuleState) {
+  switch (state.uperfModuleState) {
     case 'disabled': return '已禁用';
     case 'pending_update': return '待重启更新';
     case 'pending_remove': return '待重启移除';
     case 'active': return '已安装';
-    default: return state.profile.uperfDetected ? '已安装' : '未检测到';
+    default: return state.uperfDetected ? '已安装' : '未检测到';
   }
 }
 
 function isUperfEnabled() {
-  return state.profile.uperfDetected && state.profile.uperfModuleEnabled === 'yes';
+  return state.uperfDetected && state.uperfModuleEnabled === 'yes';
 }
 
 function isUperfActive() {
-  return state.profile.uperfDetected && (state.profile.uperfActive === 'yes' || state.profile.uperfProcessAlive === 'yes');
+  return state.uperfDetected && (state.uperfActive === 'yes' || state.uperfProcessAlive === 'yes');
 }
 
 function getFasRsName() {
-  return state.profile.fasRsModuleName || state.profile.fasRsModuleId || 'fas-rs';
+  return state.fasRsModuleName || state.fasRsModuleId || 'fas-rs';
 }
 
 function getFasRsStateText() {
   if (isFasRsRuntimeActive()) {
-    return state.profile.fasRsRuntimeTarget ? `游戏接管中 · ${state.profile.fasRsRuntimeTarget}` : '游戏接管中';
+    return state.fasRsRuntimeTarget ? `游戏接管中 · ${state.fasRsRuntimeTarget}` : '游戏接管中';
   }
   if (isFasRsResident()) {
-    return state.profile.fasRsMode ? `常驻待机 · ${state.profile.fasRsMode}` : '常驻待机';
+    return state.fasRsMode ? `常驻待机 · ${state.fasRsMode}` : '常驻待机';
   }
-  switch (state.profile.fasRsRuntimeState || state.profile.fasRsModuleState) {
+  switch (state.fasRsRuntimeState || state.fasRsModuleState) {
     case 'disabled_marker': return '已让权';
     case 'disabled': return '已禁用';
     case 'pending_update': return '待重启更新';
@@ -70,49 +148,49 @@ function getFasRsStateText() {
     case 'module_enabled': return '模块启用';
     case 'runtime_present': return '运行目录存在';
     case 'active': return '已安装';
-    default: return state.profile.fasRsDetected ? '已检测到' : '未检测到';
+    default: return state.fasRsDetected ? '已检测到' : '未检测到';
   }
 }
 
 function isFasRsEnabled() {
-  return state.profile.fasRsDetected && (isFasRsResident() || state.profile.fasRsActive === 'yes' || state.profile.fasRsModuleEnabled === 'yes');
+  return state.fasRsDetected && (isFasRsResident() || state.fasRsActive === 'yes' || state.fasRsModuleEnabled === 'yes');
 }
 
 function isFasRsResident() {
-  return state.profile.fasRsDetected && state.profile.fasRsProcessAlive === 'yes';
+  return state.fasRsDetected && state.fasRsProcessAlive === 'yes';
 }
 
 function isFasRsRuntimeActive() {
-  return state.profile.fasRsDetected && (state.profile.fasRsRuntimeOwnerActive === 'yes' || state.profile.fasRsActive === 'yes');
+  return state.fasRsDetected && (state.fasRsRuntimeOwnerActive === 'yes' || state.fasRsActive === 'yes');
 }
 
 function getExternalSchedulerName() {
-  return state.profile.externalSchedulerName || state.profile.externalSchedulerId || (state.profile.fasRsDetected ? getFasRsName() : getUperfName());
+  return state.externalSchedulerName || state.externalSchedulerId || (state.fasRsDetected ? getFasRsName() : getUperfName());
 }
 
 function getEffectiveSchedulerName() {
-  return state.profile.effectiveSchedulerName || getExternalSchedulerName();
+  return state.effectiveSchedulerName || getExternalSchedulerName();
 }
 
 function getEffectiveSchedulerModeText() {
-  return state.profile.effectiveSchedulerMode ? ` · ${state.profile.effectiveSchedulerMode}` : '';
+  return state.effectiveSchedulerMode ? ` · ${state.effectiveSchedulerMode}` : '';
 }
 
 function hasExternalScheduler() {
-  return state.profile.externalSchedulerDetected || state.profile.uperfDetected || state.profile.fasRsDetected;
+  return state.externalSchedulerDetected || state.uperfDetected || state.fasRsDetected;
 }
 
 function isExternalSchedulerActive() {
-  return state.profile.externalSchedulerActive || isUperfActive() || isFasRsRuntimeActive();
+  return state.externalSchedulerActive || isUperfActive() || isFasRsRuntimeActive();
 }
 
 function getExternalSchedulerStateText() {
-  if (state.profile.externalSchedulerKind === 'fas_rs') return getFasRsStateText();
-  if (state.profile.externalSchedulerKind === 'uperf') return getUperfStateText();
-  if (state.profile.externalSchedulerKind === 'multiple') {
+  if (state.externalSchedulerKind === 'fas_rs') return getFasRsStateText();
+  if (state.externalSchedulerKind === 'uperf') return getUperfStateText();
+  if (state.externalSchedulerKind === 'multiple') {
     return isExternalSchedulerActive() ? '多个外部调度器可用' : '检测到多个外部调度器';
   }
-  switch (state.profile.externalSchedulerState) {
+  switch (state.externalSchedulerState) {
     case 'disabled': return '已禁用';
     case 'pending_update': return '待重启更新';
     case 'pending_remove': return '待重启移除';
@@ -123,45 +201,45 @@ function getExternalSchedulerStateText() {
 }
 
 function getSchedulerStatusText() {
-  const boot = state.profile.schedulerBoot;
+  const boot = state.schedulerBoot;
   if (boot.phase === 'pending_reboot') return `等待重启到${boot.targetMode === 'ugt' ? ' UGT 日常调度' : ' Pixel'}模式`;
   if (boot.phase === 'blocked' || boot.phase === 'failed') return `调度切换失败 · ${boot.reason || boot.result || '状态未通过验证'}`;
   if (boot.phase === 'verifying' || boot.phase === 'applying') return `正在验证 ${boot.targetMode === 'ugt' ? 'UGT' : 'Pixel'} 启动模式`;
   if (boot.phase === 'success' && boot.effectiveMode === 'ugt') return 'UGT 日常调度模式 · 已验证';
   if (boot.phase === 'success' && boot.effectiveMode === 'pixel') return 'Pixel 调度模式 · 已验证';
   const name = getEffectiveSchedulerName();
-  const desired = state.profile.schedOwner === 'external' ? 'UGT 启动模式' : 'Pixel 启动模式';
-  if (state.profile.schedEffectiveOwner === 'external') {
+  const desired = state.schedOwner === 'external' ? 'UGT 启动模式' : 'Pixel 启动模式';
+  if (state.schedEffectiveOwner === 'external') {
     if (!hasExternalScheduler()) return `${desired} · 当前无外部调度器运行`;
-    const lease = state.profile.effectiveSchedulerKind === 'fas_rs' && (state.profile.arbiterState === 'FAS_LEASED_GAME' || state.profile.arbiterState === 'EXIT_HOLD');
+    const lease = state.effectiveSchedulerKind === 'fas_rs' && (state.arbiterState === 'FAS_LEASED_GAME' || state.arbiterState === 'EXIT_HOLD');
     const current = isExternalSchedulerActive() ? `${name} 接管${getEffectiveSchedulerModeText()}` : `${name} ${getExternalSchedulerStateText()}`;
     return `${desired} · 当前 ${current}${lease ? '（游戏临时接管）' : ''}`;
   }
-  return state.profile.schedOwner === 'external' ? 'UGT 模式等待重启验证' : 'Pixel 调度模式 · 当前 Pixel9Pro-Control';
+  return state.schedOwner === 'external' ? 'UGT 模式等待重启验证' : 'Pixel 调度模式 · 当前 Pixel9Pro-Control';
 }
 
 function getSchedulerToggleText() {
-  if (state.profile.schedOwnerBusy) return '切换中…';
-  if (state.profile.schedulerBoot.phase === 'pending_reboot') return '取消切换';
-  return state.profile.schedulerBoot.effectiveMode === 'ugt' ? '切换到 Pixel' : '切换到 UGT';
+  if (state.schedOwnerBusy) return '切换中…';
+  if (state.schedulerBoot.phase === 'pending_reboot') return '取消切换';
+  return state.schedulerBoot.effectiveMode === 'ugt' ? '切换到 Pixel' : '切换到 UGT';
 }
 
 function isVerifiedPixelBoot() {
-  return state.profile.schedulerBoot.phase === 'success' && state.profile.schedulerBoot.effectiveMode === 'pixel';
+  return state.schedulerBoot.phase === 'success' && state.schedulerBoot.effectiveMode === 'pixel';
 }
 
 function isVerifiedSchedulerBoot() {
-  return state.profile.schedulerBoot.phase === 'success'
-    && (state.profile.schedulerBoot.effectiveMode === 'pixel' || state.profile.schedulerBoot.effectiveMode === 'ugt');
+  return state.schedulerBoot.phase === 'success'
+    && (state.schedulerBoot.effectiveMode === 'pixel' || state.schedulerBoot.effectiveMode === 'ugt');
 }
 
 function isCurrentStrategyBusy() {
-  return state.profile.profileApplyBusy
-    || state.profile.profilePolicyBusy
-    || state.profile.schedOwnerBusy
-    || state.profile.gameHandoffBusy
-    || state.profile.ownerArbiterBusy
-    || state.profile.schedulerRetryBusy;
+  return state.profileApplyBusy
+    || state.profilePolicyBusy
+    || state.schedOwnerBusy
+    || state.gameHandoffBusy
+    || state.ownerArbiterBusy
+    || state.schedulerRetryBusy;
 }
 
 function getSchedulerExternalDesc() {
@@ -174,13 +252,13 @@ function getSchedulerExternalDesc() {
 }
 
 function getSchedulerPixelDesc() {
-  if (state.profile.uperfDetected && state.profile.fasRsDetected) {
+  if (state.uperfDetected && state.fasRsDetected) {
     return `当前日常调度由本模块管理；${getUperfName()} 未接管，fas-rs 仅按游戏策略临时接管。`;
   }
-  if (state.profile.uperfDetected) {
+  if (state.uperfDetected) {
     return `检测到 ${getUperfName()}，当前日常调度由本模块管理。`;
   }
-  if (state.profile.fasRsDetected) {
+  if (state.fasRsDetected) {
     return 'fas-rs 进程常驻待机，仅在有效游戏 lease 内接管；当前日常调度由本模块管理。';
   }
   return '当前由本模块管理 CPU 调度。';
@@ -188,9 +266,10 @@ function getSchedulerPixelDesc() {
 
 function syncOptionalModuleUi() {
   const available = {
-    ugt: state.profile.uperfDetected,
-    fas: state.profile.fasRsDetected,
-    baseband: state.network.basebandInstalled && state.shell.deviceModel === 'Pixel 9 Pro',
+    ugt: state.uperfDetected,
+    fas: state.fasRsDetected,
+    baseband: requireFeature('network').isBasebandInstalled()
+      && requireFeature('shell').getDeviceModel() === 'Pixel 9 Pro',
   };
   document.querySelectorAll('[data-module-visible]').forEach((element) => {
     const keys = String(element.dataset.moduleVisible || '').split('|').filter(Boolean);
@@ -213,21 +292,21 @@ function syncOwnerArbiterUi() {
   syncOptionalModuleUi();
   const strategyBusy = isCurrentStrategyBusy();
   if (refs.gameHandoffRow) {
-    const available = state.profile.fasRsDetected;
+    const available = state.fasRsDetected;
     refs.gameHandoffRow.hidden = !available;
     if (available) {
-      const enabled = state.profile.gameHandoffPolicy === 'fas_rs';
+      const enabled = state.gameHandoffPolicy === 'fas_rs';
       refs.gameHandoffLabel.textContent = enabled
         ? 'fas-rs 常驻待机；命中游戏时建立 lease，退出后恢复日常选择'
         : 'fas-rs 游戏临时接管已关闭';
       refs.gameHandoffToggleBtn.disabled = strategyBusy || !isVerifiedSchedulerBoot();
       refs.gameHandoffToggleBtn.className = `tiny-btn${enabled ? ' tonal' : ''}`;
-      refs.gameHandoffToggleLabel.textContent = state.profile.gameHandoffBusy ? '切换中…' : (enabled ? '关闭' : '启用');
+      refs.gameHandoffToggleLabel.textContent = state.gameHandoffBusy ? '切换中…' : (enabled ? '关闭' : '启用');
     }
   }
   if (refs.schedulerHealthRow) {
     refs.schedulerHealthRow.hidden = false;
-    const health = state.profile.schedulerHealth;
+    const health = state.schedulerHealth;
     refs.schedulerHealthLabel.textContent = health.status === 'healthy'
       ? '控制面健康'
       : health.status === 'drift' ? `检测到漂移 · ${health.reason || 'profile 不一致'}`
@@ -237,37 +316,37 @@ function syncOwnerArbiterUi() {
               ? '检查延后 · 外部调度接管中'
               : '检查延后 · 调度切换中')
             : '等待健康检查';
-    refs.schedulerRetryBtn.disabled = strategyBusy || state.profile.schedulerRetryBusy || !['failed', 'blocked'].includes(state.profile.schedulerBoot.phase);
-    refs.schedulerRetryLabel.textContent = state.profile.schedulerRetryBusy ? '验证中…' : '重新验证';
+    refs.schedulerRetryBtn.disabled = strategyBusy || state.schedulerRetryBusy || !['failed', 'blocked'].includes(state.schedulerBoot.phase);
+    refs.schedulerRetryLabel.textContent = state.schedulerRetryBusy ? '验证中…' : '重新验证';
   }
   if (!refs.ownerArbiterRow) return;
-  const available = state.profile.fasRsDetected;
+  const available = state.fasRsDetected;
   refs.ownerArbiterRow.hidden = !available;
   if (!available) return;
   const active = getFasRsStateText();
-  refs.ownerArbiterLabel.textContent = state.profile.ownerArbiterBusy
+  refs.ownerArbiterLabel.textContent = state.ownerArbiterBusy
     ? '正在检查调度接管状态…'
     : `fas-rs ${active || '已检测到'}；常驻进程不等于调度接管`;
   refs.ownerArbiterTickBtn.disabled = strategyBusy;
-  refs.ownerArbiterTickLabel.textContent = state.profile.ownerArbiterBusy ? '检查中…' : '立即检查';
+  refs.ownerArbiterTickLabel.textContent = state.ownerArbiterBusy ? '检查中…' : '立即检查';
 }
 
 function syncCurrentStrategyTransitionCopy() {
   let title = '';
   let detail = '';
-  if (state.profile.schedOwnerBusy) {
+  if (state.schedOwnerBusy) {
     title = '正在切换调度接管';
     detail = '正在提交下次启动模式；当前 boot 不会热启动或热停止 UGT。';
-  } else if (state.profile.gameHandoffBusy) {
+  } else if (state.gameHandoffBusy) {
     title = '正在切换游戏接管';
     detail = '正在更新 fas-rs 接管策略并核对当前 owner，通常需要数秒。';
-  } else if (state.profile.ownerArbiterBusy) {
+  } else if (state.ownerArbiterBusy) {
     title = '正在检查调度协调';
     detail = '正在复读前台场景、owner 和关键调度节点，通常需要数秒。';
-  } else if (state.profile.profileApplyBusy) {
+  } else if (state.profileApplyBusy) {
     title = '正在切换性能模式';
     detail = '正在应用 profile 并复读关键调度节点，通常需要数秒。';
-  } else if (state.profile.profilePolicyBusy) {
+  } else if (state.profilePolicyBusy) {
     title = '正在切换自动 / 手动';
     detail = '正在应用当前 profile 并复读调度状态，通常需要数秒。';
   }
@@ -278,11 +357,11 @@ function syncCurrentStrategyTransitionCopy() {
 }
 
 function syncProfileUi() {
-  const profile = PROFILES[state.profile.currentProfile] || PROFILES.unknown;
-  const isAuto = state.profile.profilePolicy === 'auto';
-  const isExternal = state.profile.schedEffectiveOwner === 'external';
+  const profile = PROFILES[state.currentProfile] || PROFILES.unknown;
+  const isAuto = state.profilePolicy === 'auto';
+  const isExternal = state.schedEffectiveOwner === 'external';
   const effectiveName = getEffectiveSchedulerName();
-  const schedulerPending = ['pending_reboot', 'verifying', 'applying'].includes(state.profile.schedulerBoot.phase);
+  const schedulerPending = ['pending_reboot', 'verifying', 'applying'].includes(state.schedulerBoot.phase);
   const strategyBusy = isCurrentStrategyBusy() || schedulerPending;
   if (isExternal) {
     refs.topbarProfileChip.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? `${effectiveName} 接管` : '外部调度未启用') : '调度让权';
@@ -299,7 +378,7 @@ function syncProfileUi() {
     refs.profilePolicyAutoBtn.disabled = true;
     refs.schedOwnerLabel.textContent = getSchedulerStatusText();
     refs.schedOwnerToggleBtn.className = 'tiny-btn primary';
-    refs.schedOwnerToggleBtn.disabled = isCurrentStrategyBusy() || !state.profile.uperfDetected;
+    refs.schedOwnerToggleBtn.disabled = isCurrentStrategyBusy() || !state.uperfDetected;
     refs.schedOwnerToggleLabel.textContent = getSchedulerToggleText();
     refs.hero.className = 'hero-card mode-game';
     setStaticHtml(refs.heroIcon, PROFILES.performance.hero);
@@ -314,14 +393,14 @@ function syncProfileUi() {
   }
   refs.topbarProfileChip.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
   refs.perfCurrentName.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
-  const autoTransitionFailed = isAuto && state.profile.profileTransition.terminal === 'yes' && state.profile.profileTransition.ok === 'no';
+  const autoTransitionFailed = isAuto && state.profileTransition.terminal === 'yes' && state.profileTransition.ok === 'no';
   refs.perfCurrentDesc.textContent = isAuto
-    ? (autoTransitionFailed ? `${profile.desc} · 自动切档已停止` : `${profile.desc} · ${describeAutoReason(state.profile.autoReason)}`)
+    ? (autoTransitionFailed ? `${profile.desc} · 自动切档已停止` : `${profile.desc} · ${describeAutoReason(state.autoReason)}`)
     : profile.desc;
   const pixelPolicyDesc = isAuto
     ? (autoTransitionFailed
       ? '自动切档连续失败并已停止；切到手动档后可重新启用自动。'
-      : `自动模式：按“${describeAutoReason(state.profile.autoReason)}”在均衡与省电间切换；点击模式卡片转为手动。`)
+      : `自动模式：按“${describeAutoReason(state.autoReason)}”在均衡与省电间切换；点击模式卡片转为手动。`)
     : `手动模式：固定为「${profile.name}」；切换为自动后，仅在温度持续偏高时收口至省电。`;
   refs.perfPolicyDesc.textContent = hasExternalScheduler() ? `${pixelPolicyDesc} ${getSchedulerPixelDesc()}` : pixelPolicyDesc;
   refs.profilePolicyManualBtn.className = `seg-btn${!isAuto ? ' active' : ''}`;
@@ -330,14 +409,14 @@ function syncProfileUi() {
   refs.profilePolicyAutoBtn.disabled = strategyBusy || !isVerifiedPixelBoot();
   refs.schedOwnerLabel.textContent = getSchedulerStatusText();
   refs.schedOwnerToggleBtn.className = 'tiny-btn';
-  refs.schedOwnerToggleBtn.disabled = isCurrentStrategyBusy() || !state.profile.uperfDetected;
+  refs.schedOwnerToggleBtn.disabled = isCurrentStrategyBusy() || !state.uperfDetected;
   refs.schedOwnerToggleLabel.textContent = getSchedulerToggleText();
   refs.hero.className = `hero-card ${profile.modeClass}`;
   setStaticHtml(refs.heroIcon, profile.hero);
   refs.heroMode.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
   document.querySelectorAll('.profile-option').forEach((card) => {
     card.classList.toggle('disabled', strategyBusy || !isVerifiedPixelBoot());
-    card.classList.toggle('selected', card.dataset.profile === state.profile.currentProfile);
+    card.classList.toggle('selected', card.dataset.profile === state.currentProfile);
   });
   syncCurrentStrategyTransitionCopy();
   syncOwnerArbiterUi();
@@ -364,59 +443,59 @@ function describeAutoReason(reason) {
 }
 
 function applyProfileState(data) {
-  state.profile.currentProfile = PROFILES[data.profile] ? data.profile : 'unknown';
-  state.profile.manualProfile = PROFILES[data.manual_profile] ? data.manual_profile : state.profile.currentProfile;
-  state.profile.profilePolicy = data.policy === 'auto' ? 'auto' : 'manual';
-  state.profile.schedOwner = data.sched_owner === 'external' ? 'external' : 'pixel';
-  state.profile.schedEffectiveOwner = data.sched_effective_owner === 'external' ? 'external' : 'pixel';
-  state.profile.gameHandoffPolicy = data.game_handoff_policy === 'fas_rs' ? 'fas_rs' : 'off';
-  state.profile.arbiterState = typeof data.arbiter_state === 'string' ? data.arbiter_state : '';
-  state.profile.arbiterApplyResult = typeof data.arbiter_apply_result === 'string' ? data.arbiter_apply_result : '';
-  state.profile.arbiterReason = typeof data.arbiter_reason === 'string' ? data.arbiter_reason : '';
-  state.profile.uperfDetected = boolValue(data.uperf_detected);
-  state.profile.uperfModuleId = typeof data.uperf_module_id === 'string' ? data.uperf_module_id : '';
-  state.profile.uperfModuleName = typeof data.uperf_module_name === 'string' ? data.uperf_module_name : '';
-  state.profile.uperfModulePath = typeof data.uperf_module_path === 'string' ? data.uperf_module_path : '';
-  state.profile.uperfModuleSource = typeof data.uperf_module_source === 'string' ? data.uperf_module_source : '';
-  state.profile.uperfModuleState = typeof data.uperf_module_state === 'string' ? data.uperf_module_state : '';
-  state.profile.uperfModuleEnabled = typeof data.uperf_module_enabled === 'string' ? data.uperf_module_enabled : 'no';
-  state.profile.uperfProcessAlive = typeof data.uperf_process_alive === 'string' ? data.uperf_process_alive : 'no';
-  state.profile.uperfActive = typeof data.uperf_active === 'string' ? data.uperf_active : 'no';
-  state.profile.fasRsDetected = boolValue(data.fas_rs_detected);
-  state.profile.fasRsModuleId = typeof data.fas_rs_module_id === 'string' ? data.fas_rs_module_id : '';
-  state.profile.fasRsModuleName = typeof data.fas_rs_module_name === 'string' ? data.fas_rs_module_name : '';
-  state.profile.fasRsModulePath = typeof data.fas_rs_module_path === 'string' ? data.fas_rs_module_path : '';
-  state.profile.fasRsModuleSource = typeof data.fas_rs_module_source === 'string' ? data.fas_rs_module_source : '';
-  state.profile.fasRsModuleState = typeof data.fas_rs_module_state === 'string' ? data.fas_rs_module_state : '';
-  state.profile.fasRsModuleEnabled = typeof data.fas_rs_module_enabled === 'string' ? data.fas_rs_module_enabled : 'no';
-  state.profile.fasRsOwnerState = typeof data.fas_rs_owner_state === 'string' ? data.fas_rs_owner_state : '';
-  state.profile.fasRsMode = typeof data.fas_rs_mode === 'string' ? data.fas_rs_mode : '';
-  state.profile.fasRsProcessAlive = typeof data.fas_rs_process_alive === 'string' ? data.fas_rs_process_alive : 'no';
-  state.profile.fasRsRuntimeState = typeof data.fas_rs_runtime_state === 'string' ? data.fas_rs_runtime_state : '';
-  state.profile.fasRsRuntimeOwnerActive = typeof data.fas_rs_runtime_owner_active === 'string' ? data.fas_rs_runtime_owner_active : 'no';
-  state.profile.fasRsRuntimeTarget = typeof data.fas_rs_runtime_target === 'string' ? data.fas_rs_runtime_target : '';
-  state.profile.fasRsActive = typeof data.fas_rs_active === 'string' ? data.fas_rs_active : 'no';
-  state.profile.externalSchedulerDetected = boolValue(data.external_scheduler_detected);
-  state.profile.externalSchedulerActive = boolValue(data.external_scheduler_active);
-  state.profile.externalSchedulerId = typeof data.external_scheduler_id === 'string' ? data.external_scheduler_id : '';
-  state.profile.externalSchedulerName = typeof data.external_scheduler_name === 'string' ? data.external_scheduler_name : '';
-  state.profile.externalSchedulerKind = typeof data.external_scheduler_kind === 'string' ? data.external_scheduler_kind : '';
-  state.profile.externalSchedulerPath = typeof data.external_scheduler_path === 'string' ? data.external_scheduler_path : '';
-  state.profile.externalSchedulerSource = typeof data.external_scheduler_source === 'string' ? data.external_scheduler_source : '';
-  state.profile.externalSchedulerState = typeof data.external_scheduler_state === 'string' ? data.external_scheduler_state : '';
-  state.profile.externalSchedulerEnabled = typeof data.external_scheduler_enabled === 'string' ? data.external_scheduler_enabled : 'no';
-  state.profile.effectiveSchedulerOwner = typeof data.effective_scheduler_owner === 'string' ? data.effective_scheduler_owner : 'pixel';
-  state.profile.effectiveSchedulerName = typeof data.effective_scheduler_name === 'string' ? data.effective_scheduler_name : '';
-  state.profile.effectiveSchedulerKind = typeof data.effective_scheduler_kind === 'string' ? data.effective_scheduler_kind : '';
-  state.profile.effectiveSchedulerMode = typeof data.effective_scheduler_mode === 'string' ? data.effective_scheduler_mode : '';
-  state.profile.profileSurface = typeof data.profile_surface === 'string' ? data.profile_surface : 'authoritative';
-  state.profile.profileSurfaceStale = boolValue(data.profile_surface_stale);
-  state.profile.profileSurfaceNote = typeof data.profile_surface_note === 'string' ? data.profile_surface_note : '';
+  state.currentProfile = PROFILES[data.profile] ? data.profile : 'unknown';
+  state.manualProfile = PROFILES[data.manual_profile] ? data.manual_profile : state.currentProfile;
+  state.profilePolicy = data.policy === 'auto' ? 'auto' : 'manual';
+  state.schedOwner = data.sched_owner === 'external' ? 'external' : 'pixel';
+  state.schedEffectiveOwner = data.sched_effective_owner === 'external' ? 'external' : 'pixel';
+  state.gameHandoffPolicy = data.game_handoff_policy === 'fas_rs' ? 'fas_rs' : 'off';
+  state.arbiterState = typeof data.arbiter_state === 'string' ? data.arbiter_state : '';
+  state.arbiterApplyResult = typeof data.arbiter_apply_result === 'string' ? data.arbiter_apply_result : '';
+  state.arbiterReason = typeof data.arbiter_reason === 'string' ? data.arbiter_reason : '';
+  state.uperfDetected = boolValue(data.uperf_detected);
+  state.uperfModuleId = typeof data.uperf_module_id === 'string' ? data.uperf_module_id : '';
+  state.uperfModuleName = typeof data.uperf_module_name === 'string' ? data.uperf_module_name : '';
+  state.uperfModulePath = typeof data.uperf_module_path === 'string' ? data.uperf_module_path : '';
+  state.uperfModuleSource = typeof data.uperf_module_source === 'string' ? data.uperf_module_source : '';
+  state.uperfModuleState = typeof data.uperf_module_state === 'string' ? data.uperf_module_state : '';
+  state.uperfModuleEnabled = typeof data.uperf_module_enabled === 'string' ? data.uperf_module_enabled : 'no';
+  state.uperfProcessAlive = typeof data.uperf_process_alive === 'string' ? data.uperf_process_alive : 'no';
+  state.uperfActive = typeof data.uperf_active === 'string' ? data.uperf_active : 'no';
+  state.fasRsDetected = boolValue(data.fas_rs_detected);
+  state.fasRsModuleId = typeof data.fas_rs_module_id === 'string' ? data.fas_rs_module_id : '';
+  state.fasRsModuleName = typeof data.fas_rs_module_name === 'string' ? data.fas_rs_module_name : '';
+  state.fasRsModulePath = typeof data.fas_rs_module_path === 'string' ? data.fas_rs_module_path : '';
+  state.fasRsModuleSource = typeof data.fas_rs_module_source === 'string' ? data.fas_rs_module_source : '';
+  state.fasRsModuleState = typeof data.fas_rs_module_state === 'string' ? data.fas_rs_module_state : '';
+  state.fasRsModuleEnabled = typeof data.fas_rs_module_enabled === 'string' ? data.fas_rs_module_enabled : 'no';
+  state.fasRsOwnerState = typeof data.fas_rs_owner_state === 'string' ? data.fas_rs_owner_state : '';
+  state.fasRsMode = typeof data.fas_rs_mode === 'string' ? data.fas_rs_mode : '';
+  state.fasRsProcessAlive = typeof data.fas_rs_process_alive === 'string' ? data.fas_rs_process_alive : 'no';
+  state.fasRsRuntimeState = typeof data.fas_rs_runtime_state === 'string' ? data.fas_rs_runtime_state : '';
+  state.fasRsRuntimeOwnerActive = typeof data.fas_rs_runtime_owner_active === 'string' ? data.fas_rs_runtime_owner_active : 'no';
+  state.fasRsRuntimeTarget = typeof data.fas_rs_runtime_target === 'string' ? data.fas_rs_runtime_target : '';
+  state.fasRsActive = typeof data.fas_rs_active === 'string' ? data.fas_rs_active : 'no';
+  state.externalSchedulerDetected = boolValue(data.external_scheduler_detected);
+  state.externalSchedulerActive = boolValue(data.external_scheduler_active);
+  state.externalSchedulerId = typeof data.external_scheduler_id === 'string' ? data.external_scheduler_id : '';
+  state.externalSchedulerName = typeof data.external_scheduler_name === 'string' ? data.external_scheduler_name : '';
+  state.externalSchedulerKind = typeof data.external_scheduler_kind === 'string' ? data.external_scheduler_kind : '';
+  state.externalSchedulerPath = typeof data.external_scheduler_path === 'string' ? data.external_scheduler_path : '';
+  state.externalSchedulerSource = typeof data.external_scheduler_source === 'string' ? data.external_scheduler_source : '';
+  state.externalSchedulerState = typeof data.external_scheduler_state === 'string' ? data.external_scheduler_state : '';
+  state.externalSchedulerEnabled = typeof data.external_scheduler_enabled === 'string' ? data.external_scheduler_enabled : 'no';
+  state.effectiveSchedulerOwner = typeof data.effective_scheduler_owner === 'string' ? data.effective_scheduler_owner : 'pixel';
+  state.effectiveSchedulerName = typeof data.effective_scheduler_name === 'string' ? data.effective_scheduler_name : '';
+  state.effectiveSchedulerKind = typeof data.effective_scheduler_kind === 'string' ? data.effective_scheduler_kind : '';
+  state.effectiveSchedulerMode = typeof data.effective_scheduler_mode === 'string' ? data.effective_scheduler_mode : '';
+  state.profileSurface = typeof data.profile_surface === 'string' ? data.profile_surface : 'authoritative';
+  state.profileSurfaceStale = boolValue(data.profile_surface_stale);
+  state.profileSurfaceNote = typeof data.profile_surface_note === 'string' ? data.profile_surface_note : '';
   if (data.cpu_contract && typeof data.cpu_contract === 'object' && data.cpu_contract.profiles) {
-    state.profile.cpuContract = data.cpu_contract;
+    state.cpuContract = data.cpu_contract;
   }
   if (data.scheduler_boot && typeof data.scheduler_boot === 'object') {
-    state.profile.schedulerBoot = {
+    state.schedulerBoot = {
       targetMode: data.scheduler_boot.target_mode === 'ugt' ? 'ugt' : 'pixel',
       effectiveMode: ['pixel', 'ugt'].includes(data.scheduler_boot.effective_mode) ? data.scheduler_boot.effective_mode : 'unknown',
       phase: typeof data.scheduler_boot.phase === 'string' ? data.scheduler_boot.phase : '',
@@ -430,21 +509,21 @@ function applyProfileState(data) {
     };
   }
   if (data.scheduler_health && typeof data.scheduler_health === 'object') {
-    state.profile.schedulerHealth = {
+    state.schedulerHealth = {
       status: data.scheduler_health.status || '', reason: data.scheduler_health.reason || '',
       checkedEpoch: data.scheduler_health.checked_epoch || '', profileVerified: data.scheduler_health.profile_verified || '',
       cpufreqPermissions: data.scheduler_health.cpufreq_permissions || '', powerhalFailures: data.scheduler_health.powerhal_failures || ''
     };
   }
   if (data.profile_transition && typeof data.profile_transition === 'object') {
-    state.profile.profileTransition = {
+    state.profileTransition = {
       key: data.profile_transition.key || '', attempts: Number(data.profile_transition.attempts) || 0,
       firstEpoch: data.profile_transition.first_epoch || '', deadlineEpoch: data.profile_transition.deadline_epoch || '',
       terminal: data.profile_transition.terminal || 'no', ok: data.profile_transition.ok || 'pending',
       result: data.profile_transition.result || ''
     };
   }
-  state.profile.autoReason = typeof data.auto_reason === 'string' ? data.auto_reason : '';
+  state.autoReason = typeof data.auto_reason === 'string' ? data.auto_reason : '';
   syncProfileUi();
   syncHeroDesc();
 }
@@ -452,24 +531,24 @@ function applyProfileState(data) {
 function applyProfileMutationState(data) {
   latestProfileMutationState = data;
   profileMutationStateRevision += 1;
-  if (PROFILES[data.profile]) state.profile.currentProfile = data.profile;
-  if (PROFILES[data.manual_profile]) state.profile.manualProfile = data.manual_profile;
-  if (data.policy === 'auto' || data.policy === 'manual') state.profile.profilePolicy = data.policy;
-  if (data.sched_owner === 'external' || data.sched_owner === 'pixel') state.profile.schedOwner = data.sched_owner;
+  if (PROFILES[data.profile]) state.currentProfile = data.profile;
+  if (PROFILES[data.manual_profile]) state.manualProfile = data.manual_profile;
+  if (data.policy === 'auto' || data.policy === 'manual') state.profilePolicy = data.policy;
+  if (data.sched_owner === 'external' || data.sched_owner === 'pixel') state.schedOwner = data.sched_owner;
   if (data.sched_effective_owner === 'external' || data.sched_effective_owner === 'pixel') {
-    state.profile.schedEffectiveOwner = data.sched_effective_owner;
+    state.schedEffectiveOwner = data.sched_effective_owner;
   }
   if (data.game_handoff_policy === 'fas_rs' || data.game_handoff_policy === 'off') {
-    state.profile.gameHandoffPolicy = data.game_handoff_policy;
+    state.gameHandoffPolicy = data.game_handoff_policy;
   }
-  if (typeof data.arbiter_state === 'string') state.profile.arbiterState = data.arbiter_state;
-  if (typeof data.arbiter_apply_result === 'string') state.profile.arbiterApplyResult = data.arbiter_apply_result;
-  if (typeof data.arbiter_reason === 'string') state.profile.arbiterReason = data.arbiter_reason;
-  if (typeof data.auto_reason === 'string') state.profile.autoReason = data.auto_reason;
+  if (typeof data.arbiter_state === 'string') state.arbiterState = data.arbiter_state;
+  if (typeof data.arbiter_apply_result === 'string') state.arbiterApplyResult = data.arbiter_apply_result;
+  if (typeof data.arbiter_reason === 'string') state.arbiterReason = data.arbiter_reason;
+  if (typeof data.auto_reason === 'string') state.autoReason = data.auto_reason;
   if (data.scheduler_boot && typeof data.scheduler_boot === 'object') {
     const boot = data.scheduler_boot;
-    state.profile.schedulerBoot = {
-      ...state.profile.schedulerBoot,
+    state.schedulerBoot = {
+      ...state.schedulerBoot,
       ...(typeof boot.target_mode === 'string' ? { targetMode: boot.target_mode === 'ugt' ? 'ugt' : 'pixel' } : {}),
       ...(typeof boot.effective_mode === 'string'
         ? { effectiveMode: ['pixel', 'ugt'].includes(boot.effective_mode) ? boot.effective_mode : 'unknown' }
@@ -485,14 +564,14 @@ function applyProfileMutationState(data) {
     };
   }
   if (data.scheduler_health && typeof data.scheduler_health === 'object') {
-    state.profile.schedulerHealth = {
+    state.schedulerHealth = {
       status: data.scheduler_health.status || '', reason: data.scheduler_health.reason || '',
       checkedEpoch: data.scheduler_health.checked_epoch || '', profileVerified: data.scheduler_health.profile_verified || '',
       cpufreqPermissions: data.scheduler_health.cpufreq_permissions || '', powerhalFailures: data.scheduler_health.powerhal_failures || ''
     };
   }
   if (data.profile_transition && typeof data.profile_transition === 'object') {
-    state.profile.profileTransition = {
+    state.profileTransition = {
       key: data.profile_transition.key || '', attempts: Number(data.profile_transition.attempts) || 0,
       firstEpoch: data.profile_transition.first_epoch || '', deadlineEpoch: data.profile_transition.deadline_epoch || '',
       terminal: data.profile_transition.terminal || 'no', ok: data.profile_transition.ok || 'pending',
@@ -538,9 +617,9 @@ function renderProfileCards() {
 }
 
 function ensureHomeCpuRows(clusters) {
-  if (state.profile.homeCpuRows && state.profile.homeCpuRows.length === clusters.length) return;
+  if (state.homeCpuRows && state.homeCpuRows.length === clusters.length) return;
   refs.homeCpuRows.replaceChildren();
-  state.profile.homeCpuRows = clusters.map((cluster, index) => {
+  state.homeCpuRows = clusters.map((cluster, index) => {
     const row = document.createElement('div');
     row.className = 'home-cpu-row';
     const label = document.createElement('span');
@@ -560,9 +639,9 @@ function ensureHomeCpuRows(clusters) {
 }
 
 function ensurePerfCpuRows(clusters) {
-  if (state.profile.cpuRows && state.profile.cpuRows.length === clusters.length) return;
+  if (state.cpuRows && state.cpuRows.length === clusters.length) return;
   refs.cpuRows.replaceChildren();
-  state.profile.cpuRows = clusters.map((cluster, index) => {
+  state.cpuRows = clusters.map((cluster, index) => {
     const row = document.createElement('div');
     row.className = 'cpu-row';
     const head = document.createElement('div');
@@ -619,72 +698,72 @@ async function loadSavedProfile() {
     applyProfileMutationState(data);
     void refreshFullProfileState();
   } catch (_) {
-    state.profile.currentProfile = 'unknown';
-    state.profile.manualProfile = 'balanced';
-    state.profile.profilePolicy = 'manual';
-    state.profile.schedOwner = 'pixel';
-    state.profile.schedEffectiveOwner = 'pixel';
-    state.profile.gameHandoffPolicy = 'off';
-    state.profile.arbiterState = '';
-    state.profile.arbiterApplyResult = '';
-    state.profile.arbiterReason = '';
-    state.profile.uperfDetected = false;
-    state.profile.uperfModuleId = '';
-    state.profile.uperfModuleName = '';
-    state.profile.uperfModulePath = '';
-    state.profile.uperfModuleSource = '';
-    state.profile.uperfModuleState = '';
-    state.profile.uperfModuleEnabled = 'no';
-    state.profile.uperfProcessAlive = 'no';
-    state.profile.uperfActive = 'no';
-    state.profile.fasRsDetected = false;
-    state.profile.fasRsModuleId = '';
-    state.profile.fasRsModuleName = '';
-    state.profile.fasRsModulePath = '';
-    state.profile.fasRsModuleSource = '';
-    state.profile.fasRsModuleState = '';
-    state.profile.fasRsModuleEnabled = 'no';
-    state.profile.fasRsOwnerState = '';
-    state.profile.fasRsMode = '';
-    state.profile.fasRsProcessAlive = 'no';
-    state.profile.fasRsRuntimeState = '';
-    state.profile.fasRsRuntimeOwnerActive = 'no';
-    state.profile.fasRsRuntimeTarget = '';
-    state.profile.fasRsActive = 'no';
-    state.profile.externalSchedulerDetected = false;
-    state.profile.externalSchedulerActive = false;
-    state.profile.externalSchedulerId = '';
-    state.profile.externalSchedulerName = '';
-    state.profile.externalSchedulerKind = '';
-    state.profile.externalSchedulerPath = '';
-    state.profile.externalSchedulerSource = '';
-    state.profile.externalSchedulerState = '';
-    state.profile.externalSchedulerEnabled = 'no';
-    state.profile.effectiveSchedulerOwner = 'pixel';
-    state.profile.effectiveSchedulerName = 'Pixel9Pro-Control';
-    state.profile.effectiveSchedulerKind = 'pixel';
-    state.profile.effectiveSchedulerMode = '';
-    state.profile.profileSurface = 'authoritative';
-    state.profile.profileSurfaceStale = false;
-    state.profile.profileSurfaceNote = '';
-    state.profile.autoReason = '';
+    state.currentProfile = 'unknown';
+    state.manualProfile = 'balanced';
+    state.profilePolicy = 'manual';
+    state.schedOwner = 'pixel';
+    state.schedEffectiveOwner = 'pixel';
+    state.gameHandoffPolicy = 'off';
+    state.arbiterState = '';
+    state.arbiterApplyResult = '';
+    state.arbiterReason = '';
+    state.uperfDetected = false;
+    state.uperfModuleId = '';
+    state.uperfModuleName = '';
+    state.uperfModulePath = '';
+    state.uperfModuleSource = '';
+    state.uperfModuleState = '';
+    state.uperfModuleEnabled = 'no';
+    state.uperfProcessAlive = 'no';
+    state.uperfActive = 'no';
+    state.fasRsDetected = false;
+    state.fasRsModuleId = '';
+    state.fasRsModuleName = '';
+    state.fasRsModulePath = '';
+    state.fasRsModuleSource = '';
+    state.fasRsModuleState = '';
+    state.fasRsModuleEnabled = 'no';
+    state.fasRsOwnerState = '';
+    state.fasRsMode = '';
+    state.fasRsProcessAlive = 'no';
+    state.fasRsRuntimeState = '';
+    state.fasRsRuntimeOwnerActive = 'no';
+    state.fasRsRuntimeTarget = '';
+    state.fasRsActive = 'no';
+    state.externalSchedulerDetected = false;
+    state.externalSchedulerActive = false;
+    state.externalSchedulerId = '';
+    state.externalSchedulerName = '';
+    state.externalSchedulerKind = '';
+    state.externalSchedulerPath = '';
+    state.externalSchedulerSource = '';
+    state.externalSchedulerState = '';
+    state.externalSchedulerEnabled = 'no';
+    state.effectiveSchedulerOwner = 'pixel';
+    state.effectiveSchedulerName = 'Pixel9Pro-Control';
+    state.effectiveSchedulerKind = 'pixel';
+    state.effectiveSchedulerMode = '';
+    state.profileSurface = 'authoritative';
+    state.profileSurfaceStale = false;
+    state.profileSurfaceNote = '';
+    state.autoReason = '';
     syncProfileUi();
     syncHeroDesc();
   }
 }
 
 async function refreshCpu() {
-  if (state.profile.cpuBusy) return;
-  state.profile.cpuBusy = true;
+  if (state.cpuBusy) return;
+  state.cpuBusy = true;
   if (refs.refreshBtn) refs.refreshBtn.disabled = true;
   try {
     const clusters = await apiFetch(API.status, { timeoutMs: 6000 });
-    state.profile.lastClusters = clusters;
+    state.lastClusters = clusters;
     ensurePerfCpuRows(clusters);
     ensureHomeCpuRows(clusters);
     clusters.forEach((cluster, index) => {
-      const perf = state.profile.cpuRows[index];
-      const home = state.profile.homeCpuRows[index];
+      const perf = state.cpuRows[index];
+      const home = state.homeCpuRows[index];
       const maxHz = cluster.max > 0 ? cluster.max : perf.maxHz;
       perf.current.textContent = !cluster.cur || Number.isNaN(cluster.cur) ? '—' : `${(cluster.cur / 1000).toFixed(0)} MHz`;
       perf.max.textContent = ` / ${(maxHz / 1000).toFixed(0)} MHz`;
@@ -700,8 +779,8 @@ async function refreshCpu() {
       applyProfileMutationState(profileData);
     } catch (_) {}
   } catch (err) {
-    state.profile.cpuRows = null;
-    state.profile.homeCpuRows = null;
+    state.cpuRows = null;
+    state.homeCpuRows = null;
     const el = document.createElement('div');
     el.className = 'note-body';
     el.style.color = 'var(--danger)';
@@ -710,23 +789,23 @@ async function refreshCpu() {
     refs.cpuRows.appendChild(el);
   } finally {
     if (refs.refreshBtn) refs.refreshBtn.disabled = false;
-    state.profile.cpuBusy = false;
+    state.cpuBusy = false;
   }
 }
 
 async function applyProfile(profile) {
-  if (state.profile.schedOwner === 'external') {
+  if (state.schedOwner === 'external') {
     showToast(hasExternalScheduler() ? getSchedulerStatusText() : '本模块调度未启用');
     appendLog(hasExternalScheduler()
       ? `${getSchedulerStatusText()}，未切换本模块 profile`
       : '本模块 CPU 调度未启用，未切换 profile', 'warn');
     return;
   }
-  if (profile === state.profile.currentProfile || state.profile.cpuBusy || isCurrentStrategyBusy()) return;
-  const prevPolicy = state.profile.profilePolicy;
+  if (profile === state.currentProfile || state.cpuBusy || isCurrentStrategyBusy()) return;
+  const prevPolicy = state.profilePolicy;
   const card = refs.profileList.querySelector(`[data-profile="${profile}"]`);
   if (!card) return;
-  state.profile.profileApplyBusy = true;
+  state.profileApplyBusy = true;
   invalidateFullProfileStateRefresh();
   syncProfileUi();
   card.classList.add('loading');
@@ -749,22 +828,22 @@ async function applyProfile(profile) {
     appendLog(String(err), 'err');
   } finally {
     card.classList.remove('loading');
-    state.profile.profileApplyBusy = false;
+    state.profileApplyBusy = false;
     syncProfileUi();
     void refreshFullProfileState();
   }
 }
 
 async function setProfilePolicy(policy) {
-  if (state.profile.schedOwner === 'external') {
+  if (state.schedOwner === 'external') {
     showToast(hasExternalScheduler() ? getSchedulerStatusText() : '本模块调度未启用');
     appendLog(hasExternalScheduler()
       ? `${getSchedulerStatusText()}，自动/手动策略暂停`
       : '本模块 CPU 调度未启用，自动/手动策略暂停', 'warn');
     return;
   }
-  if (state.profile.profilePolicy === policy || isCurrentStrategyBusy()) return;
-  state.profile.profilePolicyBusy = true;
+  if (state.profilePolicy === policy || isCurrentStrategyBusy()) return;
+  state.profilePolicyBusy = true;
   invalidateFullProfileStateRefresh();
   syncProfileUi();
   appendLog(policy === 'auto' ? '启用自动调度…' : '切回手动调度…', 'dim');
@@ -778,10 +857,10 @@ async function setProfilePolicy(policy) {
     });
     if (data.ok) {
       applyProfileMutationState(data);
-      showToast(policy === 'auto' ? '已启用自动调度' : `已切回手动：${PROFILES[state.profile.currentProfile].name}`);
+      showToast(policy === 'auto' ? '已启用自动调度' : `已切回手动：${PROFILES[state.currentProfile].name}`);
       appendLog(policy === 'auto'
-        ? `自动调度已启用：${describeAutoReason(state.profile.autoReason)}`
-        : `已切回手动：${PROFILES[state.profile.currentProfile].name}`, 'ok');
+        ? `自动调度已启用：${describeAutoReason(state.autoReason)}`
+        : `已切回手动：${PROFILES[state.currentProfile].name}`, 'ok');
       refreshCpu();
     } else {
       showToast(`切换失败：${data.error || '未知'}`);
@@ -791,7 +870,7 @@ async function setProfilePolicy(policy) {
     showToast('请求失败，检查服务是否运行');
     appendLog(String(err), 'err');
   } finally {
-    state.profile.profilePolicyBusy = false;
+    state.profilePolicyBusy = false;
     syncProfileUi();
     void refreshFullProfileState();
   }
@@ -799,12 +878,12 @@ async function setProfilePolicy(policy) {
 
 async function toggleSchedOwner() {
   if (isCurrentStrategyBusy()) return;
-  if (state.profile.schedulerBoot.phase === 'pending_reboot') {
+  if (state.schedulerBoot.phase === 'pending_reboot') {
     await cancelSchedulerChange();
     return;
   }
-  const nextOwner = state.profile.schedulerBoot.effectiveMode === 'ugt' ? 'pixel' : 'external';
-  state.profile.schedOwnerBusy = true;
+  const nextOwner = state.schedulerBoot.effectiveMode === 'ugt' ? 'pixel' : 'external';
+  state.schedOwnerBusy = true;
   invalidateFullProfileStateRefresh();
   syncProfileUi();
   const actionText = nextOwner === 'external'
@@ -835,7 +914,7 @@ async function toggleSchedOwner() {
     showToast('请求失败，检查服务是否运行');
     appendLog(String(err), 'err');
   } finally {
-    state.profile.schedOwnerBusy = false;
+    state.schedOwnerBusy = false;
     syncProfileUi();
     void refreshFullProfileState();
   }
@@ -843,7 +922,7 @@ async function toggleSchedOwner() {
 
 async function cancelSchedulerChange() {
   if (isCurrentStrategyBusy()) return;
-  state.profile.schedOwnerBusy = true;
+  state.schedOwnerBusy = true;
   invalidateFullProfileStateRefresh();
   syncProfileUi();
   try {
@@ -864,7 +943,7 @@ async function cancelSchedulerChange() {
     showToast('请求失败，检查服务是否运行');
     appendLog(String(err), 'err');
   } finally {
-    state.profile.schedOwnerBusy = false;
+    state.schedOwnerBusy = false;
     syncProfileUi();
     void refreshFullProfileState();
   }
@@ -872,7 +951,7 @@ async function cancelSchedulerChange() {
 
 async function retrySchedulerValidation() {
   if (isCurrentStrategyBusy()) return;
-  state.profile.schedulerRetryBusy = true;
+  state.schedulerRetryBusy = true;
   invalidateFullProfileStateRefresh();
   syncProfileUi();
   try {
@@ -892,16 +971,16 @@ async function retrySchedulerValidation() {
     showToast('请求失败，检查服务是否运行');
     appendLog(String(err), 'err');
   } finally {
-    state.profile.schedulerRetryBusy = false;
+    state.schedulerRetryBusy = false;
     syncProfileUi();
     void refreshFullProfileState();
   }
 }
 
 async function toggleGameHandoff() {
-  if (isCurrentStrategyBusy() || !state.profile.fasRsDetected || !isVerifiedSchedulerBoot()) return;
-  const nextPolicy = state.profile.gameHandoffPolicy === 'fas_rs' ? 'off' : 'fas_rs';
-  state.profile.gameHandoffBusy = true;
+  if (isCurrentStrategyBusy() || !state.fasRsDetected || !isVerifiedSchedulerBoot()) return;
+  const nextPolicy = state.gameHandoffPolicy === 'fas_rs' ? 'off' : 'fas_rs';
+  state.gameHandoffBusy = true;
   invalidateFullProfileStateRefresh();
   syncProfileUi();
   appendLog(nextPolicy === 'fas_rs' ? '启用 fas-rs 游戏临时接管…' : '关闭 fas-rs 游戏临时接管…', 'dim');
@@ -932,15 +1011,15 @@ async function toggleGameHandoff() {
     showToast('请求失败，检查服务是否运行');
     appendLog(String(err), 'err');
   } finally {
-    state.profile.gameHandoffBusy = false;
+    state.gameHandoffBusy = false;
     syncProfileUi();
     void refreshFullProfileState();
   }
 }
 
 async function triggerOwnerArbiter() {
-  if (isCurrentStrategyBusy() || !state.profile.fasRsDetected) return;
-  state.profile.ownerArbiterBusy = true;
+  if (isCurrentStrategyBusy() || !state.fasRsDetected) return;
+  state.ownerArbiterBusy = true;
   syncProfileUi();
   appendLog('正在检查外部调度接管状态…', 'dim');
   refs.logCard.classList.add('open');
@@ -964,7 +1043,7 @@ async function triggerOwnerArbiter() {
     showToast('请求失败，检查 WebUI 服务');
     appendLog(String(err), 'err');
   } finally {
-    state.profile.ownerArbiterBusy = false;
+    state.ownerArbiterBusy = false;
     syncProfileUi();
   }
 }
@@ -972,6 +1051,30 @@ async function triggerOwnerArbiter() {
 registerFeature('profile', {
   initialize: renderProfileCards,
   load: loadSavedProfile,
-  refresh: refreshCpu
+  refresh: refreshCpu,
+  isRefreshing: () => state.cpuBusy,
+  syncOptionalModuleUi,
+  getSchedulerBootTargetMode: () => state.schedulerBoot.targetMode,
+  getThermalContext: () => ({
+    schedEffectiveOwner: state.schedEffectiveOwner,
+    hasExternalScheduler: hasExternalScheduler(),
+    externalSchedulerActive: isExternalSchedulerActive()
+  }),
+  getCpuDetailState: () => ({
+    currentProfile: state.currentProfile,
+    cpuContract: state.cpuContract,
+    schedOwner: state.schedOwner,
+    lastClusters: state.lastClusters
+  }),
+  buildProfileDetail,
+  formatSchedValue,
+  getSchedulerStatusText,
+  setProfilePolicy,
+  toggleSchedOwner,
+  retrySchedulerValidation,
+  toggleGameHandoff,
+  triggerOwnerArbiter,
+  cancelSchedulerChange
 });
+})();
 

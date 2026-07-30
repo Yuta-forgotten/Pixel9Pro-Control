@@ -1,4 +1,4 @@
-// WebUI 运行时常量、状态分片与功能注册表；加载顺序由 index.html 统一约束。
+// WebUI 运行时常量、DOM 引用与功能注册表；加载顺序由 index.html 统一约束。
 'use strict';
 
 if (location.host !== '127.0.0.1:6210') {
@@ -221,151 +221,6 @@ const ZONE_LABELS = {
 };
 
 const refs = {};
-const state = {
-  shell: {
-    currentTab: 'home',
-    deviceModel: '',
-    foregroundPaused: false,
-    rebootContext: 'thermal',
-    poller: {
-      timer: null,
-      running: false,
-      lastInteractionAt: 0,
-      lastRun: { cpu: 0, thermal: 0, optim: 0, slow: 0 }
-    },
-    pull: { y0: 0, active: false, dist: 0, busy: false }
-  },
-  theme: {
-    mode: 'system',
-    paletteName: 'default',
-    paletteCustom: '#3aa6c2'
-  },
-  auth: { webuiToken: '' },
-  profile: {
-    currentProfile: 'unknown',
-    manualProfile: 'balanced',
-    profilePolicy: 'manual',
-    schedOwner: 'pixel',
-    schedEffectiveOwner: 'pixel',
-    gameHandoffPolicy: 'off',
-    arbiterState: '',
-    arbiterApplyResult: '',
-    arbiterReason: '',
-    uperfDetected: false,
-    uperfModuleId: '',
-    uperfModuleName: '',
-    uperfModulePath: '',
-    uperfModuleSource: '',
-    uperfModuleState: '',
-    uperfModuleEnabled: 'no',
-    uperfProcessAlive: 'no',
-    uperfActive: 'no',
-    fasRsDetected: false,
-    fasRsModuleId: '',
-    fasRsModuleName: '',
-    fasRsModulePath: '',
-    fasRsModuleSource: '',
-    fasRsModuleState: '',
-    fasRsModuleEnabled: 'no',
-    fasRsOwnerState: '',
-    fasRsMode: '',
-    fasRsProcessAlive: 'no',
-    fasRsRuntimeState: '',
-    fasRsRuntimeOwnerActive: 'no',
-    fasRsRuntimeTarget: '',
-    fasRsActive: 'no',
-    externalSchedulerDetected: false,
-    externalSchedulerActive: false,
-    externalSchedulerId: '',
-    externalSchedulerName: '',
-    externalSchedulerKind: '',
-    externalSchedulerPath: '',
-    externalSchedulerSource: '',
-    externalSchedulerState: '',
-    externalSchedulerEnabled: 'no',
-    effectiveSchedulerOwner: 'pixel',
-    effectiveSchedulerName: 'Pixel9Pro-Control',
-    effectiveSchedulerKind: 'pixel',
-    effectiveSchedulerMode: '',
-    profileSurface: 'authoritative',
-    profileSurfaceStale: false,
-    profileSurfaceNote: '',
-    cpuContract: null,
-    schedulerBoot: {
-      targetMode: 'pixel', effectiveMode: 'unknown', phase: '', final: 'no', ok: 'pending',
-      result: '', reason: '', attempts: 0, rebootRequired: 'no', autoRepairUsed: 'no'
-    },
-    schedulerHealth: { status: '', reason: '', checkedEpoch: '', profileVerified: '', cpufreqPermissions: '', powerhalFailures: '' },
-    profileTransition: { key: '', attempts: 0, firstEpoch: '', deadlineEpoch: '', terminal: 'no', ok: 'pending', result: '' },
-    autoReason: '',
-    cpuBusy: false,
-    profileApplyBusy: false,
-    profilePolicyBusy: false,
-    schedOwnerBusy: false,
-    gameHandoffBusy: false,
-    ownerArbiterBusy: false,
-    schedulerRetryBusy: false,
-    cpuRows: null,
-    homeCpuRows: null,
-    lastClusters: null
-  },
-  thermal: {
-    currentOffset: 4,
-    thermalBusy: false,
-    thermalBadReads: 0,
-    lastSkinTempC: null,
-    thermalApplyBusy: false,
-    sensorRefs: null,
-    homeSensorRefs: null,
-    thermalModal: { pending: 4, prev: 4 },
-    tempChart: { timer: null, draw: null, activeRange: 10, requestId: 0 }
-  },
-  memory: {
-    swapMode: 'unknown',
-    swapData: null,
-    swapBusy: false,
-    swapLoading: false,
-    bgRestrictEnabled: 'on',
-    bgRestrictBusy: false,
-    bgRestrictSuggestions: []
-  },
-  network: {
-    basebandInstalled: false,
-    nrSwitch: 'off',
-    nrContract: null,
-    nrBusy: false,
-    sim2AutoManage: 'off',
-    idleIsolateMode: 'off',
-    standbyGuardBusy: false,
-    standbyDiag: null,
-    uecapMode: 'unknown',
-    uecapActiveMode: 'unknown',
-    uecapBusy: false,
-    uecapPendingMode: '',
-    uecapVerifyState: 'idle',
-    uecapVerifyMessage: '',
-    uecapExpectedHash: '',
-    uecapVerifyNonce: 0,
-    ntpServer: '',
-    ntpServers: [],
-    ntpBusy: false,
-    deviceClockTimer: null
-  },
-  energy: {
-    detail: {
-      timer: null,
-      fullTimer: null,
-      requestId: 0,
-      requestKind: '',
-      requestController: null,
-      fullData: null,
-      liveData: null,
-      activeWindowMinutes: 30,
-      openSections: Object.create(null),
-      renderSignature: ''
-    }
-  }
-};
 
 const featureRegistry = new Map();
 
@@ -391,7 +246,6 @@ Object.defineProperty(window, 'Pixel9ProControl', {
   enumerable: false,
   writable: false,
   value: Object.freeze({
-    state,
     features: Object.freeze({ get: requireFeature, names: listFeatures })
   })
 });

@@ -1,5 +1,34 @@
 // 功耗统计、分段详情与定时刷新功能。
 'use strict';
+(() => {
+const state = {
+  detail: {
+    timer: null,
+    fullTimer: null,
+    requestId: 0,
+    requestKind: '',
+    requestController: null,
+    fullData: null,
+    liveData: null,
+    activeWindowMinutes: 30,
+    openSections: Object.create(null),
+    renderSignature: ''
+  }
+};
+
+const core = () => requireFeature('core');
+const apiFetch = (...args) => core().apiFetch(...args);
+const computeNextPollDelay = (...args) => core().computeNextPollDelay(...args);
+const errorBlock = (...args) => core().errorBlock(...args);
+const isWebUiActive = (...args) => core().isWebUiActive(...args);
+const queueNextPoll = (...args) => core().queueNextPoll(...args);
+const sleep = (...args) => core().sleep(...args);
+const friendlyPackageLabel = (...args) => requireFeature('memory').friendlyPackageLabel(...args);
+const exportHistoryWindow = (...args) => requireFeature('thermal').exportHistoryWindow(...args);
+const setStaticHtml = (...args) => requireFeature('ui').setStaticHtml(...args);
+const pushModalState = (...args) => requireFeature('ui').pushModalState(...args);
+const stopTempChartRefresh = () => requireFeature('thermal').stopChart();
+
 function fmtDuration(sec) {
   const value = Number(sec);
   if (!Number.isFinite(value) || value < 0) return '—';
@@ -116,16 +145,16 @@ async function fetchEnergyDetailWithRetry() {
 }
 
 async function fetchEnergyRequest(kind, path, timeoutMs) {
-  if (state.energy.detail.requestKind) return null;
+  if (state.detail.requestKind) return null;
   const controller = new AbortController();
-  state.energy.detail.requestKind = kind;
-  state.energy.detail.requestController = controller;
+  state.detail.requestKind = kind;
+  state.detail.requestController = controller;
   try {
     return await apiFetch(path, { timeoutMs, controller });
   } finally {
-    if (state.energy.detail.requestController === controller) {
-      state.energy.detail.requestController = null;
-      state.energy.detail.requestKind = '';
+    if (state.detail.requestController === controller) {
+      state.detail.requestController = null;
+      state.detail.requestKind = '';
     }
   }
 }
@@ -181,7 +210,7 @@ function getEnergySystemAgeSeconds(data, liveGeneratedAt, systemGeneratedAt) {
   return candidates.length ? Math.max(...candidates) : null;
 }
 
-function getEnergySystemRefreshDelay(data = state.energy.detail.fullData) {
+function getEnergySystemRefreshDelay(data = state.detail.fullData) {
   const ttlSec = Number(data?.cache_ttl_sec);
   if (!Number.isFinite(ttlSec) || ttlSec <= 0) return ENERGY_SYSTEM_REFRESH_FALLBACK_MS;
   const rawAge = data?.system_cache_age_sec;
@@ -195,7 +224,7 @@ function getEnergyRenderSignature(data) {
     'generated_at', 'live_generated_at', '_live_generated_at',
     'system_cache_age_sec'
   ]);
-  return `${state.energy.detail.activeWindowMinutes}|${JSON.stringify(data, (key, value) => (
+  return `${state.detail.activeWindowMinutes}|${JSON.stringify(data, (key, value) => (
     ignored.has(key) ? undefined : value
   ))}`;
 }
@@ -231,7 +260,7 @@ function reconcileStableDom(current, next) {
 
 function renderEnergyDetail(input, options = {}) {
   try {
-    const d = mergeEnergyDetailData(input, options.fullData || state.energy.detail.fullData);
+    const d = mergeEnergyDetailData(input, options.fullData || state.detail.fullData);
     const text = (v) => v == null || v === '' ? '—' : String(v);
     const el = (tag, className = '', content = '') => {
       const node = document.createElement(tag);
@@ -248,14 +277,14 @@ function renderEnergyDetail(input, options = {}) {
     };
     const disclosure = (key, title, summary, body) => {
       const details = el('details', 'energy-disclosure');
-      details.open = state.energy.detail.openSections[key] === true;
+      details.open = state.detail.openSections[key] === true;
       const trigger = el('summary', 'energy-disclosure-summary');
       const copy = el('span', 'energy-disclosure-copy');
       copy.append(el('strong', '', title), el('small', '', summary));
       trigger.append(copy, el('span', 'energy-disclosure-chevron', '›'));
       details.append(trigger, body);
       details.addEventListener('toggle', () => {
-        state.energy.detail.openSections[key] = details.open;
+        state.detail.openSections[key] = details.open;
       });
       return details;
     };
@@ -374,13 +403,13 @@ function renderEnergyDetail(input, options = {}) {
         };
     };
     const views = windows.map(windowView).filter(Boolean);
-    if (!views.some((view) => view.min === state.energy.detail.activeWindowMinutes) && views.length) {
-      state.energy.detail.activeWindowMinutes = views.find((view) => view.min === 30)?.min || views[0].min;
+    if (!views.some((view) => view.min === state.detail.activeWindowMinutes) && views.length) {
+      state.detail.activeWindowMinutes = views.find((view) => view.min === 30)?.min || views[0].min;
     }
-    const activeView = views.find((view) => view.min === state.energy.detail.activeWindowMinutes) || null;
+    const activeView = views.find((view) => view.min === state.detail.activeWindowMinutes) || null;
     const renderSignature = getEnergyRenderSignature(d);
     const existingRoot = refs.detailBody.firstElementChild;
-    if (state.energy.detail.renderSignature === renderSignature && existingRoot?.classList.contains('energy-overview')) return;
+    if (state.detail.renderSignature === renderSignature && existingRoot?.classList.contains('energy-overview')) return;
     const root = el('div', 'energy-overview');
 
     const usedMah = Number(scope.used_mah);
@@ -422,12 +451,12 @@ function renderEnergyDetail(input, options = {}) {
     rangeTabs.setAttribute('role', 'group');
     rangeTabs.setAttribute('aria-label', '功耗统计窗口');
     views.forEach((view) => {
-      const button = el('button', `energy-range-btn ${view.tone}${view.min === state.energy.detail.activeWindowMinutes ? ' active' : ''}`, `${view.min} 分钟`);
+      const button = el('button', `energy-range-btn ${view.tone}${view.min === state.detail.activeWindowMinutes ? ' active' : ''}`, `${view.min} 分钟`);
       button.type = 'button';
-      button.setAttribute('aria-pressed', view.min === state.energy.detail.activeWindowMinutes ? 'true' : 'false');
+      button.setAttribute('aria-pressed', view.min === state.detail.activeWindowMinutes ? 'true' : 'false');
       button.addEventListener('click', () => {
-        state.energy.detail.activeWindowMinutes = view.min;
-        renderEnergyDetail(state.energy.detail.liveData || input, { fullData: state.energy.detail.fullData });
+        state.detail.activeWindowMinutes = view.min;
+        renderEnergyDetail(state.detail.liveData || input, { fullData: state.detail.fullData });
       });
       rangeTabs.appendChild(button);
     });
@@ -607,70 +636,105 @@ function renderEnergyDetail(input, options = {}) {
 
     if (existingRoot?.classList.contains('energy-overview')) reconcileStableDom(existingRoot, root);
     else refs.detailBody.replaceChildren(root);
-    state.energy.detail.renderSignature = renderSignature;
+    state.detail.renderSignature = renderSignature;
   } catch (err) {
-    state.energy.detail.renderSignature = '';
+    state.detail.renderSignature = '';
     refs.detailBody.replaceChildren(); refs.detailBody.appendChild(errorBlock(err.message));
   }
 }
 
 function scheduleEnergyDetailRefresh(delay = ENERGY_DETAIL_REFRESH_MS) {
-  if (state.energy.detail.timer) clearTimeout(state.energy.detail.timer);
+  if (state.detail.timer) clearTimeout(state.detail.timer);
   if (!isWebUiActive() || !refs.detailModal.classList.contains('open')) return;
-  const requestId = state.energy.detail.requestId;
-  state.energy.detail.timer = window.setTimeout(async () => {
-    state.energy.detail.timer = null;
-    if (!isWebUiActive() || !refs.detailModal.classList.contains('open') || requestId !== state.energy.detail.requestId) return;
-    if (state.energy.detail.requestKind) {
+  const requestId = state.detail.requestId;
+  state.detail.timer = window.setTimeout(async () => {
+    state.detail.timer = null;
+    if (!isWebUiActive() || !refs.detailModal.classList.contains('open') || requestId !== state.detail.requestId) return;
+    if (state.detail.requestKind) {
       scheduleEnergyDetailRefresh(POLL_MIN_DELAY_MS);
       return;
     }
     try {
       const live = await fetchEnergyFastDetail();
-      if (!live || requestId !== state.energy.detail.requestId) return;
-      if (isFullEnergyDetailData(live)) state.energy.detail.fullData = live;
-      else state.energy.detail.liveData = live;
-      renderEnergyDetail(live, { fullData: state.energy.detail.fullData });
+      if (!live || requestId !== state.detail.requestId) return;
+      if (isFullEnergyDetailData(live)) state.detail.fullData = live;
+      else state.detail.liveData = live;
+      renderEnergyDetail(live, { fullData: state.detail.fullData });
     } catch (_) {}
-    if (isWebUiActive() && refs.detailModal.classList.contains('open') && requestId === state.energy.detail.requestId) {
+    if (isWebUiActive() && refs.detailModal.classList.contains('open') && requestId === state.detail.requestId) {
       scheduleEnergyDetailRefresh();
     }
   }, delay);
 }
 
 function scheduleEnergySystemRefresh(delay = getEnergySystemRefreshDelay()) {
-  if (state.energy.detail.fullTimer) clearTimeout(state.energy.detail.fullTimer);
+  if (state.detail.fullTimer) clearTimeout(state.detail.fullTimer);
   if (!isWebUiActive() || !refs.detailModal.classList.contains('open')) return;
-  const requestId = state.energy.detail.requestId;
-  state.energy.detail.fullTimer = window.setTimeout(async () => {
-    state.energy.detail.fullTimer = null;
-    if (!isWebUiActive() || !refs.detailModal.classList.contains('open') || requestId !== state.energy.detail.requestId) return;
-    if (state.energy.detail.requestKind) {
+  const requestId = state.detail.requestId;
+  state.detail.fullTimer = window.setTimeout(async () => {
+    state.detail.fullTimer = null;
+    if (!isWebUiActive() || !refs.detailModal.classList.contains('open') || requestId !== state.detail.requestId) return;
+    if (state.detail.requestKind) {
       scheduleEnergySystemRefresh(POLL_MIN_DELAY_MS);
       return;
     }
     try {
       const full = await fetchEnergySystemDetail();
-      if (!full || requestId !== state.energy.detail.requestId) return;
+      if (!full || requestId !== state.detail.requestId) return;
       if (isFullEnergyDetailData(full)) {
-        state.energy.detail.fullData = full;
-        state.energy.detail.liveData = full;
-        renderEnergyDetail(full, { fullData: state.energy.detail.fullData });
+        state.detail.fullData = full;
+        state.detail.liveData = full;
+        renderEnergyDetail(full, { fullData: state.detail.fullData });
       }
     } catch (_) {}
-    if (isWebUiActive() && refs.detailModal.classList.contains('open') && requestId === state.energy.detail.requestId) {
+    if (isWebUiActive() && refs.detailModal.classList.contains('open') && requestId === state.detail.requestId) {
       scheduleEnergySystemRefresh();
     }
   }, delay);
 }
 
+function abortEnergyDetailRequest(reason = 'page-hidden') {
+  if (state.detail.requestController) {
+    state.detail.requestController.abort(reason);
+    state.detail.requestController = null;
+  }
+  state.detail.requestKind = '';
+}
+
+function stopEnergyDetailRefresh() {
+  if (state.detail.timer) {
+    clearTimeout(state.detail.timer);
+    state.detail.timer = null;
+  }
+  if (state.detail.fullTimer) {
+    clearTimeout(state.detail.fullTimer);
+    state.detail.fullTimer = null;
+  }
+  abortEnergyDetailRequest('detail-closed');
+  state.detail.requestId += 1;
+  state.detail.renderSignature = '';
+}
+
+function pauseEnergyDetailRefresh() {
+  if (state.detail.timer) {
+    clearTimeout(state.detail.timer);
+    state.detail.timer = null;
+  }
+  if (state.detail.fullTimer) {
+    clearTimeout(state.detail.fullTimer);
+    state.detail.fullTimer = null;
+  }
+  abortEnergyDetailRequest('page-hidden');
+  state.detail.requestId += 1;
+}
+
 async function openEnergyDetail() {
   stopTempChartRefresh();
   stopEnergyDetailRefresh();
-  state.energy.detail.fullData = null;
-  state.energy.detail.liveData = null;
-  state.energy.detail.renderSignature = '';
-  const requestId = state.energy.detail.requestId;
+  state.detail.fullData = null;
+  state.detail.liveData = null;
+  state.detail.renderSignature = '';
+  const requestId = state.detail.requestId;
   refs.detailTitle.textContent = '功耗统计';
   setStaticHtml(refs.detailBody, '<div style="text-align:center;color:var(--text-3);padding:24px 0;font-size:13px">正在加载功耗数据…</div>');
   refs.detailModal.classList.remove('history-mode');
@@ -680,27 +744,27 @@ async function openEnergyDetail() {
   queueNextPoll(computeNextPollDelay());
   try {
     const live = await fetchEnergyFastDetail();
-    if (requestId !== state.energy.detail.requestId) return;
-    state.energy.detail.liveData = live;
-    renderEnergyDetail(live, { fullData: state.energy.detail.fullData });
+    if (requestId !== state.detail.requestId) return;
+    state.detail.liveData = live;
+    renderEnergyDetail(live, { fullData: state.detail.fullData });
     scheduleEnergyDetailRefresh();
     scheduleEnergySystemRefresh(350);
   } catch (err) {
-    if (requestId !== state.energy.detail.requestId) return;
+    if (requestId !== state.detail.requestId) return;
     try {
       const initial = await fetchEnergyDetailWithRetry();
-      if (requestId !== state.energy.detail.requestId) return;
+      if (requestId !== state.detail.requestId) return;
       if (isFullEnergyDetailData(initial)) {
-        state.energy.detail.fullData = initial;
-        state.energy.detail.liveData = initial;
+        state.detail.fullData = initial;
+        state.detail.liveData = initial;
       } else {
-        state.energy.detail.liveData = initial;
+        state.detail.liveData = initial;
       }
-      renderEnergyDetail(initial, { fullData: state.energy.detail.fullData });
+      renderEnergyDetail(initial, { fullData: state.detail.fullData });
       scheduleEnergyDetailRefresh(350);
       scheduleEnergySystemRefresh();
     } catch (fallbackErr) {
-      if (requestId !== state.energy.detail.requestId) return;
+      if (requestId !== state.detail.requestId) return;
       refs.detailBody.replaceChildren();
       refs.detailBody.appendChild(errorBlock(fallbackErr.message || err.message));
     }
@@ -710,7 +774,10 @@ async function openEnergyDetail() {
 registerFeature('energy', {
   open: openEnergyDetail,
   pause: pauseEnergyDetailRefresh,
+  stop: stopEnergyDetailRefresh,
+  formatDuration: fmtDuration,
   scheduleDetail: scheduleEnergyDetailRefresh,
   scheduleSystem: scheduleEnergySystemRefresh
 });
+})();
 

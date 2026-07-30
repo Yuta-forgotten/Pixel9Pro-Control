@@ -1,5 +1,13 @@
 // 主题模式与调色盘功能。
 'use strict';
+(() => {
+const state = {
+  mode: 'system',
+  paletteName: 'default',
+  paletteCustom: '#3aa6c2'
+};
+const showToast = (...args) => requireFeature('core').showToast(...args);
+
 function getResolvedTheme(mode) {
   if (mode === 'light' || mode === 'dark') return mode;
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -12,31 +20,31 @@ function getThemeLabel(mode) {
 }
 
 function syncThemeUi() {
-  const resolved = getResolvedTheme(state.theme.mode);
+  const resolved = getResolvedTheme(state.mode);
   document.documentElement.dataset.theme = resolved;
   document.querySelector('meta[name="theme-color"]').setAttribute('content', resolved === 'dark' ? '#191c1b' : '#eceeec');
-  setStaticHtml(refs.themeBtnIcon, THEME_ICONS[state.theme.mode] || THEME_ICONS.system);
-  refs.topbarThemeChip.textContent = `界面 · ${getThemeLabel(state.theme.mode)}`;
+  requireFeature('ui').setStaticHtml(refs.themeBtnIcon, THEME_ICONS[state.mode] || THEME_ICONS.system);
+  refs.topbarThemeChip.textContent = `界面 · ${getThemeLabel(state.mode)}`;
   refs.themeChoices.forEach((choice) => {
-    choice.classList.toggle('selected', choice.dataset.themeOption === state.theme.mode);
+    choice.classList.toggle('selected', choice.dataset.themeOption === state.mode);
   });
   document.querySelectorAll('[data-seg-theme]').forEach((b) => {
-    b.classList.toggle('active', b.dataset.segTheme === state.theme.mode);
+    b.classList.toggle('active', b.dataset.segTheme === state.mode);
   });
 }
 
 function applyTheme(mode, persist = true) {
-  state.theme.mode = mode;
+  state.mode = mode;
   if (persist) { localStorage.setItem(STORAGE_THEME_KEY, mode); saveThemeToServer(); }
   syncThemeUi();
   // 自定义/预设主题色在明暗下取色不同, 切换模式时按新明暗重新派生
-  if (state.theme.paletteName && state.theme.paletteName !== 'default') applyPalette(state.theme.paletteName, false);
+  if (state.paletteName && state.paletteName !== 'default') applyPalette(state.paletteName, false);
 }
 
 function initTheme() {
   applyTheme(localStorage.getItem(STORAGE_THEME_KEY) || 'system', false);
   const mq = window.matchMedia('(prefers-color-scheme: dark)');
-  const handle = () => { if (state.theme.mode === 'system') { syncThemeUi(); if (state.theme.paletteName !== 'default') applyPalette(state.theme.paletteName, false); } };
+  const handle = () => { if (state.mode === 'system') { syncThemeUi(); if (state.paletteName !== 'default') applyPalette(state.paletteName, false); } };
   if (mq.addEventListener) mq.addEventListener('change', handle);
   else mq.addListener(handle);
 }
@@ -150,16 +158,16 @@ function normalizeHex(v) {
 }
 
 function applyPalette(name, persist = true) {
-  state.theme.paletteName = name;
+  state.paletteName = name;
   if (persist) { localStorage.setItem(STORAGE_PALETTE_KEY, name); saveThemeToServer(); }
   const root = document.documentElement;
   let seed = null;
-  if (name === 'custom') seed = state.theme.paletteCustom;
+  if (name === 'custom') seed = state.paletteCustom;
   else { const p = PALETTES.find((x) => x.name === name); if (p && p.name !== 'default') seed = p.seed; }
   if (!seed || !isValidHex(seed)) {
     PALETTE_VARS.forEach((v) => root.style.removeProperty(v)); // 默认: 全部回退 :root 清新青绿
   } else {
-    const vars = deriveTheme(seed, getResolvedTheme(state.theme.mode) === 'dark');
+    const vars = deriveTheme(seed, getResolvedTheme(state.mode) === 'dark');
     PALETTE_VARS.forEach((v) => { if (vars[v] != null) root.style.setProperty(v, vars[v]); });
   }
   syncPaletteUi();
@@ -167,16 +175,16 @@ function applyPalette(name, persist = true) {
 
 function syncPaletteUi() {
   document.querySelectorAll('#swatch-row .swatch').forEach((b) => {
-    b.classList.toggle('active', b.dataset.palette === state.theme.paletteName);
+    b.classList.toggle('active', b.dataset.palette === state.paletteName);
   });
   const preview = document.getElementById('palette-custom-preview');
   if (preview) {
-    preview.style.background = state.theme.paletteCustom;
-    preview.classList.toggle('active', state.theme.paletteName === 'custom');
+    preview.style.background = state.paletteCustom;
+    preview.classList.toggle('active', state.paletteName === 'custom');
   }
   const input = document.getElementById('palette-hex-input');
   if (input && document.activeElement !== input) {
-    input.value = state.theme.paletteName === 'custom' ? state.theme.paletteCustom : '';
+    input.value = state.paletteName === 'custom' ? state.paletteCustom : '';
   }
 }
 
@@ -192,7 +200,7 @@ function renderPaletteSwatches() {
     btn.style.setProperty('--swatch', p.seed);
     btn.setAttribute('aria-label', `主题色 ${p.label}`);
     btn.title = p.label;
-    setStaticHtml(btn, '<span class="swatch-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>');
+    requireFeature('ui').setStaticHtml(btn, '<span class="swatch-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>');
     row.appendChild(btn);
   });
 }
@@ -203,7 +211,7 @@ function applyCustomHex() {
   const raw = (input.value || '').trim();
   if (!isValidHex(raw)) { showToast('请输入有效颜色，如 #3aa6c2', 2600, 'err'); return; }
   const hex = normalizeHex(raw);
-  state.theme.paletteCustom = hex;
+  state.paletteCustom = hex;
   localStorage.setItem(STORAGE_PALETTE_CUSTOM_KEY, hex);
   applyPalette('custom', true);
   showToast('已应用自定义主题色');
@@ -211,17 +219,17 @@ function applyCustomHex() {
 
 function initPalette() {
   const savedCustom = localStorage.getItem(STORAGE_PALETTE_CUSTOM_KEY);
-  state.theme.paletteCustom = isValidHex(savedCustom) ? normalizeHex(savedCustom) : '#3aa6c2';
+  state.paletteCustom = isValidHex(savedCustom) ? normalizeHex(savedCustom) : '#3aa6c2';
   applyPalette(localStorage.getItem(STORAGE_PALETTE_KEY) || 'default', false);
 }
 
 // 服务端兜底: localStorage 为主存储, 此处仅在每次改主题时静默备份到 $MODDIR/.webui_theme,
 // 配合 customize.sh 迁移, 即使 WebView 清数据或模块更新也能回读 (失败静默, 不打扰用户)
 function saveThemeToServer() {
-  apiFetch(API.theme, {
+  requireFeature('core').apiFetch(API.theme, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode: state.theme.mode, palette: state.theme.paletteName, custom: state.theme.paletteCustom }),
+    body: JSON.stringify({ mode: state.mode, palette: state.paletteName, custom: state.paletteCustom }),
     timeoutMs: 5000
   }).catch(() => {});
 }
@@ -230,11 +238,11 @@ function saveThemeToServer() {
 async function restoreThemeFromServerIfNeeded() {
   if (localStorage.getItem(STORAGE_THEME_KEY) || localStorage.getItem(STORAGE_PALETTE_KEY) || localStorage.getItem(STORAGE_PALETTE_CUSTOM_KEY)) return;
   try {
-    const data = await apiFetch(API.theme, { timeoutMs: 5000 });
+    const data = await requireFeature('core').apiFetch(API.theme, { timeoutMs: 5000 });
     if (!data) return;
     if (data.custom && isValidHex(data.custom)) {
-      state.theme.paletteCustom = normalizeHex(data.custom);
-      localStorage.setItem(STORAGE_PALETTE_CUSTOM_KEY, state.theme.paletteCustom);
+      state.paletteCustom = normalizeHex(data.custom);
+      localStorage.setItem(STORAGE_PALETTE_CUSTOM_KEY, state.paletteCustom);
     }
     if (data.mode && data.mode !== 'system') {
       localStorage.setItem(STORAGE_THEME_KEY, data.mode);
@@ -253,6 +261,11 @@ registerFeature('theme', {
     renderPaletteSwatches();
     initPalette();
     void restoreThemeFromServerIfNeeded();
-  }
+  },
+  applyCustomHex,
+  applyPalette,
+  applyTheme,
+  getThemeLabel
 });
+})();
 

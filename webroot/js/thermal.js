@@ -1,5 +1,29 @@
 // 温控档位、传感器状态与温度历史功能。
 'use strict';
+(() => {
+const state = {
+  currentOffset: 4,
+  thermalBusy: false,
+  thermalBadReads: 0,
+  lastSkinTempC: null,
+  thermalApplyBusy: false,
+  sensorRefs: null,
+  homeSensorRefs: null,
+  thermalModal: { pending: 4, prev: 4 },
+  tempChart: { timer: null, draw: null, activeRange: 10, requestId: 0 }
+};
+
+const core = () => requireFeature('core');
+const apiFetch = (...args) => core().apiFetch(...args);
+const appendLog = (...args) => core().appendLog(...args);
+const buildInfoRow = (...args) => core().buildInfoRow(...args);
+const showToast = (...args) => core().showToast(...args);
+const fmtDuration = (...args) => requireFeature('energy').formatDuration(...args);
+const setStaticHtml = (...args) => requireFeature('ui').setStaticHtml(...args);
+const pushModalState = (...args) => requireFeature('ui').pushModalState(...args);
+const openRebootModal = (...args) => requireFeature('ui').openRebootModal(...args);
+const stopEnergyDetailRefresh = () => requireFeature('energy').stop();
+
 // 温度色阶 (单一真源): 青绿→黄→橙→红, 语义固定不交动态色 (doc 17 §11)
 const TEMP_SCALE = [
   { max: 36, color: '#23a78c' }, // 凉爽
@@ -17,7 +41,7 @@ function tempHex(t) {
 }
 
 function tempStatus(t) {
-  const modThresh = THRESH_STOCK + (state.thermal.currentOffset ?? THRESH_MOD_DEFAULT);
+  const modThresh = THRESH_STOCK + (state.currentOffset ?? THRESH_MOD_DEFAULT);
   if (t < 36) return '凉爽';
   if (t < THRESH_STOCK) return '正常';
   if (t < modThresh) return '已高于原厂阈值，当前仍在放宽区间';
@@ -31,7 +55,7 @@ function barPct(t) {
 }
 
 function positionMarkers() {
-  const modThresh = THRESH_STOCK + (state.thermal.currentOffset ?? THRESH_MOD_DEFAULT);
+  const modThresh = THRESH_STOCK + (state.currentOffset ?? THRESH_MOD_DEFAULT);
   const stockPct = barPct(THRESH_STOCK);
   const modPct = barPct(modThresh);
   refs.mkStock.style.left = `${stockPct}%`;
@@ -39,9 +63,9 @@ function positionMarkers() {
   refs.mkStockLbl.textContent = `${THRESH_STOCK}°C 原厂`;
   refs.mkMod.style.left = `${modPct}%`;
   refs.mkModLbl.style.left = `${modPct}%`;
-  refs.mkModLbl.textContent = state.thermal.currentOffset === 0 ? '' : `${modThresh}°C 当前`;
-  refs.mkMod.style.display = state.thermal.currentOffset === 0 ? 'none' : '';
-  refs.mkModLbl.style.display = state.thermal.currentOffset === 0 ? 'none' : '';
+  refs.mkModLbl.textContent = state.currentOffset === 0 ? '' : `${modThresh}°C 当前`;
+  refs.mkMod.style.display = state.currentOffset === 0 ? 'none' : '';
+  refs.mkModLbl.style.display = state.currentOffset === 0 ? 'none' : '';
 }
 
 function formatThermalOffset(offset) {
@@ -70,7 +94,7 @@ async function readThermalZones({ fresh = false, clear = false } = {}) {
   const skin = valid.find((zone) => zone.zone === 'VIRTUAL-SKIN') || valid.find((zone) => zone.zone === 'SKIN');
   if (!skin) throw new Error('VIRTUAL-SKIN 未找到');
   const tempC = skin.temp / 1000;
-  if (state.thermal.lastSkinTempC !== null && Math.abs(tempC - state.thermal.lastSkinTempC) >= 12 && !fresh && !clear) {
+  if (state.lastSkinTempC !== null && Math.abs(tempC - state.lastSkinTempC) >= 12 && !fresh && !clear) {
     throw new Error('缓存温度跳变，准备校准');
   }
   return valid;
@@ -78,27 +102,29 @@ async function readThermalZones({ fresh = false, clear = false } = {}) {
 
 function syncHeroDesc() {
   const parts = [];
-  const preset = THERMAL_PRESETS[state.thermal.currentOffset];
+  const preset = THERMAL_PRESETS[state.currentOffset];
+  const scheduler = requireFeature('profile').getThermalContext();
+  const swapMode = requireFeature('memory').getSwapMode();
   if (preset) parts.push(preset.name);
-  if (state.profile.schedEffectiveOwner === 'external') parts.push(hasExternalScheduler() ? (isExternalSchedulerActive() ? '外部调度接管' : '外部调度未启用') : '调度停用');
-  else if (hasExternalScheduler()) parts.push('覆盖外部调度');
-  if (state.memory.swapMode === 'optimized') parts.push('内存已优化');
-  else if (state.memory.swapMode === 'stock') parts.push('内存默认');
+  if (scheduler.schedEffectiveOwner === 'external') parts.push(scheduler.hasExternalScheduler ? (scheduler.externalSchedulerActive ? '外部调度接管' : '外部调度未启用') : '调度停用');
+  else if (scheduler.hasExternalScheduler) parts.push('覆盖外部调度');
+  if (swapMode === 'optimized') parts.push('内存已优化');
+  else if (swapMode === 'stock') parts.push('内存默认');
   refs.heroDesc.textContent = parts.join(' · ') || '正在读取配置…';
 }
 
 function syncThermalUi() {
-  const preset = THERMAL_PRESETS[state.thermal.currentOffset] || THERMAL_PRESETS[4];
+  const preset = THERMAL_PRESETS[state.currentOffset] || THERMAL_PRESETS[4];
   refs.topbarThermalChip.textContent = `温控 ${preset.name}`;
   refs.thermalCurrentName.textContent = preset.name;
   refs.thermalCurrentDesc.textContent = preset.summary;
-  const label = formatThermalOffset(state.thermal.currentOffset);
+  const label = formatThermalOffset(state.currentOffset);
   [refs.homeModBadge, refs.thModBadge].forEach((el) => {
     el.textContent = label;
-    el.className = `badge ${state.thermal.currentOffset === 0 ? 'off' : 'default'}`;
+    el.className = `badge ${state.currentOffset === 0 ? 'off' : 'default'}`;
   });
   document.querySelectorAll('.thermal-option').forEach((card) => {
-    card.classList.toggle('selected', Number(card.dataset.offset) === state.thermal.currentOffset);
+    card.classList.toggle('selected', Number(card.dataset.offset) === state.currentOffset);
   });
   positionMarkers();
 }
@@ -166,26 +192,26 @@ function ensureSensorRefs(container, key, zones, className) {
 async function loadThermalPreset() {
   try {
     const data = await apiFetch(API.thermalSet);
-    state.thermal.currentOffset = THERMAL_OFFSETS.includes(data.offset) ? data.offset : THERMAL_DEFAULT_OFFSET;
+    state.currentOffset = THERMAL_OFFSETS.includes(data.offset) ? data.offset : THERMAL_DEFAULT_OFFSET;
   } catch (_) {
-    state.thermal.currentOffset = THERMAL_DEFAULT_OFFSET;
+    state.currentOffset = THERMAL_DEFAULT_OFFSET;
   }
   syncThermalUi();
   syncHeroDesc();
 }
 
 async function refreshThermal() {
-  if (state.thermal.thermalBusy) return;
-  state.thermal.thermalBusy = true;
+  if (state.thermalBusy) return;
+  state.thermalBusy = true;
   try {
     let zones;
     try {
       zones = await readThermalZones();
     } catch (_) {
-      state.thermal.thermalBadReads += 1;
+      state.thermalBadReads += 1;
       zones = await readThermalZones({ fresh: true });
     }
-    if (state.thermal.thermalBadReads >= 2) {
+    if (state.thermalBadReads >= 2) {
       try { zones = await readThermalZones({ clear: true }); } catch (_) {}
     }
     const skin = zones.find((zone) => zone.zone === 'VIRTUAL-SKIN') || zones.find((zone) => zone.zone === 'SKIN');
@@ -196,8 +222,8 @@ async function refreshThermal() {
     refs.thermalContent.hidden = false;
     if (skin) {
       const tempC = skin.temp / 1000;
-      state.thermal.lastSkinTempC = tempC;
-      state.thermal.thermalBadReads = 0;
+      state.lastSkinTempC = tempC;
+      state.thermalBadReads = 0;
       const color = tempHex(tempC);
       refs.homeTempNum.textContent = tempC.toFixed(1);
       refs.homeTempNum.style.color = color;
@@ -237,7 +263,7 @@ async function refreshThermal() {
     refs.tempNum.textContent = '--';
     refs.tempStatus.textContent = err.message;
   } finally {
-    state.thermal.thermalBusy = false;
+    state.thermalBusy = false;
   }
 }
 
@@ -393,9 +419,10 @@ async function fetchTempHistory(minutes) {
 }
 
 async function triggerThermalBurst(options = {}) {
-  if (!state.auth.webuiToken) {
+  const auth = requireFeature('auth');
+  if (!auth.hasToken()) {
     if (!options.prompt) return false;
-    if (!(await ensureWebuiToken())) return false;
+    if (!(await auth.ensureToken())) return false;
   }
   try {
     await apiFetch(API.thermalBurst, {
@@ -422,7 +449,7 @@ function openTempChart() {
     { min: 720, label: '12 小时' },
   ];
   let active = 10;
-  state.thermal.tempChart.activeRange = active;
+  state.tempChart.activeRange = active;
   refs.detailModal.classList.remove('energy-mode');
   refs.detailModal.classList.add('history-mode');
   const root = document.createElement('div');
@@ -527,14 +554,14 @@ function openTempChart() {
     };
   };
   const draw = async (rangeMin, options = {}) => {
-    const requestId = ++state.thermal.tempChart.requestId;
+    const requestId = ++state.tempChart.requestId;
     active = rangeMin;
-    state.thermal.tempChart.activeRange = rangeMin;
+    state.tempChart.activeRange = rangeMin;
     const rangeLabel = ranges.find((r) => r.min === rangeMin)?.label || `${rangeMin} 分钟`;
     tabsEl.querySelectorAll('.range-btn').forEach((button) => button.classList.toggle('active', Number(button.dataset.range) === rangeMin));
     if (!options.silent && !view) setStaticHtml(areaEl, '<div class="energy-empty">正在读取温度记录…</div>');
     const data = await fetchTempHistory(rangeMin);
-    if (requestId !== state.thermal.tempChart.requestId || state.thermal.tempChart.draw !== draw) return;
+    if (requestId !== state.tempChart.requestId || state.tempChart.draw !== draw) return;
     if (!data || data.length < 2) {
       setStaticHtml(areaEl, '<div class="energy-empty">温度记录不足。保持页面运行一段时间后再查看。</div>');
       view = null;
@@ -545,7 +572,7 @@ function openTempChart() {
     const realMax = Math.max(...temps);
     const avg = temps.reduce((a, b) => a + b, 0) / temps.length;
     const current = data[data.length - 1].temp;
-    const threshold = THRESH_STOCK + state.thermal.currentOffset;
+    const threshold = THRESH_STOCK + state.currentOffset;
     const gapThresholdSec = getTempGapThresholdSec(data);
     let highSec = 0;
     for (let i = 1; i < data.length; i++) {
@@ -588,9 +615,9 @@ function openTempChart() {
   });
   refs.detailModal.classList.add('open');
   pushModalState('detail');
-  state.thermal.tempChart.draw = draw;
+  state.tempChart.draw = draw;
   window.setTimeout(() => {
-    if (!refs.detailModal.classList.contains('open') || state.thermal.tempChart.draw !== draw) return;
+    if (!refs.detailModal.classList.contains('open') || state.tempChart.draw !== draw) return;
     draw(active).catch(() => {}).then(() => scheduleTempChartRefresh());
   }, 80);
 }
@@ -630,7 +657,7 @@ async function exportHistoryWindow(scope, button) {
 }
 
 function stopThermalBurst() {
-  if (!state.auth.webuiToken) return;
+  if (!requireFeature('auth').hasToken()) return;
   apiFetch(API.thermalBurst, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -641,18 +668,18 @@ function stopThermalBurst() {
 }
 
 async function applyThermal(offset) {
-  if (offset === state.thermal.currentOffset || state.thermal.thermalApplyBusy) return;
-  const prev = state.thermal.currentOffset;
+  if (offset === state.currentOffset || state.thermalApplyBusy) return;
+  const prev = state.currentOffset;
   const card = refs.thermalList.querySelector(`[data-offset="${offset}"]`);
   if (!card) return;
-  state.thermal.thermalApplyBusy = true;
+  state.thermalApplyBusy = true;
   card.classList.add('loading');
   appendLog(`切换温控阈值 ${THERMAL_PRESETS[offset].name}…`, 'dim');
   refs.logCard.classList.add('open');
   try {
     const data = await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ offset }), timeoutMs: 8000 });
     if (data.ok) {
-      state.thermal.currentOffset = offset;
+      state.currentOffset = offset;
       syncThermalUi();
       syncHeroDesc();
       if (data.restarted) {
@@ -671,15 +698,15 @@ async function applyThermal(offset) {
     appendLog(String(err), 'err');
   } finally {
     card.classList.remove('loading');
-    state.thermal.thermalApplyBusy = false;
+    state.thermalApplyBusy = false;
   }
 }
 
 async function cancelThermalChange() {
   refs.rebootModal.classList.remove('open');
   try {
-    await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ offset: state.thermal.thermalModal.prev }), timeoutMs: 8000 });
-    state.thermal.currentOffset = state.thermal.thermalModal.prev;
+    await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ offset: state.thermalModal.prev }), timeoutMs: 8000 });
+    state.currentOffset = state.thermalModal.prev;
     syncThermalUi();
     syncHeroDesc();
     showToast('已撤销，恢复原档位');
@@ -702,11 +729,45 @@ async function rebootDevice() {
 }
 
 async function cancelPendingRebootChange() {
-  if (state.shell.rebootContext === 'scheduler') {
-    await cancelSchedulerChange();
+  if (requireFeature('ui').getRebootContext() === 'scheduler') {
+    await requireFeature('profile').cancelSchedulerChange();
   } else {
     await cancelThermalChange();
   }
+}
+
+function stopTempChartRefresh() {
+  const wasActive = Boolean(state.tempChart.draw);
+  if (state.tempChart.timer) {
+    clearTimeout(state.tempChart.timer);
+    state.tempChart.timer = null;
+  }
+  state.tempChart.draw = null;
+  state.tempChart.requestId += 1;
+  if (wasActive) stopThermalBurst();
+}
+
+function pauseTempChartRefresh() {
+  const wasActive = Boolean(state.tempChart.draw);
+  if (state.tempChart.timer) {
+    clearTimeout(state.tempChart.timer);
+    state.tempChart.timer = null;
+  }
+  state.tempChart.requestId += 1;
+  if (wasActive) stopThermalBurst();
+}
+
+function scheduleTempChartRefresh(delay = TEMP_CHART_REFRESH_MS) {
+  if (state.tempChart.timer) clearTimeout(state.tempChart.timer);
+  if (!core().isWebUiActive() || !refs.detailModal.classList.contains('open') || !state.tempChart.draw) return;
+  state.tempChart.timer = window.setTimeout(async () => {
+    state.tempChart.timer = null;
+    if (!core().isWebUiActive() || !refs.detailModal.classList.contains('open') || !state.tempChart.draw) return;
+    try {
+      await state.tempChart.draw(state.tempChart.activeRange, { silent: true });
+    } catch (_) {}
+    scheduleTempChartRefresh();
+  }, delay);
 }
 
 registerFeature('thermal', {
@@ -714,6 +775,22 @@ registerFeature('thermal', {
   load: loadThermalPreset,
   refresh: refreshThermal,
   pause: pauseTempChartRefresh,
-  positionMarkers
+  positionMarkers,
+  isRefreshing: () => state.thermalBusy,
+  syncHeroDesc,
+  openChart: openTempChart,
+  triggerBurst: triggerThermalBurst,
+  rebootDevice,
+  cancelPendingRebootChange,
+  exportHistoryWindow,
+  setPendingChange(pending, prev) {
+    state.thermalModal.pending = pending;
+    state.thermalModal.prev = prev;
+  },
+  isChartActive: () => Boolean(state.tempChart.draw),
+  stopChart: stopTempChartRefresh,
+  pauseChart: pauseTempChartRefresh,
+  scheduleChart: scheduleTempChartRefresh
 });
+})();
 

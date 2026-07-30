@@ -35,12 +35,29 @@ for (const source of scripts) {
 
 const runtime = fs.readFileSync(path.join(webroot, 'js', 'runtime.js'), 'utf8');
 const bootstrap = fs.readFileSync(path.join(webroot, 'app.js'), 'utf8');
-for (const slice of ['shell', 'theme', 'auth', 'profile', 'thermal', 'memory', 'network', 'energy']) {
-  assert(runtime.includes(`  ${slice}:`), `缺少 WebUI 状态分片：${slice}`);
-  assert(runtime.includes(`requireFeature(name)`), '功能注册表必须提供显式读取入口');
+assert(runtime.includes('function requireFeature(name)'), '功能注册表必须提供显式读取入口');
+assert(!runtime.includes('const state ='), 'runtime.js 不得重新持有 feature state');
+assert(!runtime.includes('Pixel9ProControl.state'), '运行时全局不得暴露 feature state');
+assert(!/value:\s*Object\.freeze\(\{[\s\S]*?\bstate\s*,/.test(runtime), 'Pixel9ProControl 不得导出 state');
+
+const privateStateContracts = {
+  'theme.js': ['const state = {'],
+  'ui.js': ['const state = {'],
+  'common.js': ['const authState = {', 'const shellState = {'],
+  'profile.js': ['const state = {'],
+  'thermal.js': ['const state = {'],
+  'memory.js': ['const state = {'],
+  'network.js': ['const state = {'],
+  'energy.js': ['const state = {']
+};
+for (const [file, markers] of Object.entries(privateStateContracts)) {
+  const source = fs.readFileSync(path.join(webroot, 'js', file), 'utf8');
+  assert(source.includes('(() => {'), `${file} 必须用私有 scope 隔离 feature state`);
+  for (const marker of markers) assert(source.includes(marker), `${file} 缺少私有 state：${marker}`);
 }
-for (const feature of ['auth', 'shell', 'ui', 'theme', 'profile', 'thermal', 'memory', 'network', 'energy']) {
+for (const feature of ['core', 'auth', 'shell', 'ui', 'theme', 'profile', 'thermal', 'memory', 'network', 'energy']) {
   assert(bootstrap.includes(`requireFeature('${feature}')`), `bootstrap 未声明功能依赖：${feature}`);
 }
+assert(bootstrap.includes("registerFeature('app'"), 'bootstrap 必须注册 poll coordinator API');
 
 process.stdout.write(`WebUI 资源契约通过：${scripts.length} 个脚本\n`);

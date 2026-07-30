@@ -1,7 +1,40 @@
 // NR、SIM、UECap、基带与 NTP 功能。
 'use strict';
+(() => {
+const state = {
+  basebandInstalled: false,
+  nrSwitch: 'off',
+  nrContract: null,
+  nrBusy: false,
+  sim2AutoManage: 'off',
+  idleIsolateMode: 'off',
+  standbyGuardBusy: false,
+  standbyDiag: null,
+  uecapMode: 'unknown',
+  uecapActiveMode: 'unknown',
+  uecapBusy: false,
+  uecapPendingMode: '',
+  uecapVerifyState: 'idle',
+  uecapVerifyMessage: '',
+  uecapExpectedHash: '',
+  uecapVerifyNonce: 0,
+  ntpServer: '',
+  ntpServers: [],
+  ntpBusy: false,
+  deviceClockTimer: null
+};
+
+const core = () => requireFeature('core');
+const apiFetch = (...args) => core().apiFetch(...args);
+const appendLog = (...args) => core().appendLog(...args);
+const buildInfoRow = (...args) => core().buildInfoRow(...args);
+const errorBlock = (...args) => core().errorBlock(...args);
+const showToast = (...args) => core().showToast(...args);
+const sleep = (...args) => core().sleep(...args);
+const syncOptionalModuleUi = () => requireFeature('profile').syncOptionalModuleUi();
+
 function buildNrSwitchDetail() {
-  const contract = state.network.nrContract || {};
+  const contract = state.nrContract || {};
   const delay = Number.isFinite(contract.screenOffDelayS) ? contract.screenOffDelayS : null;
   const cooldown = Number.isFinite(contract.restoreCooldownS) ? contract.restoreCooldownS : null;
   const recheck = Number.isFinite(contract.lteRecheckS) ? contract.lteRecheckS : null;
@@ -37,8 +70,8 @@ function renderNrSwitchRows(data) {
 }
 
 function syncStandbyGuardButtons() {
-  refs.sim2AutoToggleBtn.disabled = state.network.standbyGuardBusy;
-  refs.idleIsolateToggleBtn.disabled = state.network.standbyGuardBusy;
+  refs.sim2AutoToggleBtn.disabled = state.standbyGuardBusy;
+  refs.idleIsolateToggleBtn.disabled = state.standbyGuardBusy;
 }
 
 function standbyWorkerModeLabel(mode) {
@@ -62,9 +95,9 @@ function formatStandbyTimestamp(value) {
 }
 
 function renderStandbyGuard(data) {
-  state.network.sim2AutoManage = data.sim2_auto_manage === 'on' ? 'on' : 'off';
-  state.network.idleIsolateMode = data.idle_isolate_mode === 'on' ? 'on' : 'off';
-  state.network.standbyDiag = {
+  state.sim2AutoManage = data.sim2_auto_manage === 'on' ? 'on' : 'off';
+  state.idleIsolateMode = data.idle_isolate_mode === 'on' ? 'on' : 'off';
+  state.standbyDiag = {
     updatedAt: data.diag_updated_at || '',
     screen: data.diag_screen || 'unknown',
     workerMode: data.diag_worker_mode || 'unknown',
@@ -77,7 +110,7 @@ function renderStandbyGuard(data) {
     cycleCount: data.diag_cycle_count || '0',
   };
 
-  const sim2On = state.network.sim2AutoManage === 'on';
+  const sim2On = state.sim2AutoManage === 'on';
   refs.sim2AutoToggleLabel.textContent = sim2On ? '关闭' : '开启';
   refs.sim2AutoDesc.textContent = sim2On
     ? '已开启：息屏时停用空槽实例，亮屏或插入 SIM2 后自动恢复。'
@@ -89,7 +122,7 @@ function renderStandbyGuard(data) {
     { label: '适用场景', value: sim2On ? '单卡用户 · 副卡槽为空' : '双卡用户 · 两张 SIM 都在使用', cls: 'off' },
   ].forEach((row) => refs.sim2AutoRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
-  const isolateOn = state.network.idleIsolateMode === 'on';
+  const isolateOn = state.idleIsolateMode === 'on';
   refs.idleIsolateToggleLabel.textContent = isolateOn ? '关闭' : '开启';
   refs.idleIsolateDesc.textContent = isolateOn
     ? '已开启：息屏优化已暂停，仅保留最低限度的状态检查。'
@@ -102,21 +135,21 @@ function renderStandbyGuard(data) {
   ].forEach((row) => refs.idleIsolateRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   refs.standbyDiagRows.replaceChildren();
-  if (!state.network.standbyDiag.updatedAt) {
+  if (!state.standbyDiag.updatedAt) {
     refs.standbyDiagRows.appendChild(buildInfoRow('状态文件', '等待后台 worker 首次写入', 'off'));
   } else {
-    const nrLabel = state.network.standbyDiag.nrSwitch === 'on'
-      ? (state.network.standbyDiag.nrState === 'lte' ? 'NR 管理开启 / 当前 LTE' : 'NR 管理开启 / 当前 5G')
+    const nrLabel = state.standbyDiag.nrSwitch === 'on'
+      ? (state.standbyDiag.nrState === 'lte' ? 'NR 管理开启 / 当前 LTE' : 'NR 管理开启 / 当前 5G')
       : 'NR 管理关闭';
-    const profileLabel = `${state.network.standbyDiag.profilePolicy === 'auto' ? '自动' : '手动'} / ${state.network.standbyDiag.activeProfile || 'unknown'}`;
+    const profileLabel = `${state.standbyDiag.profilePolicy === 'auto' ? '自动' : '手动'} / ${state.standbyDiag.activeProfile || 'unknown'}`;
     [
-      { label: '最近更新', value: formatStandbyTimestamp(state.network.standbyDiag.updatedAt), cls: 'off' },
-      { label: '当前屏幕', value: state.network.standbyDiag.screen === 'on' ? '亮屏' : state.network.standbyDiag.screen === 'off' ? '息屏' : '未知', cls: state.network.standbyDiag.screen === 'on' ? 'warn' : 'good' },
-      { label: 'worker 分支', value: standbyWorkerModeLabel(state.network.standbyDiag.workerMode), cls: standbyWorkerModeClass(state.network.standbyDiag.workerMode) },
-      { label: '下次复查', value: state.network.standbyDiag.nextSleepSecs ? `${state.network.standbyDiag.nextSleepSecs}s` : '—', cls: 'off' },
-      { label: 'NR 状态', value: nrLabel, cls: state.network.standbyDiag.nrState === 'lte' ? 'warn' : 'off' },
+      { label: '最近更新', value: formatStandbyTimestamp(state.standbyDiag.updatedAt), cls: 'off' },
+      { label: '当前屏幕', value: state.standbyDiag.screen === 'on' ? '亮屏' : state.standbyDiag.screen === 'off' ? '息屏' : '未知', cls: state.standbyDiag.screen === 'on' ? 'warn' : 'good' },
+      { label: 'worker 分支', value: standbyWorkerModeLabel(state.standbyDiag.workerMode), cls: standbyWorkerModeClass(state.standbyDiag.workerMode) },
+      { label: '下次复查', value: state.standbyDiag.nextSleepSecs ? `${state.standbyDiag.nextSleepSecs}s` : '—', cls: 'off' },
+      { label: 'NR 状态', value: nrLabel, cls: state.standbyDiag.nrState === 'lte' ? 'warn' : 'off' },
       { label: '调度状态', value: profileLabel, cls: 'off' },
-      { label: '循环计数', value: state.network.standbyDiag.cycleCount || '0', cls: 'off' },
+      { label: '循环计数', value: state.standbyDiag.cycleCount || '0', cls: 'off' },
     ].forEach((row) => refs.standbyDiagRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
   }
 
@@ -137,20 +170,20 @@ function getUecapModeHash(data, mode) {
 }
 
 function getUecapVerifyRow(data, requested, active) {
-  if (state.network.uecapVerifyState === 'failed') {
+  if (state.uecapVerifyState === 'failed') {
     return {
       label: '配置校验',
-      value: state.network.uecapVerifyMessage || '未在时限内确认，请手动刷新复查',
+      value: state.uecapVerifyMessage || '未在时限内确认，请手动刷新复查',
       cls: 'warn'
     };
   }
 
-  if (state.network.uecapPendingMode) {
-    const label = uecapLabel(state.network.uecapPendingMode);
-    if (state.network.uecapVerifyState === 'switching') {
+  if (state.uecapPendingMode) {
+    const label = uecapLabel(state.uecapPendingMode);
+    if (state.uecapVerifyState === 'switching') {
       return { label: '配置校验', value: `${label}：切换中`, cls: 'warn' };
     }
-    if (state.network.uecapVerifyState === 'verifying') {
+    if (state.uecapVerifyState === 'verifying') {
       return { label: '配置校验', value: `${label}：正在校验配置`, cls: 'warn' };
     }
   }
@@ -166,19 +199,19 @@ function getUecapVerifyRow(data, requested, active) {
 }
 
 function renderUecapBtnGroup(activeMode) {
-  const selectedMode = state.network.uecapPendingMode || activeMode;
+  const selectedMode = state.uecapPendingMode || activeMode;
   refs.uecapBtnGroup.replaceChildren();
   UECAP_MODES.forEach((m) => {
     const btn = document.createElement('button');
     btn.type = 'button';
     const isSelected = m.id === selectedMode;
-    const isPending = state.network.uecapBusy && m.id === state.network.uecapPendingMode;
-    btn.className = `uecap-btn${isSelected ? ' active' : ''}${isPending ? ' pending' : ''}${isPending && state.network.uecapVerifyState === 'verifying' ? ' verifying' : ''}`;
+    const isPending = state.uecapBusy && m.id === state.uecapPendingMode;
+    btn.className = `uecap-btn${isSelected ? ' active' : ''}${isPending ? ' pending' : ''}${isPending && state.uecapVerifyState === 'verifying' ? ' verifying' : ''}`;
     btn.dataset.mode = m.id;
     btn.textContent = isPending
-      ? (state.network.uecapVerifyState === 'switching' ? '切换中...' : '校验中...')
+      ? (state.uecapVerifyState === 'switching' ? '切换中...' : '校验中...')
       : m.name;
-    btn.disabled = state.network.uecapBusy;
+    btn.disabled = state.uecapBusy;
     btn.addEventListener('click', () => setUecapMode(m.id));
     refs.uecapBtnGroup.appendChild(btn);
   });
@@ -186,13 +219,13 @@ function renderUecapBtnGroup(activeMode) {
 
 function renderUecapRows(data) {
   refs.uecapRows.replaceChildren();
-  const requested = data.requested_mode || state.network.uecapMode || 'special';
+  const requested = data.requested_mode || state.uecapMode || 'special';
   const active = data.active_mode || 'custom';
-  state.network.uecapMode = requested;
-  state.network.uecapActiveMode = active;
+  state.uecapMode = requested;
+  state.uecapActiveMode = active;
   const modeInfo = UECAP_MODES.find((m) => m.id === requested);
-  refs.uecapDesc.textContent = state.network.uecapPendingMode
-    ? `${uecapLabel(state.network.uecapPendingMode)}：已提交切换，正在校验当前配置。`
+  refs.uecapDesc.textContent = state.uecapPendingMode
+    ? `${uecapLabel(state.uecapPendingMode)}：已提交切换，正在校验当前配置。`
     : modeInfo ? `${modeInfo.desc} · 切换后自动校验配置是否生效。` : '选择 UE 能力配置，切换后会自动校验是否生效。';
   renderUecapBtnGroup(requested);
   const verifyRow = getUecapVerifyRow(data, requested, active);
@@ -208,8 +241,8 @@ function renderUecapRows(data) {
 async function refreshNrSwitch() {
   try {
     const data = await apiFetch(API.nrSwitch, { timeoutMs: 6000 });
-    state.network.nrSwitch = data.nr_switch || 'off';
-    state.network.nrContract = {
+    state.nrSwitch = data.nr_switch || 'off';
+    state.nrContract = {
       screenOffDelayS: Number(data.screen_off_delay_s),
       restoreCooldownS: Number(data.restore_cooldown_s),
       lteRecheckS: Number(data.lte_recheck_s),
@@ -224,12 +257,12 @@ async function refreshNrSwitch() {
 async function refreshUecap() {
   try {
     const data = await apiFetch(API.uecap, { timeoutMs: 6000 });
-    state.network.uecapMode = data.requested_mode || 'special';
-    state.network.uecapActiveMode = data.active_mode || 'custom';
-    const expectedHash = getUecapModeHash(data, state.network.uecapMode);
-    if (!state.network.uecapPendingMode && state.network.uecapVerifyState === 'failed' && state.network.uecapMode === state.network.uecapActiveMode && (!expectedHash || expectedHash === data.target_hash)) {
-      state.network.uecapVerifyState = 'idle';
-      state.network.uecapVerifyMessage = '';
+    state.uecapMode = data.requested_mode || 'special';
+    state.uecapActiveMode = data.active_mode || 'custom';
+    const expectedHash = getUecapModeHash(data, state.uecapMode);
+    if (!state.uecapPendingMode && state.uecapVerifyState === 'failed' && state.uecapMode === state.uecapActiveMode && (!expectedHash || expectedHash === data.target_hash)) {
+      state.uecapVerifyState = 'idle';
+      state.uecapVerifyMessage = '';
     }
     renderUecapRows(data);
   } catch (err) {
@@ -249,8 +282,8 @@ async function refreshStandbyGuard() {
 }
 
 async function setStandbyGuard(update, successText, logText) {
-  if (state.network.standbyGuardBusy) return;
-  state.network.standbyGuardBusy = true;
+  if (state.standbyGuardBusy) return;
+  state.standbyGuardBusy = true;
   syncStandbyGuardButtons();
   try {
     const data = await apiFetch(API.standbyGuard, {
@@ -269,13 +302,13 @@ async function setStandbyGuard(update, successText, logText) {
   } catch (_) {
     showToast('请求失败');
   } finally {
-    state.network.standbyGuardBusy = false;
+    state.standbyGuardBusy = false;
     syncStandbyGuardButtons();
   }
 }
 
 async function toggleSim2AutoManage() {
-  const next = state.network.sim2AutoManage === 'on' ? 'off' : 'on';
+  const next = state.sim2AutoManage === 'on' ? 'off' : 'on';
   await setStandbyGuard(
     { sim2_auto_manage: next },
     next === 'on' ? 'SIM2 自动管理已开启' : 'SIM2 自动管理已关闭',
@@ -284,7 +317,7 @@ async function toggleSim2AutoManage() {
 }
 
 async function toggleIdleIsolateMode() {
-  const next = state.network.idleIsolateMode === 'on' ? 'off' : 'on';
+  const next = state.idleIsolateMode === 'on' ? 'off' : 'on';
   await setStandbyGuard(
     { idle_isolate_mode: next },
     next === 'on' ? '待机隔离模式已开启' : '待机隔离模式已关闭',
@@ -294,32 +327,32 @@ async function toggleIdleIsolateMode() {
 
 // ── 后台应用限制 ─────────────────────────────────────────
 async function verifyUecapSwitch(mode, expectedHash, initialData) {
-  const nonce = ++state.network.uecapVerifyNonce;
+  const nonce = ++state.uecapVerifyNonce;
   const label = UECAP_MODES.find((m) => m.id === mode)?.name || mode;
   const deadline = Date.now() + UECAP_VERIFY_TIMEOUT_MS;
   let lastData = initialData || null;
   let lastErr = '';
 
-  state.network.uecapPendingMode = mode;
-  state.network.uecapExpectedHash = expectedHash || '';
-  state.network.uecapVerifyState = 'switching';
+  state.uecapPendingMode = mode;
+  state.uecapExpectedHash = expectedHash || '';
+  state.uecapVerifyState = 'switching';
   renderUecapRows(lastData || {
     requested_mode: mode,
-    active_mode: state.network.uecapActiveMode || 'custom',
+    active_mode: state.uecapActiveMode || 'custom',
     target_hash: expectedHash || 'unknown'
   });
 
   await sleep(1800);
 
-  while (state.network.uecapVerifyNonce === nonce && Date.now() < deadline) {
-    state.network.uecapVerifyState = 'verifying';
+  while (state.uecapVerifyNonce === nonce && Date.now() < deadline) {
+    state.uecapVerifyState = 'verifying';
     if (lastData) renderUecapRows(lastData);
 
     try {
       const data = await apiFetch(API.uecap, { timeoutMs: 6000 });
       lastData = data;
-      state.network.uecapMode = data.requested_mode || mode;
-      state.network.uecapActiveMode = data.active_mode || 'custom';
+      state.uecapMode = data.requested_mode || mode;
+      state.uecapActiveMode = data.active_mode || 'custom';
       renderUecapRows(data);
 
       const confirmedHash = expectedHash || getUecapModeHash(data, mode);
@@ -328,11 +361,11 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
         && (!confirmedHash || data.target_hash === confirmedHash);
 
       if (confirmed) {
-        state.network.uecapBusy = false;
-        state.network.uecapPendingMode = '';
-        state.network.uecapExpectedHash = '';
-        state.network.uecapVerifyState = 'idle';
-        state.network.uecapVerifyMessage = '';
+        state.uecapBusy = false;
+        state.uecapPendingMode = '';
+        state.uecapExpectedHash = '';
+        state.uecapVerifyState = 'idle';
+        state.uecapVerifyMessage = '';
         renderUecapRows(data);
         showToast(`UE 能力配置已切换为 ${label}`);
         appendLog(`UE 配置已确认: ${label}`, 'ok');
@@ -345,13 +378,13 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
     await sleep(UECAP_VERIFY_INTERVAL_MS);
   }
 
-  if (state.network.uecapVerifyNonce !== nonce) return;
+  if (state.uecapVerifyNonce !== nonce) return;
 
-  state.network.uecapBusy = false;
-  state.network.uecapPendingMode = '';
-  state.network.uecapExpectedHash = '';
-  state.network.uecapVerifyState = 'failed';
-  state.network.uecapVerifyMessage = lastErr
+  state.uecapBusy = false;
+  state.uecapPendingMode = '';
+  state.uecapExpectedHash = '';
+  state.uecapVerifyState = 'failed';
+  state.uecapVerifyMessage = lastErr
     ? `15 秒内未确认（${lastErr}）`
     : '15 秒内未确认，请手动刷新复查';
 
@@ -361,12 +394,12 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
 }
 
 async function toggleNrSwitch() {
-  if (state.network.nrBusy) return;
-  state.network.nrBusy = true;
+  if (state.nrBusy) return;
+  state.nrBusy = true;
   try {
     const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'toggle' }), timeoutMs: 8000 });
     if (data.ok) {
-      state.network.nrSwitch = data.nr_switch;
+      state.nrSwitch = data.nr_switch;
       showToast(data.nr_switch === 'on' ? 'NR 息屏降级已开启' : 'NR 息屏降级已关闭');
       appendLog(data.nr_switch === 'on' ? 'NR 息屏降级: 开启' : 'NR 息屏降级: 关闭', 'ok');
       refreshNrSwitch();
@@ -376,21 +409,21 @@ async function toggleNrSwitch() {
   } catch (_) {
     showToast('请求失败');
   } finally {
-    state.network.nrBusy = false;
+    state.nrBusy = false;
   }
 }
 
 async function setUecapMode(mode) {
-  if (state.network.uecapBusy || (mode === state.network.uecapMode && state.network.uecapVerifyState !== 'failed')) return;
+  if (state.uecapBusy || (mode === state.uecapMode && state.uecapVerifyState !== 'failed')) return;
   const label = UECAP_MODES.find((m) => m.id === mode)?.name || mode;
-  state.network.uecapBusy = true;
-  state.network.uecapPendingMode = mode;
-  state.network.uecapVerifyState = 'switching';
-  state.network.uecapVerifyMessage = `${label}：正在提交切换`;
+  state.uecapBusy = true;
+  state.uecapPendingMode = mode;
+  state.uecapVerifyState = 'switching';
+  state.uecapVerifyMessage = `${label}：正在提交切换`;
   renderUecapRows({
-    requested_mode: state.network.uecapMode || mode,
-    active_mode: state.network.uecapActiveMode || 'custom',
-    target_hash: state.network.uecapExpectedHash || 'unknown'
+    requested_mode: state.uecapMode || mode,
+    active_mode: state.uecapActiveMode || 'custom',
+    target_hash: state.uecapExpectedHash || 'unknown'
   });
   try {
     const data = await apiFetch(API.uecap, {
@@ -400,42 +433,42 @@ async function setUecapMode(mode) {
       timeoutMs: 12000
     });
     if (data.ok) {
-      state.network.uecapMode = data.requested_mode || mode;
-      state.network.uecapActiveMode = data.active_mode || state.network.uecapActiveMode || 'custom';
+      state.uecapMode = data.requested_mode || mode;
+      state.uecapActiveMode = data.active_mode || state.uecapActiveMode || 'custom';
       const expectedHash = getUecapModeHash(data, mode) || data.target_hash || '';
-      state.network.uecapExpectedHash = expectedHash;
-      state.network.uecapVerifyState = data.reloading ? 'switching' : 'verifying';
+      state.uecapExpectedHash = expectedHash;
+      state.uecapVerifyState = data.reloading ? 'switching' : 'verifying';
       renderUecapRows(data);
       showToast(`${label}：已提交切换，正在校验配置`, 2600);
       appendLog(`UE 配置已提交: ${label}，等待校验结果`, 'ok');
       await verifyUecapSwitch(mode, expectedHash, data);
     } else if (data.applied) {
-      state.network.uecapMode = data.requested_mode || mode;
-      state.network.uecapActiveMode = data.active_mode || mode;
-      state.network.uecapBusy = false;
-      state.network.uecapPendingMode = '';
-      state.network.uecapExpectedHash = '';
-      state.network.uecapVerifyState = 'failed';
-      state.network.uecapVerifyMessage = data.error || '配置已切换，但 modem 未完成重载';
+      state.uecapMode = data.requested_mode || mode;
+      state.uecapActiveMode = data.active_mode || mode;
+      state.uecapBusy = false;
+      state.uecapPendingMode = '';
+      state.uecapExpectedHash = '';
+      state.uecapVerifyState = 'failed';
+      state.uecapVerifyMessage = data.error || '配置已切换，但 modem 未完成重载';
       renderUecapRows(data);
-      showToast(state.network.uecapVerifyMessage, 4200);
+      showToast(state.uecapVerifyMessage, 4200);
       appendLog(`UE 配置已写入但重载失败: ${label}`, 'warn');
     } else {
       showToast(`切换失败：${data.error || '未知'}`);
-      state.network.uecapBusy = false;
-      state.network.uecapPendingMode = '';
-      state.network.uecapExpectedHash = '';
-      state.network.uecapVerifyState = 'failed';
-      state.network.uecapVerifyMessage = data.error || '提交失败';
+      state.uecapBusy = false;
+      state.uecapPendingMode = '';
+      state.uecapExpectedHash = '';
+      state.uecapVerifyState = 'failed';
+      state.uecapVerifyMessage = data.error || '提交失败';
       await refreshUecap();
     }
   } catch (_) {
     showToast('请求失败');
-    state.network.uecapBusy = false;
-    state.network.uecapPendingMode = '';
-    state.network.uecapExpectedHash = '';
-    state.network.uecapVerifyState = 'failed';
-    state.network.uecapVerifyMessage = '请求失败，请重试';
+    state.uecapBusy = false;
+    state.uecapPendingMode = '';
+    state.uecapExpectedHash = '';
+    state.uecapVerifyState = 'failed';
+    state.uecapVerifyMessage = '请求失败，请重试';
     await refreshUecap();
   }
 }
@@ -443,11 +476,11 @@ async function setUecapMode(mode) {
 function renderBasebandRows(data) {
   refs.basebandRows.replaceChildren();
   if (!data.installed) {
-    state.network.basebandInstalled = false;
+    state.basebandInstalled = false;
     syncOptionalModuleUi();
     return;
   }
-  state.network.basebandInstalled = true;
+  state.basebandInstalled = true;
   syncOptionalModuleUi();
   refs.basebandDesc.textContent = `已安装 ${data.version || ''}，可提供 CarrierSettings、MCFG 和 IMS 相关配置。`;
   const props = data.props || {};
@@ -465,7 +498,7 @@ function renderBasebandRows(data) {
 }
 
 async function refreshBaseband() {
-  if (!state.network.basebandInstalled) {
+  if (!state.basebandInstalled) {
     syncOptionalModuleUi();
     return;
   }
@@ -478,28 +511,28 @@ async function refreshBaseband() {
 }
 
 function startDeviceClock() {
-  if (!isWebUiActive() || state.shell.currentTab !== 'system') return;
-  if (state.network.deviceClockTimer) return;
+  if (!core().isWebUiActive() || requireFeature('shell').getCurrentTab() !== 'system') return;
+  if (state.deviceClockTimer) return;
   const pad = (n) => String(n).padStart(2, '0');
   const tick = () => {
     const el = document.getElementById('ntp-device-time');
-    if (!el || !isWebUiActive() || state.shell.currentTab !== 'system') return;
+    if (!el || !core().isWebUiActive() || requireFeature('shell').getCurrentTab() !== 'system') return;
     // WebView 运行在本机, new Date() 即设备实时时钟; 每秒走字, 不再依赖 CGI 快照
     const d = new Date();
     el.textContent = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   };
   tick();
-  state.network.deviceClockTimer = window.setInterval(tick, 1000);
+  state.deviceClockTimer = window.setInterval(tick, 1000);
 }
 
 function stopDeviceClock() {
-  if (!state.network.deviceClockTimer) return;
-  clearInterval(state.network.deviceClockTimer);
-  state.network.deviceClockTimer = null;
+  if (!state.deviceClockTimer) return;
+  clearInterval(state.deviceClockTimer);
+  state.deviceClockTimer = null;
 }
 
 function syncDeviceClockForTab() {
-  if (isWebUiActive() && state.shell.currentTab === 'system') startDeviceClock();
+  if (core().isWebUiActive() && requireFeature('shell').getCurrentTab() === 'system') startDeviceClock();
   else stopDeviceClock();
 }
 
@@ -507,14 +540,14 @@ function renderNtpCard(data) {
   refs.ntpServerList.replaceChildren();
   const servers = Array.isArray(data.servers)
     ? data.servers.filter((server) => server && server.id && server.name)
-    : state.network.ntpServers;
+    : state.ntpServers;
   if (!servers.length) {
     refs.ntpServerList.appendChild(errorBlock('NTP 服务器配置为空'));
     return;
   }
-  state.network.ntpServers = servers;
+  state.ntpServers = servers;
   const current = data.ntp_server || data.default_server || servers[0].id;
-  state.network.ntpServer = current;
+  state.ntpServer = current;
   servers.forEach((srv) => {
     const card = document.createElement('div');
     card.className = `opt-item${srv.id === current ? ' ntp-selected' : ''}`;
@@ -556,8 +589,8 @@ async function refreshNtp() {
 }
 
 async function setNtpServer(server) {
-  if (state.network.ntpBusy || server === state.network.ntpServer) return;
-  state.network.ntpBusy = true;
+  if (state.ntpBusy || server === state.ntpServer) return;
+  state.ntpBusy = true;
   try {
     const data = await apiFetch(API.ntp, {
       method: 'POST',
@@ -566,7 +599,7 @@ async function setNtpServer(server) {
       timeoutMs: 10000
     });
     if (data.ok) {
-      const label = state.network.ntpServers.find((s) => s.id === server)?.name || server;
+      const label = state.ntpServers.find((s) => s.id === server)?.name || server;
       if (data.refreshed === false) {
         showToast(`NTP 已切换为 ${label}，即时同步未完成`);
         appendLog(`NTP: ${server}（即时同步未完成）`, 'warn');
@@ -581,13 +614,13 @@ async function setNtpServer(server) {
   } catch (_) {
     showToast('请求失败');
   } finally {
-    state.network.ntpBusy = false;
+    state.ntpBusy = false;
   }
 }
 
 async function syncNtp() {
-  if (state.network.ntpBusy) return;
-  state.network.ntpBusy = true;
+  if (state.ntpBusy) return;
+  state.ntpBusy = true;
   refs.ntpSyncLabel.textContent = '同步中…';
   try {
     const data = await apiFetch(API.ntp, {
@@ -607,7 +640,7 @@ async function syncNtp() {
     showToast('同步请求失败');
   } finally {
     refs.ntpSyncLabel.textContent = '立即同步';
-    state.network.ntpBusy = false;
+    state.ntpBusy = false;
   }
 }
 
@@ -622,6 +655,15 @@ registerFeature('network', {
     ]);
   },
   stopDeviceClock,
-  syncDeviceClockForTab
+  syncDeviceClockForTab,
+  buildNrSwitchDetail,
+  toggleNrSwitch,
+  toggleSim2AutoManage,
+  toggleIdleIsolateMode,
+  refreshBaseband,
+  syncNtp,
+  isBasebandInstalled: () => state.basebandInstalled,
+  setBasebandInstalled(value) { state.basebandInstalled = Boolean(value); }
 });
+})();
 

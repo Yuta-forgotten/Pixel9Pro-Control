@@ -1,5 +1,24 @@
 // 通用请求、轮询、导航和系统信息功能。
 'use strict';
+(() => {
+const authState = { webuiToken: '' };
+const shellState = {
+  currentTab: 'home',
+  deviceModel: '',
+  foregroundPaused: false,
+  poller: {
+    timer: null,
+    running: false,
+    lastInteractionAt: 0,
+    lastRun: { cpu: 0, thermal: 0, optim: 0, slow: 0 }
+  },
+  pull: { y0: 0, active: false, dist: 0, busy: false }
+};
+
+function boolValue(value) {
+  return value === true || value === 'true' || value === 'yes' || value === 1 || value === '1';
+}
+
 function errorBlock(msg) {
   const el = document.createElement('div');
   el.className = 'note-body';
@@ -46,13 +65,13 @@ function appendLog(text, type = '') {
 function setWebuiToken(token) {
   const clean = String(token || '').trim();
   if (!/^[A-Za-z0-9._:-]{8,128}$/.test(clean)) return false;
-  state.auth.webuiToken = clean;
+  authState.webuiToken = clean;
   sessionStorage.setItem(STORAGE_TOKEN_KEY, clean);
   return true;
 }
 
 function clearWebuiToken() {
-  state.auth.webuiToken = '';
+  authState.webuiToken = '';
   sessionStorage.removeItem(STORAGE_TOKEN_KEY);
 }
 
@@ -77,7 +96,7 @@ async function fetchWebuiTokenForPrompt() {
 }
 
 async function ensureWebuiToken() {
-  if (state.auth.webuiToken) return true;
+  if (authState.webuiToken) return true;
   // auth.sh 经 loopback 自由提供 token（能 POST 必能 GET），读到即静默采用，不弹窗。
   const serverToken = await fetchWebuiTokenForPrompt();
   if (serverToken && setWebuiToken(serverToken)) return true;
@@ -94,7 +113,7 @@ async function ensureWebuiToken() {
 // 会话无 token 时后台静默预取（auth.sh loopback），使首个写操作零延迟、零弹窗。
 function prefetchWebuiToken() {
   fetchWebuiTokenForPrompt()
-    .then((t) => { if (t && !state.auth.webuiToken) setWebuiToken(t); })
+    .then((t) => { if (t && !authState.webuiToken) setWebuiToken(t); })
     .catch(() => {});
 }
 
@@ -106,9 +125,9 @@ async function apiFetch(path, opts = {}) {
   const method = (opts.method || 'GET').toUpperCase();
   if (method !== 'GET') {
     if (!(await ensureWebuiToken())) throw new Error('missing WebUI token');
-    headers['X-PIXEL9PRO-TOKEN'] = state.auth.webuiToken;
-  } else if (state.auth.webuiToken) {
-    headers['X-PIXEL9PRO-TOKEN'] = state.auth.webuiToken;
+    headers['X-PIXEL9PRO-TOKEN'] = authState.webuiToken;
+  } else if (authState.webuiToken) {
+    headers['X-PIXEL9PRO-TOKEN'] = authState.webuiToken;
   }
   const request = { cache: 'no-store', ...opts, headers, signal: controller.signal };
   delete request.timeoutMs;
@@ -136,12 +155,12 @@ function sleep(ms) {
 }
 
 function noteUserActivity() {
-  state.shell.poller.lastInteractionAt = Date.now();
-  if (isWebUiActive() && state.shell.poller.running) queueNextPoll(POLL_MIN_DELAY_MS);
+  shellState.poller.lastInteractionAt = Date.now();
+  if (isWebUiActive() && shellState.poller.running) queueNextPoll(POLL_MIN_DELAY_MS);
 }
 
 function isWebUiActive() {
-  return document.visibilityState === 'visible' && !document.hidden && !state.shell.foregroundPaused;
+  return document.visibilityState === 'visible' && !document.hidden && !shellState.foregroundPaused;
 }
 
 function isAnyModalOpen() {
@@ -154,27 +173,27 @@ function isAnyModalOpen() {
 }
 
 function isPollingRelaxed() {
-  return isAnyModalOpen() || (Date.now() - state.shell.poller.lastInteractionAt) >= WEBUI_IDLE_MS;
+  return isAnyModalOpen() || (Date.now() - shellState.poller.lastInteractionAt) >= WEBUI_IDLE_MS;
 }
 
 function getPollInterval(key) {
   const relaxed = isPollingRelaxed();
   switch (key) {
     case 'cpu':
-      if (state.shell.currentTab === 'tune') return relaxed ? POLL_INTERVALS.cpu.relaxedPerf : POLL_INTERVALS.cpu.perf;
-      if (state.shell.currentTab === 'home') return relaxed ? POLL_INTERVALS.cpu.relaxedHome : POLL_INTERVALS.cpu.home;
+      if (shellState.currentTab === 'tune') return relaxed ? POLL_INTERVALS.cpu.relaxedPerf : POLL_INTERVALS.cpu.perf;
+      if (shellState.currentTab === 'home') return relaxed ? POLL_INTERVALS.cpu.relaxedHome : POLL_INTERVALS.cpu.home;
       return 0;
     case 'thermal':
-      if (state.shell.currentTab === 'tune') return relaxed ? POLL_INTERVALS.thermal.relaxedThermal : POLL_INTERVALS.thermal.thermal;
-      if (state.shell.currentTab === 'home') return relaxed ? POLL_INTERVALS.thermal.relaxedHome : POLL_INTERVALS.thermal.home;
+      if (shellState.currentTab === 'tune') return relaxed ? POLL_INTERVALS.thermal.relaxedThermal : POLL_INTERVALS.thermal.thermal;
+      if (shellState.currentTab === 'home') return relaxed ? POLL_INTERVALS.thermal.relaxedHome : POLL_INTERVALS.thermal.home;
       return 0;
     case 'optim':
-      if (state.shell.currentTab === 'system') return relaxed ? POLL_INTERVALS.optim.relaxedOptim : POLL_INTERVALS.optim.optim;
-      if (state.shell.currentTab === 'home') return relaxed ? POLL_INTERVALS.optim.relaxedHome : POLL_INTERVALS.optim.home;
+      if (shellState.currentTab === 'system') return relaxed ? POLL_INTERVALS.optim.relaxedOptim : POLL_INTERVALS.optim.optim;
+      if (shellState.currentTab === 'home') return relaxed ? POLL_INTERVALS.optim.relaxedHome : POLL_INTERVALS.optim.home;
       return 0;
     case 'slow':
-      if (state.shell.currentTab === 'network' || state.shell.currentTab === 'system') return relaxed ? POLL_INTERVALS.slow.relaxedOptim : POLL_INTERVALS.slow.optim;
-      if (state.shell.currentTab === 'home') return relaxed ? POLL_INTERVALS.slow.relaxedHome : POLL_INTERVALS.slow.home;
+      if (shellState.currentTab === 'network' || shellState.currentTab === 'system') return relaxed ? POLL_INTERVALS.slow.relaxedOptim : POLL_INTERVALS.slow.optim;
+      if (shellState.currentTab === 'home') return relaxed ? POLL_INTERVALS.slow.relaxedHome : POLL_INTERVALS.slow.home;
       return 0;
     default:
       return 0;
@@ -182,7 +201,7 @@ function getPollInterval(key) {
 }
 
 function markPollFresh(keys, at = Date.now()) {
-  keys.forEach((key) => { state.shell.poller.lastRun[key] = at; });
+  keys.forEach((key) => { shellState.poller.lastRun[key] = at; });
 }
 
 function computeNextPollDelay(now = Date.now()) {
@@ -190,36 +209,41 @@ function computeNextPollDelay(now = Date.now()) {
   ['cpu', 'thermal', 'optim', 'slow'].forEach((key) => {
     const interval = getPollInterval(key);
     if (!interval) return;
-    delays.push(Math.max(interval - (now - state.shell.poller.lastRun[key]), POLL_MIN_DELAY_MS));
+    delays.push(Math.max(interval - (now - shellState.poller.lastRun[key]), POLL_MIN_DELAY_MS));
   });
   return delays.length ? Math.min(...delays) : POLL_INTERVALS.slow.relaxedHome;
 }
 
 function queueNextPoll(delayMs = POLL_MIN_DELAY_MS) {
-  clearTimeout(state.shell.poller.timer);
-  state.shell.poller.timer = null;
-  if (!state.shell.poller.running || !isWebUiActive()) return;
-  state.shell.poller.timer = window.setTimeout(runPollCycle, Math.max(delayMs, POLL_MIN_DELAY_MS));
+  clearTimeout(shellState.poller.timer);
+  shellState.poller.timer = null;
+  if (!shellState.poller.running || !isWebUiActive()) return;
+  shellState.poller.timer = window.setTimeout(runPollCycle, Math.max(delayMs, POLL_MIN_DELAY_MS));
 }
 
 async function runPollCycle() {
-  if (!state.shell.poller.running || !isWebUiActive()) return;
+  if (!shellState.poller.running || !isWebUiActive()) return;
   const now = Date.now();
   const jobs = [];
+  const app = requireFeature('app');
+  const profile = requireFeature('profile');
+  const thermal = requireFeature('thermal');
+  const memory = requireFeature('memory');
+  const network = requireFeature('network');
 
-  if (shouldPollCpu() && !state.profile.cpuBusy && (now - state.shell.poller.lastRun.cpu) >= getPollInterval('cpu')) {
-    jobs.push({ key: 'cpu', run: () => refreshCpu() });
+  if (app.shouldPollCpu() && !profile.isRefreshing() && (now - shellState.poller.lastRun.cpu) >= getPollInterval('cpu')) {
+    jobs.push({ key: 'cpu', run: () => profile.refresh() });
   }
-  if (shouldPollThermal() && !state.thermal.thermalBusy && (now - state.shell.poller.lastRun.thermal) >= getPollInterval('thermal')) {
-    jobs.push({ key: 'thermal', run: () => refreshThermal() });
+  if (app.shouldPollThermal() && !thermal.isRefreshing() && (now - shellState.poller.lastRun.thermal) >= getPollInterval('thermal')) {
+    jobs.push({ key: 'thermal', run: () => thermal.refresh() });
   }
-  if (shouldPollOptim() && !state.memory.swapLoading && (now - state.shell.poller.lastRun.optim) >= getPollInterval('optim')) {
-    jobs.push({ key: 'optim', run: () => refreshSwap() });
+  if (app.shouldPollOptim() && !memory.isRefreshing() && (now - shellState.poller.lastRun.optim) >= getPollInterval('optim')) {
+    jobs.push({ key: 'optim', run: () => memory.refresh() });
   }
-  if (shouldPollSlow() && (now - state.shell.poller.lastRun.slow) >= getPollInterval('slow')) {
+  if (app.shouldPollSlow() && (now - shellState.poller.lastRun.slow) >= getPollInterval('slow')) {
     jobs.push({
       key: 'slow',
-      run: () => Promise.allSettled([refreshNrSwitch(), refreshUecap(), refreshBaseband(), refreshNtp(), refreshStandbyGuard(), refreshBgRestrict(), loadInfo()])
+      run: () => Promise.allSettled([network.refresh(), memory.refreshRestrictions(), loadInfo()])
     });
   }
 
@@ -253,22 +277,22 @@ function bindTopbarScroll() {
 }
 
 function switchTab(tab) {
-  if (tab === state.shell.currentTab) return;
-  state.shell.currentTab = tab;
+  if (tab === shellState.currentTab) return;
+  shellState.currentTab = tab;
   document.querySelectorAll('.tab-page').forEach((page) => page.classList.toggle('active', page.dataset.tab === tab));
   document.querySelectorAll('.tab-item').forEach((item) => item.classList.toggle('active', item.dataset.tab === tab));
   refs.topbarSubtitle.textContent = TAB_META[tab] || '控制台';
   syncTopbar();
   noteUserActivity();
-  syncDeviceClockForTab();
-  refreshCurrentTabData();
+  requireFeature('network').syncDeviceClockForTab();
+  requireFeature('app').refreshCurrentTabData();
 }
 
 function getSwipeTargetTab(deltaX, deltaY) {
   const absX = Math.abs(deltaX);
   const absY = Math.abs(deltaY);
   if (absX < 60 || absX <= absY * 1.5) return '';
-  const nextIndex = TAB_ORDER.indexOf(state.shell.currentTab) + (deltaX < 0 ? 1 : -1);
+  const nextIndex = TAB_ORDER.indexOf(shellState.currentTab) + (deltaX < 0 ? 1 : -1);
   if (nextIndex < 0 || nextIndex >= TAB_ORDER.length) return '';
   return TAB_ORDER[nextIndex];
 }
@@ -326,43 +350,43 @@ function bindPullToRefresh() {
 
   document.querySelectorAll('.tab-page').forEach((page) => {
     page.addEventListener('touchstart', (evt) => {
-      if (state.shell.pull.busy || evt.touches.length !== 1) return;
+      if (shellState.pull.busy || evt.touches.length !== 1) return;
       if (page.scrollTop <= 0) {
-        state.shell.pull.y0 = evt.touches[0].clientY;
-        state.shell.pull.active = true;
-        state.shell.pull.dist = 0;
+        shellState.pull.y0 = evt.touches[0].clientY;
+        shellState.pull.active = true;
+        shellState.pull.dist = 0;
       }
     }, { passive: true });
     page.addEventListener('touchmove', (evt) => {
-      if (!state.shell.pull.active) return;
-      const dy = evt.touches[0].clientY - state.shell.pull.y0;
+      if (!shellState.pull.active) return;
+      const dy = evt.touches[0].clientY - shellState.pull.y0;
       if (page.scrollTop > 0) {
-        state.shell.pull.active = false;
+        shellState.pull.active = false;
         hide();
         return;
       }
       if (dy > 0) {
-        state.shell.pull.dist = dy;
+        shellState.pull.dist = dy;
         refs.pullInd.classList.add('active');
         show(dy);
         if (evt.cancelable) evt.preventDefault();
       } else {
-        state.shell.pull.active = false;
+        shellState.pull.active = false;
         hide();
       }
     }, { passive: false });
     page.addEventListener('touchend', async () => {
-      if (!state.shell.pull.active) return;
-      state.shell.pull.active = false;
-      if (state.shell.pull.dist > TRIGGER && !state.shell.pull.busy) {
-        state.shell.pull.busy = true;
+      if (!shellState.pull.active) return;
+      shellState.pull.active = false;
+      if (shellState.pull.dist > TRIGGER && !shellState.pull.busy) {
+        shellState.pull.busy = true;
         refs.pullInd.classList.add('active', 'spinning');
         refs.pullInd.style.transform = 'translateY(0)';
         refs.pullText.textContent = '正在刷新';
-        await doFullRefresh();
+        await requireFeature('app').fullRefresh();
         refs.pullText.textContent = '已完成';
         await sleep(400);
-        state.shell.pull.busy = false;
+        shellState.pull.busy = false;
       }
       hide();
     }, { passive: true });
@@ -395,10 +419,12 @@ async function loadInfo() {
   try {
     const data = await apiFetch(API.info);
     const deviceModel = data.model || '—';
-    const hadBaseband = state.network.basebandInstalled;
-    state.shell.deviceModel = deviceModel;
-    state.network.basebandInstalled = boolValue(data.baseband_installed);
-    syncOptionalModuleUi();
+    const network = requireFeature('network');
+    const profile = requireFeature('profile');
+    const hadBaseband = network.isBasebandInstalled();
+    shellState.deviceModel = deviceModel;
+    network.setBasebandInstalled(boolValue(data.baseband_installed));
+    profile.syncOptionalModuleUi();
     refs.infoModel.textContent = deviceModel;
     refs.infoAndroid.textContent = data.version ? `Android ${data.version}` : '—';
     refs.infoKernel.textContent = data.kernel || '—';
@@ -406,7 +432,7 @@ async function loadInfo() {
     refs.topbarKicker.textContent = data.module_version
       ? `${deviceModel} · UI ${data.module_version}`
       : `${deviceModel} · UI`;
-    if (state.network.basebandInstalled && !hadBaseband) refreshBaseband();
+    if (network.isBasebandInstalled() && !hadBaseband) network.refreshBaseband();
     refs.rtWebuiMem.textContent = data.httpd_rss_kb
       ? data.httpd_rss_kb < 1024 ? `${data.httpd_rss_kb}KB` : `${(data.httpd_rss_kb / 1024).toFixed(1)}MB`
       : '—';
@@ -441,8 +467,10 @@ async function loadInfo() {
 registerFeature('auth', {
   initialize() {
     loadWebuiTokenFromSession();
-    if (!state.auth.webuiToken) prefetchWebuiToken();
-  }
+    if (!authState.webuiToken) prefetchWebuiToken();
+  },
+  ensureToken: ensureWebuiToken,
+  hasToken: () => Boolean(authState.webuiToken)
 });
 
 registerFeature('shell', {
@@ -451,6 +479,41 @@ registerFeature('shell', {
     bindPullToRefresh();
     bindTopbarScroll();
   },
-  loadInfo
+  loadInfo,
+  getCurrentTab: () => shellState.currentTab,
+  getDeviceModel: () => shellState.deviceModel,
+  isForegroundPaused: () => shellState.foregroundPaused,
+  setForegroundPaused(value) { shellState.foregroundPaused = Boolean(value); },
+  setLastInteractionAt(value) { shellState.poller.lastInteractionAt = value; },
+  isPolling: () => shellState.poller.running,
+  startPolling() {
+    if (shellState.poller.running) return;
+    shellState.poller.running = true;
+    queueNextPoll(computeNextPollDelay());
+  },
+  stopPolling() {
+    shellState.poller.running = false;
+    clearTimeout(shellState.poller.timer);
+    shellState.poller.timer = null;
+  }
 });
+
+registerFeature('core', {
+  apiFetch,
+  appendLog,
+  boolValue,
+  buildInfoRow,
+  computeNextPollDelay,
+  errorBlock,
+  escapeHtml,
+  fmtBytes,
+  isWebUiActive,
+  markPollFresh,
+  noteUserActivity,
+  queueNextPoll,
+  showToast,
+  sleep,
+  switchTab
+});
+})();
 

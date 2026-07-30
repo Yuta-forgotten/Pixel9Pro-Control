@@ -61,9 +61,9 @@ const htmlContracts = [
 for (const [pattern, message] of htmlContracts) assert(pattern.test(html), message);
 
 assert(app.includes("document.querySelectorAll('[data-module-visible]')"), 'generic optional-module visibility binding is missing');
-assert(app.includes('baseband: state.network.basebandInstalled && state.shell.deviceModel === \'Pixel 9 Pro\''), 'baseband visibility must require the supported device and installed module');
-assert(app.includes('ugt: state.profile.uperfDetected') && app.includes('fas: state.profile.fasRsDetected'), 'UGT/fas-rs visibility must use independent detection flags');
-assert(app.includes('if (!state.network.basebandInstalled)'), 'baseband detail fetch must be skipped when the module is absent');
+assert(app.includes("baseband: requireFeature('network').isBasebandInstalled()") && app.includes("requireFeature('shell').getDeviceModel() === 'Pixel 9 Pro'"), 'baseband visibility must require the supported device and installed module');
+assert(app.includes('ugt: state.uperfDetected') && app.includes('fas: state.fasRsDetected'), 'UGT/fas-rs visibility must use independent detection flags');
+assert(app.includes('if (!state.basebandInstalled)'), 'baseband detail fetch must be skipped when the module is absent');
 for (const transitionCopy of [
   '正在提交下次启动模式；当前 boot 不会热启动或热停止 UGT。',
   '正在更新 fas-rs 接管策略并核对当前 owner，通常需要数秒。',
@@ -139,14 +139,16 @@ assert(service.includes('_expected_policy') && service.includes('runtime_write_v
 const applyProfileStart = service.indexOf('apply_profile_state()');
 const applyProfileEnd = service.indexOf('\n}', applyProfileStart);
 const applyProfileBody = service.slice(applyProfileStart, applyProfileEnd);
-assert((service.match(/runtime_write_value_if_changed "\$PROFILE_AUTO_REASON_FILE"/g) || []).length === 2 && (applyProfileBody.match(/runtime_write_value_if_changed "\$PROFILE_AUTO_REASON_FILE"/g) || []).length === 2, 'all profile reason writes must stay inside the shared profile transaction');
+assert((service.match(/runtime_write_value_if_changed "\$PROFILE_AUTO_REASON_FILE"/g) || []).length === 1
+  && (applyProfileBody.match(/runtime_write_value_if_changed "\$PROFILE_AUTO_REASON_FILE"/g) || []).length === 1
+  && applyProfileBody.includes('profile_state_commit_active_reason "$_target" "$_reason"'), 'all profile reason writes must stay inside the shared profile transaction');
 assert((service.match(/SO_TRANSITION_LOCK_MAX_ATTEMPTS=1/g) || []).length >= 2 && service.includes('export SO_TRANSITION_LOCK_MAX_ATTEMPTS SO_TRANSITION_LOCK_RETRY_SLEEP_S'), 'periodic owner and auto-profile decisions must fail fast instead of waiting with stale inputs');
 assert(service.includes('STG_TERMINAL') && service.includes('_prelocked_profile') && service.includes('return 78'), 'terminal profile transitions must stop repeated service lock attempts until the key changes or is reset');
 assert(service.includes('_sleep_until_worker_cycle') && service.includes('UNIFIED_SCREEN_WAKE_RECHECK_S'), 'unified worker must interrupt long Doze sleeps with a bounded read-only screen-wake recheck');
 assert(profileCgi.includes('scheduler_transition_guard_lib.sh') && profileCgi.includes('reset_auto_profile_guard'), 'explicit profile requests must reset stale automatic retry state under the shared lock');
 assert(profileCgi.includes('emit_profile_mutation_state()') && app.includes('function applyProfileMutationState(data)'), 'profile mutations must return and merge a compact verified state');
 assert(profileCgi.includes('emit_profile_transition_state()') && profileCgi.includes('stg_load'), 'compact profile state must expose primary or fallback retry terminal state');
-assert(app.includes('自动切档连续失败并已停止') && app.includes('state.profile.profileTransition.terminal'), 'WebUI must show when automatic profile retries reached a failed terminal state');
+assert(app.includes('自动切档连续失败并已停止') && app.includes('state.profileTransition.terminal'), 'WebUI must show when automatic profile retries reached a failed terminal state');
 assert(profileCgi.includes('if so_transition_lock_is_active; then') && profileCgi.includes('_health_status=deferred'), 'profile reads must expose transition-deferred health without racing the persisted health file');
 const profileSchedulerLockStart = profileCgi.indexOf('acquire_profile_scheduler_lock()');
 const profileSchedulerLockEnd = profileCgi.indexOf('\n}', profileSchedulerLockStart);
@@ -173,16 +175,14 @@ const mutationApplyEnd = app.indexOf('function renderProfileCards()', mutationAp
 assert(mutationApplyStart >= 0 && mutationApplyEnd > mutationApplyStart, 'profile mutation state merger is missing');
 const mutationApplySource = app.slice(mutationApplyStart, mutationApplyEnd).trim();
 const mutationState = {
-  profile: {
-    currentProfile: 'balanced', manualProfile: 'balanced', profilePolicy: 'auto',
-    schedOwner: 'pixel', schedEffectiveOwner: 'pixel', gameHandoffPolicy: 'fas_rs',
-    autoReason: 'auto_balanced', uperfDetected: true, fasRsDetected: true,
-    cpuContract: { sentinel: true },
-    schedulerBoot: {
-      targetMode: 'pixel', effectiveMode: 'pixel', phase: 'success', final: 'yes', ok: 'yes',
-      result: 'active_pixel', reason: 'pixel_profile_verified', attempts: 1,
-      rebootRequired: 'no', autoRepairUsed: 'no'
-    }
+  currentProfile: 'balanced', manualProfile: 'balanced', profilePolicy: 'auto',
+  schedOwner: 'pixel', schedEffectiveOwner: 'pixel', gameHandoffPolicy: 'fas_rs',
+  autoReason: 'auto_balanced', uperfDetected: true, fasRsDetected: true,
+  cpuContract: { sentinel: true },
+  schedulerBoot: {
+    targetMode: 'pixel', effectiveMode: 'pixel', phase: 'success', final: 'yes', ok: 'yes',
+    result: 'active_pixel', reason: 'pixel_profile_verified', attempts: 1,
+    rebootRequired: 'no', autoRepairUsed: 'no'
   }
 };
 const applyMutation = new Function('state', 'PROFILES', 'syncProfileUi', 'syncHeroDesc',
@@ -193,15 +193,15 @@ applyMutation({
   profile: 'battery', manual_profile: 'battery', policy: 'manual', sched_owner: 'pixel',
   sched_effective_owner: 'pixel', game_handoff_policy: 'fas_rs', auto_reason: 'manual_selected'
 });
-assert(mutationState.profile.currentProfile === 'battery' && mutationState.profile.profilePolicy === 'manual', 'compact profile state must apply verified mutation fields');
-assert(mutationState.profile.uperfDetected === true && mutationState.profile.fasRsDetected === true && mutationState.profile.cpuContract.sentinel === true, 'compact profile state must preserve full scheduler discovery and CPU contract data');
+assert(mutationState.currentProfile === 'battery' && mutationState.profilePolicy === 'manual', 'compact profile state must apply verified mutation fields');
+assert(mutationState.uperfDetected === true && mutationState.fasRsDetected === true && mutationState.cpuContract.sentinel === true, 'compact profile state must preserve full scheduler discovery and CPU contract data');
 applyMutation({ scheduler_boot: { phase: 'pending_reboot', final: 'no', attempts: 2 } });
-assert(mutationState.profile.schedulerBoot.phase === 'pending_reboot' && mutationState.profile.schedulerBoot.attempts === 2, 'compact boot state must update returned fields');
-assert(mutationState.profile.schedulerBoot.targetMode === 'pixel' && mutationState.profile.schedulerBoot.result === 'active_pixel', 'compact boot state must preserve omitted verified fields');
+assert(mutationState.schedulerBoot.phase === 'pending_reboot' && mutationState.schedulerBoot.attempts === 2, 'compact boot state must update returned fields');
+assert(mutationState.schedulerBoot.targetMode === 'pixel' && mutationState.schedulerBoot.result === 'active_pixel', 'compact boot state must preserve omitted verified fields');
 applyMutation({ scheduler_health: { status: 'deferred', reason: 'transition_in_progress', checked_epoch: '123' } });
-assert(mutationState.profile.schedulerHealth.status === 'deferred' && mutationState.profile.schedulerHealth.reason === 'transition_in_progress', 'compact profile state must refresh persisted scheduler health');
+assert(mutationState.schedulerHealth.status === 'deferred' && mutationState.schedulerHealth.reason === 'transition_in_progress', 'compact profile state must refresh persisted scheduler health');
 applyMutation({ profile_transition: { key: 'profile:auto:balanced->battery', attempts: 3, terminal: 'yes', ok: 'no', result: 'failed_final' } });
-assert(mutationState.profile.profileTransition.terminal === 'yes' && mutationState.profile.profileTransition.attempts === 3, 'compact profile state must expose the final automatic retry result');
+assert(mutationState.profileTransition.terminal === 'yes' && mutationState.profileTransition.attempts === 3, 'compact profile state must expose the final automatic retry result');
 const handoffStart = profileCgi.indexOf('if [ -n "$newhandoff" ]');
 const handoffEnd = profileCgi.indexOf('\n    sbm_load_state', handoffStart);
 const handoffBody = profileCgi.slice(handoffStart, handoffEnd);
@@ -226,20 +226,20 @@ assert(!/enabled\)\s+_[A-Za-z0-9_]*screen=["']?on/.test(service + ownerArbiterCg
 assert(schedulerDetectLib.includes('detect_external_scheduler_fresh()') && schedulerDetectLib.includes('scheduler_load_inventory()'), 'scheduler detection must separate fresh discovery from cached runtime refresh');
 assert(schedulerDetectLib.includes('scheduler_fas_owner_lease_active()') && schedulerDetectLib.includes('resident_idle'), 'fas-rs detection must separate resident process state from an active game lease');
 assert(profileCgi.includes('fas_rs_runtime_owner_active') && profileCgi.includes('fas_rs_runtime_target'), 'profile API must expose fas-rs residency and active lease separately');
-assert(app.includes('function isFasRsResident()') && app.includes("state.profile.fasRsRuntimeOwnerActive === 'yes'") && !app.includes("state.profile.fasRsActive === 'yes' || state.profile.fasRsProcessAlive === 'yes'"), 'WebUI must not treat a resident fas-rs process as active scheduler ownership');
+assert(app.includes('function isFasRsResident()') && app.includes("state.fasRsRuntimeOwnerActive === 'yes'") && !app.includes("state.fasRsActive === 'yes' || state.fasRsProcessAlive === 'yes'"), 'WebUI must not treat a resident fas-rs process as active scheduler ownership');
 assert(ownerArbiter.includes('cleanup_fas_started_by_transaction') && !ownerArbiter.includes('killall fas-rs'), 'owner arbiter may only clean a fas-rs process started by its own failed transaction');
 assert(ownerArbiter.includes('fas_handoff_available()') && ownerArbiter.includes('GAME_SOURCE="fas_module_unavailable"'), 'owner arbiter must keep either baseline untouched when fas-rs is unavailable');
 assert(ownerArbiter.includes('fas_payload_incomplete') && ownerArbiter.includes('failed_prepare_powercfg_router'), 'incomplete fas-rs payload or router preparation failure must stop before baseline mutation');
 assert(ownerArbiter.includes('UPERF_START_LOCK_BOOT_ID') && ownerArbiter.includes('$UPERF_START_LOCK_DIR/boot_id'), 'UGT private start lock must bind PID/start ticks to the current boot');
 assert(service.includes('detect_external_scheduler_fresh') && ownerArbiter.includes('SCHEDULER_INVENTORY_PATH'), 'service must build scheduler inventory and owner hot path must consume it');
-assert(profileCgi.includes('cpu_profile_contract_json') && app.includes('state.profile.cpuContract'), 'WebUI CPU values must come from the backend profile contract');
+assert(profileCgi.includes('cpu_profile_contract_json') && app.includes('state.cpuContract'), 'WebUI CPU values must come from the backend profile contract');
 assert(cpuProfileLib.includes('cpu_profile_contract_json()'), 'CPU profile library must serialize its runtime contract');
 assert(runtimeDefaults.includes('SIM2_AUTO_DEFAULT="on"'), 'SIM2 default must be defined by the runtime defaults contract');
 assert(optimizeCgi.includes('sim2_auto="$SIM2_AUTO_DEFAULT"') && standbyCgi.includes('"$SIM2_AUTO_DEFAULT"'), 'SIM2 CGI defaults must consume the shared contract');
 assert(nrCgi.includes('"$NR_SCREEN_SWITCH_DEFAULT"') && !nrCgi.includes('echo "on"'), 'NR CGI default must consume the shared contract');
 assert(service.includes('scripts/nr_mode_lib.sh') && nrCgi.includes('scripts/nr_mode_lib.sh'), 'service and NR CGI must share the NR mode contract');
 assert(nrModeLib.includes('nr_mode_write_verified()') && nrModeLib.includes('nr_mode_save_current()'), 'NR contract must verify writes and persist a restore mode');
-assert(nrCgi.includes('"screen_off_delay_s"') && app.includes('state.network.nrContract'), 'WebUI NR timing must come from the backend runtime contract');
+assert(nrCgi.includes('"screen_off_delay_s"') && app.includes('state.nrContract'), 'WebUI NR timing must come from the backend runtime contract');
 assert(!app.includes('30-50%'), 'NR detail must not promise an unverified fixed power-saving percentage');
 assert(customize.includes('不支持的设备') && customize.includes('XL 温控 stock 配置缺失'), 'installer must reject unknown devices and missing XL stock data');
 assert(customize.includes('UECAP_DISABLED_REASON="uecap_unsupported_device"'), 'XL installs must disable the caiman-only UECap payload');

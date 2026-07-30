@@ -1,5 +1,30 @@
 // ZRAM、VM 参数与后台应用限制功能。
 'use strict';
+(() => {
+const state = {
+  swapMode: 'unknown',
+  swapData: null,
+  swapBusy: false,
+  swapLoading: false,
+  bgRestrictEnabled: 'on',
+  bgRestrictBusy: false,
+  bgRestrictSuggestions: []
+};
+
+const core = () => requireFeature('core');
+const apiFetch = (...args) => core().apiFetch(...args);
+const appendLog = (...args) => core().appendLog(...args);
+const buildInfoRow = (...args) => core().buildInfoRow(...args);
+const computeNextPollDelay = (...args) => core().computeNextPollDelay(...args);
+const errorBlock = (...args) => core().errorBlock(...args);
+const escapeHtml = (...args) => core().escapeHtml(...args);
+const fmtBytes = (...args) => core().fmtBytes(...args);
+const queueNextPoll = (...args) => core().queueNextPoll(...args);
+const showToast = (...args) => core().showToast(...args);
+const pushModalState = (...args) => requireFeature('ui').pushModalState(...args);
+const popModalIfTop = (...args) => requireFeature('ui').popModalIfTop(...args);
+const syncHeroDesc = () => requireFeature('thermal').syncHeroDesc();
+
 function describeSwappiness(v) {
   if (v <= 20) return '几乎不主动换出匿名页，ZRAM 基本闲置，仅在物理内存吃紧时才回收。';
   if (v <= 60) return '偏保守换页，多数匿名页留在物理内存，偏向前台零 swap 抖动。';
@@ -59,17 +84,17 @@ function buildSwapDetail(data) {
 }
 function clampSwapValue(key, raw) {
   const input = refs.swapTuneInputs[key];
-  const contractLimit = state.memory.swapData?.limits?.[key];
+  const contractLimit = state.swapData?.limits?.[key];
   const limit = contractLimit || { min: Number(input.min), max: Number(input.max) };
   let value = Number(raw);
-  if (!Number.isFinite(value)) value = Number(state.memory.swapData?.optimized?.[key] ?? input.min);
+  if (!Number.isFinite(value)) value = Number(state.swapData?.optimized?.[key] ?? input.min);
   return Math.min(limit.max, Math.max(limit.min, Math.round(value)));
 }
 
 // 用滑块吸附后的实际 value 算填充百分比, 让填充轨道与 thumb 位置严格一致
 function updateSwapFill(key) {
   const el = refs.swapTuneInputs[key];
-  const limit = state.memory.swapData?.limits?.[key] || { min: Number(el.min), max: Number(el.max) };
+  const limit = state.swapData?.limits?.[key] || { min: Number(el.min), max: Number(el.max) };
   const pct = ((Number(el.value) - limit.min) / (limit.max - limit.min)) * 100;
   el.style.setProperty('--fill', `${Math.max(0, Math.min(100, pct))}%`);
 }
@@ -102,7 +127,7 @@ function syncSwapTuneField(key, raw) {
 }
 
 function openSwapTuneModal() {
-  const current = state.memory.swapData;
+  const current = state.swapData;
   if (!current?.limits || !current?.optimized || !current?.stock) {
     showToast('VM 参数尚未读取，请稍后重试');
     refreshSwap();
@@ -149,12 +174,12 @@ function renderSwapCard(data) {
 
 
 async function refreshSwap() {
-  if (state.memory.swapLoading) return;
-  state.memory.swapLoading = true;
+  if (state.swapLoading) return;
+  state.swapLoading = true;
   try {
     const data = await apiFetch(API.swap, { timeoutMs: 6000 });
-    state.memory.swapMode = data.mode || 'custom';
-    state.memory.swapData = data;
+    state.swapMode = data.mode || 'custom';
+    state.swapData = data;
     SWAP_KEYS.forEach((key) => {
       const limit = data.limits?.[key];
       if (!limit) return;
@@ -165,7 +190,7 @@ async function refreshSwap() {
       refs.swapTuneNumbers[key].max = String(limit.max);
       refs.swapTuneNumbers[key].step = String(limit.step);
     });
-    refs.swapToggleLabel.textContent = state.memory.swapMode === 'optimized' ? '恢复原厂' : '应用模块默认';
+    refs.swapToggleLabel.textContent = state.swapMode === 'optimized' ? '恢复原厂' : '应用模块默认';
     renderSwapCard(data);
     refs.rtZramUsage.textContent = `${data.zram_disksize > 0 ? ((data.zram_orig_bytes / data.zram_disksize) * 100).toFixed(0) : '0'}% (${fmtBytes(data.zram_orig_bytes)} / ${(data.zram_disksize / 1073741824).toFixed(1)}GB)`;
     refs.rtRatio.textContent = data.zram_orig_bytes > 0 ? `${((data.zram_compr_bytes / data.zram_orig_bytes) * 100).toFixed(1)}% → 实占 ${fmtBytes(data.zram_mem_used_bytes)}` : '—';
@@ -173,7 +198,7 @@ async function refreshSwap() {
   } catch (err) {
     refs.swapRows.replaceChildren(); refs.swapRows.appendChild(errorBlock('获取失败：' + err.message));
   } finally {
-    state.memory.swapLoading = false;
+    state.swapLoading = false;
   }
 }
 
@@ -190,12 +215,12 @@ function friendlyPackageLabel(pkg, suppliedLabel = '') {
 
 function renderBgRestrictSuggestions(suggestions, activePackages) {
   const active = new Set(activePackages.map((item) => String(item.pkg || '')));
-  state.memory.bgRestrictSuggestions = (Array.isArray(suggestions) ? suggestions : [])
+  state.bgRestrictSuggestions = (Array.isArray(suggestions) ? suggestions : [])
     .filter((item) => item && item.pkg && !active.has(String(item.pkg)))
     .sort((a, b) => String(a.label || a.pkg).localeCompare(String(b.label || b.pkg), 'zh-CN'));
   if (!refs.bgRestrictPkgSuggestions) return;
   refs.bgRestrictPkgSuggestions.replaceChildren();
-  state.memory.bgRestrictSuggestions.forEach((item) => {
+  state.bgRestrictSuggestions.forEach((item) => {
     const option = document.createElement('option');
     const caution = item.restriction_tier === 'caution' ? ' · 谨慎限制' : '';
     option.value = String(item.pkg);
@@ -203,7 +228,7 @@ function renderBgRestrictSuggestions(suggestions, activePackages) {
     option.textContent = option.label;
     refs.bgRestrictPkgSuggestions.appendChild(option);
   });
-  refs.bgRestrictPkgInput.placeholder = state.memory.bgRestrictSuggestions.length
+  refs.bgRestrictPkgInput.placeholder = state.bgRestrictSuggestions.length
     ? '输入包名或选择本机常用应用'
     : 'com.example.app';
   syncBgPackageHint();
@@ -212,7 +237,7 @@ function renderBgRestrictSuggestions(suggestions, activePackages) {
 function syncBgPackageHint() {
   if (!refs.bgRestrictPkgHint || !refs.bgRestrictPkgInput) return;
   const pkg = String(refs.bgRestrictPkgInput.value || '').trim();
-  const suggestion = state.memory.bgRestrictSuggestions.find((item) => item.pkg === pkg);
+  const suggestion = state.bgRestrictSuggestions.find((item) => item.pkg === pkg);
   if (!pkg) {
     refs.bgRestrictPkgHint.textContent = '名称来自统一识别目录；仍可手动输入未收录包名。';
     refs.bgRestrictPkgHint.className = 'bg-package-hint';
@@ -267,11 +292,11 @@ function createBgDelaySelect(value) {
 
 function syncBgDelayControl(policySelect, delaySelect) {
   if (!policySelect || !delaySelect) return;
-  delaySelect.disabled = state.memory.bgRestrictBusy || policySelect.value !== 'stop_after_leave';
+  delaySelect.disabled = state.bgRestrictBusy || policySelect.value !== 'stop_after_leave';
 }
 
 function syncBgRestrictControls() {
-  const busy = state.memory.bgRestrictBusy;
+  const busy = state.bgRestrictBusy;
   if (refs.bgRestrictToggleBtn) refs.bgRestrictToggleBtn.disabled = busy;
   if (refs.bgRestrictAddBtn) refs.bgRestrictAddBtn.disabled = busy;
   if (refs.bgRestrictPkgInput) refs.bgRestrictPkgInput.disabled = busy;
@@ -331,8 +356,8 @@ function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled, runtime = {
 }
 
 function renderBgRestrict(data) {
-  state.memory.bgRestrictEnabled = data.enabled === 'on' ? 'on' : 'off';
-  const on = state.memory.bgRestrictEnabled === 'on';
+  state.bgRestrictEnabled = data.enabled === 'on' ? 'on' : 'off';
+  const on = state.bgRestrictEnabled === 'on';
   refs.bgRestrictToggleLabel.textContent = on ? '关闭' : '开启';
   refs.bgRestrictDesc.textContent = on
     ? '已开启：应用离开前台后，将按所选策略限制后台活动。'
@@ -444,8 +469,8 @@ async function forceRefreshBgRestrict() {
 }
 
 async function bgRestrictAction(body, successText) {
-  if (state.memory.bgRestrictBusy) return;
-  state.memory.bgRestrictBusy = true;
+  if (state.bgRestrictBusy) return;
+  state.bgRestrictBusy = true;
   syncBgRestrictControls();
   let nextData = null;
   let ok = false;
@@ -466,7 +491,7 @@ async function bgRestrictAction(body, successText) {
   } catch (e) {
     showToast('请求失败：' + e.message);
   } finally {
-    state.memory.bgRestrictBusy = false;
+    state.bgRestrictBusy = false;
     if (nextData) renderBgRestrict(nextData);
     syncBgRestrictControls();
   }
@@ -474,7 +499,7 @@ async function bgRestrictAction(body, successText) {
 }
 
 async function toggleBgRestrict() {
-  const next = state.memory.bgRestrictEnabled === 'on' ? 'off' : 'on';
+  const next = state.bgRestrictEnabled === 'on' ? 'off' : 'on';
   await bgRestrictAction({ action: 'toggle' }, next === 'on' ? '后台限制已开启' : '后台限制已关闭');
 }
 
@@ -486,7 +511,7 @@ async function bgRestrictAdd() {
   }
   const policy = normalizeBgPolicy(refs.bgRestrictPolicySelect.value);
   const delay = normalizeBgDelay(refs.bgRestrictDelaySelect.value);
-  const suggestion = state.memory.bgRestrictSuggestions.find((item) => item.pkg === pkg);
+  const suggestion = state.bgRestrictSuggestions.find((item) => item.pkg === pkg);
   const ok = await bgRestrictAction(
     { action: 'add', package: pkg, policy, delay },
     `已添加 ${friendlyPackageLabel(pkg, suggestion?.label)}`
@@ -509,13 +534,13 @@ async function bgRestrictRemove(pkg) {
 }
 
 async function toggleSwapMode() {
-  if (state.memory.swapBusy) return;
-  state.memory.swapBusy = true;
-  const newMode = state.memory.swapMode === 'optimized' ? 'stock' : 'optimized';
+  if (state.swapBusy) return;
+  state.swapBusy = true;
+  const newMode = state.swapMode === 'optimized' ? 'stock' : 'optimized';
   try {
     const data = await apiFetch(API.swap, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: newMode }), timeoutMs: 8000 });
-    state.memory.swapMode = data.mode || newMode;
-    state.memory.swapData = data;
+    state.swapMode = data.mode || newMode;
+    state.swapData = data;
     showToast(newMode === 'optimized' ? '已应用模块默认 VM 参数' : '已恢复原厂 VM 参数');
     appendLog(newMode === 'optimized' ? 'Swap 模块默认已应用' : 'Swap 已恢复原厂', 'ok');
     renderSwapCard(data);
@@ -523,13 +548,13 @@ async function toggleSwapMode() {
   } catch (_) {
     showToast('请求失败');
   } finally {
-    state.memory.swapBusy = false;
+    state.swapBusy = false;
   }
 }
 
 async function applySwapCustom() {
-  if (state.memory.swapBusy) return;
-  state.memory.swapBusy = true;
+  if (state.swapBusy) return;
+  state.swapBusy = true;
   const values = getSwapTuneValues();
   try {
     const data = await apiFetch(API.swap, {
@@ -538,8 +563,8 @@ async function applySwapCustom() {
       body: JSON.stringify({ mode: 'custom', ...values }),
       timeoutMs: 8000
     });
-    state.memory.swapMode = data.mode || 'custom';
-    state.memory.swapData = data;
+    state.swapMode = data.mode || 'custom';
+    state.swapData = data;
     showToast('自定义 VM 参数已应用');
     appendLog('Swap 自定义参数已应用', 'ok');
     renderSwapCard(data);
@@ -548,12 +573,29 @@ async function applySwapCustom() {
   } catch (err) {
     showToast(`请求失败：${err.message || '未知错误'}`);
   } finally {
-    state.memory.swapBusy = false;
+    state.swapBusy = false;
   }
 }
 
 registerFeature('memory', {
   refresh: refreshSwap,
-  refreshRestrictions: refreshBgRestrict
+  refreshRestrictions: refreshBgRestrict,
+  isRefreshing: () => state.swapLoading,
+  getSwapMode: () => state.swapMode,
+  getSwapData: () => state.swapData,
+  friendlyPackageLabel,
+  buildSwapDetail,
+  openSwapTuneModal,
+  closeSwapTuneModal,
+  applySwapCustom,
+  setSwapTuneValues,
+  syncSwapTuneField,
+  toggleSwapMode,
+  toggleBgRestrict,
+  bgRestrictAdd,
+  syncBgPackageHint,
+  syncBgRestrictControls,
+  forceRefreshBgRestrict
 });
+})();
 

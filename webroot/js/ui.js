@@ -1,5 +1,8 @@
 // DOM 引用、弹窗与前台刷新生命周期功能。
 'use strict';
+(() => {
+const state = { rebootContext: 'thermal' };
+
 function $(id){ return document.getElementById(id); }
 
 function initRefs() {
@@ -160,20 +163,20 @@ function popModalIfTop(name) {
 function openThemeSheet(){
   refs.themeModal.classList.add('open');
   pushModalState('theme');
-  queueNextPoll(computeNextPollDelay());
+  const core = requireFeature('core');
+  core.queueNextPoll(core.computeNextPollDelay());
 }
 function closeThemeSheet(){
   refs.themeModal.classList.remove('open');
   popModalIfTop('theme');
-  queueNextPoll(POLL_MIN_DELAY_MS);
+  requireFeature('core').queueNextPoll(POLL_MIN_DELAY_MS);
 }
 
 function openRebootModal(pending, prev, context = 'thermal') {
-  state.shell.rebootContext = context;
-  state.thermal.thermalModal.pending = pending;
-  state.thermal.thermalModal.prev = prev;
+  state.rebootContext = context;
+  if (context === 'thermal') requireFeature('thermal').setPendingChange(pending, prev);
   if (context === 'scheduler') {
-    const target = state.profile.schedulerBoot.targetMode === 'ugt' ? 'UGT 日常调度模式' : 'Pixel 调度模式';
+    const target = requireFeature('profile').getSchedulerBootTargetMode() === 'ugt' ? 'UGT 日常调度模式' : 'Pixel 调度模式';
     refs.rebootModalTitle.textContent = `切换到${target}`;
     refs.rebootModalDesc.textContent = `启动状态已提交。重启后才会进入${target}并完成最终验证。`;
   } else {
@@ -182,14 +185,16 @@ function openRebootModal(pending, prev, context = 'thermal') {
   }
   refs.rebootModal.classList.add('open');
   pushModalState('reboot');
-  queueNextPoll(computeNextPollDelay());
+  const core = requireFeature('core');
+  core.queueNextPoll(core.computeNextPollDelay());
 }
 
 function closeRebootModal() {
   refs.rebootModal.classList.remove('open');
   popModalIfTop('reboot');
-  queueNextPoll(POLL_MIN_DELAY_MS);
-  showToast(state.shell.rebootContext === 'scheduler' ? '切换已提交，重启后验证' : '已保存，重启手机后生效');
+  const core = requireFeature('core');
+  core.queueNextPoll(POLL_MIN_DELAY_MS);
+  core.showToast(state.rebootContext === 'scheduler' ? '切换已提交，重启后验证' : '已保存，重启手机后生效');
 }
 
 function openDetail(title, html) {
@@ -201,7 +206,8 @@ function openDetail(title, html) {
   setStaticHtml(refs.detailBody, html);
   refs.detailModal.classList.add('open');
   pushModalState('detail');
-  queueNextPoll(computeNextPollDelay());
+  const core = requireFeature('core');
+  core.queueNextPoll(core.computeNextPollDelay());
 }
 
 function closeDetailModal(){
@@ -211,83 +217,49 @@ function closeDetailModal(){
   refs.detailModal.classList.remove('energy-mode');
   refs.detailModal.classList.remove('history-mode');
   popModalIfTop('detail');
-  queueNextPoll(POLL_MIN_DELAY_MS);
+  requireFeature('core').queueNextPoll(POLL_MIN_DELAY_MS);
 }
 
 // 仅夹取 [min,max] 并取整, 不吸附 step —— 预设/手输需保留 27386 等非整步原厂值;
 // step 吸附交给滑块 (<input type=range step>) 的原生行为
 function stopTempChartRefresh() {
-  const wasActive = Boolean(state.thermal.tempChart.draw);
-  if (state.thermal.tempChart.timer) {
-    clearTimeout(state.thermal.tempChart.timer);
-    state.thermal.tempChart.timer = null;
-  }
-  state.thermal.tempChart.draw = null;
-  state.thermal.tempChart.requestId += 1;
-  if (wasActive) stopThermalBurst();
+  requireFeature('thermal').stopChart();
 }
 
 function pauseTempChartRefresh() {
-  const wasActive = Boolean(state.thermal.tempChart.draw);
-  if (state.thermal.tempChart.timer) {
-    clearTimeout(state.thermal.tempChart.timer);
-    state.thermal.tempChart.timer = null;
-  }
-  state.thermal.tempChart.requestId += 1;
-  if (wasActive) stopThermalBurst();
-}
-
-function abortEnergyDetailRequest(reason = 'page-hidden') {
-  if (state.energy.detail.requestController) {
-    state.energy.detail.requestController.abort(reason);
-    state.energy.detail.requestController = null;
-  }
-  state.energy.detail.requestKind = '';
+  requireFeature('thermal').pauseChart();
 }
 
 function stopEnergyDetailRefresh() {
-  if (state.energy.detail.timer) {
-    clearTimeout(state.energy.detail.timer);
-    state.energy.detail.timer = null;
-  }
-  if (state.energy.detail.fullTimer) {
-    clearTimeout(state.energy.detail.fullTimer);
-    state.energy.detail.fullTimer = null;
-  }
-  abortEnergyDetailRequest('detail-closed');
-  state.energy.detail.requestId += 1;
-  state.energy.detail.renderSignature = '';
+  requireFeature('energy').stop();
 }
 
 function pauseEnergyDetailRefresh() {
-  if (state.energy.detail.timer) {
-    clearTimeout(state.energy.detail.timer);
-    state.energy.detail.timer = null;
-  }
-  if (state.energy.detail.fullTimer) {
-    clearTimeout(state.energy.detail.fullTimer);
-    state.energy.detail.fullTimer = null;
-  }
-  abortEnergyDetailRequest('page-hidden');
-  state.energy.detail.requestId += 1;
+  requireFeature('energy').pause();
 }
 
 function scheduleTempChartRefresh(delay = TEMP_CHART_REFRESH_MS) {
-  if (state.thermal.tempChart.timer) clearTimeout(state.thermal.tempChart.timer);
-  if (!isWebUiActive() || !refs.detailModal.classList.contains('open') || !state.thermal.tempChart.draw) return;
-  state.thermal.tempChart.timer = window.setTimeout(async () => {
-    state.thermal.tempChart.timer = null;
-    if (!isWebUiActive() || !refs.detailModal.classList.contains('open') || !state.thermal.tempChart.draw) return;
-    try {
-      await state.thermal.tempChart.draw(state.thermal.tempChart.activeRange, { silent: true });
-    } catch (_) {}
-    scheduleTempChartRefresh();
-  }, delay);
+  requireFeature('thermal').scheduleChart(delay);
 }
 
 registerFeature('ui', {
   initialize: initRefs,
   pauseTemperature: pauseTempChartRefresh,
-  pauseEnergy: pauseEnergyDetailRefresh
+  pauseEnergy: pauseEnergyDetailRefresh,
+  getElement: $,
+  setStaticHtml,
+  pushModalState,
+  popModalIfTop,
+  openThemeSheet,
+  closeThemeSheet,
+  openRebootModal,
+  closeRebootModal,
+  openDetail,
+  closeDetailModal,
+  stopTemperature: stopTempChartRefresh,
+  stopEnergy: stopEnergyDetailRefresh,
+  scheduleTemperature: scheduleTempChartRefresh,
+  getRebootContext: () => state.rebootContext
 });
+})();
 
