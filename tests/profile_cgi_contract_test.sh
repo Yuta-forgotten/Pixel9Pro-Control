@@ -17,7 +17,9 @@ mkdir -p "$FIXTURE/webroot/cgi-bin" "$FIXTURE/scripts" "$FAS" || exit 2
 cp "$SOURCE_ROOT/webroot/cgi-bin/_common.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$SOURCE_ROOT/webroot/cgi-bin/profile.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 for _test_script in scheduler_detect_lib.sh scheduler_owner_lib.sh cpu_profile_lib.sh \
-    scheduler_boot_mode_lib.sh scheduler_transition_guard_lib.sh owner_arbiter.sh; do
+    scheduler_boot_mode_lib.sh scheduler_transition_guard_lib.sh profile_state_lib.sh \
+    foreground_app_lib.sh owner_arbiter_state_lib.sh owner_arbiter_observation_lib.sh \
+    owner_arbiter_external_lib.sh owner_arbiter_cpufreq_lib.sh owner_arbiter.sh; do
     cp "$SOURCE_ROOT/scripts/$_test_script" "$FIXTURE/scripts/" || exit 2
 done
 
@@ -30,6 +32,7 @@ printf 'pixel\n' > "$FIXTURE/.sched_owner_desired"
 printf 'pixel\n' > "$FIXTURE/.cpu_sched_owner"
 printf 'fas_rs\n' > "$FIXTURE/.game_handoff_policy"
 printf 'default\n' > "$FIXTURE/.game_handoff_source"
+printf 'fixture-boot-id\n' > "$FIXTURE/.boot_id"
 cat > "$FIXTURE/.scheduler_boot_state" <<'EOF'
 schema=1
 transition_id=profile-cgi-fixture
@@ -61,6 +64,7 @@ run_profile_cgi() {
         PIXEL9PRO_MODDIR="$FIXTURE" \
         PIXEL9PRO_FAS_ROOT="$FAS" \
         PIXEL9PRO_LOCKDIR_BASE="$FIXTURE/.locks" \
+        SO_BOOT_ID_PATH="$FIXTURE/.boot_id" \
         REQUEST_METHOD=POST \
         REMOTE_ADDR=127.0.0.1 \
         CONTENT_TYPE=application/json \

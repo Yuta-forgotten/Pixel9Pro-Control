@@ -22,7 +22,10 @@ new_fixture() {
     MOD="$FIXTURE/mod"
     FAS="$FIXTURE/fas"
     mkdir -p "$MOD/scripts" "$FAS/.test_runtime" || exit 2
-    for _t_script in owner_arbiter.sh scheduler_owner_lib.sh scheduler_detect_lib.sh cpu_profile_lib.sh scheduler_boot_mode_lib.sh scheduler_transition_guard_lib.sh; do
+    for _t_script in owner_arbiter.sh scheduler_owner_lib.sh scheduler_detect_lib.sh cpu_profile_lib.sh \
+        scheduler_boot_mode_lib.sh scheduler_transition_guard_lib.sh profile_state_lib.sh \
+        foreground_app_lib.sh owner_arbiter_state_lib.sh owner_arbiter_observation_lib.sh \
+        owner_arbiter_external_lib.sh owner_arbiter_cpufreq_lib.sh; do
         cp "$SOURCE_ROOT/scripts/$_t_script" "$MOD/scripts/" || exit 2
     done
     cat > "$MOD/scripts/cpu_profile.sh" <<'EOF'

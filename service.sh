@@ -11,11 +11,6 @@ HTTPD_PID_FILE="$MODDIR/.webui_httpd.pid"
 TOKEN_FILE="$MODDIR/.webui_token"
 THERMAL_CACHE="$MODDIR/.thermal_cache.json"
 LOCKDIR_BASE="$MODDIR/.locks"
-PROFILE_FILE="$MODDIR/.current_profile"
-PROFILE_POLICY_FILE="$MODDIR/.profile_policy"
-PROFILE_MANUAL_FILE="$MODDIR/.profile_manual"
-PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
-PROFILE_HISTORY_FILE="$MODDIR/.profile_history"
 SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 SCHED_OWNER_DESIRED_FILE="$MODDIR/.sched_owner_desired"
 GAME_HANDOFF_POLICY_FILE="$MODDIR/.game_handoff_policy"
@@ -30,6 +25,9 @@ SCHEDULER_INVENTORY_PATH="$MODDIR/.scheduler_inventory"
 [ -r "$MODDIR/scripts/display_state_lib.sh" ] \
     && . "$MODDIR/scripts/display_state_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: display state contract missing"; exit 1; }
+[ -r "$MODDIR/scripts/foreground_app_lib.sh" ] \
+    && . "$MODDIR/scripts/foreground_app_lib.sh" 2>/dev/null \
+    || { log -t pixel9pro_ctrl "ERROR: foreground app contract missing"; exit 1; }
 [ -r "$MODDIR/scripts/nr_mode_lib.sh" ] \
     && . "$MODDIR/scripts/nr_mode_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: NR mode contract missing"; exit 1; }
@@ -60,6 +58,10 @@ CPU_PROFILE_AVAILABLE=0
 if [ -r "$MODDIR/scripts/cpu_profile_lib.sh" ]; then
     . "$MODDIR/scripts/cpu_profile_lib.sh" 2>/dev/null && CPU_PROFILE_AVAILABLE=1
 fi
+[ -r "$MODDIR/scripts/profile_state_lib.sh" ] \
+    && . "$MODDIR/scripts/profile_state_lib.sh" 2>/dev/null \
+    && profile_state_init "$MODDIR" \
+    || { log -t pixel9pro_ctrl "ERROR: profile state contract missing"; exit 1; }
 NTP_CONFIG_FILE="$MODDIR/config/ntp_servers.tsv"
 NTP_CONFIG_AVAILABLE=0
 if [ -r "$MODDIR/scripts/ntp_config_lib.sh" ] && [ -r "$NTP_CONFIG_FILE" ]; then
@@ -326,33 +328,6 @@ valid_profile() {
     [ "$CPU_PROFILE_AVAILABLE" -eq 1 ] && cpu_profile_is_valid "$1"
 }
 
-valid_profile_policy() {
-    case "$1" in
-        manual|auto) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-read_valid_profile() {
-    _profile_path="$1"
-    _profile_default="$2"
-    _profile_value=$(cat "$_profile_path" 2>/dev/null | tr -d ' \n\r\t')
-    if [ "$CPU_PROFILE_AVAILABLE" -eq 1 ]; then
-        cpu_profile_normalize_runtime "$_profile_value" "$_profile_default"
-    else
-        printf '%s' "$_profile_default"
-    fi
-}
-
-read_valid_profile_policy() {
-    _policy_value=$(cat "$PROFILE_POLICY_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    if valid_profile_policy "$_policy_value"; then
-        printf '%s' "$_policy_value"
-    else
-        printf 'manual'
-    fi
-}
-
 read_valid_sched_owner() {
     so_read_effective_owner
 }
@@ -368,7 +343,7 @@ append_profile_history() {
     case "$_ph_epoch" in
         ''|*[!0-9]*) _ph_epoch=$(date +%s 2>/dev/null || echo 0) ;;
     esac
-    _ph_policy=$(read_valid_profile_policy)
+    _ph_policy=$(profile_state_read_policy)
     _ph_owner=$(read_valid_sched_owner)
     _ph_charging="${_p_is_charging:-0}"
     case "$_ph_charging" in
@@ -439,7 +414,7 @@ ensure_profile_history_baseline() {
     esac
     _sev=$(dumpsys thermalservice 2>/dev/null | grep "Thermal Status:" | head -1 | sed 's/.*Thermal Status:[[:space:]]*//' | tr -d ' \n\r')
     case "$_sev" in ''|*[!0-9]*) _sev=0 ;; esac
-    append_profile_history "$(read_valid_profile "$PROFILE_FILE" 'balanced')" "service_start"
+    append_profile_history "$(profile_state_read_profile "$PROFILE_FILE" 'balanced')" "service_start"
     _now="$_ph_saved_now"
 }
 
@@ -461,8 +436,8 @@ apply_profile_state() {
     valid_profile "$_target" || return 1
     case "$_expected_policy" in ''|manual|auto) ;; *) return 1 ;; esac
 
-    _prelocked_policy=$(read_valid_profile_policy)
-    _prelocked_profile=$(read_valid_profile "$PROFILE_FILE" balanced)
+    _prelocked_policy=$(profile_state_read_policy)
+    _prelocked_profile=$(profile_state_read_profile "$PROFILE_FILE" balanced)
     _prelocked_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null)
     _prelocked_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n\t')
     [ -n "$_prelocked_boot" ] || _prelocked_boot=unknown
@@ -489,8 +464,8 @@ apply_profile_state() {
 
     sbm_load_state
     _locked_owner=$(read_valid_sched_owner)
-    _locked_policy=$(read_valid_profile_policy)
-    _previous_profile=$(read_valid_profile "$PROFILE_FILE" balanced)
+    _locked_policy=$(profile_state_read_policy)
+    _previous_profile=$(profile_state_read_profile "$PROFILE_FILE" balanced)
     _previous_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null)
     if [ "$SBM_PHASE" != "success" ] || [ "$SBM_EFFECTIVE_MODE" != "pixel" ] \
         || [ "$_locked_owner" != "pixel" ]; then
@@ -585,32 +560,6 @@ apply_profile_state() {
     fi
     profile_lock_release
     return 1
-}
-
-foreground_package_name() {
-    # Keep this parser aligned with scripts/owner_arbiter.sh.  Android 17 can
-    # print transient overlays (NotificationShade, keyguard/bouncer) before
-    # the real focused app in `dumpsys window`; scan by semantic priority and
-    # only accept lines that contain a package/activity pair.
-    _dump=$(dumpsys window 2>/dev/null)
-    _pkg=""
-    for _prefix in "mFocusedApp=" "mCurrentFocus=" "mFocusedWindow=" "topResumedActivity=" "ResumedActivity:"; do
-        _pkg=$(printf '%s\n' "$_dump" | awk -v prefix="$_prefix" '
-            {
-                line = $0
-                sub(/^[ \t]+/, "", line)
-                if (index(line, prefix) == 1) print line
-            }
-        ' | sed -n '
-            s/.*[[:space:]]u[0-9][0-9]*[[:space:]]\([^/ }][^/ }]*\)\/.*/\1/p
-            s/.*[[:space:]]\([A-Za-z0-9_.$][A-Za-z0-9_.$]*\)\/.*/\1/p
-        ' | head -n 1)
-        [ -n "$_pkg" ] && break
-    done
-    if [ -z "$_pkg" ]; then
-        _pkg=$(dumpsys activity top 2>/dev/null | sed -n 's/^  ACTIVITY \([^/ ][^/ ]*\)\/.*/\1/p' | head -n 1)
-    fi
-    printf '%s' "$_pkg" | tr -d ' \r\n\t'
 }
 
 # ──────────────────────────────────────────────────────────
@@ -795,7 +744,7 @@ apply_l1_persistent_limits
 # ──────────────────────────────────────────────────────────
 # 3. 有界恢复 CPU 调度方案 (CPU + cpuset + cap + vendor_sched L2)
 # ──────────────────────────────────────────────────────────
-PROFILE=$(read_valid_profile "$PROFILE_FILE" 'balanced')
+PROFILE=$(profile_state_read_profile "$PROFILE_FILE" 'balanced')
 [ -f "$PROFILE_MANUAL_FILE" ] || runtime_write_value "$PROFILE_MANUAL_FILE" "$PROFILE" \
     || log -t pixel9pro_ctrl "WARNING: failed to initialize manual profile state"
 [ -f "$PROFILE_POLICY_FILE" ] || runtime_write_value "$PROFILE_POLICY_FILE" manual \
@@ -1303,14 +1252,14 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
     _auto_cool_since=0
     _auto_charge_hot_since=0
     _auto_charge_cool_since=0
-    _active_profile=$(read_valid_profile "$PROFILE_FILE" 'default')
+    _active_profile=$(profile_state_read_profile "$PROFILE_FILE" 'default')
     _cycle_count=0
     _idle_isolate_prev=""
 
     while true; do
         _now=$(date +%s 2>/dev/null || echo 0)
         _cycle_count=$((_cycle_count + 1))
-        _active_profile=$(read_valid_profile "$PROFILE_FILE" "$_active_profile")
+        _active_profile=$(profile_state_read_profile "$PROFILE_FILE" "$_active_profile")
         _sched_owner=$(read_valid_sched_owner)
         sbm_load_state
         _scheduler_profile_writable=0
@@ -1486,8 +1435,8 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
             fi
 
             # --- Slow auto profile policy ---
-            _profile_policy=$(read_valid_profile_policy)
-            _manual_profile=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'balanced')
+            _profile_policy=$(profile_state_read_policy)
+            _manual_profile=$(profile_state_read_profile "$PROFILE_MANUAL_FILE" 'balanced')
             _target_profile=""
             _target_reason=""
             _sev=""
@@ -1497,7 +1446,7 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
                 _auto_cool_since=0
                 _auto_charge_hot_since=0
                 _auto_charge_cool_since=0
-                _active_profile=$(read_valid_profile "$PROFILE_FILE" "$_active_profile")
+                _active_profile=$(profile_state_read_profile "$PROFILE_FILE" "$_active_profile")
             elif [ "$_profile_policy" = "manual" ]; then
                 _auto_hot_since=0
                 _auto_cool_since=0
@@ -1622,7 +1571,7 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
         if [ "${_bg_stop_next_due:-0}" -gt 0 ] 2>/dev/null && [ "$_bg_stop_next_due" -lt "$_next_sleep_secs" ] 2>/dev/null; then
             _next_sleep_secs="$_bg_stop_next_due"
         fi
-        _diag_profile_policy=$(read_valid_profile_policy)
+        _diag_profile_policy=$(profile_state_read_policy)
         _write_standby_diag_state "$_now" "$_screen" "$_worker_mode" "$_next_sleep_secs" "$_burst_effective" "$_nr_enabled" "$_nr_state" "$_diag_profile_policy" "$_active_profile" "$_idle_isolate" "$_sim2_auto" "$_cycle_count" \
             || log -t pixel9pro_ctrl "WARNING: failed to persist standby diagnostics"
         _sleep_until_worker_cycle "$_next_sleep_secs"

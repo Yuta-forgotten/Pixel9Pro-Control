@@ -1,0 +1,14 @@
+{
+  "name": "pixel9pro-control-webui-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pixel9Pro-Control WebUI 本地浏览器回归测试",
+  "scripts": {
+    "test:webui:contract": "node tests/webui_asset_contract_test.js",
+    "test:webui": "npm run test:webui:contract && playwright test --config=tests/webui/playwright.config.js",
+    "test:webui:headed": "playwright test --config=tests/webui/playwright.config.js --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.0"
+  }
+}

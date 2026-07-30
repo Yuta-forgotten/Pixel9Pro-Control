@@ -4,11 +4,6 @@
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
 require_loopback
 
-PROFILE_FILE="$MODDIR/.current_profile"
-PROFILE_POLICY_FILE="$MODDIR/.profile_policy"
-PROFILE_MANUAL_FILE="$MODDIR/.profile_manual"
-PROFILE_AUTO_REASON_FILE="$MODDIR/.profile_auto_reason"
-PROFILE_HISTORY_FILE="$MODDIR/.profile_history"
 SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 SCHED_OWNER_DESIRED_FILE="$MODDIR/.sched_owner_desired"
 GAME_HANDOFF_POLICY_FILE="$MODDIR/.game_handoff_policy"
@@ -22,6 +17,9 @@ SCHEDULER_INVENTORY_PATH="${SCHEDULER_INVENTORY_PATH:-$MODDIR/.scheduler_invento
     || json_error '500 Internal Server Error' 'scheduler owner contract not found'
 [ -r "$MODDIR/scripts/cpu_profile_lib.sh" ] && . "$MODDIR/scripts/cpu_profile_lib.sh" \
     || json_error '500 Internal Server Error' 'CPU profile contract not found'
+[ -r "$MODDIR/scripts/profile_state_lib.sh" ] && . "$MODDIR/scripts/profile_state_lib.sh" \
+    && profile_state_init "$MODDIR" \
+    || json_error '500 Internal Server Error' 'profile state contract not found'
 [ -r "$MODDIR/scripts/scheduler_boot_mode_lib.sh" ] && . "$MODDIR/scripts/scheduler_boot_mode_lib.sh" \
     || json_error '500 Internal Server Error' 'scheduler boot-mode contract not found'
 [ -r "$MODDIR/scripts/scheduler_transition_guard_lib.sh" ] && . "$MODDIR/scripts/scheduler_transition_guard_lib.sh" \
@@ -79,19 +77,6 @@ require_locked_verified_baseline() {
 reset_auto_profile_guard() {
     stg_init "$MODDIR/.profile_transition_guard"
     stg_reset || json_error '500 Internal Server Error' 'failed to reset automatic profile retry state'
-}
-
-read_valid_profile() {
-    _prof=$(cat "$1" 2>/dev/null | tr -d ' \n\r\t')
-    cpu_profile_normalize_runtime "$_prof" "$2"
-}
-
-read_valid_policy() {
-    _policy=$(cat "$PROFILE_POLICY_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    case "$_policy" in
-        auto|manual) printf '%s' "$_policy" ;;
-        *) printf 'manual' ;;
-    esac
 }
 
 read_valid_sched_owner() {
@@ -169,7 +154,7 @@ append_profile_history() {
     _ph_profile="$1"
     _ph_reason="$2"
     _ph_epoch=$(date +%s 2>/dev/null || echo 0)
-    _ph_policy=$(read_valid_policy)
+    _ph_policy=$(profile_state_read_policy)
     _ph_owner=$(read_valid_desired_sched_owner)
     _ph_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null | tr -d ' \n\r\t')
     case "$_ph_status" in
@@ -213,9 +198,9 @@ append_profile_history() {
 # serialization remain on GET so a completed write cannot be reported as a
 # client timeout while unrelated read-only details are still being assembled.
 emit_profile_mutation_state() {
-    _mutation_active=$(read_valid_profile "$PROFILE_FILE" 'balanced')
-    _mutation_manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" "$_mutation_active")
-    _mutation_policy=$(read_valid_policy)
+    _mutation_active=$(profile_state_read_profile "$PROFILE_FILE" 'balanced')
+    _mutation_manual=$(profile_state_read_profile "$PROFILE_MANUAL_FILE" "$_mutation_active")
+    _mutation_policy=$(profile_state_read_policy)
     _mutation_sched_owner=$(read_valid_desired_sched_owner)
     _mutation_effective_owner=$(read_valid_sched_owner)
     _mutation_handoff=$(read_valid_handoff_policy)
@@ -277,9 +262,9 @@ emit_scheduler_health_state() {
 }
 
 emit_profile_state() {
-    _active=$(read_valid_profile "$PROFILE_FILE" 'balanced')
-    _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" "$_active")
-    _policy=$(read_valid_policy)
+    _active=$(profile_state_read_profile "$PROFILE_FILE" 'balanced')
+    _manual=$(profile_state_read_profile "$PROFILE_MANUAL_FILE" "$_active")
+    _policy=$(profile_state_read_policy)
     _sched_owner=$(read_valid_desired_sched_owner)
     _sched_effective_owner=$(read_valid_sched_owner)
     _game_handoff_policy=$(read_valid_handoff_policy)
@@ -547,7 +532,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     if [ -n "$newprof" ]; then
         reset_auto_profile_guard
-        _old_active=$(read_valid_profile "$PROFILE_FILE" balanced)
+        _old_active=$(profile_state_read_profile "$PROFILE_FILE" balanced)
         _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$newprof" "$MODDIR" 2>/dev/null)
         _rc=$?
         if [ "$_rc" -ne 0 ]; then
@@ -579,9 +564,9 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     case "$newpolicy" in
         auto)
             reset_auto_profile_guard
-            _active=$(read_valid_profile "$PROFILE_FILE" 'balanced')
+            _active=$(profile_state_read_profile "$PROFILE_FILE" 'balanced')
             _old_active="$_active"
-            _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" balanced)
+            _manual=$(profile_state_read_profile "$PROFILE_MANUAL_FILE" balanced)
             case "$_active" in
                 balanced|battery) _target="$_active" ;;
                 *) _target="balanced" ;;
@@ -595,8 +580,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             ;;
         manual)
             reset_auto_profile_guard
-            _manual=$(read_valid_profile "$PROFILE_MANUAL_FILE" 'balanced')
-            _old_active=$(read_valid_profile "$PROFILE_FILE" balanced)
+            _manual=$(profile_state_read_profile "$PROFILE_MANUAL_FILE" 'balanced')
+            _old_active=$(profile_state_read_profile "$PROFILE_FILE" balanced)
             _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_manual" "$MODDIR" 2>/dev/null)
             [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
             if ! commit_profile_state "$_manual" "$_manual" manual manual_policy; then
