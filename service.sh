@@ -343,7 +343,6 @@ append_profile_history() {
     case "$_ph_epoch" in
         ''|*[!0-9]*) _ph_epoch=$(date +%s 2>/dev/null || echo 0) ;;
     esac
-    _ph_policy=$(profile_state_read_policy)
     _ph_owner=$(read_valid_sched_owner)
     _ph_charging="${_p_is_charging:-0}"
     case "$_ph_charging" in
@@ -358,35 +357,12 @@ append_profile_history() {
     case "$_ph_sev" in
         ''|*[!0-9]*) _ph_sev=-1 ;;
     esac
-    _ph_cap=$(cat /proc/sys/kernel/sched_util_clamp_min 2>/dev/null | tr -d ' \n\r\t')
-    case "$_ph_cap" in
-        ''|*[!0-9]*) _ph_cap=-1 ;;
-    esac
-    _ph_resp0=$(cat /sys/devices/system/cpu/cpu0/cpufreq/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
-    _ph_resp4=$(cat /sys/devices/system/cpu/cpu4/cpufreq/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
-    _ph_resp7=$(cat /sys/devices/system/cpu/cpu7/cpufreq/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
-    [ -n "$_ph_resp0" ] || _ph_resp0="na"
-    [ -n "$_ph_resp4" ] || _ph_resp4="na"
-    [ -n "$_ph_resp7" ] || _ph_resp7="na"
-    _ph_response="${_ph_resp0}/${_ph_resp4}/${_ph_resp7}"
-
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-        "$_ph_epoch" "$_ph_policy" "$_ph_owner" "$_ph_profile" "$_ph_reason" \
-        "$_ph_charging" "$_ph_vs" "$_ph_sev" "$_ph_cap" "$_ph_response" \
-        >> "$PROFILE_HISTORY_FILE" 2>/dev/null
-
-    _ph_lines=$(wc -l < "$PROFILE_HISTORY_FILE" 2>/dev/null)
-    if [ "${_ph_lines:-0}" -gt 500 ] 2>/dev/null; then
-        _ph_trim=$((_ph_lines - 500))
-        sed -i "1,${_ph_trim}d" "$PROFILE_HISTORY_FILE" 2>/dev/null
-    fi
+    profile_state_append_observation "$_ph_profile" "$_ph_reason" "$_ph_epoch" \
+        "$_ph_owner" "$_ph_charging" "$_ph_vs" "$_ph_sev"
 }
 
 profile_history_has_owner_field() {
-    [ -s "$PROFILE_HISTORY_FILE" ] || return 1
-    _ph_last=$(tail -n 1 "$PROFILE_HISTORY_FILE" 2>/dev/null)
-    _ph_cols=$(printf '%s\n' "$_ph_last" | awk -F',' '{print NF}')
-    [ "${_ph_cols:-0}" -ge 10 ] 2>/dev/null
+    profile_state_history_has_owner_field
 }
 
 ensure_profile_history_baseline() {
@@ -514,11 +490,9 @@ apply_profile_state() {
     _rc=$?
 
     if [ "$_rc" -eq 0 ]; then
-        if ! runtime_write_value "$PROFILE_FILE" "$_target" \
-            || ! runtime_write_value_if_changed "$PROFILE_AUTO_REASON_FILE" "$_reason"; then
+        if ! profile_state_commit_active_reason "$_target" "$_reason"; then
             _profile_rollback_ok=1
-            runtime_write_value "$PROFILE_FILE" "$_previous_profile" >/dev/null 2>&1 || _profile_rollback_ok=0
-            runtime_write_value "$PROFILE_AUTO_REASON_FILE" "$_previous_reason" >/dev/null 2>&1 || _profile_rollback_ok=0
+            [ "$PROFILE_STATE_ROLLBACK_RESULT" = "complete" ] || _profile_rollback_ok=0
             sh "$MODDIR/scripts/cpu_profile.sh" "$_previous_profile" "$MODDIR" force >/dev/null 2>&1 || _profile_rollback_ok=0
             if [ "$_profile_rollback_ok" -eq 1 ]; then
                 log -t pixel9pro_ctrl "WARNING: CPU profile state commit failed; restored $_previous_profile"

@@ -108,37 +108,11 @@ reconcile_owner_now() {
 }
 
 commit_profile_state() {
-    _profile_new_active="$1"
-    _profile_new_manual="$2"
-    _profile_new_policy="$3"
-    _profile_new_reason="$4"
-
-    _profile_active_existed=0
-    _profile_manual_existed=0
-    _profile_policy_existed=0
-    _profile_reason_existed=0
-    [ -e "$PROFILE_FILE" ] && _profile_active_existed=1
-    [ -e "$PROFILE_MANUAL_FILE" ] && _profile_manual_existed=1
-    [ -e "$PROFILE_POLICY_FILE" ] && _profile_policy_existed=1
-    [ -e "$PROFILE_AUTO_REASON_FILE" ] && _profile_reason_existed=1
-    _profile_old_active=$(cat "$PROFILE_FILE" 2>/dev/null)
-    _profile_old_manual=$(cat "$PROFILE_MANUAL_FILE" 2>/dev/null)
-    _profile_old_policy=$(cat "$PROFILE_POLICY_FILE" 2>/dev/null)
-    _profile_old_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null)
-
-    if cgi_atomic_write "$PROFILE_FILE" "$_profile_new_active" \
-        && cgi_atomic_write "$PROFILE_MANUAL_FILE" "$_profile_new_manual" \
-        && cgi_atomic_write "$PROFILE_POLICY_FILE" "$_profile_new_policy" \
-        && cgi_atomic_write "$PROFILE_AUTO_REASON_FILE" "$_profile_new_reason"; then
-        return 0
-    fi
-
+    profile_state_commit "$1" "$2" "$3" "$4"
+    _profile_commit_rc=$?
     PROFILE_STATE_ROLLBACK_OK=1
-    cgi_restore_file "$PROFILE_FILE" "$_profile_active_existed" "$_profile_old_active" >/dev/null 2>&1 || PROFILE_STATE_ROLLBACK_OK=0
-    cgi_restore_file "$PROFILE_MANUAL_FILE" "$_profile_manual_existed" "$_profile_old_manual" >/dev/null 2>&1 || PROFILE_STATE_ROLLBACK_OK=0
-    cgi_restore_file "$PROFILE_POLICY_FILE" "$_profile_policy_existed" "$_profile_old_policy" >/dev/null 2>&1 || PROFILE_STATE_ROLLBACK_OK=0
-    cgi_restore_file "$PROFILE_AUTO_REASON_FILE" "$_profile_reason_existed" "$_profile_old_reason" >/dev/null 2>&1 || PROFILE_STATE_ROLLBACK_OK=0
-    return 1
+    [ "$PROFILE_STATE_ROLLBACK_RESULT" != "incomplete" ] || PROFILE_STATE_ROLLBACK_OK=0
+    return "$_profile_commit_rc"
 }
 
 rollback_profile_runtime_or_error() {
@@ -154,7 +128,6 @@ append_profile_history() {
     _ph_profile="$1"
     _ph_reason="$2"
     _ph_epoch=$(date +%s 2>/dev/null || echo 0)
-    _ph_policy=$(profile_state_read_policy)
     _ph_owner=$(read_valid_desired_sched_owner)
     _ph_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null | tr -d ' \n\r\t')
     case "$_ph_status" in
@@ -169,28 +142,8 @@ append_profile_history() {
     case "$_ph_sev" in
         ''|*[!0-9]*) _ph_sev=-1 ;;
     esac
-    _ph_cap=$(cat /proc/sys/kernel/sched_util_clamp_min 2>/dev/null | tr -d ' \n\r\t')
-    case "$_ph_cap" in
-        ''|*[!0-9]*) _ph_cap=-1 ;;
-    esac
-    _ph_resp0=$(cat /sys/devices/system/cpu/cpu0/cpufreq/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
-    _ph_resp4=$(cat /sys/devices/system/cpu/cpu4/cpufreq/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
-    _ph_resp7=$(cat /sys/devices/system/cpu/cpu7/cpufreq/sched_pixel/response_time_ms 2>/dev/null | tr -d ' \n\r\t')
-    [ -n "$_ph_resp0" ] || _ph_resp0="na"
-    [ -n "$_ph_resp4" ] || _ph_resp4="na"
-    [ -n "$_ph_resp7" ] || _ph_resp7="na"
-    _ph_response="${_ph_resp0}/${_ph_resp4}/${_ph_resp7}"
-
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-        "$_ph_epoch" "$_ph_policy" "$_ph_owner" "$_ph_profile" "$_ph_reason" \
-        "$_ph_charging" "$_ph_vs" "$_ph_sev" "$_ph_cap" "$_ph_response" \
-        >> "$PROFILE_HISTORY_FILE" 2>/dev/null
-
-    _ph_lines=$(wc -l < "$PROFILE_HISTORY_FILE" 2>/dev/null)
-    if [ "${_ph_lines:-0}" -gt 500 ] 2>/dev/null; then
-        _ph_trim=$((_ph_lines - 500))
-        sed -i "1,${_ph_trim}d" "$PROFILE_HISTORY_FILE" 2>/dev/null
-    fi
+    profile_state_append_observation "$_ph_profile" "$_ph_reason" "$_ph_epoch" \
+        "$_ph_owner" "$_ph_charging" "$_ph_vs" "$_ph_sev"
 }
 
 # Mutation responses only publish state that has already been verified and
@@ -272,7 +225,7 @@ emit_profile_state() {
     _arbiter_apply_result=$(read_arbiter_value apply_result)
     _arbiter_reason=$(read_arbiter_value reason)
     _reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null | tr -d '\r')
-    _last_profile_change=$(tail -n 1 "$PROFILE_HISTORY_FILE" 2>/dev/null | tr -d '\r')
+    _last_profile_change=$(profile_state_history_last)
     case "$_reason" in
         feed_warmup|feed_hold|feed_hot|nonfeed_reset) _reason="" ;;
     esac
