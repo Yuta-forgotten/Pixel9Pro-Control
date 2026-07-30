@@ -150,6 +150,12 @@ mkdir -p "$TEST_ROOT" || exit 2
 . "$LIB" || exit 2
 printf 'TAP version 13\n'
 
+if [ -z "$(find "$TEST_ROOT" -mindepth 1 -print -quit 2>/dev/null)" ]; then
+    ok 'sourcing thermal library does not mutate the fixture'
+else
+    not_ok 'sourcing thermal library does not mutate the fixture'
+fi
+
 assert_eq 'normalizes invalid offset to module default' 4 "$(thermal_normalize_offset 8 4)"
 assert_eq 'thermal contract owns ordered offsets' '-2 0 2 4 6' "$THERMAL_ALLOWED_OFFSETS"
 assert_eq 'thermal UI contract serializes offsets and default' \

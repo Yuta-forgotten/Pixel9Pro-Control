@@ -74,6 +74,13 @@ cmd() {
 mkdir -p "$MODDIR" || exit 2
 . "$MOD/scripts/bg_restrict_lib.sh" || exit 2
 
+if [ ! -e "$BG_ENABLED_FILE" ] && [ ! -e "$BG_LIST_FILE" ] \
+    && [ ! -e "$BG_BASELINE_FILE" ] && [ ! -e "$BG_STOP_STATE_FILE" ]; then
+    ok 'sourcing BG library does not mutate state files'
+else
+    not_ok 'sourcing BG library does not mutate state files'
+fi
+
 assert_eq 'BG contract owns policy order' 'stop_after_leave block_all block_services bucket' "$BG_POLICY_ORDER"
 assert_eq 'BG contract owns delay allowlist' '3 5 10' "$BG_ALLOWED_DELAYS"
 assert_eq 'BG UI contract serializes defaults' \

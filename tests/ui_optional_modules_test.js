@@ -24,6 +24,7 @@ const uecapProfile = fs.readFileSync(path.join(root, 'uecap_profile.sh'), 'utf8'
 const customize = fs.readFileSync(path.join(root, 'customize.sh'), 'utf8');
 const service = fs.readFileSync(path.join(root, 'service.sh'), 'utf8');
 const thermalLib = fs.readFileSync(path.join(root, 'scripts', 'thermal_profile.sh'), 'utf8');
+const bgRestrictLib = fs.readFileSync(path.join(root, 'scripts', 'bg_restrict_lib.sh'), 'utf8');
 const cpuProfileLib = fs.readFileSync(path.join(root, 'scripts', 'cpu_profile_lib.sh'), 'utf8');
 const nrModeLib = fs.readFileSync(path.join(root, 'scripts', 'nr_mode_lib.sh'), 'utf8');
 const cpuProfile = fs.readFileSync(path.join(root, 'scripts', 'cpu_profile.sh'), 'utf8');
@@ -85,6 +86,15 @@ const thermalPresetStart = app.indexOf('const THERMAL_PRESETS = {');
 const thermalPresetEnd = app.indexOf('\n};', thermalPresetStart);
 assert(thermalPresetStart >= 0 && thermalPresetEnd > thermalPresetStart, 'thermal preset block is missing');
 const thermalPresetBlock = app.slice(thermalPresetStart, thermalPresetEnd);
+for (const [label, source, prefix] of [
+  ['thermal', thermalLib, '_tp_'],
+  ['BG', bgRestrictLib, '_bg_'],
+  ['UECap', uecapProfile, '_uecap_'],
+]) {
+  const shellLocals = [...source.matchAll(/^\s*(_[A-Za-z0-9_]+)=/gm)].map((match) => match[1]);
+  assert(shellLocals.every((name) => name.startsWith(prefix)), `${label} library has unscoped shell variables`);
+  assert(!/^\s*(?:\.|source)\s+/m.test(source), `${label} leaf library must not source another library`);
+}
 assert(!app.includes('const THERMAL_OFFSETS') && !app.includes('THERMAL_DEFAULT_OFFSET'), 'thermal JS must not retain the offset allowlist or default');
 assert(app.includes('const raw = data?.thermal_contract') && app.includes('state.contract.offsets.forEach((offset) =>'), 'thermal UI must render the backend contract order');
 for (const offset of ['[-2]', '0', '2', '4', '6']) {

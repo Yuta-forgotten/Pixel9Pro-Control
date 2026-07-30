@@ -171,15 +171,15 @@ uecap_commit_state() {
 }
 
 uecap_set_mode() {
-    _mode=$(uecap_mode_label "$1")
-    [ "$_mode" != "unknown" ] || return 1
-    uecap_atomic_write "$UECAP_MODE_FILE" "$_mode"
+    _uecap_set_mode_value=$(uecap_mode_label "$1")
+    [ "$_uecap_set_mode_value" != "unknown" ] || return 1
+    uecap_atomic_write "$UECAP_MODE_FILE" "$_uecap_set_mode_value"
 }
 
 uecap_set_manual_mode() {
-    _mode=$(uecap_mode_label "$1")
-    [ "$_mode" != "unknown" ] || return 1
-    uecap_atomic_write "$UECAP_MANUAL_MODE_FILE" "$_mode"
+    _uecap_set_manual_value=$(uecap_mode_label "$1")
+    [ "$_uecap_set_manual_value" != "unknown" ] || return 1
+    uecap_atomic_write "$UECAP_MANUAL_MODE_FILE" "$_uecap_set_manual_value"
 }
 
 uecap_set_policy() {
@@ -219,46 +219,46 @@ uecap_print_ui_contract_json() {
 }
 
 uecap_reload_modem() {
-    _reason="${1:-manual}"
-    case "$_reason" in
+    _uecap_reload_reason="${1:-manual}"
+    case "$_uecap_reload_reason" in
         boot|boot_manual)
             UECAP_RELOAD_DISPATCHED=false
-            uecap_log_line "skip modem reload (reason=$_reason, boot reads fresh)"
+            uecap_log_line "skip modem reload (reason=$_uecap_reload_reason, boot reads fresh)"
             return 0 ;;
     esac
     # restart-modem only cycles cellular radio, does NOT touch WiFi/BT
     # Much safer than airplane toggle which crashed the network stack (B29)
     if /system/bin/cmd phone restart-modem >/dev/null 2>&1; then
         UECAP_RELOAD_DISPATCHED=true
-        uecap_log_line "modem restart accepted (reason=$_reason)"
+        uecap_log_line "modem restart accepted (reason=$_uecap_reload_reason)"
         return 0
     fi
     UECAP_RELOAD_DISPATCHED=false
-    uecap_log_line "modem restart failed (reason=$_reason)"
+    uecap_log_line "modem restart failed (reason=$_uecap_reload_reason)"
     return 1
 }
 
 uecap_detect_active_mode() {
-    _target_hash=$(uecap_hash "$UECAP_TARGET")
-    [ -z "$_target_hash" ] && { echo "custom"; return; }
+    _uecap_detect_target_hash=$(uecap_hash "$UECAP_TARGET")
+    [ -z "$_uecap_detect_target_hash" ] && { echo "custom"; return; }
 
     # Prefer the recorded mode if its hash matches — avoids ambiguity
     # when multiple tiers share the same binarypb
-    _req=$(uecap_current_mode)
-    _req_src=$(uecap_resolve_source "$_req")
-    _req_hash=$(uecap_hash "$_req_src")
-    if [ "$_target_hash" = "$_req_hash" ]; then
-        echo "$_req"
+    _uecap_detect_requested=$(uecap_current_mode)
+    _uecap_detect_requested_source=$(uecap_resolve_source "$_uecap_detect_requested")
+    _uecap_detect_requested_hash=$(uecap_hash "$_uecap_detect_requested_source")
+    if [ "$_uecap_detect_target_hash" = "$_uecap_detect_requested_hash" ]; then
+        echo "$_uecap_detect_requested"
         return
     fi
 
-    _special_hash=$(uecap_hash "$UECAP_SPECIAL")
-    _balanced_hash=$(uecap_hash "$UECAP_BALANCED")
-    _universal_hash=$(uecap_hash "$UECAP_UNIVERSAL")
+    _uecap_detect_special_hash=$(uecap_hash "$UECAP_SPECIAL")
+    _uecap_detect_balanced_hash=$(uecap_hash "$UECAP_BALANCED")
+    _uecap_detect_universal_hash=$(uecap_hash "$UECAP_UNIVERSAL")
 
-    if [ "$_target_hash" = "$_special_hash" ]; then echo "special"
-    elif [ "$_target_hash" = "$_balanced_hash" ]; then echo "balanced"
-    elif [ "$_target_hash" = "$_universal_hash" ]; then echo "universal"
+    if [ "$_uecap_detect_target_hash" = "$_uecap_detect_special_hash" ]; then echo "special"
+    elif [ "$_uecap_detect_target_hash" = "$_uecap_detect_balanced_hash" ]; then echo "balanced"
+    elif [ "$_uecap_detect_target_hash" = "$_uecap_detect_universal_hash" ]; then echo "universal"
     else echo "custom"
     fi
 }
@@ -282,14 +282,14 @@ uecap_restore_previous_mount() {
 
 uecap_apply_mode() {
     UECAP_APPLY_RESULT="invalid"
-    _mode=$(uecap_mode_label "$1")
-    [ "$_mode" != "unknown" ] || return 1
-    _reason="${2:-manual}"
-    case "$_reason" in ''|*[!A-Za-z0-9_.:-]*) return 1 ;; esac
+    _uecap_apply_mode_value=$(uecap_mode_label "$1")
+    [ "$_uecap_apply_mode_value" != "unknown" ] || return 1
+    _uecap_apply_reason="${2:-manual}"
+    case "$_uecap_apply_reason" in ''|*[!A-Za-z0-9_.:-]*) return 1 ;; esac
 
-    _source=$(uecap_resolve_source "$_mode")
-    [ -f "$_source" ] || {
-        uecap_log_line "source missing: $_source"
+    _uecap_apply_source=$(uecap_resolve_source "$_uecap_apply_mode_value")
+    [ -f "$_uecap_apply_source" ] || {
+        uecap_log_line "source missing: $_uecap_apply_source"
         return 1
     }
     [ -e "$UECAP_TARGET" ] || {
@@ -297,77 +297,77 @@ uecap_apply_mode() {
         return 1
     }
 
-    _source_hash=$(uecap_hash "$_source")
-    [ -n "$_source_hash" ] || return 1
+    _uecap_apply_source_hash=$(uecap_hash "$_uecap_apply_source")
+    [ -n "$_uecap_apply_source_hash" ] || return 1
 
-    _target_ctx=$(ls -Zd "$UECAP_TARGET" 2>/dev/null | awk '{print $1}')
-    _source_ctx=$(ls -Zd "$_source" 2>/dev/null | awk '{print $1}')
-    if [ -n "$_target_ctx" ] && [ "$_source_ctx" != "$_target_ctx" ]; then
-        chcon "$_target_ctx" "$_source" 2>/dev/null || {
-            uecap_log_line "SELinux context update failed mode=$_mode"
+    _uecap_apply_target_ctx=$(ls -Zd "$UECAP_TARGET" 2>/dev/null | awk '{print $1}')
+    _uecap_apply_source_ctx=$(ls -Zd "$_uecap_apply_source" 2>/dev/null | awk '{print $1}')
+    if [ -n "$_uecap_apply_target_ctx" ] && [ "$_uecap_apply_source_ctx" != "$_uecap_apply_target_ctx" ]; then
+        chcon "$_uecap_apply_target_ctx" "$_uecap_apply_source" 2>/dev/null || {
+            uecap_log_line "SELinux context update failed mode=$_uecap_apply_mode_value"
             return 1
         }
-        _source_ctx=$(ls -Zd "$_source" 2>/dev/null | awk '{print $1}')
-        [ "$_source_ctx" = "$_target_ctx" ] || return 1
+        _uecap_apply_source_ctx=$(ls -Zd "$_uecap_apply_source" 2>/dev/null | awk '{print $1}')
+        [ "$_uecap_apply_source_ctx" = "$_uecap_apply_target_ctx" ] || return 1
     fi
 
-    _old_mounted=0
-    _old_source=""
-    _old_hash=""
+    _uecap_apply_old_mounted=0
+    _uecap_apply_old_source=""
+    _uecap_apply_old_hash=""
     if uecap_target_is_mounted; then
-        _old_mounted=1
-        _old_mode=$(uecap_detect_active_mode)
-        case "$_old_mode" in
-            special|balanced|universal) _old_source=$(uecap_resolve_source "$_old_mode") ;;
+        _uecap_apply_old_mounted=1
+        _uecap_apply_old_mode=$(uecap_detect_active_mode)
+        case "$_uecap_apply_old_mode" in
+            special|balanced|universal) _uecap_apply_old_source=$(uecap_resolve_source "$_uecap_apply_old_mode") ;;
             *)
                 uecap_log_line "refuse to replace unknown active bind"
                 return 1
                 ;;
         esac
-        _old_hash=$(uecap_hash "$_old_source")
-        [ -n "$_old_hash" ] || return 1
+        _uecap_apply_old_hash=$(uecap_hash "$_uecap_apply_old_source")
+        [ -n "$_uecap_apply_old_hash" ] || return 1
         uecap_unmount "$UECAP_TARGET" || {
-            uecap_log_line "unbind failed mode=$_mode"
+            uecap_log_line "unbind failed mode=$_uecap_apply_mode_value"
             return 1
         }
     fi
 
-    if ! uecap_mount_bind "$_source" "$UECAP_TARGET"; then
-        if uecap_restore_previous_mount "$_old_mounted" "$_old_source" "$_old_hash"; then
+    if ! uecap_mount_bind "$_uecap_apply_source" "$UECAP_TARGET"; then
+        if uecap_restore_previous_mount "$_uecap_apply_old_mounted" "$_uecap_apply_old_source" "$_uecap_apply_old_hash"; then
             UECAP_APPLY_RESULT="bind_failed_rolled_back"
-            uecap_log_line "bind failed mode=$_mode rollback=complete"
+            uecap_log_line "bind failed mode=$_uecap_apply_mode_value rollback=complete"
             return 1
         fi
         UECAP_APPLY_RESULT="bind_failed_rollback_incomplete"
-        uecap_log_line "bind failed mode=$_mode rollback=incomplete"
+        uecap_log_line "bind failed mode=$_uecap_apply_mode_value rollback=incomplete"
         return 2
     fi
 
-    if [ "$(uecap_hash "$UECAP_TARGET")" != "$_source_hash" ]; then
-        if uecap_restore_previous_mount "$_old_mounted" "$_old_source" "$_old_hash"; then
+    if [ "$(uecap_hash "$UECAP_TARGET")" != "$_uecap_apply_source_hash" ]; then
+        if uecap_restore_previous_mount "$_uecap_apply_old_mounted" "$_uecap_apply_old_source" "$_uecap_apply_old_hash"; then
             UECAP_APPLY_RESULT="bind_verify_failed_rolled_back"
-            uecap_log_line "bind verification failed mode=$_mode rollback=complete"
+            uecap_log_line "bind verification failed mode=$_uecap_apply_mode_value rollback=complete"
             return 1
         fi
         UECAP_APPLY_RESULT="bind_verify_failed_rollback_incomplete"
-        uecap_log_line "bind verification failed mode=$_mode rollback=incomplete"
+        uecap_log_line "bind verification failed mode=$_uecap_apply_mode_value rollback=incomplete"
         return 2
     fi
 
-    _switch_time=$(date +%s 2>/dev/null || echo 0)
-    if ! uecap_commit_state "$_mode" "$_reason" "$_switch_time"; then
-        if uecap_restore_previous_mount "$_old_mounted" "$_old_source" "$_old_hash" \
+    _uecap_apply_switch_time=$(date +%s 2>/dev/null || echo 0)
+    if ! uecap_commit_state "$_uecap_apply_mode_value" "$_uecap_apply_reason" "$_uecap_apply_switch_time"; then
+        if uecap_restore_previous_mount "$_uecap_apply_old_mounted" "$_uecap_apply_old_source" "$_uecap_apply_old_hash" \
             && [ "$UECAP_STATE_ROLLBACK_RESULT" = "complete" ]; then
             UECAP_APPLY_RESULT="state_failed_rolled_back"
-            uecap_log_line "state transaction failed mode=$_mode rollback=complete"
+            uecap_log_line "state transaction failed mode=$_uecap_apply_mode_value rollback=complete"
             return 1
         fi
         UECAP_APPLY_RESULT="state_failed_rollback_incomplete"
-        uecap_log_line "state transaction failed mode=$_mode rollback=incomplete state=$UECAP_STATE_ROLLBACK_RESULT"
+        uecap_log_line "state transaction failed mode=$_uecap_apply_mode_value rollback=incomplete state=$UECAP_STATE_ROLLBACK_RESULT"
         return 2
     fi
-    uecap_log_line "bind ok mode=$_mode hash=$(uecap_hash "$_source")"
-    if uecap_reload_modem "$_reason"; then
+    uecap_log_line "bind ok mode=$_uecap_apply_mode_value hash=$(uecap_hash "$_uecap_apply_source")"
+    if uecap_reload_modem "$_uecap_apply_reason"; then
         UECAP_APPLY_RESULT="applied"
         return 0
     fi
@@ -376,21 +376,21 @@ uecap_apply_mode() {
 }
 
 uecap_print_status_json() {
-    _requested=$(uecap_current_mode)
-    _policy=$(uecap_current_policy)
-    _manual=$(uecap_current_manual_mode)
-    _reason=$(uecap_current_reason)
-    _active=$(uecap_detect_active_mode)
-    _target_hash=$(uecap_hash "$UECAP_TARGET")
-    _special_hash=$(uecap_hash "$UECAP_SPECIAL")
-    _balanced_hash=$(uecap_hash "$UECAP_BALANCED")
-    _universal_hash=$(uecap_hash "$UECAP_UNIVERSAL")
-    _last_switch=$(uecap_last_switch)
-    case "$_last_switch" in ''|*[!0-9]*) _last_switch=0 ;; esac
+    _uecap_status_requested=$(uecap_current_mode)
+    _uecap_status_policy=$(uecap_current_policy)
+    _uecap_status_manual=$(uecap_current_manual_mode)
+    _uecap_status_reason=$(uecap_current_reason)
+    _uecap_status_active=$(uecap_detect_active_mode)
+    _uecap_status_target_hash=$(uecap_hash "$UECAP_TARGET")
+    _uecap_status_special_hash=$(uecap_hash "$UECAP_SPECIAL")
+    _uecap_status_balanced_hash=$(uecap_hash "$UECAP_BALANCED")
+    _uecap_status_universal_hash=$(uecap_hash "$UECAP_UNIVERSAL")
+    _uecap_status_last_switch=$(uecap_last_switch)
+    case "$_uecap_status_last_switch" in ''|*[!0-9]*) _uecap_status_last_switch=0 ;; esac
 
     printf '{"policy":"%s","requested_mode":"%s","manual_mode":"%s","active_mode":"%s","reason":"%s","last_switch":"%s","target_hash":"%s","special_hash":"%s","balanced_hash":"%s","universal_hash":"%s","uecap_contract":' \
-        "$_policy" "$_requested" "$_manual" "$_active" "$(uecap_json_escape "${_reason:-unknown}")" "$_last_switch" \
-        "${_target_hash:-unknown}" "${_special_hash:-unknown}" "${_balanced_hash:-unknown}" "${_universal_hash:-unknown}"
+        "$_uecap_status_policy" "$_uecap_status_requested" "$_uecap_status_manual" "$_uecap_status_active" "$(uecap_json_escape "${_uecap_status_reason:-unknown}")" "$_uecap_status_last_switch" \
+        "${_uecap_status_target_hash:-unknown}" "${_uecap_status_special_hash:-unknown}" "${_uecap_status_balanced_hash:-unknown}" "${_uecap_status_universal_hash:-unknown}"
     uecap_print_ui_contract_json
     printf '}'
 }
