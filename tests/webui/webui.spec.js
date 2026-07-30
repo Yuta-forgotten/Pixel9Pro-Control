@@ -51,6 +51,21 @@ test('所有主导航页无浏览器错误和横向溢出', async ({ page }, tes
   for (const tab of ['home', 'tune', 'network', 'system']) {
     await page.locator(`#tab-${tab}`).click();
     await expect(page.locator(`#page-${tab}`)).toHaveClass(/active/);
+    if (tab === 'tune') {
+      await expect(page.locator('#thermal-list .thermal-option')).toHaveCount(5);
+      expect(await page.locator('#thermal-list .thermal-option').evaluateAll((items) => items.map((item) => Number(item.dataset.offset)))).toEqual([-2, 0, 2, 4, 6]);
+    }
+    if (tab === 'network') {
+      await expect(page.locator('#uecap-btn-group .uecap-btn')).toHaveCount(3);
+      expect(await page.locator('#uecap-btn-group .uecap-btn').evaluateAll((items) => items.map((item) => item.dataset.mode))).toEqual(['balanced', 'special', 'universal']);
+    }
+    if (tab === 'system') {
+      await expect(page.locator('#bg-restrict-policy-select option')).toHaveCount(4);
+      expect(await page.locator('#bg-restrict-policy-select option').evaluateAll((items) => items.map((item) => item.value))).toEqual(['stop_after_leave', 'block_all', 'block_services', 'bucket']);
+      expect(await page.locator('#bg-restrict-delay-select option').evaluateAll((items) => items.map((item) => Number(item.value)))).toEqual([3, 5, 10]);
+      await expect(page.locator('#bg-restrict-policy-select')).toHaveValue('stop_after_leave');
+      await expect(page.locator('#bg-restrict-delay-select')).toHaveValue('5');
+    }
     await expectNoHorizontalOverflow(page);
     await expectNoInvalidRenderedValues(page);
     await page.screenshot({ path: testInfo.outputPath(`${tab}.png`), fullPage: true });
@@ -89,4 +104,42 @@ test('性能、温控与详情交互保持可用', async ({ page }) => {
   await expectNoHorizontalOverflow(page);
   await expectNoInvalidRenderedValues(page);
   expect(errors).toEqual([]);
+});
+
+test('缺失 backend UI contract 时可变选项保持关闭', async ({ page }) => {
+  await page.route('**/cgi-bin/set_thermal.sh', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ offset: 4 }),
+  }));
+  await page.route('**/cgi-bin/uecap.sh', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      ok: true,
+      policy: 'manual',
+      requested_mode: 'balanced',
+      active_mode: 'balanced',
+    }),
+  }));
+  await page.route('**/cgi-bin/bg_restrict.sh', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ ok: true, enabled: 'on', packages: [] }),
+  }));
+
+  await page.goto('/');
+  await waitForWebuiReady(page);
+
+  await page.locator('#tab-tune').click();
+  await expect(page.locator('#thermal-list .thermal-option')).toHaveCount(0);
+
+  await page.locator('#tab-network').click();
+  await expect(page.locator('#uecap-btn-group .uecap-btn')).toHaveCount(0);
+  await expect(page.locator('#uecap-btn-group')).toBeHidden();
+  await expect(page.locator('#uecap-rows')).toContainText('UECap mode contract 无效');
+
+  await page.locator('#tab-system').click();
+  await expect(page.locator('#bg-restrict-policy-select option')).toHaveCount(0);
+  await expect(page.locator('#bg-restrict-delay-select option')).toHaveCount(0);
+  await expect(page.locator('#bg-restrict-policy-select')).toBeDisabled();
+  await expect(page.locator('#bg-restrict-delay-select')).toBeDisabled();
+  await expect(page.locator('#bg-restrict-rows')).toContainText('后台限制 contract 无效');
 });

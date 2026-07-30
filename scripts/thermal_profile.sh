@@ -14,7 +14,8 @@
 # hardware/google/pixel/thermal/utils/thermal_info.cpp. A plain translation can
 # overlap a fixed 55/59 shutdown severity, so higher offsets taper near it.
 
-THERMAL_DEFAULT_OFFSET="${THERMAL_DEFAULT_OFFSET:-4}"
+THERMAL_ALLOWED_OFFSETS="-2 0 2 4 6"
+THERMAL_DEFAULT_OFFSET=4
 THERMAL_TARGET_SENSORS="VIRTUAL-SKIN VIRTUAL-SKIN-HINT VIRTUAL-SKIN-SOC VIRTUAL-SKIN-CPU-LIGHT-ODPM VIRTUAL-SKIN-CPU-MID VIRTUAL-SKIN-CPU-ODPM VIRTUAL-SKIN-CPU-HIGH VIRTUAL-SKIN-GPU"
 THERMAL_TARGET_SENSOR_COUNT=8
 THERMAL_SEVERITY_SLOT_COUNT=7
@@ -22,21 +23,32 @@ THERMAL_SHUTDOWN_SLOT=7
 THERMAL_MIN_SEVERITY_GAP_C=0.5
 
 thermal_is_valid_offset() {
-    case "$1" in
-        -2|0|2|4|6) return 0 ;;
-        *) return 1 ;;
-    esac
+    _tp_candidate="$1"
+    for _tp_allowed_offset in $THERMAL_ALLOWED_OFFSETS; do
+        [ "$_tp_candidate" = "$_tp_allowed_offset" ] && return 0
+    done
+    return 1
 }
 
 thermal_normalize_offset() {
     _tp_value="$1"
     _tp_fallback="${2:-$THERMAL_DEFAULT_OFFSET}"
-    thermal_is_valid_offset "$_tp_fallback" || _tp_fallback=4
+    thermal_is_valid_offset "$_tp_fallback" || _tp_fallback="$THERMAL_DEFAULT_OFFSET"
     if thermal_is_valid_offset "$_tp_value"; then
         printf '%s' "$_tp_value"
     else
         printf '%s' "$_tp_fallback"
     fi
+}
+
+thermal_print_ui_contract_json() {
+    printf '{"offsets":['
+    _tp_contract_first=1
+    for _tp_contract_offset in $THERMAL_ALLOWED_OFFSETS; do
+        [ "$_tp_contract_first" -eq 1 ] && _tp_contract_first=0 || printf ','
+        printf '%s' "$_tp_contract_offset"
+    done
+    printf '],"default_offset":%s}' "$THERMAL_DEFAULT_OFFSET"
 }
 
 thermal_format_offset() {

@@ -153,12 +153,16 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     rm -f "$_rollback" 2>/dev/null
 
     json_headers
-    printf '{"ok":true,"offset":%s,"restarted":%s}\n' "$offset" "$restarted"
+    printf '{"ok":true,"offset":%s,"restarted":%s,"thermal_contract":' "$offset" "$restarted"
+    thermal_print_ui_contract_json
+    printf '}\n'
 elif [ "$REQUEST_METHOD" = "GET" ]; then
     offset=$(cat "$OFFSET_FILE" 2>/dev/null | tr -d ' \n\r\t')
     offset=$(thermal_normalize_offset "$offset" "$THERMAL_DEFAULT_OFFSET")
     json_headers
-    printf '{"offset":%s}\n' "$offset"
+    printf '{"offset":%s,"thermal_contract":' "$offset"
+    thermal_print_ui_contract_json
+    printf '}\n'
 else
     json_error '405 Method Not Allowed' 'GET or POST only'
 fi

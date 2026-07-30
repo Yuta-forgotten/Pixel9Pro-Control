@@ -289,9 +289,13 @@ apply_l1_persistent_limits() {
 
     [ -f "$BG_ENABLED_FILE" ] || runtime_write_value "$BG_ENABLED_FILE" on \
         || { log -t pixel9pro_ctrl "WARNING: failed to initialize background restriction state"; return 1; }
-    if [ ! -e "$BG_LIST_FILE" ]; then
+    if bg_list_is_legacy_seed "$BG_LIST_FILE"; then
+        runtime_write_value "$BG_LIST_FILE" "$(bg_default_seed_entry)" \
+            || { log -t pixel9pro_ctrl "WARNING: failed to migrate background restriction seed"; return 1; }
+        log -t pixel9pro_ctrl "Background restriction default seed migrated"
+    elif [ ! -e "$BG_LIST_FILE" ]; then
         # 首次运行: 只预置抖音。文件存在但为空时表示用户已清空列表，不再重置默认包名。
-        runtime_write_value "$BG_LIST_FILE" 'com.ss.android.ugc.aweme|stop_after_leave|5' \
+        runtime_write_value "$BG_LIST_FILE" "$(bg_default_seed_entry)" \
             || { log -t pixel9pro_ctrl "WARNING: failed to initialize background restriction list"; return 1; }
     fi
     rm -f "$BG_STOP_STATE_FILE" 2>/dev/null

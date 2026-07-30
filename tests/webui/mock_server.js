@@ -188,7 +188,9 @@ async function handleApi(req, res, url) {
       return json(res, thermalZones());
     case '/cgi-bin/set_thermal.sh':
       if (Number.isFinite(body.offset)) runtime.offset = body.offset;
-      return json(res, req.method === 'POST' ? { ok: true, offset: runtime.offset, restarted: true } : { offset: runtime.offset });
+      return json(res, req.method === 'POST'
+        ? { ok: true, offset: runtime.offset, restarted: true, thermal_contract: { offsets: [-2, 0, 2, 4, 6], default_offset: 4 } }
+        : { offset: runtime.offset, thermal_contract: { offsets: [-2, 0, 2, 4, 6], default_offset: 4 } });
     case '/cgi-bin/swap.sh':
       if (body.mode) runtime.swapMode = body.mode;
       return json(res, swapState());
@@ -205,6 +207,7 @@ async function handleApi(req, res, url) {
         ok: true, policy: 'manual', requested_mode: runtime.uecapMode, manual_mode: runtime.uecapMode,
         active_mode: runtime.uecapMode, reason: 'manual', target_hash: `${runtime.uecapMode}-hash`,
         special_hash: 'special-hash', balanced_hash: 'balanced-hash', universal_hash: 'universal-hash',
+        uecap_contract: { mode_order: ['balanced', 'special', 'universal'], default_mode: 'balanced' },
       });
     case '/cgi-bin/check_baseband.sh': return json(res, { installed: true, enabled: true, version: 'test', module_id: 'pixel9pro_baseband_trial' });
     case '/cgi-bin/standby_guard.sh':
@@ -219,6 +222,10 @@ async function handleApi(req, res, url) {
       if (body.action === 'toggle') runtime.bgEnabled = runtime.bgEnabled === 'on' ? 'off' : 'on';
       return json(res, {
         ok: true, enabled: runtime.bgEnabled, entries: [],
+        bg_contract: {
+          policy_order: ['stop_after_leave', 'block_all', 'block_services', 'bucket'],
+          allowed_delays: [3, 5, 10], default_policy: 'stop_after_leave', default_delay: 5,
+        },
         suggestions: [{ package: 'com.ss.android.ugc.aweme', label: 'Douyin', policy: 'stop_after_leave', delay_min: 5 }],
       });
     case '/cgi-bin/ntp.sh':

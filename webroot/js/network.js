@@ -10,6 +10,7 @@ const state = {
   idleIsolateMode: 'off',
   standbyGuardBusy: false,
   standbyDiag: null,
+  uecapContract: null,
   uecapMode: 'unknown',
   uecapActiveMode: 'unknown',
   uecapBusy: false,
@@ -157,11 +158,28 @@ function renderStandbyGuard(data) {
 }
 
 function uecapLabel(mode) {
-  if (mode === 'balanced') return '国内频段';
-  if (mode === 'special') return '全面增强';
-  if (mode === 'universal') return 'Google 默认';
+  if (UECAP_MODE_PRESENTATION[mode]) return UECAP_MODE_PRESENTATION[mode].name;
   if (mode === 'custom') return '系统原生 / 第三方';
+  if (mode === 'stock') return '系统原生';
+  if (mode === 'disabled') return '当前不可用';
   return '未知';
+}
+
+function applyUecapContract(data) {
+  const raw = data?.uecap_contract;
+  const modeOrder = Array.isArray(raw?.mode_order) ? raw.mode_order.filter((mode) => typeof mode === 'string') : [];
+  const defaultMode = typeof raw?.default_mode === 'string' ? raw.default_mode : '';
+  if (data?.disabled === true) {
+    if (modeOrder.length !== 0 || defaultMode !== 'disabled') throw new Error('UECap disabled contract 无效');
+    state.uecapContract = { modeOrder: [], defaultMode: 'disabled', disabled: true };
+    return;
+  }
+  const valid = modeOrder.length > 0
+    && new Set(modeOrder).size === modeOrder.length
+    && modeOrder.every((mode) => UECAP_MODE_PRESENTATION[mode])
+    && modeOrder.includes(defaultMode);
+  if (!valid) throw new Error('UECap mode contract 无效');
+  state.uecapContract = { modeOrder, defaultMode, disabled: false };
 }
 
 function getUecapModeHash(data, mode) {
@@ -201,29 +219,45 @@ function getUecapVerifyRow(data, requested, active) {
 function renderUecapBtnGroup(activeMode) {
   const selectedMode = state.uecapPendingMode || activeMode;
   refs.uecapBtnGroup.replaceChildren();
-  UECAP_MODES.forEach((m) => {
+  const modes = state.uecapContract?.modeOrder || [];
+  refs.uecapBtnGroup.hidden = modes.length === 0;
+  modes.forEach((id) => {
+    const presentation = UECAP_MODE_PRESENTATION[id];
     const btn = document.createElement('button');
     btn.type = 'button';
-    const isSelected = m.id === selectedMode;
-    const isPending = state.uecapBusy && m.id === state.uecapPendingMode;
+    const isSelected = id === selectedMode;
+    const isPending = state.uecapBusy && id === state.uecapPendingMode;
     btn.className = `uecap-btn${isSelected ? ' active' : ''}${isPending ? ' pending' : ''}${isPending && state.uecapVerifyState === 'verifying' ? ' verifying' : ''}`;
-    btn.dataset.mode = m.id;
+    btn.dataset.mode = id;
     btn.textContent = isPending
       ? (state.uecapVerifyState === 'switching' ? '切换中...' : '校验中...')
-      : m.name;
+      : presentation.name;
     btn.disabled = state.uecapBusy;
-    btn.addEventListener('click', () => setUecapMode(m.id));
+    btn.addEventListener('click', () => setUecapMode(id));
     refs.uecapBtnGroup.appendChild(btn);
   });
 }
 
 function renderUecapRows(data) {
+  applyUecapContract(data);
   refs.uecapRows.replaceChildren();
-  const requested = data.requested_mode || state.uecapMode || 'special';
+  if (state.uecapContract.disabled) {
+    state.uecapMode = 'disabled';
+    state.uecapActiveMode = data.active_mode || 'stock';
+    refs.uecapDesc.textContent = data.disabled_message || '当前安装环境不提供 UE 能力配置切换。';
+    renderUecapBtnGroup('disabled');
+    [
+      { label: '功能状态', value: uecapLabel('disabled'), cls: 'off' },
+      { label: '当前配置', value: uecapLabel(state.uecapActiveMode), cls: 'off' },
+      { label: '原因', value: data.reason || 'unsupported', cls: 'off' },
+    ].forEach((row) => refs.uecapRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
+    return;
+  }
+  const requested = data.requested_mode || state.uecapMode || state.uecapContract.defaultMode;
   const active = data.active_mode || 'custom';
   state.uecapMode = requested;
   state.uecapActiveMode = active;
-  const modeInfo = UECAP_MODES.find((m) => m.id === requested);
+  const modeInfo = UECAP_MODE_PRESENTATION[requested];
   refs.uecapDesc.textContent = state.uecapPendingMode
     ? `${uecapLabel(state.uecapPendingMode)}：已提交切换，正在校验当前配置。`
     : modeInfo ? `${modeInfo.desc} · 切换后自动校验配置是否生效。` : '选择 UE 能力配置，切换后会自动校验是否生效。';
@@ -257,8 +291,9 @@ async function refreshNrSwitch() {
 async function refreshUecap() {
   try {
     const data = await apiFetch(API.uecap, { timeoutMs: 6000 });
-    state.uecapMode = data.requested_mode || 'special';
-    state.uecapActiveMode = data.active_mode || 'custom';
+    applyUecapContract(data);
+    state.uecapMode = data.requested_mode || state.uecapContract.defaultMode;
+    state.uecapActiveMode = data.active_mode || (state.uecapContract.disabled ? 'stock' : 'custom');
     const expectedHash = getUecapModeHash(data, state.uecapMode);
     if (!state.uecapPendingMode && state.uecapVerifyState === 'failed' && state.uecapMode === state.uecapActiveMode && (!expectedHash || expectedHash === data.target_hash)) {
       state.uecapVerifyState = 'idle';
@@ -266,6 +301,9 @@ async function refreshUecap() {
     }
     renderUecapRows(data);
   } catch (err) {
+    state.uecapContract = null;
+    refs.uecapBtnGroup.replaceChildren();
+    refs.uecapBtnGroup.hidden = true;
     refs.uecapRows.replaceChildren(); refs.uecapRows.appendChild(errorBlock('获取失败：' + err.message));
   }
 }
@@ -328,7 +366,7 @@ async function toggleIdleIsolateMode() {
 // ── 后台应用限制 ─────────────────────────────────────────
 async function verifyUecapSwitch(mode, expectedHash, initialData) {
   const nonce = ++state.uecapVerifyNonce;
-  const label = UECAP_MODES.find((m) => m.id === mode)?.name || mode;
+  const label = UECAP_MODE_PRESENTATION[mode]?.name || mode;
   const deadline = Date.now() + UECAP_VERIFY_TIMEOUT_MS;
   let lastData = initialData || null;
   let lastErr = '';
@@ -414,8 +452,10 @@ async function toggleNrSwitch() {
 }
 
 async function setUecapMode(mode) {
-  if (state.uecapBusy || (mode === state.uecapMode && state.uecapVerifyState !== 'failed')) return;
-  const label = UECAP_MODES.find((m) => m.id === mode)?.name || mode;
+  if (!state.uecapContract?.modeOrder.includes(mode)
+    || state.uecapBusy
+    || (mode === state.uecapMode && state.uecapVerifyState !== 'failed')) return;
+  const label = UECAP_MODE_PRESENTATION[mode]?.name || mode;
   state.uecapBusy = true;
   state.uecapPendingMode = mode;
   state.uecapVerifyState = 'switching';

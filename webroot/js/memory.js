@@ -6,6 +6,7 @@ const state = {
   swapData: null,
   swapBusy: false,
   swapLoading: false,
+  bgContract: null,
   bgRestrictEnabled: 'on',
   bgRestrictBusy: false,
   bgRestrictSuggestions: []
@@ -256,21 +257,62 @@ function syncBgPackageHint() {
 }
 
 function normalizeBgPolicy(policy) {
-  return BG_RESTRICT_POLICIES[policy] ? policy : 'block_all';
+  if (!state.bgContract) return '';
+  return state.bgContract.policyOrder.includes(policy) ? policy : state.bgContract.defaultPolicy;
 }
 
 function normalizeBgDelay(delay) {
+  if (!state.bgContract) return null;
   const value = Number(delay);
-  return BG_RESTRICT_DELAYS.includes(value) ? value : 5;
+  return state.bgContract.delays.includes(value) ? value : state.bgContract.defaultDelay;
+}
+
+function applyBgContract(data) {
+  const raw = data?.bg_contract;
+  const policyOrder = Array.isArray(raw?.policy_order) ? raw.policy_order.filter((id) => typeof id === 'string') : [];
+  const delays = Array.isArray(raw?.allowed_delays) ? raw.allowed_delays.map(Number) : [];
+  const defaultPolicy = typeof raw?.default_policy === 'string' ? raw.default_policy : '';
+  const defaultDelay = Number(raw?.default_delay);
+  const valid = policyOrder.length > 0
+    && new Set(policyOrder).size === policyOrder.length
+    && policyOrder.every((id) => BG_RESTRICT_POLICY_PRESENTATION[id])
+    && delays.length > 0
+    && new Set(delays).size === delays.length
+    && delays.every((delay) => Number.isInteger(delay) && delay > 0)
+    && policyOrder.includes(defaultPolicy)
+    && delays.includes(defaultDelay);
+  if (!valid) throw new Error('后台限制 contract 无效');
+
+  const previousPolicy = refs.bgRestrictPolicySelect?.value;
+  const previousDelay = Number(refs.bgRestrictDelaySelect?.value);
+  state.bgContract = { policyOrder, delays, defaultPolicy, defaultDelay };
+
+  refs.bgRestrictPolicySelect.replaceChildren();
+  policyOrder.forEach((id) => {
+    const option = document.createElement('option');
+    option.value = id;
+    option.textContent = BG_RESTRICT_POLICY_PRESENTATION[id].label;
+    refs.bgRestrictPolicySelect.appendChild(option);
+  });
+  refs.bgRestrictPolicySelect.value = policyOrder.includes(previousPolicy) ? previousPolicy : defaultPolicy;
+
+  refs.bgRestrictDelaySelect.replaceChildren();
+  delays.forEach((delay) => {
+    const option = document.createElement('option');
+    option.value = String(delay);
+    option.textContent = `${delay}分钟`;
+    refs.bgRestrictDelaySelect.appendChild(option);
+  });
+  refs.bgRestrictDelaySelect.value = delays.includes(previousDelay) ? String(previousDelay) : String(defaultDelay);
 }
 
 function createBgPolicySelect(value) {
   const select = document.createElement('select');
   select.className = 'bg-policy-select';
-  BG_RESTRICT_POLICY_ORDER.forEach((id) => {
+  state.bgContract.policyOrder.forEach((id) => {
     const opt = document.createElement('option');
     opt.value = id;
-    opt.textContent = BG_RESTRICT_POLICIES[id].label;
+    opt.textContent = BG_RESTRICT_POLICY_PRESENTATION[id].label;
     opt.selected = id === value;
     select.appendChild(opt);
   });
@@ -280,7 +322,7 @@ function createBgPolicySelect(value) {
 function createBgDelaySelect(value) {
   const select = document.createElement('select');
   select.className = 'bg-delay-select';
-  BG_RESTRICT_DELAYS.forEach((min) => {
+  state.bgContract.delays.forEach((min) => {
     const opt = document.createElement('option');
     opt.value = String(min);
     opt.textContent = `${min}分钟`;
@@ -296,7 +338,7 @@ function syncBgDelayControl(policySelect, delaySelect) {
 }
 
 function syncBgRestrictControls() {
-  const busy = state.bgRestrictBusy;
+  const busy = state.bgRestrictBusy || !state.bgContract;
   if (refs.bgRestrictToggleBtn) refs.bgRestrictToggleBtn.disabled = busy;
   if (refs.bgRestrictAddBtn) refs.bgRestrictAddBtn.disabled = busy;
   if (refs.bgRestrictPkgInput) refs.bgRestrictPkgInput.disabled = busy;
@@ -356,6 +398,7 @@ function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled, runtime = {
 }
 
 function renderBgRestrict(data) {
+  applyBgContract(data);
   state.bgRestrictEnabled = data.enabled === 'on' ? 'on' : 'off';
   const on = state.bgRestrictEnabled === 'on';
   refs.bgRestrictToggleLabel.textContent = on ? '关闭' : '开启';
@@ -373,7 +416,7 @@ function renderBgRestrict(data) {
   packages.forEach((p) => {
     const policy = normalizeBgPolicy(p.policy);
     const delay = normalizeBgDelay(p.delay);
-    const meta = BG_RESTRICT_POLICIES[policy];
+    const meta = BG_RESTRICT_POLICY_PRESENTATION[policy];
     const opBg = p.op_bg || '';
     const opAny = p.op_any || p.appops || '';
     const stopState = String(p.stop_state || '');
@@ -442,6 +485,8 @@ async function refreshBgRestrict() {
     const data = await apiFetch(API.bgRestrict, { timeoutMs: 8000 });
     renderBgRestrict(data);
   } catch (err) {
+    state.bgContract = null;
+    syncBgRestrictControls();
     refs.bgRestrictRows.replaceChildren();
     refs.bgRestrictRows.appendChild(errorBlock('获取失败：' + err.message));
   }
@@ -463,6 +508,8 @@ async function forceRefreshBgRestrict() {
       renderBgRestrict(fallback);
     }
   } catch (err) {
+    state.bgContract = null;
+    syncBgRestrictControls();
     refs.bgRestrictRows.replaceChildren();
     refs.bgRestrictRows.appendChild(errorBlock('获取失败：' + err.message));
   }
@@ -504,6 +551,7 @@ async function toggleBgRestrict() {
 }
 
 async function bgRestrictAdd() {
+  if (!state.bgContract) return;
   const pkg = (refs.bgRestrictPkgInput.value || '').trim();
   if (!pkg || !/^[a-zA-Z][a-zA-Z0-9._]*$/.test(pkg)) {
     showToast('请输入有效的包名 (如 com.example.app)');
@@ -523,6 +571,7 @@ async function bgRestrictAdd() {
 }
 
 async function bgRestrictUpdate(pkg, policy, delay) {
+  if (!state.bgContract) return;
   await bgRestrictAction(
     { action: 'update', package: pkg, policy: normalizeBgPolicy(policy), delay: normalizeBgDelay(delay) },
     `已更新 ${pkg}`

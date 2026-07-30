@@ -72,7 +72,6 @@ const HOME_CPU_LABELS = ['小核', '中核', '大核'];
 const TEMP_MIN = 25;
 const TEMP_MAX = 60;
 const THRESH_STOCK = 37;
-const THRESH_MOD_DEFAULT = 4;
 
 const THEME_ICONS = {
   system: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M4 5h16v10H4zm0 12h16v2H4z"/></svg>',
@@ -160,17 +159,14 @@ const THERMAL_PRESETS = {
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>'
   }
 };
-const THERMAL_OFFSETS = Object.freeze([-2, 0, 2, 4, 6]);
-const THERMAL_DEFAULT_OFFSET = 4;
-
 const SWAP_KEYS = ['swappiness', 'min_free_kbytes', 'watermark_scale_factor', 'vfs_cache_pressure'];
 
 
-const UECAP_MODES = [
-  { id: 'balanced', name: '国内频段', desc: '原厂 +25 组中国 NR 组合 · 推荐' },
-  { id: 'special', name: '全面增强', desc: '原厂 +52 组全球 NR 组合' },
-  { id: 'universal', name: 'Google 默认', desc: '原厂能力表 · 不做任何修改' },
-];
+const UECAP_MODE_PRESENTATION = {
+  balanced: { name: '国内频段', desc: '原厂 +25 组中国 NR 组合 · 推荐' },
+  special: { name: '全面增强', desc: '原厂 +52 组全球 NR 组合' },
+  universal: { name: 'Google 默认', desc: '原厂能力表 · 不做任何修改' },
+};
 
 const UECAP_DETAIL = '<b>UE 网络能力配置</b><br><br>UECap 告诉基站”手机支持哪些载波组合”，基站据此分配频段。<b>不直接影响功耗</b>——功耗取决于信号强度和 modem 活跃时间。<br><br><b>国内频段</b>（推荐）<br>原厂 +25 组中国 NR 组合（n28 / n41 / n79），只增不删。<br><br><b>全面增强</b><br>原厂 +52 组全球 NR 组合，含国际 n78 / EN-DC。国内多出的组合基本用不到。<br><br><b>Google 默认</b><br>原厂能力表，不做任何修改。<br><br>切换只重启蜂窝 modem，不影响 Wi-Fi / 蓝牙。';
 const BASEBAND_DETAIL = '<b>基带配置模块 (pixel9pro_baseband_trial)</b><br><br><b>提供内容</b><br>- 5G / IMS 属性：VoLTE、Wi-Fi Calling 开关<br>- CarrierSettings：运营商配置覆盖<br>- China MCFG：移动 / 联通 / 电信相关 modem 配置<br><br><b>不包含</b><br>- UECap binarypb 管理（由 pixel9pro_control 负责）<br>- 温控、CPU 调度、ZRAM 和 WebUI';
@@ -190,8 +186,7 @@ const POLL_INTERVALS = {
   slow: { home: 90000, optim: 75000, relaxedHome: 180000, relaxedOptim: 150000 },
 };
 
-const BG_RESTRICT_POLICY_ORDER = ['stop_after_leave', 'block_all', 'block_services', 'bucket'];
-const BG_RESTRICT_POLICIES = {
+const BG_RESTRICT_POLICY_PRESENTATION = {
   stop_after_leave: {
     label: '休眠',
     desc: '离开前台后按所选延时停止后台进程，并降低后台优先级。'
@@ -209,7 +204,6 @@ const BG_RESTRICT_POLICIES = {
     desc: '只降低 App Standby Bucket，减少后台执行机会，适合先观察通知与同步影响。'
   }
 };
-const BG_RESTRICT_DELAYS = [3, 5, 10];
 
 const ZONE_LABELS = {
   'VIRTUAL-SKIN': '机身温度',

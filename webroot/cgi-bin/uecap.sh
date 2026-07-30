@@ -17,7 +17,7 @@ if [ "$_uecap_policy" = "disabled" ]; then
             ;;
     esac
     json_headers
-    printf '{"ok":true,"reloading":false,"policy":"disabled","mode":"disabled","manual_mode":"disabled","active_mode":"stock","reason":"%s","disabled":true,"disabled_message":"%s","modes":[],"hash":"","stock_hash":""}\n' \
+    printf '{"ok":true,"reloading":false,"policy":"disabled","mode":"disabled","manual_mode":"disabled","active_mode":"stock","reason":"%s","disabled":true,"disabled_message":"%s","modes":[],"hash":"","stock_hash":"","uecap_contract":{"mode_order":[],"default_mode":"disabled"}}\n' \
         "$_uecap_disabled_reason" "$(json_escape "$_uecap_disabled_message")"
     exit 0
 fi
@@ -52,7 +52,8 @@ case "$REQUEST_METHOD" in
         read_json_body 256
         body="$JSON_BODY"
         mode=$(printf '%s' "$body" | sed -n 's/.*"mode" *: *"\([a-z]*\)".*/\1/p')
-        case "$mode" in special|balanced|universal) ;; *) json_error '400 Bad Request' 'invalid mode' ;; esac
+        uecap_is_valid_mode "$mode" \
+            || json_error '400 Bad Request' 'invalid mode'
         policy=$(printf '%s' "$body" | sed -n 's/.*"policy" *: *"\([a-z]*\)".*/\1/p')
         case "$policy" in ''|manual) ;; *) json_error '400 Bad Request' 'UECap policy is fixed to manual' ;; esac
 

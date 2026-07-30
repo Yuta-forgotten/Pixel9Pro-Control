@@ -6,6 +6,28 @@ BG_ENABLED_FILE="${BG_ENABLED_FILE:-$MODDIR/.bg_restrict_enabled}"
 BG_LIST_FILE="${BG_LIST_FILE:-$MODDIR/.bg_restrict_list}"
 BG_BASELINE_FILE="${BG_BASELINE_FILE:-$MODDIR/.bg_restrict_baseline}"
 BG_STOP_STATE_FILE="${BG_STOP_STATE_FILE:-$MODDIR/.bg_restrict_stop_state}"
+BG_POLICY_ORDER="stop_after_leave block_all block_services bucket"
+BG_DEFAULT_POLICY="block_all"
+BG_UI_DEFAULT_POLICY="stop_after_leave"
+BG_ALLOWED_DELAYS="3 5 10"
+BG_DEFAULT_DELAY=5
+BG_DEFAULT_SEED_PACKAGE="com.ss.android.ugc.aweme"
+
+bg_is_valid_policy() {
+    _bg_candidate_policy="$1"
+    for _bg_allowed_policy in $BG_POLICY_ORDER; do
+        [ "$_bg_candidate_policy" = "$_bg_allowed_policy" ] && return 0
+    done
+    return 1
+}
+
+bg_is_valid_delay() {
+    _bg_candidate_delay="$1"
+    for _bg_allowed_delay in $BG_ALLOWED_DELAYS; do
+        [ "$_bg_candidate_delay" = "$_bg_allowed_delay" ] && return 0
+    done
+    return 1
+}
 
 bg_read_enabled() {
     _v=$(cat "$BG_ENABLED_FILE" 2>/dev/null | tr -d ' \n\r\t')
@@ -32,27 +54,59 @@ bg_read_appop_mode() {
 }
 
 bg_normalize_policy() {
+    if bg_is_valid_policy "$1"; then
+        printf '%s' "$1"
+        return 0
+    fi
     case "$1" in
-        bucket|block_services|block_all|stop_after_leave) printf '%s' "$1" ;;
         reduce|rare) printf 'bucket' ;;
         services) printf 'block_services' ;;
-        strict|restricted|'') printf 'block_all' ;;
+        strict|restricted|'') printf '%s' "$BG_DEFAULT_POLICY" ;;
         stop|force_stop) printf 'stop_after_leave' ;;
-        *) printf 'block_all' ;;
+        *) printf '%s' "$BG_DEFAULT_POLICY" ;;
     esac
 }
 
 bg_normalize_delay() {
-    case "$1" in
-        3|5|10) printf '%s' "$1" ;;
-        *) printf '5' ;;
-    esac
+    if bg_is_valid_delay "$1"; then
+        printf '%s' "$1"
+    else
+        printf '%s' "$BG_DEFAULT_DELAY"
+    fi
+}
+
+bg_default_seed_entry() {
+    bg_format_entry "$BG_DEFAULT_SEED_PACKAGE" "$BG_UI_DEFAULT_POLICY" "$BG_DEFAULT_DELAY"
+}
+
+bg_list_is_legacy_seed() {
+    [ -f "$1" ] || return 1
+    _bg_legacy_seed=$(sed 's/[[:space:]]//g' "$1" 2>/dev/null | sed '/^$/d')
+    _bg_legacy_expected=$(printf 'com.tencent.mobileqq\ncom.tencent.qqmusic')
+    [ "$_bg_legacy_seed" = "$_bg_legacy_expected" ]
+}
+
+bg_print_ui_contract_json() {
+    printf '{"policy_order":['
+    _bg_contract_first=1
+    for _bg_contract_policy in $BG_POLICY_ORDER; do
+        [ "$_bg_contract_first" -eq 1 ] && _bg_contract_first=0 || printf ','
+        printf '"%s"' "$_bg_contract_policy"
+    done
+    printf '],"allowed_delays":['
+    _bg_contract_first=1
+    for _bg_contract_delay in $BG_ALLOWED_DELAYS; do
+        [ "$_bg_contract_first" -eq 1 ] && _bg_contract_first=0 || printf ','
+        printf '%s' "$_bg_contract_delay"
+    done
+    printf '],"default_policy":"%s","default_delay":%s}' \
+        "$BG_UI_DEFAULT_POLICY" "$BG_DEFAULT_DELAY"
 }
 
 bg_parse_entry() {
     _bg_raw=$(printf '%s' "$1" | tr -d ' \n\r\t')
-    _bg_policy="block_all"
-    _bg_delay="5"
+    _bg_policy="$BG_DEFAULT_POLICY"
+    _bg_delay="$BG_DEFAULT_DELAY"
     case "$_bg_raw" in
         *'|'*)
             _bg_pkg=$(printf '%s' "$_bg_raw" | cut -d '|' -f 1)

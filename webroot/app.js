@@ -287,7 +287,6 @@ async function init() {
   appFeatures.shell.initializeInteractions();
   appFeatures.shell.setForegroundPaused(document.hidden || document.visibilityState !== 'visible');
   refs.topbarSubtitle.textContent = TAB_META[appFeatures.shell.getCurrentTab()];
-  appFeatures.thermal.positionMarkers();
   appFeatures.shell.setLastInteractionAt(bootAt);
   appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow'], bootAt);
   await appFeatures.shell.loadInfo();

@@ -2,14 +2,15 @@
 'use strict';
 (() => {
 const state = {
-  currentOffset: 4,
+  contract: null,
+  currentOffset: null,
   thermalBusy: false,
   thermalBadReads: 0,
   lastSkinTempC: null,
   thermalApplyBusy: false,
   sensorRefs: null,
   homeSensorRefs: null,
-  thermalModal: { pending: 4, prev: 4 },
+  thermalModal: { pending: null, prev: null },
   tempChart: { timer: null, draw: null, activeRange: 10, requestId: 0 }
 };
 
@@ -41,7 +42,8 @@ function tempHex(t) {
 }
 
 function tempStatus(t) {
-  const modThresh = THRESH_STOCK + (state.currentOffset ?? THRESH_MOD_DEFAULT);
+  const offset = Number(state.currentOffset);
+  const modThresh = THRESH_STOCK + (Number.isFinite(offset) ? offset : 0);
   if (t < 36) return '凉爽';
   if (t < THRESH_STOCK) return '正常';
   if (t < modThresh) return '已高于原厂阈值，当前仍在放宽区间';
@@ -55,12 +57,17 @@ function barPct(t) {
 }
 
 function positionMarkers() {
-  const modThresh = THRESH_STOCK + (state.currentOffset ?? THRESH_MOD_DEFAULT);
   const stockPct = barPct(THRESH_STOCK);
-  const modPct = barPct(modThresh);
   refs.mkStock.style.left = `${stockPct}%`;
   refs.mkStockLbl.style.left = `${stockPct}%`;
   refs.mkStockLbl.textContent = `${THRESH_STOCK}°C 原厂`;
+  if (!Number.isFinite(Number(state.currentOffset))) {
+    refs.mkMod.style.display = 'none';
+    refs.mkModLbl.style.display = 'none';
+    return;
+  }
+  const modThresh = THRESH_STOCK + Number(state.currentOffset);
+  const modPct = barPct(modThresh);
   refs.mkMod.style.left = `${modPct}%`;
   refs.mkModLbl.style.left = `${modPct}%`;
   refs.mkModLbl.textContent = state.currentOffset === 0 ? '' : `${modThresh}°C 当前`;
@@ -114,7 +121,8 @@ function syncHeroDesc() {
 }
 
 function syncThermalUi() {
-  const preset = THERMAL_PRESETS[state.currentOffset] || THERMAL_PRESETS[4];
+  const preset = THERMAL_PRESETS[state.currentOffset];
+  if (!preset) return;
   refs.topbarThermalChip.textContent = `温控 ${preset.name}`;
   refs.thermalCurrentName.textContent = preset.name;
   refs.thermalCurrentDesc.textContent = preset.summary;
@@ -131,7 +139,8 @@ function syncThermalUi() {
 
 function renderThermalCards() {
   refs.thermalList.replaceChildren();
-  THERMAL_OFFSETS.forEach((offset) => {
+  if (!state.contract) return;
+  state.contract.offsets.forEach((offset) => {
     const preset = THERMAL_PRESETS[offset];
     const card = document.createElement('article');
     card.className = 'profile-card thermal-option';
@@ -163,6 +172,19 @@ function renderThermalCards() {
   });
 }
 
+function applyThermalContract(data) {
+  const raw = data?.thermal_contract;
+  const offsets = Array.isArray(raw?.offsets) ? raw.offsets.map(Number) : [];
+  const defaultOffset = Number(raw?.default_offset);
+  const uniqueOffsets = new Set(offsets);
+  const valid = offsets.length > 0
+    && uniqueOffsets.size === offsets.length
+    && offsets.every((offset) => Number.isFinite(offset) && THERMAL_PRESETS[offset])
+    && uniqueOffsets.has(defaultOffset);
+  if (!valid) throw new Error('温控档位 contract 无效');
+  state.contract = { offsets, defaultOffset };
+}
+
 function ensureSensorRefs(container, key, zones, className) {
   const signature = zones.map((zone) => zone.zone).join(',');
   if (state[key] && state[key].map((entry) => entry.zone).join(',') === signature) return state[key];
@@ -192,9 +214,15 @@ function ensureSensorRefs(container, key, zones, className) {
 async function loadThermalPreset() {
   try {
     const data = await apiFetch(API.thermalSet);
-    state.currentOffset = THERMAL_OFFSETS.includes(data.offset) ? data.offset : THERMAL_DEFAULT_OFFSET;
+    applyThermalContract(data);
+    state.currentOffset = state.contract.offsets.includes(Number(data.offset))
+      ? Number(data.offset)
+      : state.contract.defaultOffset;
+    renderThermalCards();
   } catch (_) {
-    state.currentOffset = THERMAL_DEFAULT_OFFSET;
+    state.contract = null;
+    state.currentOffset = null;
+    refs.thermalList.replaceChildren();
   }
   syncThermalUi();
   syncHeroDesc();
@@ -668,7 +696,7 @@ function stopThermalBurst() {
 }
 
 async function applyThermal(offset) {
-  if (offset === state.currentOffset || state.thermalApplyBusy) return;
+  if (!state.contract?.offsets.includes(offset) || offset === state.currentOffset || state.thermalApplyBusy) return;
   const prev = state.currentOffset;
   const card = refs.thermalList.querySelector(`[data-offset="${offset}"]`);
   if (!card) return;
@@ -771,7 +799,7 @@ function scheduleTempChartRefresh(delay = TEMP_CHART_REFRESH_MS) {
 }
 
 registerFeature('thermal', {
-  initialize: renderThermalCards,
+  initialize() { refs.thermalList.replaceChildren(); },
   load: loadThermalPreset,
   refresh: refreshThermal,
   pause: pauseTempChartRefresh,

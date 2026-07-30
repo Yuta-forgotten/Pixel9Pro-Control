@@ -332,17 +332,6 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
         esac
     done
     [ "$_profile_migrated" -eq 1 ] && ui_print "  ✓ 旧性能档已并入均衡 (省电/均衡/系统默认 三档可在 WebUI 选择)"
-    # Replace only the untouched historical QQ/QQMusic seed; preserve any
-    # user-edited list.
-    _bg_list="$MODPATH/.bg_restrict_list"
-    if [ -f "$_bg_list" ]; then
-        _bg_norm=$(sed 's/[[:space:]]//g' "$_bg_list" 2>/dev/null | sed '/^$/d')
-        _old_default=$(printf 'com.tencent.mobileqq\ncom.tencent.qqmusic')
-        if [ "$_bg_norm" = "$_old_default" ]; then
-            installer_write "$_bg_list" 'com.ss.android.ugc.aweme|stop_after_leave|5'
-            ui_print "  ✓ 后台限制默认列表已迁移为抖音"
-        fi
-    fi
     ui_print ""
 fi
 
@@ -355,8 +344,16 @@ if [ "$_is_upgrade" -eq 0 ]; then
 
     # --- 温控阈值: 现行五档 -2 / 0 / +2 / +4 / +6°C ---
     ui_print "  ① 温控偏移:"
-    _ofs_idx=3
-    _ofs_vals="-2 0 2 4 6"
+    _ofs_idx=0
+    _ofs_scan_idx=0
+    _ofs_vals="$THERMAL_ALLOWED_OFFSETS"
+    for _ofs_scan_value in $_ofs_vals; do
+        if [ "$_ofs_scan_value" = "$THERMAL_DEFAULT_OFFSET" ]; then
+            _ofs_idx=$_ofs_scan_idx
+            break
+        fi
+        _ofs_scan_idx=$((_ofs_scan_idx + 1))
+    done
     set -- $_ofs_vals
     _ofs_total=$#
     while true; do
@@ -397,12 +394,29 @@ if [ "$_is_upgrade" -eq 0 ]; then
         ui_print ""
     else
     ui_print "  ③ 网络能力配置:"
-    _UE_VALS="balanced special universal"
+    _UE_VALS=$(sh "$MODPATH/uecap_profile.sh" modes 2>/dev/null) \
+        || { ui_print "  ✗ 无法读取 UECap mode contract"; exit 1; }
+    _ue_default=$(sh "$MODPATH/uecap_profile.sh" default 2>/dev/null) \
+        || { ui_print "  ✗ 无法读取 UECap default contract"; exit 1; }
     _UE_LABEL_balanced="国内频段 (推荐)"
     _UE_LABEL_special="全面增强"
     _UE_LABEL_universal="Google 默认"
     _ue_idx=0
-    _ue_total=3
+    _ue_total=0
+    _ue_scan_idx=0
+    _ue_default_found=0
+    for _ue_scan_value in $_UE_VALS; do
+        if [ "$_ue_scan_value" = "$_ue_default" ]; then
+            _ue_idx=$_ue_scan_idx
+            _ue_default_found=1
+        fi
+        _ue_scan_idx=$((_ue_scan_idx + 1))
+        _ue_total=$((_ue_total + 1))
+    done
+    [ "$_ue_total" -gt 0 ] \
+        || { ui_print "  ✗ UECap mode contract 为空"; exit 1; }
+    [ "$_ue_default_found" -eq 1 ] \
+        || { ui_print "  ✗ UECap default 不在 mode contract 中"; exit 1; }
     while true; do
         _i=0; _ue_cur=""
         for _v in $_UE_VALS; do
@@ -506,9 +520,13 @@ else
         fi
     fi
     [ -f "$MODPATH/.profile_auto_reason" ] || installer_write "$MODPATH/.profile_auto_reason" manual_policy
-    [ -f "$MODPATH/.uecap_manual_mode" ] || installer_write "$MODPATH/.uecap_manual_mode" balanced
-    [ -f "$MODPATH/.uecap_mode" ] || installer_write "$MODPATH/.uecap_mode" balanced
-    [ -f "$MODPATH/.uecap_policy" ] || installer_write "$MODPATH/.uecap_policy" manual
+    if [ "$UECAP_DISABLED" -eq 0 ]; then
+        _ue_default=$(sh "$MODPATH/uecap_profile.sh" default 2>/dev/null) \
+            || { ui_print "  ✗ 无法读取 UECap default contract"; exit 1; }
+        [ -f "$MODPATH/.uecap_manual_mode" ] || installer_write "$MODPATH/.uecap_manual_mode" "$_ue_default"
+        [ -f "$MODPATH/.uecap_mode" ] || installer_write "$MODPATH/.uecap_mode" "$_ue_default"
+        [ -f "$MODPATH/.uecap_policy" ] || installer_write "$MODPATH/.uecap_policy" manual
+    fi
     # 不兼容的 root/设备升级时覆盖旧 UECap 状态，避免迁移出不可用档位。
     if [ "$UECAP_DISABLED" -eq 1 ]; then
         installer_write "$MODPATH/.uecap_manual_mode" disabled

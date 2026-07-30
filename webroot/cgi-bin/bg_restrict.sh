@@ -171,12 +171,10 @@ write_pkg_entry() {
 }
 
 validate_pkg_policy_request() {
-    case "$1" in bucket|block_services|block_all|stop_after_leave) ;;
-        *) json_error '400 Bad Request' 'invalid background policy' ;;
-    esac
-    case "$2" in 3|5|10) ;;
-        *) json_error '400 Bad Request' 'invalid background delay' ;;
-    esac
+    bg_is_valid_policy "$1" \
+        || json_error '400 Bad Request' 'invalid background policy'
+    bg_is_valid_delay "$2" \
+        || json_error '400 Bad Request' 'invalid background delay'
 }
 
 validate_package_name() {
@@ -187,7 +185,9 @@ validate_package_name() {
 
 emit_state() {
     _enabled=$(bg_read_enabled)
-    printf '"enabled":"%s","packages":[' "$_enabled"
+    printf '"enabled":"%s","bg_contract":' "$_enabled"
+    bg_print_ui_contract_json
+    printf ',"packages":['
     _first=1
     if [ -s "$BG_LIST_FILE" ]; then
         while IFS= read -r _line || [ -n "$_line" ]; do

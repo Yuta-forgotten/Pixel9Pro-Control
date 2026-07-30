@@ -25,6 +25,44 @@ export PIXEL9PRO_UECAP_SWITCH_FILE="$TEST_ROOT/switch"
 export PIXEL9PRO_UECAP_LOGDIR="$TEST_ROOT/logs"
 . "$SOURCE_ROOT/uecap_profile.sh"
 
+check_eq 'UECap contract owns mode order' 'balanced special universal' "$UECAP_MODE_ORDER"
+check_eq 'UECap contract owns default mode' balanced "$UECAP_DEFAULT_MODE"
+check_eq 'UECap CLI exposes mode order for installer consumers' 'balanced special universal' "$(sh "$SOURCE_ROOT/uecap_profile.sh" modes)"
+check_eq 'UECap CLI exposes default for installer consumers' balanced "$(sh "$SOURCE_ROOT/uecap_profile.sh" default)"
+if sh "$SOURCE_ROOT/uecap_profile.sh" unknown >/dev/null 2>&1; then
+    FAIL=$((FAIL + 1))
+    printf 'not ok %s - UECap CLI rejects unknown commands\n' "$((PASS + FAIL))"
+else
+    PASS=$((PASS + 1))
+    printf 'ok %s - UECap CLI rejects unknown commands\n' "$((PASS + FAIL))"
+fi
+check_eq 'UECap UI contract serializes modes and default' \
+    '{"mode_order":["balanced","special","universal"],"default_mode":"balanced"}' \
+    "$(uecap_print_ui_contract_json)"
+if uecap_is_valid_mode special && ! uecap_is_valid_mode invalid; then
+    PASS=$((PASS + 1))
+    printf 'ok %s - UECap mode validator consumes contract order\n' "$((PASS + FAIL))"
+else
+    FAIL=$((FAIL + 1))
+    printf 'not ok %s - UECap mode validator consumes contract order\n' "$((PASS + FAIL))"
+fi
+
+_uecap_source_guard="$TEST_ROOT/source_guard"
+mkdir -p "$_uecap_source_guard" || exit 2
+if (
+    export PIXEL9PRO_MODDIR="$_uecap_source_guard"
+    export PIXEL9PRO_UECAP_MODE_FILE="$_uecap_source_guard/mode"
+    set -- apply special
+    . "$SOURCE_ROOT/uecap_profile.sh"
+    [ ! -e "$_uecap_source_guard/mode" ]
+); then
+    PASS=$((PASS + 1))
+    printf 'ok %s - sourcing UECap library never runs CLI mutation\n' "$((PASS + FAIL))"
+else
+    FAIL=$((FAIL + 1))
+    printf 'not ok %s - sourcing UECap library never runs CLI mutation\n' "$((PASS + FAIL))"
+fi
+
 printf 'balanced' > "$UECAP_MODE_FILE"
 printf 'balanced' > "$UECAP_MANUAL_MODE_FILE"
 printf 'manual' > "$UECAP_POLICY_FILE"

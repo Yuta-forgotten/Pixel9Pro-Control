@@ -3,10 +3,10 @@
 # Local fixture for CGI rollback/error contracts. It never touches Android
 # settings or telephony; mock commands persist their state under TEST_ROOT.
 
-case "$(uname -s 2>/dev/null)" in
-    MINGW*|MSYS*) ;;
-    *) printf '1..0 # SKIP local mock-command fixture\n'; exit 0 ;;
-esac
+if [ -x /system/bin/sh ]; then
+    printf '1..0 # SKIP host-only mock-command fixture\n'
+    exit 0
+fi
 
 MOD="${1:-${0%/tests/*}}"
 TEST_ROOT="${2:-${TMPDIR:-/tmp}/pixel9pro_cgi_failure_$$}"
@@ -27,21 +27,33 @@ assert_contains() {
     case "$2" in *"$3"*) ok "$1" ;; *) not_ok "$1 (missing=$3)" ;; esac
 }
 
-mkdir -p "$FIXTURE/webroot/cgi-bin" "$FIXTURE/scripts" \
-    "$FIXTURE/system/vendor/etc" "$MOCK_BIN" "$MOCK_STATE_DIR" || exit 2
+mkdir -p "$FIXTURE/webroot/cgi-bin" "$FIXTURE/scripts" "$FIXTURE/config" \
+    "$FIXTURE/system/vendor/etc" "$FIXTURE/system/vendor/firmware/uecapconfig" \
+    "$MOCK_BIN" "$MOCK_STATE_DIR" || exit 2
 cp "$MOD/webroot/cgi-bin/_common.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$MOD/webroot/cgi-bin/nr_switch.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$MOD/webroot/cgi-bin/standby_guard.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$MOD/webroot/cgi-bin/set_thermal.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
+cp "$MOD/webroot/cgi-bin/bg_restrict.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
+cp "$MOD/webroot/cgi-bin/uecap.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$MOD/webroot/cgi-bin/thermal.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$MOD/webroot/cgi-bin/_thermal_cache.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$MOD/webroot/cgi-bin/owner_arbiter.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$MOD/scripts/runtime_defaults_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/nr_mode_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/thermal_profile.sh" "$FIXTURE/scripts/" || exit 2
+cp "$MOD/scripts/bg_restrict_lib.sh" "$FIXTURE/scripts/" || exit 2
+cp "$MOD/scripts/app_identity_lib.sh" "$FIXTURE/scripts/" || exit 2
+cp "$MOD/scripts/display_state_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/scheduler_detect_lib.sh" "$FIXTURE/scripts/" || exit 2
+cp "$MOD/uecap_profile.sh" "$FIXTURE/" || exit 2
+cp "$MOD/config/app_identities.tsv" "$FIXTURE/config/" || exit 2
 cp "$MOD/system/vendor/etc/thermal_stock.json" "$FIXTURE/system/vendor/etc/" || exit 2
 cp "$MOD/system/vendor/etc/thermal_info_config.json" "$FIXTURE/system/vendor/etc/" || exit 2
+cp "$MOD/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.special.binarypb" "$FIXTURE/system/vendor/firmware/uecapconfig/" || exit 2
+cp "$MOD/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.balanced.binarypb" "$FIXTURE/system/vendor/firmware/uecapconfig/" || exit 2
+cp "$MOD/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.universal.binarypb" "$FIXTURE/system/vendor/firmware/uecapconfig/" || exit 2
+cp "$MOD/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.balanced.binarypb" "$FIXTURE/uecap_target.binarypb" || exit 2
 printf 'fixture-token' > "$FIXTURE/.webui_token"
 
 cat > "$MOCK_BIN/android_settings" <<'EOF'
@@ -133,6 +145,38 @@ run_cgi() {
         sh "$FIXTURE/webroot/cgi-bin/$_test_script"
 }
 
+run_get_cgi() {
+    _test_script="$1"
+    env \
+        PIXEL9PRO_CGI_TEST_MODE=1 \
+        PIXEL9PRO_MODDIR="$FIXTURE" \
+        PIXEL9PRO_UECAP_TARGET="$FIXTURE/uecap_target.binarypb" \
+        REQUEST_METHOD=GET \
+        REMOTE_ADDR=127.0.0.1 \
+        sh "$FIXTURE/webroot/cgi-bin/$_test_script"
+}
+
+printf '4' > "$FIXTURE/.thermal_offset"
+response=$(run_get_cgi set_thermal.sh)
+assert_contains 'thermal GET exposes backend-owned UI contract' "$response" '"thermal_contract":{"offsets":[-2,0,2,4,6],"default_offset":4}'
+
+response=$(run_get_cgi bg_restrict.sh)
+assert_contains 'BG GET exposes backend-owned UI contract' "$response" '"bg_contract":{"policy_order":["stop_after_leave","block_all","block_services","bucket"],"allowed_delays":[3,5,10],"default_policy":"stop_after_leave","default_delay":5}'
+
+printf 'manual' > "$FIXTURE/.uecap_policy"
+printf 'balanced' > "$FIXTURE/.uecap_mode"
+printf 'balanced' > "$FIXTURE/.uecap_manual_mode"
+printf 'fixture' > "$FIXTURE/.uecap_reason"
+response=$(run_get_cgi uecap.sh)
+assert_contains 'UECap GET exposes backend-owned UI contract' "$response" '"uecap_contract":{"mode_order":["balanced","special","universal"],"default_mode":"balanced"}'
+
+printf 'disabled' > "$FIXTURE/.uecap_policy"
+printf 'uecap_unsupported_device' > "$FIXTURE/.uecap_reason"
+response=$(run_get_cgi uecap.sh)
+assert_contains 'disabled UECap keeps legacy fields' "$response" '"disabled":true'
+assert_contains 'disabled UECap adds an empty mode contract' "$response" '"uecap_contract":{"mode_order":[],"default_mode":"disabled"}'
+printf 'manual' > "$FIXTURE/.uecap_policy"
+
 printf 'on' > "$FIXTURE/.nr_screen_switch"
 printf '33' > "$FIXTURE/.nr_saved_mode"
 printf '11' > "$MOCK_STATE_DIR/preferred_network_mode"
@@ -169,6 +213,11 @@ assert_eq 'oversized JSON cannot mutate state' on "$(cat "$FIXTURE/.nr_screen_sw
 response=$(run_cgi nr_switch.sh '[]' 0 0)
 assert_contains 'non-object JSON is rejected' "$response" 'JSON object required'
 assert_eq 'non-object JSON cannot mutate state' on "$(cat "$FIXTURE/.nr_screen_switch")"
+
+mv "$FIXTURE/scripts/display_state_lib.sh" "$FIXTURE/scripts/display_state_lib.sh.missing" || exit 2
+response=$(run_cgi owner_arbiter.sh '{"action":"invalid"}' 0 0)
+assert_contains 'owner CGI fails explicitly when display-state dependency is missing' "$response" 'display state contract not found'
+mv "$FIXTURE/scripts/display_state_lib.sh.missing" "$FIXTURE/scripts/display_state_lib.sh" || exit 2
 
 response=$(run_cgi owner_arbiter.sh '{"action":"invalid"}' 0 0)
 assert_contains 'owner arbiter rejects an unknown action before runtime execution' "$response" 'invalid owner arbiter action'

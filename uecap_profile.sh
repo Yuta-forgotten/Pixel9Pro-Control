@@ -15,6 +15,8 @@ UECAP_TARGET="${PIXEL9PRO_UECAP_TARGET:-/vendor/firmware/uecapconfig/PLATFORM_90
 UECAP_SPECIAL="${PIXEL9PRO_UECAP_SPECIAL:-$MODDIR/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.special.binarypb}"
 UECAP_BALANCED="${PIXEL9PRO_UECAP_BALANCED:-$MODDIR/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.balanced.binarypb}"
 UECAP_UNIVERSAL="${PIXEL9PRO_UECAP_UNIVERSAL:-$MODDIR/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.universal.binarypb}"
+UECAP_MODE_ORDER="balanced special universal"
+UECAP_DEFAULT_MODE="balanced"
 UECAP_RELOAD_DISPATCHED=false
 UECAP_APPLY_RESULT="idle"
 UECAP_STATE_ROLLBACK_RESULT="not_needed"
@@ -54,27 +56,38 @@ uecap_target_is_mounted() {
     "$_uecap_mount_list_bin" 2>/dev/null | grep -F " on $UECAP_TARGET " >/dev/null 2>&1
 }
 
+uecap_is_valid_mode() {
+    _uecap_candidate_mode="$1"
+    for _uecap_allowed_mode in $UECAP_MODE_ORDER; do
+        [ "$_uecap_candidate_mode" = "$_uecap_allowed_mode" ] && return 0
+    done
+    return 1
+}
+
 uecap_mode_label() {
-    case "$1" in
-        special|balanced|universal) echo "$1" ;;
-        *) echo "unknown" ;;
-    esac
+    if uecap_is_valid_mode "$1"; then
+        echo "$1"
+    else
+        echo "unknown"
+    fi
 }
 
 uecap_current_mode() {
-    _mode=$(cat "$UECAP_MODE_FILE" 2>/dev/null | tr -d ' \n\r')
-    case "$_mode" in
-        special|balanced|universal) echo "$_mode" ;;
-        *) echo "balanced" ;;
-    esac
+    _uecap_current=$(cat "$UECAP_MODE_FILE" 2>/dev/null | tr -d ' \n\r')
+    if uecap_is_valid_mode "$_uecap_current"; then
+        echo "$_uecap_current"
+    else
+        echo "$UECAP_DEFAULT_MODE"
+    fi
 }
 
 uecap_current_manual_mode() {
-    _mode=$(cat "$UECAP_MANUAL_MODE_FILE" 2>/dev/null | tr -d ' \n\r')
-    case "$_mode" in
-        special|balanced|universal) echo "$_mode" ;;
-        *) echo "balanced" ;;
-    esac
+    _uecap_manual=$(cat "$UECAP_MANUAL_MODE_FILE" 2>/dev/null | tr -d ' \n\r')
+    if uecap_is_valid_mode "$_uecap_manual"; then
+        echo "$_uecap_manual"
+    else
+        echo "$UECAP_DEFAULT_MODE"
+    fi
 }
 
 uecap_current_policy() {
@@ -190,8 +203,19 @@ uecap_resolve_source() {
     case "$1" in
         universal) echo "$UECAP_UNIVERSAL" ;;
         special) echo "$UECAP_SPECIAL" ;;
-        *) echo "$UECAP_BALANCED" ;;
+        balanced) echo "$UECAP_BALANCED" ;;
+        *) return 1 ;;
     esac
+}
+
+uecap_print_ui_contract_json() {
+    printf '{"mode_order":['
+    _uecap_contract_first=1
+    for _uecap_contract_mode in $UECAP_MODE_ORDER; do
+        [ "$_uecap_contract_first" -eq 1 ] && _uecap_contract_first=0 || printf ','
+        printf '"%s"' "$_uecap_contract_mode"
+    done
+    printf '],"default_mode":"%s"}' "$UECAP_DEFAULT_MODE"
 }
 
 uecap_reload_modem() {
@@ -364,18 +388,35 @@ uecap_print_status_json() {
     _last_switch=$(uecap_last_switch)
     case "$_last_switch" in ''|*[!0-9]*) _last_switch=0 ;; esac
 
-    printf '{"policy":"%s","requested_mode":"%s","manual_mode":"%s","active_mode":"%s","reason":"%s","last_switch":"%s","target_hash":"%s","special_hash":"%s","balanced_hash":"%s","universal_hash":"%s"}' \
+    printf '{"policy":"%s","requested_mode":"%s","manual_mode":"%s","active_mode":"%s","reason":"%s","last_switch":"%s","target_hash":"%s","special_hash":"%s","balanced_hash":"%s","universal_hash":"%s","uecap_contract":' \
         "$_policy" "$_requested" "$_manual" "$_active" "$(uecap_json_escape "${_reason:-unknown}")" "$_last_switch" \
         "${_target_hash:-unknown}" "${_special_hash:-unknown}" "${_balanced_hash:-unknown}" "${_universal_hash:-unknown}"
+    uecap_print_ui_contract_json
+    printf '}'
 }
 
-case "$1" in
-    apply)
-        _mode=$(uecap_mode_label "${2:-$(uecap_current_mode)}")
-        [ "$_mode" = "unknown" ] && exit 1
-        uecap_apply_mode "$_mode" manual
-        ;;
-    status)
-        uecap_print_status_json
-        ;;
+uecap_main() {
+    case "$1" in
+        apply)
+            _uecap_cli_mode=$(uecap_mode_label "${2:-$(uecap_current_mode)}")
+            [ "$_uecap_cli_mode" = "unknown" ] && return 1
+            uecap_apply_mode "$_uecap_cli_mode" manual
+            ;;
+        status)
+            uecap_print_status_json
+            ;;
+        modes)
+            printf '%s\n' "$UECAP_MODE_ORDER"
+            ;;
+        default)
+            printf '%s\n' "$UECAP_DEFAULT_MODE"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+case "${0##*/}" in
+    uecap_profile.sh) uecap_main "$@" ;;
 esac

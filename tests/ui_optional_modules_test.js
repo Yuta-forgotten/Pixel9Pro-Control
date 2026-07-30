@@ -85,17 +85,30 @@ const thermalPresetStart = app.indexOf('const THERMAL_PRESETS = {');
 const thermalPresetEnd = app.indexOf('\n};', thermalPresetStart);
 assert(thermalPresetStart >= 0 && thermalPresetEnd > thermalPresetStart, 'thermal preset block is missing');
 const thermalPresetBlock = app.slice(thermalPresetStart, thermalPresetEnd);
-assert(app.includes('const THERMAL_OFFSETS = Object.freeze([-2, 0, 2, 4, 6])'), 'thermal UI must define all five current presets once');
-assert(app.includes('THERMAL_OFFSETS.forEach((offset) =>'), 'thermal UI must render the shared preset list');
-assert(app.includes('THERMAL_OFFSETS.includes(data.offset) ? data.offset : THERMAL_DEFAULT_OFFSET'), 'thermal UI must accept -2 and use the named default');
+assert(!app.includes('const THERMAL_OFFSETS') && !app.includes('THERMAL_DEFAULT_OFFSET'), 'thermal JS must not retain the offset allowlist or default');
+assert(app.includes('const raw = data?.thermal_contract') && app.includes('state.contract.offsets.forEach((offset) =>'), 'thermal UI must render the backend contract order');
 for (const offset of ['[-2]', '0', '2', '4', '6']) {
   assert(thermalPresetBlock.includes(`${offset}: {`), `thermal preset ${offset} is missing`);
 }
 assert(thermalCgi.includes('. "$THERMAL_LIB"'), 'thermal CGI must use the shared thermal library');
 assert(!thermalCgi.includes('awk -v off='), 'thermal CGI must not duplicate the thermal transformer');
 assert(customize.includes('. "$MODPATH/scripts/thermal_profile.sh"'), 'installer must use the shared thermal library');
-assert(customize.includes('_ofs_vals="-2 0 2 4 6"'), 'installer must expose all five current thermal offsets');
-assert(thermalLib.includes('-2|0|2|4|6') && thermalLib.includes('THERMAL_SHUTDOWN_SLOT=7'), 'shared thermal contract must expose five presets and preserve shutdown');
+assert(customize.includes('_ofs_vals="$THERMAL_ALLOWED_OFFSETS"') && customize.includes('"$_ofs_scan_value" = "$THERMAL_DEFAULT_OFFSET"'), 'installer must consume the shared thermal order and default');
+assert(thermalLib.includes('THERMAL_ALLOWED_OFFSETS="-2 0 2 4 6"') && thermalLib.includes('thermal_print_ui_contract_json()') && thermalLib.includes('THERMAL_SHUTDOWN_SLOT=7'), 'shared thermal contract must expose five presets and preserve shutdown');
+assert(thermalCgi.includes('"thermal_contract":') && app.includes('thermal_contract'), 'thermal CGI must expose the backend-owned UI contract');
+assert(app.includes('const BG_RESTRICT_POLICY_PRESENTATION') && !app.includes('BG_RESTRICT_POLICY_ORDER') && !app.includes('BG_RESTRICT_DELAYS'), 'BG JS must retain presentation only');
+assert(html.includes('id="bg-restrict-policy-select" aria-label="后台限制策略" disabled></select>')
+  && html.includes('id="bg-restrict-delay-select" aria-label="休眠延时" disabled></select>'), 'BG HTML must wait for the backend contract instead of embedding behavior options');
+assert(app.includes('const raw = data?.bg_contract') && service.includes('bg_default_seed_entry') && !customize.includes('com.ss.android.ugc.aweme|stop_after_leave|5'), 'BG policy, delay and seed defaults must come from the backend contract');
+assert(uecapProfile.includes('UECAP_MODE_ORDER="balanced special universal"') && uecapProfile.includes('uecap_print_ui_contract_json()'), 'UECap runtime must own mode order and default');
+assert(uecapProfile.includes('case "${0##*/}" in') && uecapProfile.includes('uecap_profile.sh) uecap_main "$@"'), 'sourcing UECap library must not dispatch CLI mutations');
+assert(customize.includes('_UE_VALS=$(sh "$MODPATH/uecap_profile.sh" modes')
+  && customize.includes('_ue_default=$(sh "$MODPATH/uecap_profile.sh" default')
+  && customize.includes('_ue_default_found=1')
+  && !customize.includes('_UE_VALS="balanced special universal"'), 'installer must fail closed while consuming the UECap CLI contract');
+assert(uecapProfile.includes('*)\n            return 1'), 'UECap CLI must reject unknown commands');
+assert(uecapCgi.includes('uecap_is_valid_mode "$mode"') && app.includes('const raw = data?.uecap_contract') && !app.includes('const UECAP_MODES'), 'UECap CGI and UI must consume the backend mode contract');
+assert(uecapCgi.includes('"uecap_contract":{"mode_order":[],"default_mode":"disabled"}'), 'disabled UECap schema must add an empty contract without dropping legacy fields');
 
 for (const host of ['ntp.aliyun.com', 'ntp.myhuaweicloud.com', 'ntp1.xiaomi.com', 'time.android.com']) {
   assert(ntpCatalog.includes(host), `NTP catalog is missing ${host}`);

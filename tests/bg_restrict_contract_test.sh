@@ -74,6 +74,35 @@ cmd() {
 mkdir -p "$MODDIR" || exit 2
 . "$MOD/scripts/bg_restrict_lib.sh" || exit 2
 
+assert_eq 'BG contract owns policy order' 'stop_after_leave block_all block_services bucket' "$BG_POLICY_ORDER"
+assert_eq 'BG contract owns delay allowlist' '3 5 10' "$BG_ALLOWED_DELAYS"
+assert_eq 'BG UI contract serializes defaults' \
+    '{"policy_order":["stop_after_leave","block_all","block_services","bucket"],"allowed_delays":[3,5,10],"default_policy":"stop_after_leave","default_delay":5}' \
+    "$(bg_print_ui_contract_json)"
+assert_eq 'BG default seed comes from contract' 'com.ss.android.ugc.aweme|stop_after_leave|5' "$(bg_default_seed_entry)"
+printf 'com.tencent.mobileqq\ncom.tencent.qqmusic\n' > "$BG_LIST_FILE"
+if bg_list_is_legacy_seed "$BG_LIST_FILE"; then
+    ok 'BG legacy untouched seed is detected for service migration'
+else
+    not_ok 'BG legacy untouched seed is detected for service migration'
+fi
+printf 'com.example.user|bucket|3\n' > "$BG_LIST_FILE"
+if bg_list_is_legacy_seed "$BG_LIST_FILE"; then
+    not_ok 'BG user-edited seed is preserved'
+else
+    ok 'BG user-edited seed is preserved'
+fi
+if bg_is_valid_policy block_services && ! bg_is_valid_policy unknown; then
+    ok 'BG policy validator consumes contract order'
+else
+    not_ok 'BG policy validator consumes contract order'
+fi
+if bg_is_valid_delay 10 && ! bg_is_valid_delay 7; then
+    ok 'BG delay validator consumes contract allowlist'
+else
+    not_ok 'BG delay validator consumes contract allowlist'
+fi
+
 PKG=com.example.app
 printf '%s\n' "$PKG|block_all|5" > "$BG_LIST_FILE"
 
