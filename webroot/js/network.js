@@ -263,11 +263,31 @@ function renderUecapRows(data) {
     : modeInfo ? `${modeInfo.desc} · 切换后自动校验配置是否生效。` : '选择 UE 能力配置，切换后会自动校验是否生效。';
   renderUecapBtnGroup(requested);
   const verifyRow = getUecapVerifyRow(data, requested, active);
+  const receipt = data.runtime_receipt || {};
+  const reloadResult = receipt.reload_result === 'success'
+    ? 'modem 已重载'
+    : receipt.reload_result === 'failed'
+      ? 'modem 重载失败'
+      : receipt.reload_result === 'unknown'
+        ? '尚无运行收据'
+        : '未执行';
+  const nrRegistered = receipt.nr_registered === 'true' || receipt.nr_registered === true;
+  const nrAvailable = receipt.nr_available === 'true' || receipt.nr_available === true;
+  const nrBand = receipt.nr_band && receipt.nr_band !== 'unknown' ? ` / band ${receipt.nr_band}` : '';
+  const radioResult = nrRegistered
+    ? `NR 已注册${nrBand}`
+    : nrAvailable
+      ? `NR 可用但当前未注册${nrBand}`
+      : receipt.actual_rat && receipt.actual_rat !== 'unknown'
+        ? `${receipt.actual_rat}（NR 未观测）`
+        : '尚无 telephony 收据';
   const rows = [
     { label: '已选配置', value: uecapLabel(requested), cls: requested === active ? 'good' : 'off' },
     { label: '当前配置', value: uecapLabel(active), cls: active === requested ? 'good' : 'warn' },
     verifyRow,
     { label: '配置摘要', value: (data.target_hash || 'unknown').slice(0, 12), cls: 'off' },
+    { label: 'Modem 时序', value: reloadResult, cls: receipt.reload_result === 'failed' ? 'warn' : receipt.reload_result === 'success' ? 'good' : 'off' },
+    { label: '实际无线', value: radioResult, cls: nrRegistered ? 'good' : nrAvailable ? 'warn' : 'off' },
   ];
   rows.forEach((row) => refs.uecapRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 }

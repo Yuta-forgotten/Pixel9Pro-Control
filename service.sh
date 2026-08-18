@@ -171,10 +171,21 @@ apply_uecap_profile() {
     if [ -f "$MODDIR/uecap_profile.sh" ]; then
         . "$MODDIR/uecap_profile.sh"
         _mode=$(uecap_current_manual_mode)
+        if uecap_pre_modem_receipt_is_current "$_mode"; then
+            _source=$(uecap_resolve_source "$_mode")
+            uecap_capture_radio_snapshot >/dev/null 2>&1 || true
+            UECAP_RELOAD_DISPATCHED=false
+            UECAP_RELOAD_RESULT="not_required_pre_modem"
+            uecap_write_runtime_receipt "$_mode" "$(uecap_hash "$_source")" \
+                "$(uecap_hash "$UECAP_TARGET")" pre_modem applied pre_modem_observed \
+                >/dev/null 2>&1 || log -t pixel9pro_ctrl "WARNING: failed to refresh UECap pre-modem receipt"
+            log -t pixel9pro_ctrl "UECap pre-modem receipt verified: $_mode, actual_rat=$(uecap_receipt_get actual_rat 2>/dev/null || echo unknown), nr_registered=$(uecap_receipt_get nr_registered 2>/dev/null || echo unknown)"
+            return 0
+        fi
         if uecap_apply_mode "$_mode" "boot_manual" 2>/dev/null; then
-            log -t pixel9pro_ctrl "UECap profile applied: $_mode (manual)"
+            log -t pixel9pro_ctrl "UECap profile applied: $_mode (manual), modem_reload=${UECAP_RELOAD_RESULT:-unknown}, actual_rat=$(uecap_receipt_get actual_rat 2>/dev/null || echo unknown), nr_registered=$(uecap_receipt_get nr_registered 2>/dev/null || echo unknown)"
         else
-            log -t pixel9pro_ctrl "WARNING: failed to apply UECap profile: $_mode"
+            log -t pixel9pro_ctrl "WARNING: failed to apply UECap profile: $_mode result=${UECAP_APPLY_RESULT:-unknown}, modem_reload=${UECAP_RELOAD_RESULT:-unknown}"
         fi
     fi
 }

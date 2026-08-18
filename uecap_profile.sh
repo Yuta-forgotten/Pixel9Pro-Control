@@ -9,6 +9,7 @@ UECAP_MANUAL_MODE_FILE="${PIXEL9PRO_UECAP_MANUAL_MODE_FILE:-$MODDIR/.uecap_manua
 UECAP_POLICY_FILE="${PIXEL9PRO_UECAP_POLICY_FILE:-$MODDIR/.uecap_policy}"
 UECAP_REASON_FILE="${PIXEL9PRO_UECAP_REASON_FILE:-$MODDIR/.uecap_reason}"
 UECAP_SWITCH_FILE="${PIXEL9PRO_UECAP_SWITCH_FILE:-$MODDIR/.uecap_last_switch}"
+UECAP_RECEIPT_FILE="${PIXEL9PRO_UECAP_RECEIPT_FILE:-$MODDIR/.uecap_runtime_receipt}"
 UECAP_LOGDIR="${PIXEL9PRO_UECAP_LOGDIR:-$MODDIR/.logs}"
 UECAP_LOGFILE="${PIXEL9PRO_UECAP_LOGFILE:-$UECAP_LOGDIR/pixel9pro_uecap.log}"
 UECAP_TARGET="${PIXEL9PRO_UECAP_TARGET:-/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.binarypb}"
@@ -18,6 +19,7 @@ UECAP_UNIVERSAL="${PIXEL9PRO_UECAP_UNIVERSAL:-$MODDIR/system/vendor/firmware/uec
 UECAP_MODE_ORDER="balanced special universal"
 UECAP_DEFAULT_MODE="balanced"
 UECAP_RELOAD_DISPATCHED=false
+UECAP_RELOAD_RESULT="not_run"
 UECAP_APPLY_RESULT="idle"
 UECAP_STATE_ROLLBACK_RESULT="not_needed"
 
@@ -121,6 +123,132 @@ uecap_atomic_write() {
     return 1
 }
 
+uecap_receipt_value() {
+    # The receipt is a deliberately small key/value file.  Strip separators
+    # before writing so CGI JSON cannot be confused by command output.
+    printf '%s' "$1" | tr '\r\n=|' '    '
+}
+
+uecap_receipt_get() {
+    _uecap_receipt_key="$1"
+    [ -f "$UECAP_RECEIPT_FILE" ] || return 1
+    awk -F= -v key="$_uecap_receipt_key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$UECAP_RECEIPT_FILE" 2>/dev/null
+}
+
+uecap_boot_id() {
+    if [ -n "${PIXEL9PRO_UECAP_BOOT_ID:-}" ]; then
+        printf '%s' "$PIXEL9PRO_UECAP_BOOT_ID"
+        return 0
+    fi
+    _uecap_boot_id_value=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')
+    [ -n "$_uecap_boot_id_value" ] \
+        || _uecap_boot_id_value=$(getprop ro.boot.boot_id 2>/dev/null | tr -d ' \n\r\t')
+    [ -n "$_uecap_boot_id_value" ] && printf '%s' "$_uecap_boot_id_value" || printf 'unknown'
+}
+
+uecap_capture_radio_snapshot() {
+    UECAP_RADIO_ACTUAL_RAT="unknown"
+    UECAP_RADIO_NR_AVAILABLE="unknown"
+    UECAP_RADIO_ENDC_AVAILABLE="unknown"
+    UECAP_RADIO_NR_REGISTERED="unknown"
+    UECAP_RADIO_NR_BAND="unknown"
+    UECAP_RADIO_NR_ARFCN="unknown"
+    UECAP_RADIO_NR_RANGE="unknown"
+
+    if [ "${PIXEL9PRO_UECAP_TEST_MODE:-0}" = "1" ]; then
+        UECAP_RADIO_ACTUAL_RAT="${PIXEL9PRO_UECAP_ACTUAL_RAT:-unknown}"
+        UECAP_RADIO_NR_AVAILABLE="${PIXEL9PRO_UECAP_NR_AVAILABLE:-unknown}"
+        UECAP_RADIO_ENDC_AVAILABLE="${PIXEL9PRO_UECAP_ENDC_AVAILABLE:-unknown}"
+        UECAP_RADIO_NR_REGISTERED="${PIXEL9PRO_UECAP_NR_REGISTERED:-unknown}"
+        UECAP_RADIO_NR_BAND="${PIXEL9PRO_UECAP_NR_BAND:-unknown}"
+        UECAP_RADIO_NR_ARFCN="${PIXEL9PRO_UECAP_NR_ARFCN:-unknown}"
+        UECAP_RADIO_NR_RANGE="${PIXEL9PRO_UECAP_NR_RANGE:-unknown}"
+        return 0
+    fi
+
+    _uecap_radio_dump="$MODDIR/.uecap_telephony.$$"
+    dumpsys telephony.registry > "$_uecap_radio_dump" 2>/dev/null || {
+        rm -f "$_uecap_radio_dump" 2>/dev/null
+        return 1
+    }
+    UECAP_RADIO_ACTUAL_RAT=$(sed -n 's/.*mTelephonyDisplayInfo=.*network=\([^,} ]*\).*/\1/p' "$_uecap_radio_dump" | head -n 1)
+    UECAP_RADIO_NR_AVAILABLE=$(grep -o 'isNrAvailable[[:space:]]*=[[:space:]]*[A-Za-z]*' "$_uecap_radio_dump" | head -n 1 | sed 's/.*=[[:space:]]*//')
+    UECAP_RADIO_ENDC_AVAILABLE=$(grep -o 'isEnDcAvailable[[:space:]]*=[[:space:]]*[A-Za-z]*' "$_uecap_radio_dump" | head -n 1 | sed 's/.*=[[:space:]]*//')
+    _uecap_nr_identity=$(grep -o 'CellIdentityNr[^}]*' "$_uecap_radio_dump" | head -n 1)
+    case "$_uecap_nr_identity" in
+        ''|*null*|*none*) UECAP_RADIO_NR_REGISTERED=false ;;
+        *) UECAP_RADIO_NR_REGISTERED=true ;;
+    esac
+    UECAP_RADIO_NR_BAND=$(printf '%s' "$_uecap_nr_identity" | sed -n 's/.*mBands=\[\([^]]*\)\].*/\1/p')
+    UECAP_RADIO_NR_ARFCN=$(printf '%s' "$_uecap_nr_identity" | sed -n 's/.*mNrarfcn=\([^ ]*\).*/\1/p')
+    [ -n "$UECAP_RADIO_ACTUAL_RAT" ] || UECAP_RADIO_ACTUAL_RAT=unknown
+    [ -n "$UECAP_RADIO_NR_AVAILABLE" ] || UECAP_RADIO_NR_AVAILABLE=unknown
+    [ -n "$UECAP_RADIO_ENDC_AVAILABLE" ] || UECAP_RADIO_ENDC_AVAILABLE=unknown
+    [ -n "$UECAP_RADIO_NR_BAND" ] || UECAP_RADIO_NR_BAND=unknown
+    [ -n "$UECAP_RADIO_NR_ARFCN" ] || UECAP_RADIO_NR_ARFCN=unknown
+    UECAP_RADIO_NR_RANGE=$(sed -n 's/.*mNrFrequencyRange=\([^,} ]*\).*/\1/p' "$_uecap_radio_dump" | head -n 1)
+    [ -n "$UECAP_RADIO_NR_RANGE" ] || UECAP_RADIO_NR_RANGE=unknown
+    rm -f "$_uecap_radio_dump" 2>/dev/null
+    return 0
+}
+
+uecap_write_runtime_receipt() {
+    _uecap_receipt_mode="$1"
+    _uecap_receipt_source_hash="$2"
+    _uecap_receipt_target_hash="$3"
+    _uecap_receipt_reason="$4"
+    _uecap_receipt_apply="$5"
+    _uecap_receipt_effective="$6"
+    _uecap_receipt_now="$(date +%s 2>/dev/null || echo 0)"
+    _uecap_receipt_tmp="${UECAP_RECEIPT_FILE}.tmp.$$"
+    [ -n "$UECAP_RECEIPT_FILE" ] && [ ! -d "$UECAP_RECEIPT_FILE" ] || return 1
+    {
+        printf 'schema=1\n'
+        printf 'boot_id=%s\n' "$(uecap_receipt_value "$(uecap_boot_id)")"
+        printf 'updated_at=%s\n' "$_uecap_receipt_now"
+        printf 'reason=%s\n' "$(uecap_receipt_value "$_uecap_receipt_reason")"
+        printf 'requested_mode=%s\n' "$(uecap_receipt_value "$_uecap_receipt_mode")"
+        printf 'active_mode=%s\n' "$(uecap_receipt_value "$(uecap_detect_active_mode)")"
+        printf 'source_hash=%s\n' "$(uecap_receipt_value "$_uecap_receipt_source_hash")"
+        printf 'target_hash=%s\n' "$(uecap_receipt_value "$_uecap_receipt_target_hash")"
+        printf 'bind_status=verified\n'
+        printf 'apply_result=%s\n' "$(uecap_receipt_value "$_uecap_receipt_apply")"
+        printf 'reload_dispatched=%s\n' "$(uecap_receipt_value "${UECAP_RELOAD_DISPATCHED:-false}")"
+        printf 'reload_result=%s\n' "$(uecap_receipt_value "${UECAP_RELOAD_RESULT:-not_run}")"
+        printf 'effective_state=%s\n' "$(uecap_receipt_value "$_uecap_receipt_effective")"
+        printf 'actual_rat=%s\n' "$(uecap_receipt_value "${UECAP_RADIO_ACTUAL_RAT:-unknown}")"
+        printf 'nr_available=%s\n' "$(uecap_receipt_value "${UECAP_RADIO_NR_AVAILABLE:-unknown}")"
+        printf 'endc_available=%s\n' "$(uecap_receipt_value "${UECAP_RADIO_ENDC_AVAILABLE:-unknown}")"
+        printf 'nr_registered=%s\n' "$(uecap_receipt_value "${UECAP_RADIO_NR_REGISTERED:-unknown}")"
+        printf 'nr_band=%s\n' "$(uecap_receipt_value "${UECAP_RADIO_NR_BAND:-unknown}")"
+        printf 'nr_arfcn=%s\n' "$(uecap_receipt_value "${UECAP_RADIO_NR_ARFCN:-unknown}")"
+        printf 'nr_frequency_range=%s\n' "$(uecap_receipt_value "${UECAP_RADIO_NR_RANGE:-unknown}")"
+    } > "$_uecap_receipt_tmp" 2>/dev/null \
+        && mv "$_uecap_receipt_tmp" "$UECAP_RECEIPT_FILE" 2>/dev/null \
+        && [ -f "$UECAP_RECEIPT_FILE" ]
+    _uecap_receipt_rc=$?
+    [ "$_uecap_receipt_rc" -eq 0 ] || rm -f "$_uecap_receipt_tmp" 2>/dev/null
+    return "$_uecap_receipt_rc"
+}
+
+uecap_pre_modem_receipt_is_current() {
+    _uecap_pre_modem_mode="$1"
+    uecap_is_valid_mode "$_uecap_pre_modem_mode" || return 1
+    _uecap_pre_modem_source=$(uecap_resolve_source "$_uecap_pre_modem_mode") || return 1
+    _uecap_pre_modem_source_hash=$(uecap_hash "$_uecap_pre_modem_source")
+    _uecap_pre_modem_target_hash=$(uecap_hash "$UECAP_TARGET")
+    [ -n "$_uecap_pre_modem_source_hash" ] \
+        && [ "$_uecap_pre_modem_source_hash" = "$_uecap_pre_modem_target_hash" ] \
+        && [ "$(uecap_receipt_get boot_id)" = "$(uecap_boot_id)" ] \
+        && [ "$(uecap_receipt_get reason)" = "pre_modem" ] \
+        && [ "$(uecap_receipt_get requested_mode)" = "$_uecap_pre_modem_mode" ] \
+        && [ "$(uecap_receipt_get active_mode)" = "$_uecap_pre_modem_mode" ] \
+        && [ "$(uecap_receipt_get bind_status)" = "verified" ] \
+        && [ "$(uecap_receipt_get source_hash)" = "$_uecap_pre_modem_source_hash" ] \
+        && [ "$(uecap_receipt_get target_hash)" = "$_uecap_pre_modem_target_hash" ] \
+        && [ "$(uecap_receipt_get reload_result)" = "not_required_pre_modem" ]
+}
+
 uecap_restore_file() {
     if [ "$2" = "1" ]; then
         uecap_atomic_write "$1" "$3"
@@ -220,20 +348,35 @@ uecap_print_ui_contract_json() {
 
 uecap_reload_modem() {
     _uecap_reload_reason="${1:-manual}"
-    case "$_uecap_reload_reason" in
-        boot|boot_manual)
-            UECAP_RELOAD_DISPATCHED=false
-            uecap_log_line "skip modem reload (reason=$_uecap_reload_reason, boot reads fresh)"
-            return 0 ;;
-    esac
+    UECAP_RELOAD_DISPATCHED=false
+    UECAP_RELOAD_RESULT="not_run"
+    if [ "$_uecap_reload_reason" = "pre_modem" ]; then
+        UECAP_RELOAD_RESULT="not_required_pre_modem"
+        uecap_log_line "pre-modem bind complete; modem will read fresh payload"
+        return 0
+    fi
+    if [ "${PIXEL9PRO_UECAP_TEST_MODE:-0}" = "1" ]; then
+        case "${PIXEL9PRO_UECAP_RESTART_MODEM_RESULT:-success}" in
+            fail)
+                UECAP_RELOAD_RESULT="failed"
+                uecap_log_line "modem restart test failure (reason=$_uecap_reload_reason)"
+                return 1
+                ;;
+        esac
+        UECAP_RELOAD_DISPATCHED=true
+        UECAP_RELOAD_RESULT="success"
+        uecap_log_line "modem restart test accepted (reason=$_uecap_reload_reason)"
+        return 0
+    fi
     # restart-modem only cycles cellular radio, does NOT touch WiFi/BT
     # Much safer than airplane toggle which crashed the network stack (B29)
     if /system/bin/cmd phone restart-modem >/dev/null 2>&1; then
         UECAP_RELOAD_DISPATCHED=true
+        UECAP_RELOAD_RESULT="success"
         uecap_log_line "modem restart accepted (reason=$_uecap_reload_reason)"
         return 0
     fi
-    UECAP_RELOAD_DISPATCHED=false
+    UECAP_RELOAD_RESULT="failed"
     uecap_log_line "modem restart failed (reason=$_uecap_reload_reason)"
     return 1
 }
@@ -368,9 +511,24 @@ uecap_apply_mode() {
     fi
     uecap_log_line "bind ok mode=$_uecap_apply_mode_value hash=$(uecap_hash "$_uecap_apply_source")"
     if uecap_reload_modem "$_uecap_apply_reason"; then
+        [ "${UECAP_RELOAD_RESULT:-not_run}" = "not_run" ] \
+            && UECAP_RELOAD_RESULT="success"
+        _uecap_effective_state="reload_accepted"
+        [ "$UECAP_RELOAD_RESULT" = "not_required_pre_modem" ] \
+            && _uecap_effective_state="pre_modem_bind"
+        uecap_capture_radio_snapshot >/dev/null 2>&1 || true
+        uecap_write_runtime_receipt "$_uecap_apply_mode_value" "$_uecap_apply_source_hash" \
+            "$(uecap_hash "$UECAP_TARGET")" "$_uecap_apply_reason" "applied" "$_uecap_effective_state" \
+            >/dev/null 2>&1 || uecap_log_line "WARNING: failed to persist UECap runtime receipt"
         UECAP_APPLY_RESULT="applied"
         return 0
     fi
+    [ "${UECAP_RELOAD_RESULT:-not_run}" = "not_run" ] \
+        && UECAP_RELOAD_RESULT="failed"
+    uecap_capture_radio_snapshot >/dev/null 2>&1 || true
+    uecap_write_runtime_receipt "$_uecap_apply_mode_value" "$_uecap_apply_source_hash" \
+        "$(uecap_hash "$UECAP_TARGET")" "$_uecap_apply_reason" "applied_reload_failed" "unverified" \
+        >/dev/null 2>&1 || uecap_log_line "WARNING: failed to persist UECap runtime receipt"
     UECAP_APPLY_RESULT="applied_reload_failed"
     return 3
 }
@@ -388,11 +546,35 @@ uecap_print_status_json() {
     _uecap_status_last_switch=$(uecap_last_switch)
     case "$_uecap_status_last_switch" in ''|*[!0-9]*) _uecap_status_last_switch=0 ;; esac
 
+    _uecap_receipt_schema=$(uecap_receipt_get schema); [ -n "$_uecap_receipt_schema" ] || _uecap_receipt_schema=0
+    _uecap_receipt_boot_id=$(uecap_receipt_get boot_id); [ -n "$_uecap_receipt_boot_id" ] || _uecap_receipt_boot_id=unknown
+    _uecap_receipt_updated_at=$(uecap_receipt_get updated_at); [ -n "$_uecap_receipt_updated_at" ] || _uecap_receipt_updated_at=0
+    _uecap_receipt_reason=$(uecap_receipt_get reason); [ -n "$_uecap_receipt_reason" ] || _uecap_receipt_reason=unknown
+    _uecap_receipt_apply=$(uecap_receipt_get apply_result); [ -n "$_uecap_receipt_apply" ] || _uecap_receipt_apply=unknown
+    _uecap_receipt_reload_dispatched=$(uecap_receipt_get reload_dispatched); [ -n "$_uecap_receipt_reload_dispatched" ] || _uecap_receipt_reload_dispatched=false
+    case "$_uecap_receipt_reload_dispatched" in true|false) ;; *) _uecap_receipt_reload_dispatched=false ;; esac
+    _uecap_receipt_reload_result=$(uecap_receipt_get reload_result); [ -n "$_uecap_receipt_reload_result" ] || _uecap_receipt_reload_result=unknown
+    _uecap_receipt_effective=$(uecap_receipt_get effective_state); [ -n "$_uecap_receipt_effective" ] || _uecap_receipt_effective=unknown
+    _uecap_receipt_actual_rat=$(uecap_receipt_get actual_rat); [ -n "$_uecap_receipt_actual_rat" ] || _uecap_receipt_actual_rat=unknown
+    _uecap_receipt_nr_available=$(uecap_receipt_get nr_available); [ -n "$_uecap_receipt_nr_available" ] || _uecap_receipt_nr_available=unknown
+    _uecap_receipt_endc_available=$(uecap_receipt_get endc_available); [ -n "$_uecap_receipt_endc_available" ] || _uecap_receipt_endc_available=unknown
+    _uecap_receipt_nr_registered=$(uecap_receipt_get nr_registered); [ -n "$_uecap_receipt_nr_registered" ] || _uecap_receipt_nr_registered=unknown
+    _uecap_receipt_nr_band=$(uecap_receipt_get nr_band); [ -n "$_uecap_receipt_nr_band" ] || _uecap_receipt_nr_band=unknown
+    _uecap_receipt_nr_arfcn=$(uecap_receipt_get nr_arfcn); [ -n "$_uecap_receipt_nr_arfcn" ] || _uecap_receipt_nr_arfcn=unknown
+    _uecap_receipt_nr_range=$(uecap_receipt_get nr_frequency_range); [ -n "$_uecap_receipt_nr_range" ] || _uecap_receipt_nr_range=unknown
+
     printf '{"policy":"%s","requested_mode":"%s","manual_mode":"%s","active_mode":"%s","reason":"%s","last_switch":"%s","target_hash":"%s","special_hash":"%s","balanced_hash":"%s","universal_hash":"%s","uecap_contract":' \
         "$_uecap_status_policy" "$_uecap_status_requested" "$_uecap_status_manual" "$_uecap_status_active" "$(uecap_json_escape "${_uecap_status_reason:-unknown}")" "$_uecap_status_last_switch" \
         "${_uecap_status_target_hash:-unknown}" "${_uecap_status_special_hash:-unknown}" "${_uecap_status_balanced_hash:-unknown}" "${_uecap_status_universal_hash:-unknown}"
     uecap_print_ui_contract_json
-    printf '}'
+    printf ',"runtime_receipt":{"schema":%s,"boot_id":"%s","updated_at":"%s","reason":"%s","apply_result":"%s","reload_dispatched":%s,"reload_result":"%s","effective_state":"%s","actual_rat":"%s","nr_available":"%s","endc_available":"%s","nr_registered":"%s","nr_band":"%s","nr_arfcn":"%s","nr_frequency_range":"%s"}}' \
+        "$_uecap_receipt_schema" "$(uecap_json_escape "$_uecap_receipt_boot_id")" "$_uecap_receipt_updated_at" \
+        "$(uecap_json_escape "$_uecap_receipt_reason")" "$(uecap_json_escape "$_uecap_receipt_apply")" \
+        "$_uecap_receipt_reload_dispatched" "$(uecap_json_escape "$_uecap_receipt_reload_result")" \
+        "$(uecap_json_escape "$_uecap_receipt_effective")" "$(uecap_json_escape "$_uecap_receipt_actual_rat")" \
+        "$(uecap_json_escape "$_uecap_receipt_nr_available")" "$(uecap_json_escape "$_uecap_receipt_endc_available")" \
+        "$(uecap_json_escape "$_uecap_receipt_nr_registered")" "$(uecap_json_escape "$_uecap_receipt_nr_band")" \
+        "$(uecap_json_escape "$_uecap_receipt_nr_arfcn")" "$(uecap_json_escape "$_uecap_receipt_nr_range")"
 }
 
 uecap_main() {

@@ -21,6 +21,7 @@ const nrCgi = fs.readFileSync(path.join(root, 'webroot', 'cgi-bin', 'nr_switch.s
 const commonCgi = fs.readFileSync(path.join(root, 'webroot', 'cgi-bin', '_common.sh'), 'utf8');
 const uecapCgi = fs.readFileSync(path.join(root, 'webroot', 'cgi-bin', 'uecap.sh'), 'utf8');
 const uecapProfile = fs.readFileSync(path.join(root, 'uecap_profile.sh'), 'utf8');
+const postMount = fs.readFileSync(path.join(root, 'post-mount.sh'), 'utf8');
 const customize = fs.readFileSync(path.join(root, 'customize.sh'), 'utf8');
 const service = fs.readFileSync(path.join(root, 'service.sh'), 'utf8');
 const thermalLib = fs.readFileSync(path.join(root, 'scripts', 'thermal_profile.sh'), 'utf8');
@@ -269,8 +270,8 @@ assert(customize.includes('UECAP_DISABLED_REASON="uecap_unsupported_device"'), '
 assert(basebandCustomize.includes('[ "$device" != "caiman" ]'), 'baseband submodule must reject non-caiman devices');
 assert(!service.includes('# v4.'), 'service.sh must not contain a release changelog');
 assert(!fs.existsSync(path.join(root, 'system.prop')), 'empty system.prop must not be packaged');
-assert(moduleProp.includes('version=v4.5.05') && moduleProp.includes('versionCode=110'), 'release version must be v4.5.05 / 110');
-for (const component of ['webui=4.5.05', 'scheduler=4.5.05', 'core=4.5.05']) {
+assert(moduleProp.includes('version=v4.5.07') && moduleProp.includes('versionCode=112'), 'release version must be v4.5.07 / 112');
+for (const component of ['webui=4.5.06', 'scheduler=4.5.05', 'core=4.5.07']) {
   assert(versionsProp.includes(component), `component version is stale: ${component}`);
 }
 assert(commonCgi.includes("'413 Payload Too Large'") && commonCgi.includes('JSON object required'), 'all write CGI must share bounded JSON-object parsing');
@@ -285,6 +286,7 @@ assert(!thermalReadCgi.includes('*clear=1*'), 'GET must not mutate the thermal c
 assert(app.includes("options.method = 'POST'") && app.includes("JSON.stringify({ action: 'clear' })"), 'thermal cache clear must use authenticated POST');
 assert(!uecapCgi.includes('auto|manual') && !uecapCgi.includes('toggle_mode()'), 'UECap CGI must not retain the retired auto/toggle branches');
 assert(!uecapProfile.includes('auto|manual'), 'UECap runtime contract must remain manual-only');
+assert(postMount.includes('uecap_apply_mode "$_uecap_post_mount_mode" pre_modem') && service.includes('uecap_pre_modem_receipt_is_current'), 'UECap must bind after MetaModule mount and verify the same-boot receipt before modem startup fallback');
 
 const emitProfileStart = profileCgi.indexOf('emit_profile_state()');
 const emitProfileEnd = profileCgi.indexOf('\n}\n', emitProfileStart);

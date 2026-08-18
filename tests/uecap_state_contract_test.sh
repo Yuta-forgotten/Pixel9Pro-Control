@@ -22,7 +22,10 @@ export PIXEL9PRO_UECAP_MANUAL_MODE_FILE="$TEST_ROOT/manual"
 export PIXEL9PRO_UECAP_POLICY_FILE="$TEST_ROOT/policy"
 export PIXEL9PRO_UECAP_REASON_FILE="$TEST_ROOT/reason"
 export PIXEL9PRO_UECAP_SWITCH_FILE="$TEST_ROOT/switch"
+export PIXEL9PRO_UECAP_RECEIPT_FILE="$TEST_ROOT/runtime_receipt"
 export PIXEL9PRO_UECAP_LOGDIR="$TEST_ROOT/logs"
+export PIXEL9PRO_UECAP_TEST_MODE=1
+export PIXEL9PRO_UECAP_BOOT_ID=test-boot
 . "$SOURCE_ROOT/uecap_profile.sh"
 
 check_eq 'UECap contract owns mode order' 'balanced special universal' "$UECAP_MODE_ORDER"
@@ -46,6 +49,18 @@ else
     FAIL=$((FAIL + 1))
     printf 'not ok %s - UECap mode validator consumes contract order\n' "$((PASS + FAIL))"
 fi
+
+PIXEL9PRO_UECAP_RESTART_MODEM_RESULT=success
+uecap_reload_modem pre_modem
+check_eq 'pre-modem UECap path does not dispatch a late reload' false "$UECAP_RELOAD_DISPATCHED"
+check_eq 'pre-modem UECap path records the explicit no-reload reason' not_required_pre_modem "$UECAP_RELOAD_RESULT"
+uecap_reload_modem boot_manual
+check_eq 'boot UECap path dispatches modem reload' true "$UECAP_RELOAD_DISPATCHED"
+check_eq 'boot modem reload records success' success "$UECAP_RELOAD_RESULT"
+PIXEL9PRO_UECAP_RESTART_MODEM_RESULT=fail
+uecap_reload_modem boot_manual
+check_eq 'boot modem reload failure is explicit' failed "$UECAP_RELOAD_RESULT"
+PIXEL9PRO_UECAP_RESTART_MODEM_RESULT=success
 
 _uecap_source_guard="$TEST_ROOT/source_guard"
 mkdir -p "$_uecap_source_guard" || exit 2
@@ -126,7 +141,8 @@ uecap_mount_bind() {
     MOUNTED=1
 }
 uecap_reload_modem() {
-    [ "$RELOAD_FAIL" -eq 0 ] || { UECAP_RELOAD_DISPATCHED=false; return 1; }
+    [ "$RELOAD_FAIL" -eq 0 ] || { UECAP_RELOAD_DISPATCHED=false; UECAP_RELOAD_RESULT=failed; return 1; }
+    UECAP_RELOAD_RESULT=success
     UECAP_RELOAD_DISPATCHED=true
 }
 
@@ -149,6 +165,38 @@ uecap_apply_mode special manual_locked
 check_eq 'modem reload failure returns applied status' 3 "$?"
 check_eq 'modem reload failure keeps applied mode' special "$(cat "$UECAP_MODE_FILE")"
 check_eq 'modem reload failure is explicit' applied_reload_failed "$UECAP_APPLY_RESULT"
+check_eq 'runtime receipt records reload failure' applied_reload_failed "$(uecap_receipt_get apply_result)"
+check_eq 'runtime receipt never claims modem effective after reload failure' unverified "$(uecap_receipt_get effective_state)"
+check_eq 'runtime receipt keeps bind verification separate' verified "$(uecap_receipt_get bind_status)"
+
+RELOAD_FAIL=0
+uecap_apply_mode universal manual_locked
+check_eq 'successful apply dispatches modem reload' 0 "$?"
+check_eq 'runtime receipt records successful modem reload' success "$(uecap_receipt_get reload_result)"
+check_eq 'successful bind remains separately verified' verified "$(uecap_receipt_get bind_status)"
+check_eq 'successful reload records accepted handoff, not unverified effective payload' reload_accepted "$(uecap_receipt_get effective_state)"
+
+UECAP_RELOAD_DISPATCHED=false
+UECAP_RELOAD_RESULT=not_required_pre_modem
+uecap_capture_radio_snapshot
+uecap_write_runtime_receipt universal "$(uecap_hash "$UECAP_UNIVERSAL")" \
+    "$(uecap_hash "$UECAP_TARGET")" pre_modem applied pre_modem_bind
+if uecap_pre_modem_receipt_is_current universal; then
+    PASS=$((PASS + 1))
+    printf 'ok %s - same-boot pre-modem receipt validates source and target\n' "$((PASS + FAIL))"
+else
+    FAIL=$((FAIL + 1))
+    printf 'not ok %s - same-boot pre-modem receipt validates source and target\n' "$((PASS + FAIL))"
+fi
+PIXEL9PRO_UECAP_BOOT_ID=other-boot
+if uecap_pre_modem_receipt_is_current universal; then
+    FAIL=$((FAIL + 1))
+    printf 'not ok %s - cross-boot pre-modem receipt is rejected\n' "$((PASS + FAIL))"
+else
+    PASS=$((PASS + 1))
+    printf 'ok %s - cross-boot pre-modem receipt is rejected\n' "$((PASS + FAIL))"
+fi
+PIXEL9PRO_UECAP_BOOT_ID=test-boot
 
 printf '1..%s\n' "$((PASS + FAIL))"
 printf '# pass=%s fail=%s\n' "$PASS" "$FAIL"
