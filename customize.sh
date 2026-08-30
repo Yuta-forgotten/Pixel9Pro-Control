@@ -237,6 +237,7 @@ fi
 
 UECAP_DISABLED=0
 UECAP_DISABLED_REASON=""
+UECAP_EXTERNAL=0
 case "$device" in
     komodo)
         ui_print "  机型: Pixel 9 Pro XL (komodo)"
@@ -251,8 +252,11 @@ case "$device" in
             ui_print "  ✗ XL 温控 stock 配置缺失, 已中止安装"
             exit 1
         fi
-        UECAP_DISABLED=1
-        UECAP_DISABLED_REASON="uecap_unsupported_device"
+        # komodo is supported by the device contract, but UECap remains owned
+        # by the device's external/stock path. Keep the runtime script for
+        # read-only status reporting; only remove the embedded caiman payload.
+        UECAP_EXTERNAL=1
+        UECAP_DISABLED_REASON="device_external_stock"
         installer_write "$DEVICE_FILE" komodo
         ;;
     caiman)
@@ -269,22 +273,26 @@ esac
 ui_print ""
 
 # Magisk Magic Mount 与 modem cbd 的早期 mmap 存在已验证的启动 race。
-# komodo 的 UECap payload 也不能复用 caiman 固件，因此两种情况都在安装
-# staging 目录内移除 payload 和运行脚本，避免生成不可启动的模块布局。
-if [ "$ROOT_IMPL" = "Magisk" ]; then
+# 只有 caiman 的 managed UECap 覆盖在 Magisk 下需要移除运行脚本；komodo
+# 保留 read-only external runtime，不把设备原生 stock 错报为不支持。
+if [ "$ROOT_IMPL" = "Magisk" ] && [ "$UECAP_EXTERNAL" -eq 0 ]; then
     UECAP_DISABLED=1
-    [ -n "$UECAP_DISABLED_REASON" ] || UECAP_DISABLED_REASON="magisk_no_baseband"
+    UECAP_DISABLED_REASON="magisk_uecap_unavailable"
 fi
-if [ "$UECAP_DISABLED" -eq 1 ]; then
-    case "$UECAP_DISABLED_REASON" in
-        uecap_unsupported_device)
-            ui_print "  ⚠ Pro XL 不加载 Pixel 9 Pro 专用 UECap payload"
-            ;;
-        *)
-            ui_print "  ⚠ Magisk 下自动剔除基带 UECap 覆盖"
-            ui_print "    (规避 Magic Mount × modem cbd 启动 race)"
-            ;;
-    esac
+if [ "$UECAP_EXTERNAL" -eq 1 ]; then
+    ui_print "  ✓ Pro XL UECap 使用设备原生 / external stock"
+    rm -f "$MODPATH/system/vendor/firmware/uecapconfig/"* 2>/dev/null \
+        || { ui_print "  ✗ 无法移除不适用于 komodo 的内置 UECap payload"; exit 1; }
+    rmdir "$MODPATH/system/vendor/firmware/uecapconfig" 2>/dev/null || true
+    rmdir "$MODPATH/system/vendor/firmware" 2>/dev/null || true
+    [ -f "$MODPATH/uecap_profile.sh" ] \
+        || { ui_print "  ✗ external UECap runtime script unexpectedly missing"; exit 1; }
+    ui_print "    保留 UECap runtime，仅提供 stock 状态展示，不提供三档写入"
+    ui_print ""
+elif [ "$UECAP_DISABLED" -eq 1 ]; then
+    ui_print "  ⚠ Magisk 下自动停用 caiman UECap 管理"
+    ui_print "    reason: $UECAP_DISABLED_REASON"
+    ui_print "    (规避 Magic Mount × modem cbd 启动 race)"
     rm -f "$MODPATH/system/vendor/firmware/uecapconfig/"* 2>/dev/null \
         || { ui_print "  ✗ 无法移除不兼容的 UECap payload"; exit 1; }
     rmdir "$MODPATH/system/vendor/firmware/uecapconfig" 2>/dev/null || true
@@ -385,8 +393,15 @@ if [ "$_is_upgrade" -eq 0 ]; then
 
 
     # --- UECap 网络能力 ---
-    if [ "$UECAP_DISABLED" -eq 1 ]; then
-        ui_print "  ③ 网络能力配置: 跳过 (当前设备/root 不支持)"
+    if [ "$UECAP_EXTERNAL" -eq 1 ]; then
+        ui_print "  ③ 网络能力配置: 跳过 (Pixel 9 Pro XL 使用设备原生 UECap)"
+        installer_write "$MODPATH/.uecap_manual_mode" stock
+        installer_write "$MODPATH/.uecap_mode" stock
+        installer_write "$MODPATH/.uecap_policy" external
+        installer_write "$MODPATH/.uecap_reason" device_external_stock
+        ui_print ""
+    elif [ "$UECAP_DISABLED" -eq 1 ]; then
+        ui_print "  ③ 网络能力配置: 跳过 (当前 root 不提供 managed UECap)"
         installer_write "$MODPATH/.uecap_manual_mode" disabled
         installer_write "$MODPATH/.uecap_mode" disabled
         installer_write "$MODPATH/.uecap_policy" disabled
@@ -520,7 +535,12 @@ else
         fi
     fi
     [ -f "$MODPATH/.profile_auto_reason" ] || installer_write "$MODPATH/.profile_auto_reason" manual_policy
-    if [ "$UECAP_DISABLED" -eq 0 ]; then
+    if [ "$UECAP_EXTERNAL" -eq 1 ]; then
+        installer_write "$MODPATH/.uecap_manual_mode" stock
+        installer_write "$MODPATH/.uecap_mode" stock
+        installer_write "$MODPATH/.uecap_policy" external
+        installer_write "$MODPATH/.uecap_reason" device_external_stock
+    elif [ "$UECAP_DISABLED" -eq 0 ]; then
         _ue_default=$(sh "$MODPATH/uecap_profile.sh" default 2>/dev/null) \
             || { ui_print "  ✗ 无法读取 UECap default contract"; exit 1; }
         [ -f "$MODPATH/.uecap_manual_mode" ] || installer_write "$MODPATH/.uecap_manual_mode" "$_ue_default"
@@ -528,7 +548,12 @@ else
         [ -f "$MODPATH/.uecap_policy" ] || installer_write "$MODPATH/.uecap_policy" manual
     fi
     # 不兼容的 root/设备升级时覆盖旧 UECap 状态，避免迁移出不可用档位。
-    if [ "$UECAP_DISABLED" -eq 1 ]; then
+    if [ "$UECAP_EXTERNAL" -eq 1 ]; then
+        installer_write "$MODPATH/.uecap_manual_mode" stock
+        installer_write "$MODPATH/.uecap_mode" stock
+        installer_write "$MODPATH/.uecap_policy" external
+        installer_write "$MODPATH/.uecap_reason" device_external_stock
+    elif [ "$UECAP_DISABLED" -eq 1 ]; then
         installer_write "$MODPATH/.uecap_manual_mode" disabled
         installer_write "$MODPATH/.uecap_mode" disabled
         installer_write "$MODPATH/.uecap_policy" disabled

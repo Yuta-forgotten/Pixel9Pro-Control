@@ -44,7 +44,12 @@ const schedulerBootLib = fs.readFileSync(path.join(root, 'scripts', 'scheduler_b
 const schedulerOwnerLib = fs.readFileSync(path.join(root, 'scripts', 'scheduler_owner_lib.sh'), 'utf8');
 const schedulerReconcile = fs.readFileSync(path.join(root, 'scripts', 'scheduler_reconcile.sh'), 'utf8');
 const schedulerGuard = fs.readFileSync(path.join(root, 'scripts', 'scheduler_transition_guard_lib.sh'), 'utf8');
-const basebandCustomize = fs.readFileSync(path.join(root, 'modules', 'pixel9pro_baseband_trial', 'customize.sh'), 'utf8');
+const basebandRoot = process.env.PIXEL9PRO_BASEBAND_ROOT
+  ? path.resolve(process.env.PIXEL9PRO_BASEBAND_ROOT)
+  : path.resolve(root, '..', 'pixel9pro_baseband_trial_module');
+assert(fs.existsSync(basebandRoot), `standalone baseband source is missing: ${basebandRoot}`);
+const basebandCustomize = fs.readFileSync(path.join(basebandRoot, 'customize.sh'), 'utf8');
+const basebandManifest = fs.readFileSync(path.join(basebandRoot, 'config', 'baseband_devices.tsv'), 'utf8');
 const moduleProp = fs.readFileSync(path.join(root, 'module.prop'), 'utf8');
 const versionsProp = fs.readFileSync(path.join(root, 'versions.prop'), 'utf8');
 
@@ -63,9 +68,10 @@ const htmlContracts = [
 for (const [pattern, message] of htmlContracts) assert(pattern.test(html), message);
 
 assert(app.includes("document.querySelectorAll('[data-module-visible]')"), 'generic optional-module visibility binding is missing');
-assert(app.includes("baseband: requireFeature('network').isBasebandInstalled()") && app.includes("requireFeature('shell').getDeviceModel() === 'Pixel 9 Pro'"), 'baseband visibility must require the supported device and installed module');
+assert(app.includes("baseband: requireFeature('network').isBasebandInstalled()"), 'baseband visibility must use the standalone module state');
+assert(!app.includes("requireFeature('shell').getDeviceModel() === 'Pixel 9 Pro'"), 'baseband visibility must not use the display model as a SKU gate');
 assert(app.includes('ugt: state.uperfDetected') && app.includes('fas: state.fasRsDetected'), 'UGT/fas-rs visibility must use independent detection flags');
-assert(app.includes('if (!state.basebandInstalled)'), 'baseband detail fetch must be skipped when the module is absent');
+assert(app.includes('if (!state.basebandInstalled && (!state.basebandState || !state.basebandState.installed))'), 'baseband detail fetch must be skipped only when the module state is absent');
 for (const transitionCopy of [
   '正在提交下次启动模式；当前 boot 不会热启动或热停止 UGT。',
   '正在更新 fas-rs 接管策略并核对当前 owner，通常需要数秒。',
@@ -119,7 +125,7 @@ assert(customize.includes('_UE_VALS=$(sh "$MODPATH/uecap_profile.sh" modes')
   && !customize.includes('_UE_VALS="balanced special universal"'), 'installer must fail closed while consuming the UECap CLI contract');
 assert(uecapProfile.includes('*)\n            return 1'), 'UECap CLI must reject unknown commands');
 assert(uecapCgi.includes('uecap_is_valid_mode "$mode"') && app.includes('const raw = data?.uecap_contract') && !app.includes('const UECAP_MODES'), 'UECap CGI and UI must consume the backend mode contract');
-assert(uecapCgi.includes('"uecap_contract":{"mode_order":[],"default_mode":"disabled"}'), 'disabled UECap schema must add an empty contract without dropping legacy fields');
+assert(uecapProfile.includes('uecap_print_ui_contract_json()') && app.includes("modeOrder.length !== 0 || defaultMode !== 'disabled'"), 'disabled UECap schema must be generated from the empty backend contract');
 
 for (const host of ['ntp.aliyun.com', 'ntp.myhuaweicloud.com', 'ntp1.xiaomi.com', 'time.android.com']) {
   assert(ntpCatalog.includes(host), `NTP catalog is missing ${host}`);
@@ -266,8 +272,23 @@ assert(nrModeLib.includes('nr_mode_write_verified()') && nrModeLib.includes('nr_
 assert(nrCgi.includes('"screen_off_delay_s"') && app.includes('state.nrContract'), 'WebUI NR timing must come from the backend runtime contract');
 assert(!app.includes('30-50%'), 'NR detail must not promise an unverified fixed power-saving percentage');
 assert(customize.includes('不支持的设备') && customize.includes('XL 温控 stock 配置缺失'), 'installer must reject unknown devices and missing XL stock data');
-assert(customize.includes('UECAP_DISABLED_REASON="uecap_unsupported_device"'), 'XL installs must disable the caiman-only UECap payload');
-assert(basebandCustomize.includes('[ "$device" != "caiman" ]'), 'baseband submodule must reject non-caiman devices');
+assert(customize.includes('UECAP_EXTERNAL=1') && customize.includes('UECAP_DISABLED_REASON="device_external_stock"'), 'komodo installs must use the external/stock UECap policy');
+assert(customize.includes('magisk_uecap_unavailable'), 'Magisk managed UECap state must be explicit');
+assert(!customize.includes('uecap_unsupported_device') && !customize.includes('magisk_no_baseband'), 'retired UECap disable reasons must not remain in runtime installer logic');
+assert(basebandCustomize.includes('config/baseband_devices.tsv') && basebandCustomize.includes('不要卸载 APatch Manager'), 'standalone baseband installer must use the dual-device manifest and preserve Manager upgrades');
+const basebandRows = basebandManifest.split(/\r?\n/).filter((line) => line.trim() && !line.trim().startsWith('#'));
+assert(basebandRows.length === 2 && basebandRows.every((line) => line.split('|').length === 7), 'standalone baseband manifest must contain exactly two seven-field rows');
+assert(basebandRows.every((line) => line.split('|')[2] === 'external' && line.split('|').slice(3).every((value) => value === '')), 'standalone baseband manifest must not carry UECap payload metadata');
+function listFilesRecursively(directory) {
+  const result = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) result.push(...listFilesRecursively(fullPath));
+    else result.push(fullPath);
+  }
+  return result;
+}
+assert(!listFilesRecursively(basebandRoot).some((entry) => entry.endsWith('.binarypb')), 'standalone baseband source must not contain UECap binarypb');
 assert(!service.includes('# v4.'), 'service.sh must not contain a release changelog');
 assert(!fs.existsSync(path.join(root, 'system.prop')), 'empty system.prop must not be packaged');
 assert(moduleProp.includes('version=v4.5.07') && moduleProp.includes('versionCode=112'), 'release version must be v4.5.07 / 112');

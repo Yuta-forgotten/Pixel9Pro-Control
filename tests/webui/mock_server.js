@@ -7,6 +7,9 @@ const host = '127.0.0.1';
 const port = 6210;
 const token = 'pixel-test-token';
 
+const CURRENT_MODULE_VERSION = 'v4.5.07';
+const CURRENT_VERSION_CODE = '112';
+
 const runtime = {
   profile: 'balanced',
   manualProfile: 'balanced',
@@ -140,6 +143,105 @@ function thermalZones() {
   ];
 }
 
+function basebandStatus(extra = {}) {
+  return {
+    installed: true,
+    enabled: true,
+    runtime_verified: true,
+    module_dir: '/data/adb/modules/pixel9pro_baseband_trial',
+    module_dir_state: 'active',
+    module_state: 'enabled',
+    source: 'active',
+    root_impl: 'APatch',
+    version: 'v1.1.0-rc3',
+    version_code: '112',
+    description: 'fixture baseband',
+    runtime_status: 'PASS',
+    mount_observed: 'yes',
+    effective_overlay_verified: 'yes',
+    source_contract_verified: 'yes',
+    content_image_verified: 'yes',
+    migration_state: 'effective_overlay_verified',
+    source_path: '/data/adb/modules/pixel9pro_baseband_trial/system',
+    effective_path: '/product,/vendor',
+    content_image: '/data/adb/metamodule/mnt/content.img',
+    source_hash: 'source-hash-0123456789abcdef0123456789abcdef',
+    effective_hash: 'effective-hash-0123456789abcdef0123456789abcdef',
+    content_image_hash: 'content-hash-0123456789abcdef0123456789abcdef',
+    source_tree_hash: 'source-tree-hash-0123456789abcdef0123456789abcdef',
+    content_tree_hash: 'content-tree-hash-0123456789abcdef0123456789abcdef',
+    effective_contract_hash: 'effective-contract-hash-0123456789abcdef0123456789abcdef',
+    clean_reinstall_required: false,
+    pending_update: false,
+    pending_update_dir: '',
+    runtime_receipt_freshness: 'current_check',
+    prior_receipt_freshness: 'current_boot_verified',
+    current_runtime_check_freshness: 'current_check',
+    boot_id: 'test-boot',
+    errors: 'none',
+    carrier_settings: { installed: true, count: 3210, carrier_list_sha256: 'carrier-hash' },
+    mcfg: { installed: true, count: 5 },
+    props: { volte_avail_ovr: '1', wfc_avail_ovr: '1', vt_avail_ovr: '1', apns_conf_sha256: 'apn-hash' },
+    ...extra,
+  };
+}
+
+function uecapState(extra = {}) {
+  return {
+    ok: true,
+    device: 'caiman',
+    device_label: 'Pixel 9 Pro',
+    device_policy: 'managed',
+    contract_result: 'valid',
+    runtime_policy: 'managed',
+    policy: 'manual',
+    requested_mode: runtime.uecapMode,
+    manual_mode: runtime.uecapMode,
+    active_mode: runtime.uecapMode,
+    reason: 'managed_runtime',
+    disabled: false,
+    disabled_message: '',
+    last_switch: '0',
+    target_name: 'PLATFORM_9055801516233416490.binarypb',
+    target_hash: `${runtime.uecapMode}-hash`,
+    special_hash: 'special-hash',
+    balanced_hash: 'balanced-hash',
+    universal_hash: 'universal-hash',
+    uecap_contract: { mode_order: ['balanced', 'special', 'universal'], default_mode: 'balanced' },
+    runtime_receipt: {
+      schema: 2,
+      boot_id: 'test-boot',
+      updated_at: '0',
+      reason: 'pre_modem',
+      apply_result: 'applied',
+      reload_dispatched: false,
+      reload_result: 'not_required_pre_modem',
+      effective_state: 'pre_modem_bind',
+      bind_status: 'verified',
+      device: 'caiman',
+      device_policy: 'managed',
+      desired_profile: runtime.uecapMode,
+      bound_profile: runtime.uecapMode,
+      modem_load_state: 'pre_modem_bind',
+      modem_loaded_profile: 'unknown',
+      radio_observed_state: 'NR_SA',
+      functional_state: 'modem_load_unconfirmed',
+      receipt_freshness: 'current_boot',
+      actual_rat: 'NR_SA',
+      nr_available: 'true',
+      endc_available: 'not_applicable',
+      nr_registered: 'true',
+      nr_band: 'n41',
+      nr_arfcn: '0',
+      nr_frequency_range: 'FR1',
+      lte_anchor: 'not_applicable',
+      nsa_status: 'not_applicable',
+      nsa_reason: 'sa_observed',
+    },
+    ...extra,
+  };
+}
+
 function energyState(fast) {
   const now = Math.floor(Date.now() / 1000);
   return {
@@ -171,10 +273,11 @@ async function handleApi(req, res, url) {
     case '/cgi-bin/status.sh': return json(res, { ok: true, service: 'mock' });
     case '/cgi-bin/auth.sh': return json(res, { token });
     case '/cgi-bin/info.sh': return json(res, {
-      model: 'Pixel 9 Pro', android: '17', kernel: '6.1-test', module_version: 'v4.5.05',
-      version_code: '110', httpd_rss_kb: 1240, mem_total_kb: 16384000,
+      model: 'Pixel 9 Pro', version: '17', android: '17', kernel: '6.1-test', module_version: CURRENT_MODULE_VERSION,
+      version_code: CURRENT_VERSION_CODE, httpd_rss_kb: 1240, mem_total_kb: 16384000,
       mem_avail_kb: 9216000, swap_total_kb: 11665408, swap_free_kb: 10321920,
-      uptime_sec: 34567, baseband_installed: true,
+      uptime_sec: 34567, baseband_installed: true, baseband_enabled: true,
+      baseband_runtime_verified: true, baseband_version: 'v1.1.0-rc3', baseband_status: basebandStatus(),
     });
     case '/cgi-bin/profile.sh':
       if (body.profile) runtime.profile = runtime.manualProfile = body.profile;
@@ -203,13 +306,8 @@ async function handleApi(req, res, url) {
       });
     case '/cgi-bin/uecap.sh':
       if (body.mode) runtime.uecapMode = body.mode;
-      return json(res, {
-        ok: true, policy: 'manual', requested_mode: runtime.uecapMode, manual_mode: runtime.uecapMode,
-        active_mode: runtime.uecapMode, reason: 'manual', target_hash: `${runtime.uecapMode}-hash`,
-        special_hash: 'special-hash', balanced_hash: 'balanced-hash', universal_hash: 'universal-hash',
-        uecap_contract: { mode_order: ['balanced', 'special', 'universal'], default_mode: 'balanced' },
-      });
-    case '/cgi-bin/check_baseband.sh': return json(res, { installed: true, enabled: true, version: 'test', module_id: 'pixel9pro_baseband_trial' });
+      return json(res, uecapState());
+    case '/cgi-bin/check_baseband.sh': return json(res, basebandStatus());
     case '/cgi-bin/standby_guard.sh':
       if (body.sim2_auto_manage) runtime.sim2Auto = body.sim2_auto_manage;
       if (body.idle_isolate_mode) runtime.idleIsolate = body.idle_isolate_mode;

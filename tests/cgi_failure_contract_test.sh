@@ -48,6 +48,7 @@ cp "$MOD/scripts/display_state_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/scheduler_detect_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/uecap_profile.sh" "$FIXTURE/" || exit 2
 cp "$MOD/config/app_identities.tsv" "$FIXTURE/config/" || exit 2
+cp "$MOD/config/uecap_devices.tsv" "$FIXTURE/config/" || exit 2
 cp "$MOD/system/vendor/etc/thermal_stock.json" "$FIXTURE/system/vendor/etc/" || exit 2
 cp "$MOD/system/vendor/etc/thermal_info_config.json" "$FIXTURE/system/vendor/etc/" || exit 2
 cp "$MOD/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.special.binarypb" "$FIXTURE/system/vendor/firmware/uecapconfig/" || exit 2
@@ -151,6 +152,9 @@ run_get_cgi() {
         PIXEL9PRO_CGI_TEST_MODE=1 \
         PIXEL9PRO_MODDIR="$FIXTURE" \
         PIXEL9PRO_UECAP_TARGET="$FIXTURE/uecap_target.binarypb" \
+        PIXEL9PRO_UECAP_CONTRACT="$FIXTURE/config/uecap_devices.tsv" \
+        PIXEL9PRO_UECAP_DEVICE="${TEST_UECAP_DEVICE:-caiman}" \
+        APATCH=true \
         REQUEST_METHOD=GET \
         REMOTE_ADDR=127.0.0.1 \
         sh "$FIXTURE/webroot/cgi-bin/$_test_script"
@@ -167,14 +171,16 @@ printf 'manual' > "$FIXTURE/.uecap_policy"
 printf 'balanced' > "$FIXTURE/.uecap_mode"
 printf 'balanced' > "$FIXTURE/.uecap_manual_mode"
 printf 'fixture' > "$FIXTURE/.uecap_reason"
+TEST_UECAP_DEVICE=caiman
 response=$(run_get_cgi uecap.sh)
 assert_contains 'UECap GET exposes backend-owned UI contract' "$response" '"uecap_contract":{"mode_order":["balanced","special","universal"],"default_mode":"balanced"}'
 
-printf 'disabled' > "$FIXTURE/.uecap_policy"
-printf 'uecap_unsupported_device' > "$FIXTURE/.uecap_reason"
+TEST_UECAP_DEVICE=komodo
 response=$(run_get_cgi uecap.sh)
 assert_contains 'disabled UECap keeps legacy fields' "$response" '"disabled":true'
 assert_contains 'disabled UECap adds an empty mode contract' "$response" '"uecap_contract":{"mode_order":[],"default_mode":"disabled"}'
+assert_contains 'external UECap reason is explicit' "$response" '"reason":"device_external_stock"'
+TEST_UECAP_DEVICE=caiman
 printf 'manual' > "$FIXTURE/.uecap_policy"
 
 printf 'on' > "$FIXTURE/.nr_screen_switch"

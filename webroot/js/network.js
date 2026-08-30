@@ -3,6 +3,7 @@
 (() => {
 const state = {
   basebandInstalled: false,
+  basebandState: null,
   nrSwitch: 'off',
   nrContract: null,
   nrBusy: false,
@@ -241,31 +242,27 @@ function renderUecapBtnGroup(activeMode) {
 function renderUecapRows(data) {
   applyUecapContract(data);
   refs.uecapRows.replaceChildren();
-  if (state.uecapContract.disabled) {
-    state.uecapMode = 'disabled';
-    state.uecapActiveMode = data.active_mode || 'stock';
-    refs.uecapDesc.textContent = data.disabled_message || '当前安装环境不提供 UE 能力配置切换。';
-    renderUecapBtnGroup('disabled');
-    [
-      { label: '功能状态', value: uecapLabel('disabled'), cls: 'off' },
-      { label: '当前配置', value: uecapLabel(state.uecapActiveMode), cls: 'off' },
-      { label: '原因', value: data.reason || 'unsupported', cls: 'off' },
-    ].forEach((row) => refs.uecapRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
-    return;
-  }
-  const requested = data.requested_mode || state.uecapMode || state.uecapContract.defaultMode;
-  const active = data.active_mode || 'custom';
+  const receipt = data.runtime_receipt && typeof data.runtime_receipt === 'object'
+    ? data.runtime_receipt : {};
+  const disabled = Boolean(state.uecapContract.disabled);
+  const requested = disabled
+    ? (data.requested_mode || receipt.desired_profile || 'disabled')
+    : (data.requested_mode || state.uecapMode || state.uecapContract.defaultMode);
+  const active = data.active_mode || receipt.bound_profile || (disabled ? 'stock' : 'custom');
   state.uecapMode = requested;
   state.uecapActiveMode = active;
   const modeInfo = UECAP_MODE_PRESENTATION[requested];
-  refs.uecapDesc.textContent = state.uecapPendingMode
-    ? `${uecapLabel(state.uecapPendingMode)}：已提交切换，正在校验当前配置。`
-    : modeInfo ? `${modeInfo.desc} · 切换后自动校验配置是否生效。` : '选择 UE 能力配置，切换后会自动校验是否生效。';
-  renderUecapBtnGroup(requested);
-  const verifyRow = getUecapVerifyRow(data, requested, active);
-  const receipt = data.runtime_receipt || {};
+  refs.uecapDesc.textContent = disabled
+    ? (data.disabled_message || '当前安装环境不提供 UECap 配置写入；以下只展示设备、modem 和无线观察结果。')
+    : state.uecapPendingMode
+      ? `${uecapLabel(state.uecapPendingMode)}：已提交切换，正在校验当前配置。`
+      : modeInfo ? `${modeInfo.desc} · 切换后自动校验配置是否生效。` : '选择 UE 能力配置，切换后会自动校验是否生效。';
+  renderUecapBtnGroup(disabled ? 'disabled' : requested);
+  const verifyRow = disabled
+    ? { label: '配置校验', value: `${data.contract_result || 'unknown'} · 只读`, cls: 'off' }
+    : getUecapVerifyRow(data, requested, active);
   const reloadResult = receipt.reload_result === 'success'
-    ? 'modem 已重载'
+    ? (receipt.modem_load_state === 'confirmed_readback' ? 'modem 已重载并完成读回' : 'modem 重载已接受，尚未确认实际加载')
     : receipt.reload_result === 'failed'
       ? 'modem 重载失败'
       : receipt.reload_result === 'unknown'
@@ -274,20 +271,42 @@ function renderUecapRows(data) {
   const nrRegistered = receipt.nr_registered === 'true' || receipt.nr_registered === true;
   const nrAvailable = receipt.nr_available === 'true' || receipt.nr_available === true;
   const nrBand = receipt.nr_band && receipt.nr_band !== 'unknown' ? ` / band ${receipt.nr_band}` : '';
-  const radioResult = nrRegistered
-    ? `NR 已注册${nrBand}`
-    : nrAvailable
-      ? `NR 可用但当前未注册${nrBand}`
-      : receipt.actual_rat && receipt.actual_rat !== 'unknown'
-        ? `${receipt.actual_rat}（NR 未观测）`
-        : '尚无 telephony 收据';
+  const actualRat = String(receipt.actual_rat || 'unknown').toUpperCase();
+  const observedRat = String(receipt.radio_observed_state || 'UNKNOWN').toUpperCase();
+  const nsaStatus = String(receipt.nsa_status || (observedRat === 'NR_NSA' ? 'observed' : 'not_applicable'));
+  const nsaReason = String(receipt.nsa_reason || (observedRat === 'NR_SA' ? 'sa_observed' : 'no_confirmed_nsa_cell'));
+  const radioResult = observedRat === 'NR_SA' || actualRat === 'NR_SA'
+    ? `NR SA${nrBand}（不要求 EN-DC）`
+    : observedRat === 'NR_NSA' || actualRat === 'NR_NSA'
+      ? `NR NSA${nrBand}（已观测 EN-DC/LTE anchor）`
+      : actualRat === 'LTE' || observedRat === 'LTE'
+        ? 'LTE / 4G（当前无线观察结果，不代表 UECap 失败）'
+        : nrRegistered
+          ? `NR 已注册${nrBand}`
+          : nrAvailable
+            ? `NR 可用但当前未注册${nrBand}`
+            : '尚无可确认的 NR 无线状态';
+  const hasConfirmedModemLoad = receipt.modem_load_state === 'confirmed_readback';
+  const isCurrentReceipt = receipt.receipt_freshness === 'current_boot';
   const rows = [
+    { label: 'Device / SKU', value: `${data.device || 'unknown'} / ${data.device_label || 'unknown'}`, cls: 'off' },
+    { label: 'Device policy', value: data.device_policy || 'unknown', cls: 'off' },
+    { label: 'Runtime policy', value: data.runtime_policy || data.policy || 'unknown', cls: disabled ? 'off' : 'good' },
     { label: '已选配置', value: uecapLabel(requested), cls: requested === active ? 'good' : 'off' },
-    { label: '当前配置', value: uecapLabel(active), cls: active === requested ? 'good' : 'warn' },
+    { label: '当前绑定', value: uecapLabel(active), cls: active === requested ? 'good' : 'warn' },
     verifyRow,
-    { label: '配置摘要', value: (data.target_hash || 'unknown').slice(0, 12), cls: 'off' },
-    { label: 'Modem 时序', value: reloadResult, cls: receipt.reload_result === 'failed' ? 'warn' : receipt.reload_result === 'success' ? 'good' : 'off' },
-    { label: '实际无线', value: radioResult, cls: nrRegistered ? 'good' : nrAvailable ? 'warn' : 'off' },
+    { label: 'Modem load state', value: receipt.modem_load_state || 'unknown', cls: hasConfirmedModemLoad ? 'good' : 'warn' },
+    { label: 'Modem loaded profile', value: receipt.modem_loaded_profile || 'unknown', cls: 'off' },
+    { label: 'Modem 时序', value: reloadResult, cls: receipt.reload_result === 'failed' ? 'warn' : hasConfirmedModemLoad ? 'good' : 'off' },
+    { label: 'Functional state', value: receipt.functional_state || 'unknown', cls: receipt.functional_state === 'verified' ? 'good' : 'warn' },
+    { label: 'Receipt freshness', value: receipt.receipt_freshness || 'missing', cls: isCurrentReceipt ? 'good' : 'warn' },
+    { label: 'Target', value: `${data.target_name || 'unknown'} / ${(data.target_hash || 'unknown').slice(0, 16)}`, cls: 'off' },
+    { label: '实际无线', value: radioResult, cls: observedRat === 'NR_SA' || observedRat === 'NR_NSA' ? 'good' : 'off' },
+    { label: 'SA', value: observedRat === 'NR_SA' ? 'observed · 不要求 EN-DC' : 'not observed', cls: observedRat === 'NR_SA' ? 'good' : 'off' },
+    { label: 'NSA', value: `${nsaStatus} · ${nsaReason}`, cls: nsaStatus === 'observed' ? 'good' : 'off' },
+    { label: 'LTE / 4G', value: actualRat === 'LTE' || observedRat === 'LTE' ? 'observed · 仅表示当前驻网' : 'not observed', cls: 'off' },
+    { label: 'LTE anchor', value: receipt.lte_anchor || 'unknown', cls: 'off' },
+    { label: '原因', value: data.reason || 'unknown', cls: disabled ? 'off' : 'warn' },
   ];
   rows.forEach((row) => refs.uecapRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 }
@@ -537,18 +556,35 @@ function renderBasebandRows(data) {
   refs.basebandRows.replaceChildren();
   if (!data.installed) {
     state.basebandInstalled = false;
+    state.basebandState = data;
     syncOptionalModuleUi();
     return;
   }
   state.basebandInstalled = true;
+  state.basebandState = data;
   syncOptionalModuleUi();
-  refs.basebandDesc.textContent = `已安装 ${data.version || ''}，可提供 CarrierSettings、MCFG 和 IMS 相关配置。`;
+  const runtimeVerified = data.runtime_verified === true;
+  const moduleState = data.module_state || (data.enabled ? 'enabled' : 'disabled');
+  refs.basebandDesc.textContent = runtimeVerified
+    ? `已安装 ${data.version || ''}，本次启动已验证 effective overlay。`
+    : `已安装 ${data.version || ''}，但本次启动尚未确认 effective overlay；请先完成重启或按提示重新安装。`;
   const props = data.props || {};
   const cs = data.carrier_settings || {};
   const mcfg = data.mcfg || {};
+  const freshness = data.runtime_receipt_freshness || 'missing';
   const rows = [
-    { label: '安装状态', value: '已安装', cls: 'good' },
+    { label: '模块目录', value: `${data.source || 'unknown'} / ${moduleState}`, cls: data.enabled ? 'good' : 'warn' },
+    { label: '运行验证', value: runtimeVerified ? '本次启动已验证' : '目录存在，但尚未验证生效', cls: runtimeVerified ? 'good' : 'warn' },
     { label: '版本', value: data.version || '未知', cls: 'off' },
+    { label: '挂载观察', value: data.mount_observed || 'unknown', cls: data.mount_observed === 'yes' || data.mount_observed === 'not_required_magisk' ? 'good' : 'warn' },
+    { label: 'Effective overlay', value: data.effective_overlay_verified || 'unknown', cls: data.effective_overlay_verified === 'yes' ? 'good' : 'warn' },
+    { label: '迁移状态', value: data.migration_state || 'unknown', cls: data.migration_state === 'effective_overlay_verified' ? 'good' : 'warn' },
+    { label: 'Source / effective', value: `${data.source_path || 'unknown'} → ${data.effective_path || 'unknown'}`, cls: 'off' },
+    { label: 'Hash 对齐', value: `${(data.source_hash || 'unknown').slice(0, 12)} / ${(data.effective_hash || 'unknown').slice(0, 12)}`, cls: data.source_hash === data.effective_hash ? 'good' : 'warn' },
+    { label: 'Content image', value: `${data.content_image || 'missing'} / ${(data.content_image_hash || 'unknown').slice(0, 12)}`, cls: data.content_image_verified === 'yes' || data.content_image_verified === 'not_required_magisk' ? 'good' : 'warn' },
+    { label: 'Receipt', value: `${freshness} / prior ${data.prior_receipt_freshness || 'missing'}`, cls: freshness === 'current_check' ? 'good' : 'warn' },
+    { label: 'Clean reinstall', value: data.clean_reinstall_required ? '需要卸载、重启、重装、再重启' : '不需要', cls: data.clean_reinstall_required ? 'warn' : 'good' },
+    { label: '错误摘要', value: data.errors || 'none', cls: data.errors && data.errors !== 'none' ? 'warn' : 'off' },
     { label: 'VoLTE', value: props.volte_avail_ovr === '1' ? '已启用' : '未启用', cls: props.volte_avail_ovr === '1' ? 'good' : 'warn' },
     { label: 'Wi-Fi Calling', value: props.wfc_avail_ovr === '1' ? '已启用' : '未启用', cls: props.wfc_avail_ovr === '1' ? 'good' : 'warn' },
     { label: '运营商配置', value: cs.installed ? `${cs.count} 项` : '未安装', cls: cs.installed ? 'good' : 'off' },
@@ -558,7 +594,7 @@ function renderBasebandRows(data) {
 }
 
 async function refreshBaseband() {
-  if (!state.basebandInstalled) {
+  if (!state.basebandInstalled && (!state.basebandState || !state.basebandState.installed)) {
     syncOptionalModuleUi();
     return;
   }
@@ -723,7 +759,11 @@ registerFeature('network', {
   refreshBaseband,
   syncNtp,
   isBasebandInstalled: () => state.basebandInstalled,
-  setBasebandInstalled(value) { state.basebandInstalled = Boolean(value); }
+  setBasebandInstalled(value) { state.basebandInstalled = Boolean(value); },
+  setBasebandBackendState(value) {
+    state.basebandState = value || null;
+    state.basebandInstalled = Boolean(value && value.installed);
+  },
 });
 })();
 

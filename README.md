@@ -4,9 +4,9 @@
 
 ## 当前版本
 
-- Version: `v4.5.05`
-- versionCode: `110`
-- Package filename: `pixel9pro_control_v4.5.05.zip` (verify the published SHA256 before flashing)
+- Version: `v4.5.07`
+- versionCode: `112`
+- Package filename: 本轮源码修订尚未重新打包；不要把已发布的 `v4.5.05/110` ZIP 当作本轮源码包
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -14,10 +14,10 @@
 
 | 设备 | 代号 | 状态 |
 |------|------|------|
-| Pixel 9 Pro | caiman | APatch 实机验证 |
-| Pixel 9 Pro XL | komodo | 温控分支已适配；未实际测试；UECap 保持 stock |
+| Pixel 9 Pro | caiman | 既有 `v4.5.05/110` APatch 实机基线；`v4.5.07/112` 本轮源码尚未重新安装 |
+| Pixel 9 Pro XL | komodo | 温控分支已适配；UECap 由系统/外部路径保持 stock，Control 不写入 XL payload；未完成 XL 实机闭环 |
 
-安装时自动检测机型，刷入对应的温控配置。基带配置仅限 Pixel 9 Pro。
+安装时自动检测机型，刷入对应的温控配置。CarrierSettings、APN、China MCFG 和 IMS properties 由独立的 `pixel9pro_baseband_trial` 模块按 `caiman/komodo` manifest 管理；Control 不把独立基带模块重新打包进自身。
 
 ## 功能
 
@@ -106,6 +106,11 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 - 切换只重启蜂窝 modem，不影响 Wi-Fi / 蓝牙
 - WebUI 切换后自动校验配置摘要，确认一致后才提示成功
 
+UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control 管理的
+`balanced/special/universal` 三档；`komodo` 在当前源码中是
+`external/stock`，Control 只读展示设备、modem、radio 和 receipt 证据，不写入
+`PLATFORM_6287228797510365516.binarypb`。两个 `PLATFORM_*` 文件属于不同 SKU，不能改名或交叉替换。
+
 ### 独立模块与外部调度协同
 
 本项目按“控制模块 + 基带模块 + 第三方外部调度模块”协同使用。三者都可独立安装和工作；其中 `pixel9pro_control` 与 `pixel9pro_baseband_trial` 由本项目维护，Uperf Game Turbo / fas-rs 等外部调度项目由各自上游维护。本项目不打包、不替代第三方模块，但会在用户启用游戏 handoff 后受控协调 UGT 的单实例 stop/start、fas-rs lease owner marker 与 owner-aware `powercfg` router；每次 mutation 都必须复读并在失败时恢复原 baseline。
@@ -113,17 +118,19 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 | 模块 | 归属 | 详情 |
 |------|------|------|
 | `pixel9pro_control` | 本项目 | 温控、ZRAM、UECap 三档切换（仅 caiman + APatch/KSU）、NR 降级、SIM2 管理、后台限制、WebUI；未让出时管理 Pixel 原厂 CPU 调度 |
-| [`pixel9pro_baseband_trial`](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/download/v4.3.11/pixel9pro_baseband_trial_v1.0.1.zip) | 本项目可选基带模块 | 基于 [Sun_Dream（酷安）](https://www.coolapk.com/u/1281808) 的 PLMN / CarrierSettings 设计；提供 China MCFG、APN 与 VoLTE/VoNR/WFC 配置 |
+| `pixel9pro_baseband_trial` | 本项目可选基带模块 | 支持 caiman/komodo 的 CarrierSettings、APN、China MCFG 与 VoLTE/WFC properties；不携带、不写入任何 UECap `binarypb` |
 | Uperf Game Turbo / fas-rs / 其它外部调度器 | 第三方或独立外部调度模块 | CPU scene 调度、输入/前台/游戏线程调度、frame-aware 调度、per-app 性能模式；由各自上游独立维护 |
 
 - 只安装控制模块：温控/ZRAM/NR/SIM2/UECap/WebUI 正常工作；CPU 调度由本模块管理
-- 只安装基带模块：单独刷入 `pixel9pro_baseband_trial_v1.0.1.zip`，VoLTE/VoNR 自动生效，UECap 保持原厂
+- 只安装基带模块：单独安装当前明确发布的基带 ZIP，CarrierSettings/APN/IMS 配置按 manifest 生效，UECap 保持由 Control 或系统原生路径负责
 - 控制模块 + 基带模块：WebUI 检测并展示基带模块状态；UECap 由控制模块管理，CarrierSettings / MCFG 由基带模块提供
 - 控制模块 + UGT：Pixel/UGT 双向切换均在重启后生效；APatch 可由 WebUI staging，KernelSU/Magisk 需在各自 Root 管理器启停 UGT 后重启
 - 控制模块 + fas-rs：fas-rs 在 Pixel boot 常驻待机；仅有效游戏 lease 进入接管，退出后恢复 Pixel 日常 profile，不通过 PID 存在单独判断 active owner
 - 三者都安装：Pixel 或 UGT 作为日常 baseline；fas-rs 命中游戏时临时成为唯一调度写入者，退出后恢复进入 lease 前的同一 baseline；基带模块独立负责运营商配置增强
 
-**基带模块兼容性**：`pixel9pro_baseband_trial` 中的 CarrierSettings / MCFG 基于中国运营商配置，安装器只允许 `caiman`。控制模块的 UECap binarypb 同样基于 Pixel 9 Pro (Exynos 5400 modem) 固件定制；`komodo` 安装时会移除该 payload 和切换脚本并保持 stock，不能用 caiman 文件代替。
+**基带模块兼容性**：`pixel9pro_baseband_trial` 当前源码 manifest 只允许 `caiman` / `komodo`，两机共用 CarrierSettings、APN、China MCFG 和 IMS properties，但不携带 UECap payload。Control 的 UECap binarypb 仍按 SKU 独立管理：`caiman` 使用 `PLATFORM_9055801516233416490.binarypb` 三档，`komodo` 使用系统/外部原生路径并保持 stock；不能用 caiman 文件代替 XL 文件。
+
+**基带模块升级规则**：升级的是普通基带模块时，不要求卸载 APatch Manager，也不应由普通模块删除 `/data/adb/modules`、修改 `modules.img` 或自行写入 MetaModule content image。若旧模块的 active source、MetaModule content image、effective overlay、source/content/effective hash 及同一 boot 的 runtime receipt 都能复读确认，可以直接安装新版并在重启后复读；只有这些证据缺失、为空、冲突、跨 boot 或失败时，才进入 clean reinstall：Root Manager 卸载旧的普通基带模块 → 重启 → 安装新版 → 再重启 → 复读 active module、MetaModule content image、effective path、mount 和 runtime receipt。
 
 **外部调度协同说明**：Uperf Game Turbo、fas-rs 等为外部调度项目，本项目只识别设备上已经存在的模块，不提供下载、推荐或安装引导。
 
@@ -176,17 +183,18 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 
 ## 安装
 
-1. 只安装 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中明确发布且 SHA256 校验一致的 ZIP；`v4.5.03` 与本地 `v4.5.04` 含 B110 错误合同，禁止安装；需要回滚时使用已验证的 `v4.4.41`
+1. 只安装 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中明确发布且 SHA256 校验一致的 ZIP；本轮 `v4.5.07/112` 仍是源码候选，尚未生成新 ZIP；`v4.5.03` 与本地 `v4.5.04` 含 B110 错误合同，禁止安装；需要回滚时使用已验证的 `v4.4.41`
 2. KernelSU 用户需先安装 metamodule（如 `meta-overlayfs`）并重启
 3. APatch / KernelSU / Magisk → 模块 → 从存储安装
 4. **首次安装**：音量键交互向导，依次配置温控偏移、CPU 调度（检测到启用中的 UGT 时默认交其接管；否则四选一：均衡／省电／系统默认／自动）、UECap 档位（仅 APatch/KSU）、NR 降级、NTP
-5. **升级安装**：自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline
+5. **升级安装**：Control 自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline。独立普通基带模块按上面的“基带模块升级规则”判断直接升级或 clean reinstall，不因 APatch Manager 更新本身强制卸载 Manager
 6. 重启
 7. 打开 `http://127.0.0.1:6210` 验证
 
 ## 兼容性
 
 - `Pixel 9 Pro (caiman)` / `Pixel 9 Pro XL (komodo)`
+- 当前源码版本：`v4.5.07/112`；本轮尚未生成可下载 ZIP
 - `Android 17 QPR1 Beta 1 (SDK 37)` 当前验证基线
 - `APatch 0.10+` 实机验证
 - `KernelSU 0.9+` 代码兼容（需 metamodule，未完成真机闭环）
@@ -198,6 +206,7 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 |---|---|---|
 | 温控阈值偏移、CPU 调度、ZRAM、后台应用限制、SIM2、NR 降级、WebUI | ✅ | ✅ |
 | UECap 三档基带切换 (balanced/special/universal) | ✅（仅 caiman） | ❌ 不支持 |
+| 独立基带模块 CarrierSettings/APN/China MCFG/IMS properties | ✅（caiman/komodo，需按各自挂载契约复读） | ✅（使用 Magic Mount；不承担 UECap） |
 
 ## 已知问题
 

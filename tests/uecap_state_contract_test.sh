@@ -1,6 +1,7 @@
 #!/system/bin/sh
 
-SOURCE_ROOT="${1:-${0%/tests/*}}"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SOURCE_ROOT="${1:-$SCRIPT_DIR/..}"
 TEST_ROOT="${2:-${TMPDIR:-/tmp}/pixel9pro_uecap_state_$$}"
 PASS=0
 FAIL=0
@@ -16,7 +17,15 @@ check_eq() {
 }
 
 mkdir -p "$TEST_ROOT" || exit 2
+mkdir -p "$TEST_ROOT/config" "$TEST_ROOT/system/vendor/firmware/uecapconfig" || exit 2
+cat > "$TEST_ROOT/config/uecap_devices.tsv" <<'EOF'
+# device|label|uecap_policy|target_name|source_dir|mode_order|default_mode
+caiman|Pixel 9 Pro|managed|PLATFORM_9055801516233416490.binarypb|system/vendor/firmware/uecapconfig|balanced,special,universal|balanced
+komodo|Pixel 9 Pro XL|external|PLATFORM_6287228797510365516.binarypb|||disabled
+EOF
 export PIXEL9PRO_MODDIR="$TEST_ROOT"
+export PIXEL9PRO_UECAP_DEVICE=caiman
+export PIXEL9PRO_UECAP_CONTRACT="$TEST_ROOT/config/uecap_devices.tsv"
 export PIXEL9PRO_UECAP_MODE_FILE="$TEST_ROOT/mode"
 export PIXEL9PRO_UECAP_MANUAL_MODE_FILE="$TEST_ROOT/manual"
 export PIXEL9PRO_UECAP_POLICY_FILE="$TEST_ROOT/policy"
@@ -26,6 +35,7 @@ export PIXEL9PRO_UECAP_RECEIPT_FILE="$TEST_ROOT/runtime_receipt"
 export PIXEL9PRO_UECAP_LOGDIR="$TEST_ROOT/logs"
 export PIXEL9PRO_UECAP_TEST_MODE=1
 export PIXEL9PRO_UECAP_BOOT_ID=test-boot
+export APATCH=true
 . "$SOURCE_ROOT/uecap_profile.sh"
 
 check_eq 'UECap contract owns mode order' 'balanced special universal' "$UECAP_MODE_ORDER"
@@ -117,10 +127,15 @@ export PIXEL9PRO_UECAP_TARGET="$TEST_ROOT/target.binarypb"
 export PIXEL9PRO_UECAP_SPECIAL="$TEST_ROOT/special.binarypb"
 export PIXEL9PRO_UECAP_BALANCED="$TEST_ROOT/balanced.binarypb"
 export PIXEL9PRO_UECAP_UNIVERSAL="$TEST_ROOT/universal.binarypb"
-UECAP_TARGET="$PIXEL9PRO_UECAP_TARGET"
-UECAP_SPECIAL="$PIXEL9PRO_UECAP_SPECIAL"
-UECAP_BALANCED="$PIXEL9PRO_UECAP_BALANCED"
-UECAP_UNIVERSAL="$PIXEL9PRO_UECAP_UNIVERSAL"
+# The runtime snapshots override values at source time.  Keep the test
+# fixture explicit after sourcing as well, then refresh the device contract so
+# production code still exercises its manifest-derived availability gate.
+UECAP_TARGET_OVERRIDE="$PIXEL9PRO_UECAP_TARGET"
+UECAP_SPECIAL_OVERRIDE="$PIXEL9PRO_UECAP_SPECIAL"
+UECAP_BALANCED_OVERRIDE="$PIXEL9PRO_UECAP_BALANCED"
+UECAP_UNIVERSAL_OVERRIDE="$PIXEL9PRO_UECAP_UNIVERSAL"
+uecap_refresh_device_contract >/dev/null 2>&1 || exit 2
+uecap_refresh_runtime_policy
 printf 'special-payload' > "$UECAP_SPECIAL"
 printf 'balanced-payload' > "$UECAP_BALANCED"
 printf 'universal-payload' > "$UECAP_UNIVERSAL"
@@ -197,6 +212,35 @@ else
     printf 'ok %s - cross-boot pre-modem receipt is rejected\n' "$((PASS + FAIL))"
 fi
 PIXEL9PRO_UECAP_BOOT_ID=test-boot
+
+check_radio_case() {
+    _radio_label="$1"
+    _radio_rat="$2"
+    _radio_state="$3"
+    _radio_nsa_status="$4"
+    _radio_nsa_reason="$5"
+    export PIXEL9PRO_UECAP_ACTUAL_RAT="$_radio_rat"
+    export PIXEL9PRO_UECAP_NR_AVAILABLE=unknown
+    export PIXEL9PRO_UECAP_ENDC_AVAILABLE=unknown
+    export PIXEL9PRO_UECAP_NR_REGISTERED=unknown
+    export PIXEL9PRO_UECAP_NR_BAND=unknown
+    export PIXEL9PRO_UECAP_NR_ARFCN=unknown
+    export PIXEL9PRO_UECAP_NR_RANGE=unknown
+    export PIXEL9PRO_UECAP_LTE_ANCHOR=unknown
+    uecap_capture_radio_snapshot
+    uecap_classify_radio_state
+    check_eq "$_radio_label observed state" "$_radio_state" "$UECAP_RADIO_OBSERVED_STATE"
+    check_eq "$_radio_label NSA status" "$_radio_nsa_status" "$UECAP_NSA_STATUS"
+    check_eq "$_radio_label NSA reason" "$_radio_nsa_reason" "$UECAP_NSA_REASON"
+}
+
+check_radio_case 'NR_SA does not require EN-DC' NR_SA NR_SA not_applicable sa_observed
+check_radio_case 'NR_NSA records observed EN-DC path' NR_NSA NR_NSA observed nr_nsa_observed
+check_radio_case 'LTE is not an NSA failure' LTE LTE not_applicable no_confirmed_nsa_cell
+check_radio_case 'unknown radio state is not an NSA failure' UNKNOWN UNKNOWN not_applicable no_confirmed_nsa_cell
+unset PIXEL9PRO_UECAP_ACTUAL_RAT PIXEL9PRO_UECAP_NR_AVAILABLE PIXEL9PRO_UECAP_ENDC_AVAILABLE \
+    PIXEL9PRO_UECAP_NR_REGISTERED PIXEL9PRO_UECAP_NR_BAND PIXEL9PRO_UECAP_NR_ARFCN \
+    PIXEL9PRO_UECAP_NR_RANGE PIXEL9PRO_UECAP_LTE_ANCHOR
 
 printf '1..%s\n' "$((PASS + FAIL))"
 printf '# pass=%s fail=%s\n' "$PASS" "$FAIL"

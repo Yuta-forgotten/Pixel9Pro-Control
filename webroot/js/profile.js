@@ -268,8 +268,9 @@ function syncOptionalModuleUi() {
   const available = {
     ugt: state.uperfDetected,
     fas: state.fasRsDetected,
-    baseband: requireFeature('network').isBasebandInstalled()
-      && requireFeature('shell').getDeviceModel() === 'Pixel 9 Pro',
+    // The standalone baseband module is device-scoped (caiman/komodo).  Its
+    // visibility must not depend on the Control UECap policy or display name.
+    baseband: requireFeature('network').isBasebandInstalled(),
   };
   document.querySelectorAll('[data-module-visible]').forEach((element) => {
     const keys = String(element.dataset.moduleVisible || '').split('|').filter(Boolean);

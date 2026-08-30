@@ -421,9 +421,14 @@ async function loadInfo() {
     const deviceModel = data.model || '—';
     const network = requireFeature('network');
     const profile = requireFeature('profile');
-    const hadBaseband = network.isBasebandInstalled();
     shellState.deviceModel = deviceModel;
     network.setBasebandInstalled(boolValue(data.baseband_installed));
+    network.setBasebandBackendState(data.baseband_status || {
+      installed: boolValue(data.baseband_installed),
+      enabled: boolValue(data.baseband_enabled),
+      runtime_verified: boolValue(data.baseband_runtime_verified),
+      version: data.baseband_version || ''
+    });
     profile.syncOptionalModuleUi();
     refs.infoModel.textContent = deviceModel;
     refs.infoAndroid.textContent = data.version ? `Android ${data.version}` : '—';
@@ -432,7 +437,7 @@ async function loadInfo() {
     refs.topbarKicker.textContent = data.module_version
       ? `${deviceModel} · UI ${data.module_version}`
       : `${deviceModel} · UI`;
-    if (network.isBasebandInstalled() && !hadBaseband) network.refreshBaseband();
+    if (network.isBasebandInstalled()) network.refreshBaseband();
     refs.rtWebuiMem.textContent = data.httpd_rss_kb
       ? data.httpd_rss_kb < 1024 ? `${data.httpd_rss_kb}KB` : `${(data.httpd_rss_kb / 1024).toFixed(1)}MB`
       : '—';

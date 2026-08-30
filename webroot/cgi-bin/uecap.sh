@@ -1,26 +1,10 @@
 #!/system/bin/sh
-# GET returns the manual UECap tier and active hash. POST switches one of the
-# three manual tiers. Unsupported root/device installs explicitly return a stub.
+# GET returns the device-scoped UECap state. POST switches a managed caiman tier;
+# external komodo and unsupported runtime combinations are read-only.  This
+# endpoint reports UECap ownership only; standalone baseband availability is
+# queried independently through check_baseband.sh.
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
 require_loopback
-
-_uecap_policy=$(cat "$MODDIR/.uecap_policy" 2>/dev/null | tr -d ' \n\r')
-if [ "$_uecap_policy" = "disabled" ]; then
-    _uecap_disabled_reason=$(cat "$MODDIR/.uecap_reason" 2>/dev/null | tr -d ' \n\r')
-    case "$_uecap_disabled_reason" in
-        uecap_unsupported_device)
-            _uecap_disabled_message="Pixel 9 Pro XL 不使用 Pixel 9 Pro 专用 UECap payload；当前保持 stock。"
-            ;;
-        *)
-            _uecap_disabled_reason="magisk_no_baseband"
-            _uecap_disabled_message="Magisk 版不含基带 UECap 覆盖。Magic Mount 与 modem cbd 早期 mmap 加载存在 race，强制覆盖会卡 G logo。如需 UE 三档切换请使用 APatch / KSU + metamodule。"
-            ;;
-    esac
-    json_headers
-    printf '{"ok":true,"reloading":false,"policy":"disabled","mode":"disabled","manual_mode":"disabled","active_mode":"stock","reason":"%s","disabled":true,"disabled_message":"%s","modes":[],"hash":"","stock_hash":"","uecap_contract":{"mode_order":[],"default_mode":"disabled"}}\n' \
-        "$_uecap_disabled_reason" "$(json_escape "$_uecap_disabled_message")"
-    exit 0
-fi
 [ -f "$MODDIR/uecap_profile.sh" ] \
     || json_error '500 Internal Server Error' 'UECap runtime script is missing'
 
@@ -51,6 +35,8 @@ case "$REQUEST_METHOD" in
         acquire_lock "uecap_profile"
         read_json_body 256
         body="$JSON_BODY"
+        uecap_is_available \
+            || json_error '409 Conflict' "UECap 当前为只读状态: $(uecap_current_reason)"
         mode=$(printf '%s' "$body" | sed -n 's/.*"mode" *: *"\([a-z]*\)".*/\1/p')
         uecap_is_valid_mode "$mode" \
             || json_error '400 Bad Request' 'invalid mode'
