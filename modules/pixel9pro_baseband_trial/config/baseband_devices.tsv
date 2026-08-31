@@ -1,0 +1,5 @@
+# device|label|uecap_policy|source_rel|target_name|bytes|sha256
+# UECap is owned by pixel9pro_control.  This module must never stage or bind a
+# device-specific binarypb; the empty fields are part of the contract.
+caiman|Pixel 9 Pro|external||||
+komodo|Pixel 9 Pro XL|external||||

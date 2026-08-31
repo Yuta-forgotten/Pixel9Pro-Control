@@ -1,0 +1,5 @@
+# key|path|kind|expected
+carrier_settings|/product/etc/CarrierSettings|min_file_count|3210
+carrier_list|/product/etc/CarrierSettings/carrier_list.pb|sha256|83b7ced089f42fec0cfbe8d445a99536ea47e07403b781f90c6d869cf4535342
+apn|/product/etc/apns-conf.xml|sha256|8a73e952f383508b6c6b2a8e23a327eba9595d84218bd3024fd8b5e0384f04ae
+china_mcfg|/vendor/rfs/msm/mpss/readonly/vendor/mbn/mcfg_sw/generic/China|min_file_count|5
