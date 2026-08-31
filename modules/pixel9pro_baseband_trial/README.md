@@ -1,6 +1,6 @@
 # Pixel 9 Pro / XL Baseband Trial
 
-> **当前源码**：`v1.1.0-rc3`，支持 Pixel 9 Pro (`caiman`) 与 Pixel 9 Pro XL (`komodo`)。本模块只提供 CarrierSettings、APN、China MCFG 与 IMS properties；UECap 不再由本模块携带或写入。此前功能等价候选已在 caiman/APatch 完成安装、重启和有效路径复核；当前源码对应 ZIP 已重新构建并完成结构审计，但尚未重新安装，该版本仍未发布。当前 ZIP 的体积、SHA256 和 source fingerprint 统一记录在根级审查文档与日志索引中，不在模块 README 内自引用，避免源码 fingerprint 与 ZIP digest 形成循环漂移。
+> **当前源码**：`v1.1.0-rc3`，支持 Pixel 9 Pro (`caiman`) 与 Pixel 9 Pro XL (`komodo`)。本模块只提供 CarrierSettings、APN、China MCFG 与 IMS properties；UECap 不再由本模块携带或写入。该版本作为独立 GitHub Release `v1.1.0-rc3` 发布，不与 Control `v4.5.07` 合并。此前功能等价候选已在 caiman/APatch 完成安装、重启和有效路径复核；当前发布 ZIP 已完成源码、确定性构建和 ZIP 结构审计，但尚未重新安装。当前 ZIP 的体积、SHA256 和 source fingerprint 统一记录在根级审查文档与日志索引中，不在模块 README 内自引用，避免源码 fingerprint 与 ZIP digest 形成循环漂移。
 > **本轮边界**：普通基带模块可以直接升级；只有升级后 MetaModule content image、effective overlay 或同一 boot 的 runtime receipt 无法验证时，才需要 clean reinstall。升级 APatch Manager 本身不等于必须卸载 APatch Manager。
 
 ## 功能
@@ -74,7 +74,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\tests\Test-BasebandModule
 
 - [pixel9pro_baseband_trial_v1.0.1.zip](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases/download/v4.3.11/pixel9pro_baseband_trial_v1.0.1.zip)
 
-上一轮 RC2 的包和设备记录只作为历史证据。此前 RC3 功能等价候选已完成本地门禁、确定性构建、ZIP 审计和 caiman/APatch 安装重启复核；重启后的 source/content/effective contract、runtime receipt 与 migration marker 均 PASS，并观察到中国广电 NR_SA n41。当前源码对应 ZIP 已再次完成确定性构建和结构审计，但尚未重新安装或发布；komodo 实机闭环仍未完成。旧 v1.0.1 可作为明确回滚件保留，不应与 RC3 混装。
+上一轮 RC2 的包和设备记录只作为历史证据。此前 RC3 功能等价候选已完成本地门禁、确定性构建、ZIP 审计和 caiman/APatch 安装重启复核；重启后的 source/content/effective contract、runtime receipt 与 migration marker 均 PASS，并观察到中国广电 NR_SA n41。当前 v1.1.0-rc3 发布 ZIP 已再次完成确定性构建和结构审计，但尚未重新安装；komodo 实机闭环仍未完成。旧 v1.0.1 可作为明确回滚件保留，不应与 RC3 混装。
 
 ## 不要叠刷
 
