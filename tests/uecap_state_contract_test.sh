@@ -190,6 +190,7 @@ check_eq 'successful apply dispatches modem reload' 0 "$?"
 check_eq 'runtime receipt records successful modem reload' success "$(uecap_receipt_get reload_result)"
 check_eq 'successful bind remains separately verified' verified "$(uecap_receipt_get bind_status)"
 check_eq 'successful reload records accepted handoff, not unverified effective payload' reload_accepted "$(uecap_receipt_get effective_state)"
+check_eq 'UECap runtime receipt uses current schema' 3 "$(uecap_receipt_get schema)"
 
 UECAP_RELOAD_DISPATCHED=false
 UECAP_RELOAD_RESULT=not_required_pre_modem
@@ -203,6 +204,7 @@ else
     FAIL=$((FAIL + 1))
     printf 'not ok %s - same-boot pre-modem receipt validates source and target\n' "$((PASS + FAIL))"
 fi
+check_eq 'pre-modem receipt keeps modem load unconfirmed' pre_modem_bind "$(uecap_receipt_get effective_state)"
 PIXEL9PRO_UECAP_BOOT_ID=other-boot
 if uecap_pre_modem_receipt_is_current universal; then
     FAIL=$((FAIL + 1))
@@ -212,6 +214,37 @@ else
     printf 'ok %s - cross-boot pre-modem receipt is rejected\n' "$((PASS + FAIL))"
 fi
 PIXEL9PRO_UECAP_BOOT_ID=test-boot
+
+# A legacy receipt can have otherwise matching boot/source/target fields.  Its
+# schema version is still insufficient evidence for a current runtime claim.
+_legacy_source_hash=$(uecap_hash "$UECAP_UNIVERSAL")
+_legacy_target_hash=$(uecap_hash "$UECAP_TARGET")
+cat > "$UECAP_RECEIPT_FILE" <<EOF
+schema=2
+boot_id=test-boot
+updated_at=123
+reason=post_apply
+requested_mode=universal
+active_mode=universal
+source_hash=$_legacy_source_hash
+target_hash=$_legacy_target_hash
+bind_status=verified
+apply_result=applied
+reload_dispatched=true
+reload_result=success
+effective_state=confirmed_readback
+desired_profile=universal
+bound_profile=universal
+modem_load_state=confirmed_readback
+modem_loaded_profile=universal
+functional_state=verified
+receipt_freshness=current_boot
+EOF
+uecap_refresh_observed_state
+check_eq 'legacy schema receipt is not current boot evidence' stale_or_mismatched "$UECAP_RECEIPT_FRESHNESS"
+check_eq 'legacy schema receipt downgrades modem load state' stale_receipt "$UECAP_MODEM_LOAD_STATE"
+check_eq 'legacy schema receipt clears loaded profile' unknown "$UECAP_MODEM_LOADED_PROFILE"
+check_eq 'legacy schema receipt cannot publish verified functional state' stale_receipt "$UECAP_FUNCTIONAL_STATE"
 
 check_radio_case() {
     _radio_label="$1"

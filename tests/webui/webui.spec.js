@@ -175,7 +175,7 @@ test('komodo external/stock 不显示 UECap 写入，但保留独立基带卡和
         source_contract_verified: 'yes', content_image_verified: 'yes', mount_observed: 'yes',
         migration_state: 'effective_overlay_verified', source_path: '/data/adb/modules/pixel9pro_baseband_trial/system',
         effective_path: '/product,/vendor', content_image: '/data/adb/metamodule/mnt/content.img',
-        source_hash: 'source-hash', effective_hash: 'effective-hash', content_image_hash: 'content-hash',
+         source_hash: 'source-hash', source_contract_hash: 'source-contract-hash', effective_hash: 'effective-hash', effective_contract_hash: 'effective-contract-hash', content_image_hash: 'content-hash', content_contract_hash: 'content-contract-hash', effective_contract_verified: 'yes', effective_extra_files_allowed: 'yes',
         clean_reinstall_required: false, pending_update: false, pending_update_dir: '',
         runtime_receipt_freshness: 'current_check', prior_receipt_freshness: 'current_boot_verified',
         current_runtime_check_freshness: 'current_check', boot_id: 'test-boot', errors: 'none',
@@ -195,7 +195,7 @@ test('komodo external/stock 不显示 UECap 写入，但保留独立基带卡和
       target_name: 'PLATFORM_6287228797510365516.binarypb', target_hash: 'stock-hash',
       uecap_contract: { mode_order: [], default_mode: 'disabled' },
       runtime_receipt: {
-        schema: 2, device: 'komodo', device_policy: 'external', bound_profile: 'stock', desired_profile: 'disabled',
+        schema: 3, device: 'komodo', device_policy: 'external', bound_profile: 'stock', desired_profile: 'disabled',
         modem_load_state: 'not_managed', modem_loaded_profile: 'unknown', functional_state: 'external_or_disabled',
         receipt_freshness: 'missing', actual_rat: 'LTE', radio_observed_state: 'LTE',
         nsa_status: 'not_applicable', nsa_reason: 'no_confirmed_nsa_cell', lte_anchor: 'unknown',
@@ -226,7 +226,7 @@ test('Magisk UECap disabled 不隐藏 standalone baseband，且 LTE 不被判为
       target_name: 'PLATFORM_9055801516233416490.binarypb', target_hash: 'stock-hash',
       uecap_contract: { mode_order: [], default_mode: 'disabled' },
       runtime_receipt: {
-        schema: 2, device: 'caiman', device_policy: 'managed', bound_profile: 'stock', desired_profile: 'disabled',
+        schema: 3, device: 'caiman', device_policy: 'managed', bound_profile: 'stock', desired_profile: 'disabled',
         modem_load_state: 'not_managed', modem_loaded_profile: 'unknown', functional_state: 'external_or_disabled',
         receipt_freshness: 'missing', actual_rat: 'LTE', radio_observed_state: 'LTE',
         nsa_status: 'not_applicable', nsa_reason: 'no_confirmed_nsa_cell', lte_anchor: 'unknown',
@@ -260,7 +260,7 @@ for (const [name, receipt] of [
         balanced_hash: 'balanced-hash', special_hash: 'special-hash', universal_hash: 'universal-hash',
         uecap_contract: { mode_order: ['balanced', 'special', 'universal'], default_mode: 'balanced' },
         runtime_receipt: {
-          schema: 2, device: 'caiman', device_policy: 'managed', bound_profile: 'balanced', desired_profile: 'balanced',
+          schema: 3, device: 'caiman', device_policy: 'managed', bound_profile: 'balanced', desired_profile: 'balanced',
           modem_load_state: 'confirmed_readback', modem_loaded_profile: 'balanced', functional_state: 'verified',
           receipt_freshness: 'current_boot', ...receipt,
         },

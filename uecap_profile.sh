@@ -94,9 +94,12 @@ uecap_load_device_contract() {
         UECAP_DEFAULT_MODE="$_uecap_default"
         case "$UECAP_DEVICE_SOURCE_DIR" in ''|/*|*..*|*\\*) return 1 ;; esac
         UECAP_TARGET="${UECAP_TARGET_OVERRIDE:-/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME}"
-        UECAP_SPECIAL="${UECAP_SPECIAL_OVERRIDE:-$MODDIR/$UECAP_DEVICE_SOURCE_DIR/$UECAP_TARGET_NAME.special.binarypb}"
-        UECAP_BALANCED="${UECAP_BALANCED_OVERRIDE:-$MODDIR/$UECAP_DEVICE_SOURCE_DIR/$UECAP_TARGET_NAME.balanced.binarypb}"
-        UECAP_UNIVERSAL="${UECAP_UNIVERSAL_OVERRIDE:-$MODDIR/$UECAP_DEVICE_SOURCE_DIR/$UECAP_TARGET_NAME.universal.binarypb}"
+        # target_name already includes the canonical .binarypb suffix.  Insert
+        # the profile suffix before it instead of creating *.binarypb.<mode>.
+        _uecap_target_stem=${UECAP_TARGET_NAME%.binarypb}
+        UECAP_SPECIAL="${UECAP_SPECIAL_OVERRIDE:-$MODDIR/$UECAP_DEVICE_SOURCE_DIR/${_uecap_target_stem}.special.binarypb}"
+        UECAP_BALANCED="${UECAP_BALANCED_OVERRIDE:-$MODDIR/$UECAP_DEVICE_SOURCE_DIR/${_uecap_target_stem}.balanced.binarypb}"
+        UECAP_UNIVERSAL="${UECAP_UNIVERSAL_OVERRIDE:-$MODDIR/$UECAP_DEVICE_SOURCE_DIR/${_uecap_target_stem}.universal.binarypb}"
     else
         UECAP_MODE_ORDER=""
         UECAP_DEFAULT_MODE="disabled"
@@ -454,7 +457,7 @@ uecap_write_runtime_receipt() {
     [ -n "$UECAP_RECEIPT_FILE" ] && [ ! -d "$UECAP_RECEIPT_FILE" ] || return 1
     _uecap_receipt_bind_status=$(uecap_bind_status "$(uecap_resolve_source "$_uecap_receipt_mode" 2>/dev/null)" "$_uecap_receipt_target_hash")
     {
-        printf 'schema=2\n'
+        printf 'schema=3\n'
         printf 'boot_id=%s\n' "$(uecap_receipt_value "$(uecap_boot_id)")"
         printf 'updated_at=%s\n' "$_uecap_receipt_now"
         printf 'reason=%s\n' "$(uecap_receipt_value "$_uecap_receipt_reason")"
@@ -550,9 +553,11 @@ uecap_refresh_observed_state() {
         fi
 
         _uecap_receipt_boot=$(uecap_receipt_get boot_id 2>/dev/null)
+        _uecap_receipt_schema=$(uecap_receipt_get schema 2>/dev/null)
         _uecap_receipt_target=$(uecap_receipt_get target_hash 2>/dev/null)
         _uecap_receipt_source=$(uecap_receipt_get source_hash 2>/dev/null)
-        if [ -n "$_uecap_receipt_boot" ] && [ "$_uecap_receipt_boot" = "$(uecap_boot_id)" ] \
+        if [ "$_uecap_receipt_schema" = "3" ] \
+            && [ -n "$_uecap_receipt_boot" ] && [ "$_uecap_receipt_boot" = "$(uecap_boot_id)" ] \
             && [ "$_uecap_receipt_target" = "$_uecap_observed_target_hash" ] \
             && [ "$_uecap_receipt_source" = "$_uecap_observed_source_hash" ]; then
             UECAP_RECEIPT_FRESHNESS="current_boot"
@@ -600,6 +605,7 @@ uecap_pre_modem_receipt_is_current() {
     _uecap_pre_modem_target_hash=$(uecap_hash "$UECAP_TARGET")
     [ -n "$_uecap_pre_modem_source_hash" ] \
         && [ "$_uecap_pre_modem_source_hash" = "$_uecap_pre_modem_target_hash" ] \
+        && [ "$(uecap_receipt_get schema)" = "3" ] \
         && [ "$(uecap_receipt_get boot_id)" = "$(uecap_boot_id)" ] \
         && [ "$(uecap_receipt_get reason)" = "pre_modem" ] \
         && [ "$(uecap_receipt_get requested_mode)" = "$_uecap_pre_modem_mode" ] \
@@ -714,7 +720,7 @@ uecap_reload_modem() {
     if [ "$_uecap_reload_reason" = "pre_modem" ]; then
         UECAP_RELOAD_RESULT="not_required_pre_modem"
         UECAP_MODEM_LOAD_STATE="pre_modem_bind"
-        uecap_log_line "pre-modem bind complete; modem will read fresh payload"
+        uecap_log_line "UECap bind verified after MetaModule mount; modem load remains unconfirmed"
         return 0
     fi
     if [ "${PIXEL9PRO_UECAP_TEST_MODE:-0}" = "1" ]; then
@@ -890,7 +896,8 @@ uecap_apply_mode() {
             && _uecap_effective_state="pre_modem_bind"
         UECAP_MODEM_LOADED_PROFILE="unknown"
         UECAP_FUNCTIONAL_STATE="modem_load_unconfirmed"
-        if [ -n "${PIXEL9PRO_UECAP_MODEM_LOADED_PROFILE:-}" ] \
+        if [ "${PIXEL9PRO_UECAP_TEST_MODE:-0}" = "1" ] \
+            && [ -n "${PIXEL9PRO_UECAP_MODEM_LOADED_PROFILE:-}" ] \
             && uecap_is_valid_mode "$PIXEL9PRO_UECAP_MODEM_LOADED_PROFILE"; then
             UECAP_MODEM_LOADED_PROFILE="$PIXEL9PRO_UECAP_MODEM_LOADED_PROFILE"
             UECAP_MODEM_LOAD_STATE="confirmed_readback"

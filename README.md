@@ -6,7 +6,7 @@
 
 - Version: `v4.5.07`
 - versionCode: `112`
-- Package filename: 本轮源码修订尚未重新打包；不要把已发布的 `v4.5.05/110` ZIP 当作本轮源码包
+- Package filename: `pixel9pro_control_v4.5.07.zip`；此前功能等价候选已在 caiman/APatch 完成安装、重启和运行态复核，当前源码对应的本地候选已重新构建并审计但尚未重新安装，也尚未发布到 GitHub Releases。当前 ZIP 的体积、SHA256 和 source fingerprint 统一记录在根级审查文档与日志索引中，不在模块 README 内自引用，避免源码 fingerprint 与 ZIP digest 形成循环漂移
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -14,7 +14,7 @@
 
 | 设备 | 代号 | 状态 |
 |------|------|------|
-| Pixel 9 Pro | caiman | 既有 `v4.5.05/110` APatch 实机基线；`v4.5.07/112` 本轮源码尚未重新安装 |
+| Pixel 9 Pro | caiman | 当前 active 为此前功能等价的 `v4.5.07/112` 候选；APatch 安装、重启、UECap bind/receipt 与 NR_SA n41 电话注册已复核；当前重建 ZIP 尚未重新安装 |
 | Pixel 9 Pro XL | komodo | 温控分支已适配；UECap 由系统/外部路径保持 stock，Control 不写入 XL payload；未完成 XL 实机闭环 |
 
 安装时自动检测机型，刷入对应的温控配置。CarrierSettings、APN、China MCFG 和 IMS properties 由独立的 `pixel9pro_baseband_trial` 模块按 `caiman/komodo` manifest 管理；Control 不把独立基带模块重新打包进自身。
@@ -183,7 +183,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 
 ## 安装
 
-1. 只安装 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中明确发布且 SHA256 校验一致的 ZIP；本轮 `v4.5.07/112` 仍是源码候选，尚未生成新 ZIP；`v4.5.03` 与本地 `v4.5.04` 含 B110 错误合同，禁止安装；需要回滚时使用已验证的 `v4.4.41`
+1. 对外安装只使用 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中明确发布且 SHA256 校验一致的 ZIP；本地 `v4.5.07/112` 当前候选已完成源码/结构审计，但当前重建 ZIP 尚未重新安装或发布，不能冒充正式 Release；`v4.5.03` 与本地 `v4.5.04` 含 B110 错误合同，禁止安装；需要回滚时使用已验证的 `v4.4.41`
 2. KernelSU 用户需先安装 metamodule（如 `meta-overlayfs`）并重启
 3. APatch / KernelSU / Magisk → 模块 → 从存储安装
 4. **首次安装**：音量键交互向导，依次配置温控偏移、CPU 调度（检测到启用中的 UGT 时默认交其接管；否则四选一：均衡／省电／系统默认／自动）、UECap 档位（仅 APatch/KSU）、NR 降级、NTP
@@ -194,7 +194,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 ## 兼容性
 
 - `Pixel 9 Pro (caiman)` / `Pixel 9 Pro XL (komodo)`
-- 当前源码版本：`v4.5.07/112`；本轮尚未生成可下载 ZIP
+- 当前源码版本：`v4.5.07/112`；此前功能等价候选已完成 caiman/APatch 复核，当前源码对应 ZIP 已完成本地确定性构建和结构审计，但尚未重新安装，也尚未成为可下载的 GitHub Release
 - `Android 17 QPR1 Beta 1 (SDK 37)` 当前验证基线
 - `APatch 0.10+` 实机验证
 - `KernelSU 0.9+` 代码兼容（需 metamodule，未完成真机闭环）

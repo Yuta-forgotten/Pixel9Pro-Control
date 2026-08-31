@@ -179,7 +179,7 @@ apply_uecap_profile() {
             uecap_write_runtime_receipt "$_mode" "$(uecap_hash "$_source")" \
                 "$(uecap_hash "$UECAP_TARGET")" pre_modem applied pre_modem_observed \
                 >/dev/null 2>&1 || log -t pixel9pro_ctrl "WARNING: failed to refresh UECap pre-modem receipt"
-            log -t pixel9pro_ctrl "UECap pre-modem receipt verified: $_mode, actual_rat=$(uecap_receipt_get actual_rat 2>/dev/null || echo unknown), nr_registered=$(uecap_receipt_get nr_registered 2>/dev/null || echo unknown)"
+            log -t pixel9pro_ctrl "UECap bind receipt refreshed: $_mode; modem load remains unconfirmed, actual_rat=$(uecap_receipt_get actual_rat 2>/dev/null || echo unknown), nr_registered=$(uecap_receipt_get nr_registered 2>/dev/null || echo unknown)"
             return 0
         fi
         if uecap_apply_mode "$_mode" "boot_manual" 2>/dev/null; then

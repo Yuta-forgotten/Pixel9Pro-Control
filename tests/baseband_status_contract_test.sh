@@ -71,12 +71,13 @@ with open(sys.argv[1], encoding='utf-8') as handle:
 top_level = {
     'installed', 'enabled', 'runtime_verified', 'module_dir',
     'module_dir_state', 'module_state', 'source', 'root_impl', 'version',
-    'version_code', 'description', 'runtime_status', 'mount_observed',
+    'version_code', 'description', 'runtime_status', 'status_schema', 'mount_observed',
     'effective_overlay_verified', 'source_contract_verified',
-    'content_image_verified', 'migration_state', 'source_path',
-    'effective_path', 'content_image', 'source_hash', 'effective_hash',
-    'content_image_hash', 'source_tree_hash', 'content_tree_hash',
-    'effective_contract_hash', 'clean_reinstall_required', 'pending_update',
+    'content_image_verified', 'effective_contract_verified', 'effective_extra_files_allowed',
+    'migration_state', 'source_path', 'effective_path', 'content_image',
+    'source_hash', 'source_contract_hash', 'effective_hash', 'effective_contract_hash',
+    'content_image_hash', 'content_contract_hash', 'source_tree_hash', 'content_tree_hash',
+    'clean_reinstall_required', 'pending_update',
     'pending_update_dir', 'runtime_receipt_freshness',
     'prior_receipt_freshness', 'current_runtime_check_freshness', 'boot_id',
     'errors', 'carrier_settings', 'mcfg', 'props',
@@ -132,7 +133,7 @@ write_receipt() {
     _status_clean="$5"
     _status_errors="$6"
     cat > "$_status_path" <<EOF
-schema=2
+schema=3
 status=$_status_status
 root_impl=APatch
 module_dir=/active/pixel9pro_baseband_trial
@@ -140,13 +141,17 @@ content_image=/metamodule/content.img
 source_path=/active/pixel9pro_baseband_trial/system
 effective_path=/product,/vendor
 source_hash=source-hash
+source_contract_hash=source-contract-hash
 effective_hash=effective-hash
+effective_contract_hash=effective-contract-hash
 content_image_hash=content-hash
+content_contract_hash=content-contract-hash
 source_tree_hash=tree-hash
 content_tree_hash=tree-hash
-effective_contract_hash=contract-hash
 source_contract_verified=yes
 content_image_verified=yes
+effective_contract_verified=yes
+effective_extra_files_allowed=yes
 mount_observed=yes
 effective_overlay_verified=$_status_effective
 migration_state=effective_overlay_verified
@@ -210,8 +215,12 @@ assert_json_value 'PASS receipt marks runtime verified' "$TEST_ROOT/current.json
 assert_json_value 'PASS receipt keeps active source' "$TEST_ROOT/current.json" source active
 assert_json_value 'PASS receipt does not request clean reinstall' "$TEST_ROOT/current.json" clean_reinstall_required false
 assert_json_value 'PASS receipt exposes source hash' "$TEST_ROOT/current.json" source_hash source-hash
+assert_json_value 'PASS receipt exposes source contract hash' "$TEST_ROOT/current.json" source_contract_hash source-contract-hash
 assert_json_value 'PASS receipt exposes effective hash' "$TEST_ROOT/current.json" effective_hash effective-hash
+assert_json_value 'PASS receipt exposes effective contract hash' "$TEST_ROOT/current.json" effective_contract_hash effective-contract-hash
 assert_json_value 'PASS receipt exposes content image hash' "$TEST_ROOT/current.json" content_image_hash content-hash
+assert_json_value 'PASS receipt exposes content contract hash' "$TEST_ROOT/current.json" content_contract_hash content-contract-hash
+assert_json_value 'PASS receipt exposes schema 3' "$TEST_ROOT/current.json" status_schema 3
 assert_json_value 'PASS receipt exposes carrier count' "$TEST_ROOT/current.json" carrier_settings.count 3210
 assert_json_value 'PASS receipt exposes MCFG count' "$TEST_ROOT/current.json" mcfg.count 5
 
@@ -220,6 +229,14 @@ run_status || exit 2
 assert_json_value 'FAIL receipt is not runtime verified' "$TEST_ROOT/current.json" runtime_verified false
 assert_json_value 'FAIL receipt requests clean reinstall' "$TEST_ROOT/current.json" clean_reinstall_required true
 assert_json_value 'FAIL receipt preserves error summary' "$TEST_ROOT/current.json" errors effective_overlay_failed
+
+write_receipt "$ACTIVE_ROOT/pixel9pro_baseband_trial/.runtime_status" PASS yes current_check no none
+sed -i 's/^schema=3$/schema=2/' "$ACTIVE_ROOT/pixel9pro_baseband_trial/.runtime_status"
+run_status || exit 2
+assert_json_value 'legacy receipt schema is not runtime verified' "$TEST_ROOT/current.json" runtime_verified false
+assert_json_value 'legacy receipt schema requests clean reinstall' "$TEST_ROOT/current.json" clean_reinstall_required true
+assert_json_value 'legacy receipt schema is explicit' "$TEST_ROOT/current.json" runtime_status LEGACY_RECEIPT
+assert_json_value 'legacy receipt schema error is explicit' "$TEST_ROOT/current.json" errors legacy_receipt_schema
 
 rm -f "$ACTIVE_ROOT/pixel9pro_baseband_trial/.runtime_status"
 mkdir "$ACTIVE_ROOT/pixel9pro_baseband_trial/.runtime_status" || exit 2

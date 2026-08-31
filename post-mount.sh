@@ -1,7 +1,8 @@
 #!/system/bin/sh
 
-# MetaModule mount runs before this stage.  Bind the selected caiman UECap
-# payload here so cbd/shamp sees it on the modem's first boot-time read.
+# MetaModule mount runs before this stage. Bind the selected managed UECap
+# payload here; this verifies the target view before late service runs, but it
+# does not by itself prove that the modem has loaded the payload.
 MODDIR="${0%/*}"
 export PIXEL9PRO_MODDIR="$MODDIR"
 
@@ -10,7 +11,7 @@ export PIXEL9PRO_MODDIR="$MODDIR"
 
 _uecap_post_mount_mode=$(uecap_current_manual_mode)
 if uecap_apply_mode "$_uecap_post_mount_mode" pre_modem >/dev/null 2>&1; then
-    log -t pixel9pro_ctrl "UECap pre-modem bind verified: $_uecap_post_mount_mode"
+    log -t pixel9pro_ctrl "UECap bind verified after MetaModule mount: $_uecap_post_mount_mode; modem load remains unconfirmed"
 else
     log -t pixel9pro_ctrl "WARNING: UECap pre-modem bind failed: $_uecap_post_mount_mode result=${UECAP_APPLY_RESULT:-unknown}"
 fi

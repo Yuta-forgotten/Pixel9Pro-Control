@@ -209,7 +209,7 @@ function uecapState(extra = {}) {
     universal_hash: 'universal-hash',
     uecap_contract: { mode_order: ['balanced', 'special', 'universal'], default_mode: 'balanced' },
     runtime_receipt: {
-      schema: 2,
+      schema: 3,
       boot_id: 'test-boot',
       updated_at: '0',
       reason: 'pre_modem',
