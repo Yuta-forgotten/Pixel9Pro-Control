@@ -144,6 +144,9 @@ for (const host of ['ntp.aliyun.com', 'ntp.myhuaweicloud.com', 'ntp1.xiaomi.com'
 assert(ntpCgi.includes('ntp_config_validate') && service.includes('ntp_config_validate'), 'NTP consumers must validate the shared catalog');
 assert(!app.includes('const SWAP_OPTIMIZED') && !swapCgi.includes('OPT_SWAPPINESS='), 'VM presets must come from vm_profile_lib.sh');
 assert(swapCgi.includes('. "$VM_PROFILE_LIB"') && app.includes('data.zram_target'), 'VM CGI and UI must consume the shared VM contract');
+assert(swapCgi.includes('zram_active') && swapCgi.includes('zram_owner') && app.includes('zram_target_supported'), 'ZRAM UI must consume authoritative runtime/owner fields');
+assert(swapCgi.includes('VM_ZRAM_SIZE_PROPERTY') && swapCgi.includes('pending_reboot') && swapCgi.includes('setprop'), 'ZRAM size request must use the mmd persistent property and reboot boundary');
+assert(app.includes('applyZramSizeRequest') && html.includes('swap-zram-size-apply-btn'), 'ZRAM size request UI must call the backend contract');
 assert(cpuProfile.includes('. "$CPU_PROFILE_LIB"') && ownerArbiter.includes('. "$MODDIR/scripts/cpu_profile_lib.sh"'), 'CPU apply and owner verification must share one profile contract');
 assert(cpuProfile.includes('apply_profile_l2') && cpuProfile.includes('verify_profile_runtime'), 'CPU and L2 must be one verified profile transaction');
 assert(!service.includes('cpu_profile.sh" enforce') && !service.includes('POWER_PROFILE_FILE'), 'service must not retain the legacy 15-second L2 writer or .power_profile SoT');
@@ -301,8 +304,8 @@ function listFilesRecursively(directory) {
 assert(!listFilesRecursively(basebandRoot).some((entry) => entry.endsWith('.binarypb')), 'standalone baseband source must not contain UECap binarypb');
 assert(!service.includes('# v4.'), 'service.sh must not contain a release changelog');
 assert(!fs.existsSync(path.join(root, 'system.prop')), 'empty system.prop must not be packaged');
-assert(moduleProp.includes('version=v4.5.07') && moduleProp.includes('versionCode=112'), 'release version must be v4.5.07 / 112');
-for (const component of ['webui=4.5.06', 'scheduler=4.5.05', 'core=4.5.07']) {
+assert(moduleProp.includes('version=v4.5.09') && moduleProp.includes('versionCode=114'), 'release version must be v4.5.09 / 114');
+for (const component of ['webui=4.5.06', 'scheduler=4.5.05', 'core=4.5.09']) {
   assert(versionsProp.includes(component), `component version is stale: ${component}`);
 }
 assert(commonCgi.includes("'413 Payload Too Large'") && commonCgi.includes('JSON object required'), 'all write CGI must share bounded JSON-object parsing');

@@ -69,10 +69,12 @@ function buildSwapDetail(data) {
   const wsf = d.watermark_scale_factor || 0;
   const currentAlgorithm = escapeHtml(d.zram_algo || 'unknown');
   const targetAlgorithm = escapeHtml(target.algorithm || 'unknown');
+  const owner = escapeHtml(d.zram_owner || 'unknown');
   const algoBlock = isEH
     ? `<b>ZRAM 算法: ${targetAlgorithm} (Emerald Hill 硬件加速)</b><br>Tensor G4 内置固定功能压缩引擎，适合高频换页场景。`
     : `<b>ZRAM 算法: ${currentAlgorithm}</b><br>当前未达到模块目标 ${targetAlgorithm}；开机服务会尝试恢复。`;
-  const sizeBlock = `<b>ZRAM 大小: ${sizeGB}GB${ramPct}</b><br>原厂默认约为 50% RAM；模块扩容后让更多后台匿名页驻留在 ZRAM 中。`;
+  const targetSizeGB = d.zram_target_current_bytes > 0 ? (d.zram_target_current_bytes / 1073741824).toFixed(1) : '—';
+  const sizeBlock = `<b>ZRAM 实际大小: ${sizeGB}GB${ramPct}</b><br>当前 owner: ${owner}；开机请求: ${escapeHtml(String(d.zram_size_requested || '50%'))}（约 ${targetSizeGB}GB）（${d.zram_target_supported === false ? '由系统 owner 在重启时应用' : '可尝试配置'}）。`;
   return [
     swapModeIntro(d.mode),
     algoBlock,
@@ -158,13 +160,19 @@ function renderSwapCard(data) {
   const optimized = data.optimized || {};
   const stock = data.stock || {};
   const isEH = data.zram_algo === target.algorithm;
+  const zramActive = data.zram_active === true && Number(data.zram_swap_kb) > 0 && Number(data.swap_total_kb) > 0;
+  const zramOwner = data.zram_owner || 'unknown';
+  const targetSupport = data.zram_target_supported !== false;
+  const requestedSize = data.zram_size_requested || '50%';
   const sizeGB = (data.zram_disksize / 1073741824).toFixed(1);
   refs.swapDesc.textContent = isEH
     ? `Emerald Hill 硬件压缩 · 压缩率 ${ratio}% · 实占 ${fmtBytes(data.zram_mem_used_bytes)}`
     : `算法 ${data.zram_algo} · 目标 ${target.algorithm || 'unknown'}`;
   const rows = [
-    { label: 'ZRAM 算法', value: isEH ? '硬件加速' : data.zram_algo, cls: isEH ? 'good' : 'warn' },
-    { label: 'ZRAM 大小', value: `${sizeGB}GB`, cls: data.zram_disksize === target.size_bytes ? 'good' : 'off' },
+    { label: 'ZRAM 状态', value: zramActive ? `已启用（${zramOwner}）` : '异常：未启用', cls: zramActive ? 'good' : 'off' },
+    { label: 'ZRAM 算法', value: isEH ? '硬件加速' : data.zram_algo, cls: isEH && zramActive ? 'good' : 'warn' },
+    { label: 'ZRAM 实际大小', value: `${sizeGB}GB`, cls: zramActive ? 'good' : 'off' },
+    { label: 'ZRAM 开机请求', value: `${requestedSize} · ${targetSupport ? '可尝试' : '由系统 owner 管理'}`, cls: targetSupport ? 'warn' : 'off' },
     { label: 'swappiness', value: String(data.swappiness), cls: data.swappiness === optimized.swappiness ? 'good' : data.swappiness === stock.swappiness ? 'warn' : 'off' },
     { label: 'min_free_kbytes', value: String(data.min_free_kbytes), cls: data.min_free_kbytes === optimized.min_free_kbytes ? 'good' : data.min_free_kbytes === stock.min_free_kbytes ? 'warn' : 'off' },
     { label: 'watermark_scale_factor', value: String(data.watermark_scale_factor || 0), cls: data.watermark_scale_factor === optimized.watermark_scale_factor ? 'good' : data.watermark_scale_factor === stock.watermark_scale_factor ? 'warn' : 'off' },
@@ -626,6 +634,17 @@ async function applySwapCustom() {
   }
 }
 
+async function applyZramSizeRequest() {
+  const value = String(refs.swapZramSizeNumber?.value || '').trim();
+  if (!value) { showToast('请输入 ZRAM 容量 bytes 或百分比'); return; }
+  try {
+    const data = await apiFetch(API.swap, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'zram_size', size_bytes: value }), timeoutMs: 8000 });
+    showToast(data.message || 'ZRAM 容量将在重启后由 mmd 应用');
+    appendLog(`ZRAM 容量请求已保存：${value}（重启生效）`, 'ok');
+    refreshSwap();
+  } catch (err) { showToast(`ZRAM 容量请求失败：${err.message || '未知错误'}`); }
+}
+
 registerFeature('memory', {
   refresh: refreshSwap,
   refreshRestrictions: refreshBgRestrict,
@@ -637,6 +656,7 @@ registerFeature('memory', {
   openSwapTuneModal,
   closeSwapTuneModal,
   applySwapCustom,
+  applyZramSizeRequest,
   setSwapTuneValues,
   syncSwapTuneField,
   toggleSwapMode,

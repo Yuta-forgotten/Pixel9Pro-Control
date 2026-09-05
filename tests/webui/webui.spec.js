@@ -49,6 +49,9 @@ test('所有主导航页无浏览器错误和横向溢出', async ({ page }, tes
 
   await page.goto('/');
   await waitForWebuiReady(page);
+  await page.locator('#tab-home').click();
+  await expect(page.locator('#swap-rows')).toContainText('mmd');
+  await expect(page.locator('#swap-rows')).toContainText('已启用');
   await expect(page.locator('#profile-list .profile-option')).toHaveCount(3);
 
   for (const tab of ['home', 'tune', 'network', 'system']) {

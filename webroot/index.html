@@ -394,7 +394,7 @@
             <div class="panel-copy">
               <div class="kicker">内存优化</div>
               <div class="panel-title">ZRAM / VM 参数</div>
-              <div class="panel-desc" id="swap-desc">Tensor G4 Emerald Hill 硬件压缩引擎，ZRAM 11392MB，VM 参数开机自动配置。</div>
+              <div class="panel-desc" id="swap-desc">正在读取系统 owner、ZRAM 实际容量和 VM 参数。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn tonal" id="swap-detail-btn" type="button">详情</button>
@@ -617,7 +617,8 @@
       </button>
     </div>
     <div class="modal-sheet-body">
-      <div class="swap-tune-note">ZRAM 算法与容量由开机服务管理；下方 VM 参数即时生效，应用后会以 custom 模式随下次开机恢复。</div>
+        <div class="swap-tune-note">下方四个 VM 参数支持真实即时写入、权威复读和失败回滚，并以 custom 模式随下次开机恢复。ZRAM 容量可通过系统持久属性请求在下次重启由 mmd 应用；当前运行态不会被在线 reset。</div>
+        <div class="swap-zram-size-form"><label for="swap-zram-size-number">ZRAM 容量请求（bytes 或百分比）</label><input id="swap-zram-size-number" type="text" inputmode="numeric" value="11945377792"><button class="tiny-btn" id="swap-zram-size-apply-btn" type="button">重启后应用</button></div>
       <div class="swap-tune-form">
         <label class="swap-field" for="swap-input-swappiness">
           <span class="swap-field-head"><span>swappiness</span><b id="swap-value-swappiness">100</b></span>

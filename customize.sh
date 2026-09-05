@@ -16,6 +16,14 @@ GAME_HANDOFF_SOURCE_FILE="$MODPATH/.game_handoff_source"
 DEVICE_FILE="$MODPATH/.device_variant"
 
 OLDDIR="/data/adb/modules/pixel9pro_control"
+INSTALL_TRACE_FILE="$MODPATH/.install_trace"
+install_trace() { printf '%s stage=%s rc=%s\n' "$(date +%s)" "$1" "${2:-0}" >> "$INSTALL_TRACE_FILE" 2>/dev/null || true; }
+trap 'install_trace failed "$?"' EXIT
+install_trace enter 0
+
+# APD extraction can normalize executable ZIP entries to 0644. Restore
+# runtime permissions explicitly before the module is activated.
+chmod 755 "$MODPATH/service.sh" "$MODPATH/post-mount.sh" "$MODPATH/scripts/"*.sh "$MODPATH/webroot/cgi-bin/"*.sh 2>/dev/null || true
 
 # Thermal HAL may select an LPM-specific top-level config at runtime.  The
 # selected filename is authoritative; never generate a sibling file that HAL
@@ -114,6 +122,11 @@ _flush_keys() { timeout 1 getevent -qlc 1 >/dev/null 2>&1; }
 
 chooseport() {
     _flush_keys
+    # APD/automation often has no physical key event stream. Avoid spending
+    # 30s per prompt there; retain the displayed default immediately.
+    if [ "${PIXEL9PRO_NONINTERACTIVE:-0}" = "1" ] || [ ! -c /dev/input/event0 ]; then
+        return 1
+    fi
     # A bounded wait prevents headless/APatch installs from hanging forever.
     # Timeout is treated as confirmation of the currently displayed default.
     if timeout 30 /system/bin/getevent -lc 1 2>&1 \
@@ -347,11 +360,12 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
                 && [ -f "$MODPATH/$_sf" ] || _migration_failed=1
         fi
     done
-    if [ "$_migration_failed" -ne 0 ]; then
+if [ "$_migration_failed" -ne 0 ]; then
         ui_print "  ✗ 用户配置迁移不完整, 已中止安装"
         exit 1
-    fi
-    ui_print "  ✓ 已迁移用户配置"
+fi
+install_trace migration 0
+ui_print "  ✓ 已迁移用户配置"
     # Retired light/responsive/performance selections migrate to the current
     # balanced daily baseline. default remains a selectable stock profile.
     _profile_migrated=0

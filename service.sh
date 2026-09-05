@@ -7,10 +7,12 @@
 
 MODDIR="${0%/*}"
 PORT=6210
+SERVICE_START_FILE="$MODDIR/.service_started"
 HTTPD_PID_FILE="$MODDIR/.webui_httpd.pid"
 TOKEN_FILE="$MODDIR/.webui_token"
 THERMAL_CACHE="$MODDIR/.thermal_cache.json"
 LOCKDIR_BASE="$MODDIR/.locks"
+ZRAM_STATE_FILE="$MODDIR/.zram_state"
 SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 SCHED_OWNER_DESIRED_FILE="$MODDIR/.sched_owner_desired"
 GAME_HANDOFF_POLICY_FILE="$MODDIR/.game_handoff_policy"
@@ -18,6 +20,11 @@ SIM2_AUTO_FILE="$MODDIR/.sim2_auto_manage"
 IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
 SCHEDULER_INVENTORY_PATH="$MODDIR/.scheduler_inventory"
+
+# Persist an early entry marker before loading optional contracts.  A missing
+# marker distinguishes "service never launched" from a later ZRAM failure.
+printf 'epoch=%s\npid=%s\n' "$(date +%s)" "$$" > "$SERVICE_START_FILE" 2>/dev/null || true
+log -t pixel9pro_ctrl "service entry moddir=$MODDIR pid=$$"
 
 [ -r "$MODDIR/scripts/runtime_defaults_lib.sh" ] \
     && . "$MODDIR/scripts/runtime_defaults_lib.sh" 2>/dev/null \
@@ -624,6 +631,13 @@ fi
 
 # === ZRAM / VM 配置 ===
 if [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
+zram_record_state() {
+    _zr_algo=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | sed 's/.*\[\(.*\)\].*/\1/')
+    _zr_size=$(cat /sys/block/zram0/disksize 2>/dev/null | tr -d ' \n\r')
+    _zr_swap=$(awk '$1 ~ /(^|\/)zram0$/ { print $3; found=1 } END { if (!found) print 0 }' /proc/swaps 2>/dev/null | tail -1)
+    _zr_total=$(awk '/^SwapTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+    runtime_write_value "$ZRAM_STATE_FILE" "epoch=$(date +%s)\nalgorithm=${_zr_algo:-unknown}\ndisksize=${_zr_size:-0}\nswap_kb=${_zr_swap:-0}\nswap_total_kb=${_zr_total:-0}\n" 2>/dev/null || true
+}
 # 原厂出厂: persist.vendor.zram_comp_algorithm 默认为 lz4, ZRAM 大小 50% RAM ≈ 8GB.
 # init.rc 代码兜底默认是 lz77eh (Emerald Hill 硬件), 但出厂 persist 属性覆盖为 lz4.
 # 目标算法、大小和 VM 预设由 scripts/vm_profile_lib.sh 统一定义。
@@ -637,7 +651,22 @@ fi
 CURRENT_ALGO=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | sed 's/.*\[\(.*\)\].*/\1/')
 CURRENT_SIZE=$(cat /sys/block/zram0/disksize 2>/dev/null)
 
-if [ "$CURRENT_ALGO" != "$VM_ZRAM_ALGO" ] || [ "$CURRENT_SIZE" != "$VM_ZRAM_SIZE_BYTES" ]; then
+# 参数相同不等于 swap 正在使用：init/OTA/异常 swapoff 可能留下正确的
+# comp_algorithm/disksize，却把 zram0 从 /proc/swaps 移除。必须复用共享
+# contract 的完整匹配（含 active swap）判定，否则会错误地 skip swapon。
+if [ "$(getprop mmd.setup_complete 2>/dev/null | tr -d ' \n\r\t')" = "true" ]; then
+    # On current caiman builds mmd is the authoritative zram owner; fs_mgr
+    # explicitly skips zram setup when mmd has initialized it. Do not reset or
+    # resize it from the module, because the kernel-backed size is capped by
+    # mmd/fstab (currently ~7.6 GiB). Only verify that swap is active.
+    if vm_zram_matches "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES"; then
+        log -t pixel9pro_ctrl "ZRAM: mmd-owned target already active"
+    elif vm_enable_existing_zram && vm_zram_matches "$CURRENT_ALGO" "$CURRENT_SIZE"; then
+        log -t pixel9pro_ctrl "ZRAM: mmd-owned existing size retained and enabled"
+    else
+        log -t pixel9pro_ctrl "ZRAM: mmd-owned; retained effective size without module reset"
+    fi
+elif ! vm_zram_matches "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES"; then
     log -t pixel9pro_ctrl "ZRAM reconfigure: ${CURRENT_ALGO}/${CURRENT_SIZE} -> ${VM_ZRAM_ALGO}/${VM_ZRAM_SIZE_BYTES}"
     if vm_reconfigure_zram "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES"; then
         log -t pixel9pro_ctrl "ZRAM: $VM_ZRAM_ALGO $(($VM_ZRAM_SIZE_BYTES / 1048576))MB ready"
@@ -647,11 +676,17 @@ if [ "$CURRENT_ALGO" != "$VM_ZRAM_ALGO" ] || [ "$CURRENT_SIZE" != "$VM_ZRAM_SIZE
             log -t pixel9pro_ctrl "ERROR: ZRAM reconfigure failed and previous configuration restore was incomplete"
         else
             log -t pixel9pro_ctrl "WARNING: ZRAM reconfigure failed; previous configuration restored"
+            if vm_enable_existing_zram; then
+                log -t pixel9pro_ctrl "ZRAM fallback: re-enabled existing kernel-supported size"
+            else
+                log -t pixel9pro_ctrl "ERROR: ZRAM fallback re-enable failed"
+            fi
         fi
     fi
 else
     log -t pixel9pro_ctrl "ZRAM: already $VM_ZRAM_ALGO $(($VM_ZRAM_SIZE_BYTES / 1048576))MB, skip"
 fi
+zram_record_state
 
 # === Swap / 内存回收调优 (按上次用户选择恢复) ===
 SWAP_CUSTOM_FILE="$MODDIR/.swap_custom"

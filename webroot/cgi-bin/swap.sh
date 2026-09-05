@@ -49,6 +49,15 @@ emit_state() {
     vcp=$(cat /proc/sys/vm/vfs_cache_pressure 2>/dev/null)
     algo=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | sed 's/.*\[\(.*\)\].*/\1/')
     disksize=$(cat /sys/block/zram0/disksize 2>/dev/null)
+    swap_kb=$(awk '$1 ~ /(^|\/)zram0$/ { print $3; found=1 } END { if (!found) print 0 }' /proc/swaps 2>/dev/null | tail -1)
+    swap_total_kb=$(awk '/^SwapTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
+    [ "${swap_kb:-0}" -gt 0 ] 2>/dev/null && zram_active=true || zram_active=false
+    mmd_owned=false
+    [ "$(getprop mmd.setup_complete 2>/dev/null | tr -d ' \n\r\t')" = "true" ] && mmd_owned=true
+    target_property="$VM_ZRAM_SIZE_PROPERTY"
+    target_value=$(getprop "$target_property" 2>/dev/null | tr -d ' \n\r\t')
+    [ -n "$target_value" ] || target_value=50%
+    target_size_bytes=$(vm_zram_size_to_bytes "$target_value")
 
     # ZRAM mm_stat: orig compr mem_used ...
     mm=$(cat /sys/block/zram0/mm_stat 2>/dev/null)
@@ -62,9 +71,9 @@ emit_state() {
     mode=$(vm_detect_mode)
     contract=$(vm_contract_json)
 
-    printf '{"swappiness":%s,"min_free_kbytes":%s,"watermark_scale_factor":%s,"vfs_cache_pressure":%s,"zram_algo":"%s","zram_disksize":%s,"stock_zram_size":%s,"zram_orig_bytes":%s,"zram_compr_bytes":%s,"zram_mem_used_bytes":%s,"mode":"%s",%s}' \
+    printf '{"swappiness":%s,"min_free_kbytes":%s,"watermark_scale_factor":%s,"vfs_cache_pressure":%s,"zram_algo":"%s","zram_disksize":%s,"zram_active":%s,"zram_swap_kb":%s,"swap_total_kb":%s,"zram_owner":"%s","zram_target_supported":%s,"zram_size_property":"%s","zram_size_requested":"%s","zram_target_current_bytes":%s,"stock_zram_size":%s,"zram_orig_bytes":%s,"zram_compr_bytes":%s,"zram_mem_used_bytes":%s,"mode":"%s",%s}' \
         "${sw:-0}" "${mfk:-0}" "${wsf:-0}" "${vcp:-0}" "$(json_escape "${algo:-unknown}")" \
-        "${disksize:-0}" "${stock_zram_bytes:-0}" \
+        "${disksize:-0}" "$zram_active" "${swap_kb:-0}" "${swap_total_kb:-0}" "$([ "$mmd_owned" = true ] && echo mmd || echo module)" "$([ "$mmd_owned" = true ] && echo false || echo true)" "$target_property" "$target_value" "$target_size_bytes" "${stock_zram_bytes:-0}" \
         "${orig:-0}" "${compr:-0}" "${mem_used:-0}" "$mode" "$contract"
 }
 
@@ -134,6 +143,20 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                     vm_write_error
                 fi
             fi
+            ;;
+        zram_size)
+            _zram_requested=$(printf '%s' "$body" | sed -n 's/.*"size_bytes"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9][0-9]*%\{0,1\}\)"\{0,1\}.*/\1/p')
+            vm_zram_size_is_valid "$_zram_requested" \
+                || json_error '400 Bad Request' 'invalid zram size_bytes (1GiB..16GiB or percent)'
+            if [ "$(getprop mmd.setup_complete 2>/dev/null | tr -d ' \n\r\t')" != "true" ]; then
+                json_error '409 Conflict' 'mmd owner is not ready; zram size change requires reboot'
+            fi
+            setprop "$VM_ZRAM_SIZE_PROPERTY" "$_zram_requested" 2>/dev/null \
+                || json_error '500 Internal Server Error' 'failed to persist zram size property'
+            [ "$(getprop "$VM_ZRAM_SIZE_PROPERTY" 2>/dev/null | tr -d ' \n\r\t')" = "$_zram_requested" ] \
+                || json_error '500 Internal Server Error' 'zram size property readback mismatch'
+            json_headers
+            printf '{"ok":true,"mode":"pending_reboot","zram_size_property":"%s","zram_size_requested":"%s","message":"重启后由 mmd 应用，当前运行态不变"}\n' "$VM_ZRAM_SIZE_PROPERTY" "$_zram_requested"
             ;;
         *)
             json_error '400 Bad Request' 'invalid mode'

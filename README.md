@@ -19,7 +19,7 @@
 - 限制安装器音量键等待，避免输入缺失时无限阻塞安装流程；
 - 清理发布包中的测试、构建和临时文件，避免非运行时内容污染安装包。
 
-安装包：`pixel9pro_control_v4.5.07-apdfix.zip`
+安装包：`pixel9pro_control_v4.5.09.zip`
 
 SHA-256：`AE743049B87D3FA217465057EDCB7730B09898C135D0D4074B71D8A8C76DB761`
 
@@ -78,10 +78,10 @@ WebUI 实时温度优先读取后台 worker 维护的 `.thermal_cache.json`，�
 
 ### ZRAM / 内存优化
 
-- 算法：`lz77eh`（Emerald Hill 硬件加速）
-- 容量：`11392MB`
+- 算法：由当前系统 owner 初始化；caiman / `CP41.260814.003.B1` 实机为 `lz77eh`（Emerald Hill 硬件加速）
+- 容量：WebUI 显示设备实际 `disksize` 与 swap 状态；当前 build 实测约 `7.6GiB`，历史 `11392MB` 仅作为目标/兼容性实验值，不覆盖 mmd-owned 配置
 - VM 参数：`swappiness=100`、`min_free_kbytes=131072`、`watermark_scale_factor=200`、`vfs_cache_pressure=60`
-- WebUI 支持模块默认、原厂恢复和手动调节 VM 参数；手动值即时生效并随 custom 模式开机恢复。
+- WebUI 支持模块默认、原厂恢复和手动调节四个 VM 参数；手动值即时生效并随 custom 模式开机恢复。ZRAM 算法/容量在 mmd-owned build 上只读显示 owner、实际容量、`/proc/swaps` 活跃状态和 `SwapTotal`，不提供伪在线调节。
 
 ### 待机与 modem 策略（以 Google 默认机制为主）
 

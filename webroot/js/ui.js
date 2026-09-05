@@ -76,6 +76,8 @@ function initRefs() {
   refs.swapToggleLabel = $('swap-toggle-label');
   refs.swapRows = $('swap-rows');
   refs.swapTuneModal = $('modal-swap-tune');
+  refs.swapZramSizeNumber = $('swap-zram-size-number');
+  refs.swapZramSizeApply = $('swap-zram-size-apply-btn');
   refs.swapTuneInputs = {
     swappiness: $('swap-input-swappiness'),
     min_free_kbytes: $('swap-input-minfree'),

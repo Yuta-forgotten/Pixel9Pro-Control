@@ -10,6 +10,7 @@ ntp_config_validate() {
         BEGIN { FS="\t"; valid=1; rows=0; defaults=0 }
         /^#/ || /^[ \t]*$/ { next }
         {
+            sub(/\r$/, "", $0)
             rows++
             if (NF != 4 || $1 !~ /^[A-Za-z0-9.-]+$/ || $2 == "" || $3 == "") valid=0
             if ($4 != "yes" && $4 != "no") valid=0
@@ -21,7 +22,7 @@ ntp_config_validate() {
 }
 
 ntp_server_default() {
-    _ntp_default=$(awk 'BEGIN { FS="\t" } $0 !~ /^#/ && $4 == "yes" { print $1; exit }' "$NTP_CONFIG_FILE" 2>/dev/null)
+    _ntp_default=$(awk 'BEGIN { FS="\t" } $0 !~ /^#/ { sub(/\r$/, "", $0) } $0 !~ /^#/ && $4 == "yes" { print $1; exit }' "$NTP_CONFIG_FILE" 2>/dev/null)
     [ -n "$_ntp_default" ] || return 1
     printf '%s' "$_ntp_default"
 }
@@ -30,6 +31,7 @@ ntp_server_is_allowed() {
     [ -n "$1" ] || return 1
     awk -v host="$1" '
         BEGIN { FS="\t" }
+        $0 !~ /^#/ { sub(/\r$/, "", $0) }
         $0 !~ /^#/ && $1 == host { found=1; exit }
         END { exit found ? 0 : 1 }
     ' "$NTP_CONFIG_FILE" 2>/dev/null

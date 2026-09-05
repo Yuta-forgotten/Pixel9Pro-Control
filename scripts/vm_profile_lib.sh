@@ -6,6 +6,7 @@
 
 VM_ZRAM_ALGO="lz77eh"
 VM_ZRAM_SIZE_BYTES="11945377792"
+VM_ZRAM_SIZE_PROPERTY="persist.vendor.zram_swap_size_v2"
 
 VM_OPT_SWAPPINESS=100
 VM_OPT_MIN_FREE_KBYTES=131072
@@ -142,7 +143,22 @@ vm_contract_json() {
         "$VM_MIN_FREE_KBYTES_MIN" "$VM_MIN_FREE_KBYTES_MAX" \
         "$VM_WATERMARK_SCALE_MIN" "$VM_WATERMARK_SCALE_MAX" \
         "$VM_VFS_CACHE_PRESSURE_MIN" "$VM_VFS_CACHE_PRESSURE_MAX"
-    printf '"zram_target":{"algorithm":"%s","size_bytes":%s}' "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES"
+    printf '"zram_target":{"algorithm":"%s","size_bytes":%s,"property":"%s","policy":"mmd_owned_on_supported_builds"}' "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES" "$VM_ZRAM_SIZE_PROPERTY"
+}
+
+vm_zram_size_is_valid() {
+    case "$1" in
+        ''|*[!0-9%]*) return 1 ;;
+        *%) _vm_pct=${1%%%}; [ -n "$_vm_pct" ] && [ "$_vm_pct" -ge 10 ] 2>/dev/null && [ "$_vm_pct" -le 100 ] 2>/dev/null ;;
+        *) [ "$1" -ge 1073741824 ] 2>/dev/null && [ "$1" -le 17179869184 ] 2>/dev/null ;;
+    esac
+}
+
+vm_zram_size_to_bytes() {
+    case "$1" in
+        *%) _vm_pct=${1%%%}; awk -v pct="$_vm_pct" '/^MemTotal:/{printf "%.0f", $2 * 1024 * pct / 100; exit}' /proc/meminfo 2>/dev/null ;;
+        *) printf '%s' "$1" ;;
+    esac
 }
 
 vm_zram_matches() {
@@ -160,6 +176,11 @@ vm_configure_zram_raw() {
         && swapon /dev/block/zram0 2>/dev/null
 }
 
+vm_enable_existing_zram() {
+    mkswap /dev/block/zram0 >/dev/null 2>&1 && swapon /dev/block/zram0 2>/dev/null \
+        && awk '$1 ~ /(^|\/)zram0$/ { found=1 } END { exit found ? 0 : 1 }' /proc/swaps 2>/dev/null
+}
+
 vm_reconfigure_zram() {
     _vm_target_algo="$1"
     _vm_target_size="$2"
@@ -170,7 +191,12 @@ vm_reconfigure_zram() {
     case "$_vm_target_size" in ''|*[!0-9]*) return 1 ;; esac
     case "$_vm_old_size" in ''|*[!0-9]*) return 1 ;; esac
 
-    swapoff /dev/block/zram0 2>/dev/null || return 1
+    # An interrupted boot/OTA can leave zram configured but absent from
+    # /proc/swaps.  In that state swapoff returns ENOENT even though it is
+    # safe (and necessary) to reset and re-enable the device.
+    if awk '$1 ~ /(^|\/)zram0$/ { found=1 } END { exit found ? 0 : 1 }' /proc/swaps 2>/dev/null; then
+        swapoff /dev/block/zram0 2>/dev/null || return 1
+    fi
     if vm_configure_zram_raw "$_vm_target_algo" "$_vm_target_size" \
         && vm_zram_matches "$_vm_target_algo" "$_vm_target_size"; then
         return 0
