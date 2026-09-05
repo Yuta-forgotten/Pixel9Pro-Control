@@ -189,8 +189,20 @@ command -v python3 >/dev/null 2>&1 || {
     exit 2
 }
 
+run_info() {
+    mkdir -p "$FIXTURE/webroot/cgi-bin" || return 1
+    cp "$COMMON_SCRIPT" "$STATUS_SCRIPT" "$SOURCE_ROOT/webroot/cgi-bin/info.sh" "$FIXTURE/webroot/cgi-bin/" || return 1
+    env PATH="$MOCK_BIN:$PATH" PIXEL9PRO_MODDIR="$FIXTURE" \
+        REMOTE_ADDR=127.0.0.1 REQUEST_METHOD=GET \
+        BASEBAND_STATUS_ACTIVE_ROOT="$ACTIVE_ROOT" BASEBAND_STATUS_UPDATE_ROOT="$UPDATE_ROOT" \
+        sh "$FIXTURE/webroot/cgi-bin/info.sh" > "$TEST_ROOT/info.http" || return 1
+    sed -n '/^{/,$p' "$TEST_ROOT/info.http" > "$TEST_ROOT/info.json"
+}
+
 run_status || exit 2
 assert_json_schema 'missing module keeps a stable JSON schema' "$TEST_ROOT/current.json"
+run_info || exit 2
+assert_json_value 'info missing summary is false' "$TEST_ROOT/info.json" baseband_runtime_verified false
 assert_json_value 'missing module is not installed' "$TEST_ROOT/current.json" installed false
 assert_json_value 'missing module does not request clean reinstall' "$TEST_ROOT/current.json" clean_reinstall_required false
 assert_json_value 'missing module reports no pending update' "$TEST_ROOT/current.json" pending_update false
@@ -212,6 +224,9 @@ assert_json_value 'missing active receipt has explicit error' "$TEST_ROOT/curren
 write_receipt "$ACTIVE_ROOT/pixel9pro_baseband_trial/.runtime_status" PASS yes current_check no none
 run_status || exit 2
 assert_json_value 'PASS receipt marks runtime verified' "$TEST_ROOT/current.json" runtime_verified true
+run_info || exit 2
+assert_json_value 'info PASS summary is true' "$TEST_ROOT/info.json" baseband_runtime_verified true
+assert_json_value 'info PASS detail is true' "$TEST_ROOT/info.json" baseband_status.runtime_verified true
 assert_json_value 'PASS receipt keeps active source' "$TEST_ROOT/current.json" source active
 assert_json_value 'PASS receipt does not request clean reinstall' "$TEST_ROOT/current.json" clean_reinstall_required false
 assert_json_value 'PASS receipt exposes source hash' "$TEST_ROOT/current.json" source_hash source-hash

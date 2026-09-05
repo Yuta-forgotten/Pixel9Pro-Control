@@ -66,6 +66,6 @@ core_ver=$(grep '^core=' "$versions_file" 2>/dev/null | cut -d= -f2 | tr -d '\r\
 
 printf '{"model":"%s","version":"%s","version_code":"%s","module_version":"%s","httpd_rss_kb":%s,"auth_required":true,"baseband_installed":%s,"baseband_enabled":%s,"baseband_runtime_verified":%s,"baseband_version":"%s","baseband_status":%s,"mem_total_kb":%s,"mem_avail_kb":%s,"swap_total_kb":%s,"swap_free_kb":%s,"kernel":"%s","uptime_sec":%s,"webui_version":"%s","scheduler_version":"%s","core_version":"%s"}' \
     "$(json_escape "$model")" "$(json_escape "$version")" "$vc" "$(json_escape "$mv")" "$httpd_rss" "$baseband_installed" \
-    "$(baseband_status_bool "$BASEBAND_STATUS_ENABLED")" "$BASEBAND_STATUS_RUNTIME_VERIFIED" "$(json_escape "$baseband_version")" "$baseband_status_json" \
+    "$(baseband_status_bool "$BASEBAND_STATUS_ENABLED")" "$baseband_runtime_verified" "$(json_escape "$baseband_version")" "$baseband_status_json" \
     "$mem_total" "$mem_avail" "$swap_total" "$swap_free" "$(json_escape "${kernel:-}")" "$uptime_sec" \
     "$(json_escape "$webui_ver")" "$(json_escape "$sched_ver")" "$(json_escape "$core_ver")"
