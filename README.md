@@ -8,6 +8,23 @@
 - WebUI: `http://127.0.0.1:6210`
 - 版本号以模块包内的 `module.prop` 和对应 Git tag/release 为准；本 README 不固定某个“最新版”，避免源码长期漂移时产生过时版本声明。
 
+## 本次发行说明
+
+本版本修复了以下问题：
+
+- 修复 Pixel Thermal HAL 对 LPM Include 配置的处理，保留正确的 stock include 边界；
+- 增强 Thermal effective 状态回读，避免仅凭写入结果报告成功；
+- 补齐 CPU transaction 测试依赖，减少测试环境与实际源码依赖不一致；
+- 修复基带状态摘要聚合，改善 Control 与独立基带模块的状态展示；
+- 限制安装器音量键等待，避免输入缺失时无限阻塞安装流程；
+- 清理发布包中的测试、构建和临时文件，避免非运行时内容污染安装包。
+
+安装包：`pixel9pro_control_v4.5.07-apdfix.zip`
+
+SHA-256：`AE743049B87D3FA217465057EDCB7730B09898C135D0D4074B71D8A8C76DB761`
+
+该摘要对应本地完成结构审计、推送并在 caiman / Android `CP41.260814.003.B1` 上完成重启后模块加载验证的安装包。版本号和发行文件名仍应以实际 GitHub Release 资产为准。
+
 ## 支持设备
 
 | 设备 | 代号 | 状态 |
