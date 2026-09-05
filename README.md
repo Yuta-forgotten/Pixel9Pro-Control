@@ -2,12 +2,11 @@
 
 > APatch / KernelSU / Magisk 模块。为 Pixel 9 Pro / Pro XL (Tensor G4) 设计的温控阈值、可选 CPU 调度、ZRAM、UE 网络控制模块；Material 3 WebUI 控制台，可与 Uperf Game Turbo、fas-rs 等外部调度模块协同。（Magisk 下基带 UE 切换不可用。）
 
-## 当前版本
+## 模块身份
 
-- Version: `v4.5.07`
-- versionCode: `112`
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
+- 版本号以模块包内的 `module.prop` 和对应 Git tag/release 为准；本 README 不固定某个“最新版”，避免源码长期漂移时产生过时版本声明。
 
 ## 支持设备
 
@@ -207,7 +206,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 
 ## 免责声明
 
-### 2026-09-05 实机验证边界
+### 验证边界
 
 
 本模块通过修改温控阈值、CPU 调度参数、ZRAM 配置和系统设置来改变设备行为。**使用本模块可能带来以下风险**：
@@ -219,4 +218,3 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 **用户应在充分理解上述风险的前提下自行决定是否安装和使用本模块。作者不对因使用本模块造成的任何直接或间接损害承担责任。**
 
 - **Pixel**、**Android**、**Tensor**、**Material Design** 是 Google LLC 的商标。本项目与 Google LLC 无任何关联。
-
