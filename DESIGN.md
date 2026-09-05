@@ -1,60 +1,70 @@
-# Pixel9Pro-Control 设计决策
+# pixel9pro_baseband_trial 设计决策
 
-## 1. 目标与 ownership
+## 1. 目标与职责
 
-本模块负责 Pixel 9 Pro / Pixel 9 Pro XL 的温控配置、Pixel 调度、ZRAM/VM、NR 息屏策略、SIM2 管理、后台限制、WebUI，以及在允许的 root/挂载后端上管理 UECap。
+本模块为 Pixel 9 Pro (`caiman`) 与 Pixel 9 Pro XL (`komodo`) 提供运营商配置层的补充，不承担 modem firmware、NV item 或 UECap 能力表的写入。当前职责是：
 
-运营商配置由独立的 `pixel9pro_baseband_trial` 提供。两个模块可以独立安装；Control 不重新打包或接管 standalone 的 CarrierSettings/APN/MCFG/IMS overlay。
+- `CarrierSettings` framework 配置；
+- APN 配置；
+- China `mcfg_sw` metadata；
+- VoLTE/WFC debug properties；
+- 安装后 source → MetaModule content image → effective overlay → runtime receipt 的一致性复读。
 
-UECap ownership 按 SKU 固定：
+UECap ownership 明确分离：caiman 的三档 UECap 由 `pixel9pro_control` 管理，komodo 由系统/外部 stock 路径负责。本模块不得成为第二个 UECap writer。
 
-- caiman：Control 管理 `PLATFORM_9055801516233416490.binarypb` 的 `balanced`、`special`、`universal` 三档；
-- komodo：Control 保持 `external/stock`，不写入 `PLATFORM_6287228797510365516.binarypb`。
+## 2. 关键决策与权衡
 
-这意味着安装框架、状态机、WebUI、通用 contract 可以复用，但 UECap filename、payload、hash、MCFG、firmware、`mcfg_hw`、Saipan 和 SKU-specific thermal stock 必须分别确认。
+### 2.1 让 MetaModule 成为唯一内容迁移 owner
 
-## 2. UECap 状态模型
+APatch/KernelSU 的 `system/`、`product/`、`vendor/` 内容由活动 MetaModule 的 `metainstall.sh` 迁移和挂载。本模块只检查活动 MetaModule contract，不自行 mount、bind、loop、修改 `modules.img` 或写入 `metamodule/mnt`。
 
-UECap 状态不能只用“文件存在”表示。Control 分开记录：
+这样牺牲了安装器直接“修好”挂载的能力，但避免不同模块同时管理 OverlayFS lower/upper 层，也能把“安装命令成功”和“有效路径已经生效”区分开。Magisk 使用自身 Magic Mount，不强制要求 MetaModule。
 
-- desired：用户或启动流程请求的档位；
-- bound/effective：目标文件是否已经按 hash bind 到有效路径；
-- modem load：是否有独立的 modem load/readback 证据；
-- radio observed：当前电话注册与 RAT 观察；
-- functional：是否达到可验证功能态；
-- receipt freshness：receipt 是否属于当前 boot 和当前 source/target。
+### 2.2 普通模块升级采用条件式直升
 
-`pre_modem_bind` / `modem_load_unconfirmed` 是诚实的中间状态，不把 VFS bind hash 夸大成 modem 已加载 profile 的证明。切换失败必须执行恢复并复读旧 payload；不使用 airplane-mode toggle，避免同时撕裂 Wi-Fi、Bluetooth 和 connectivity。
+不是所有用户都必须先卸载旧普通基带模块。只有以下证据全部成立时才允许直接升级：active source、enabled、无 pending conflict、content image、effective overlay、source/content/effective contract/hash，以及属于当前 boot 的 schema 3 runtime receipt。
 
-## 3. 调度与事务
+任一层缺失、为空、冲突、失败、跨 boot 或无法确认时，安装器 fail closed，并提示用户按“卸载旧普通基带模块 → 重启 → 安装新版 → 再重启 → 全量复读”执行 clean reinstall。这里的卸载对象不是 APatch Manager。
 
-CPU response、cpuset、uclamp cap 与 vendor scheduler L2 属于同一 profile transaction。Pixel 与 UGT 是重启后选择的日常 baseline；fas-rs 只在有效游戏 lease 内成为临时 external owner，退出后恢复进入 lease 前的同一 baseline。
+### 2.3 effective merged tree 允许 lower-layer extra files
 
-所有有副作用的路径遵循：
+OverlayFS 的有效目录是合并视图，effective tree 可能比模块 source 多出 lower layer 文件。因此 correctness 以声明 contract 中的关键路径、文件数量下限、关键 hash、mount 和 receipt 为准；不把 aggregate tree hash 或“effective 必须与 source 文件总数完全相等”当作硬门禁。
 
-`前置验证 → 主写入 → 权威复读 → desired/effective marker 提交 → 失败回滚 → 回滚复读`
+### 2.4 receipt schema 3 才能成为当前运行证据
 
-周期 worker 遇到锁、外部 owner、稳定状态或 terminal failure 时必须 no-op/defer，不重放参数。自动 mutation 使用有界重试与 terminal state；独立 health 只读，不用持续抢写修复外部调度器或 ThermalHAL 已接管的状态。
+schema 2 及更旧 receipt 即使包含看似匹配的 boot/source/target 字段，也不能提升为当前 verified。schema 3 必须同时记录 boot、source/content/effective contract、mount/effective 状态、migration 状态与 freshness，避免把历史或 partial receipt 当作实际生效证明。
 
-## 4. 温控与系统策略
+## 3. 设备与内容边界
 
-温控配置从当前机型 stock JSON 生成。目标 sensor 允许有限 offset，数值型 SHUTDOWN 保留 stock `55/59°C`；同时检查严格递增和下一档 `HotHysteresis` overlap，不能只检查固定间隔。
+| 内容 | caiman | komodo |
+|---|---|---|
+| CarrierSettings/APN/China MCFG/IMS properties | 当前模块按 manifest 提供 | 当前模块按 manifest 提供，但目标 build 仍需单独验证 |
+| UECap | Control 管理 `PLATFORM_9055801516233416490.binarypb` | 系统/外部 stock 管理 `PLATFORM_6287228797510365516.binarypb` |
+| `mcfg_hw` / Saipan | 不从 XL 资源推导 | 不因存在候选就盲刷 |
+| modem firmware / NV | 不修改 | 不修改 |
 
-NR 息屏降级、SIM2、后台限制和功耗采样是使用层策略，不裁剪设备能力表。当前 caiman 已有 `NR_SA`/n41 实机证据，NSA 仅保留兼容解析；LTE 快照不能单独证明 Control 失效。
+两个 `PLATFORM_*` 文件属于不同 SKU，不能改名、互换或仅凭文件存在复用。通用安装框架、状态机、CarrierSettings/APN/IMS 逻辑和测试框架可以复用；SKU-specific UECap、MCFG、firmware、`mcfg_hw` 与 stock 资源必须分别审计。
 
-## 5. WebUI 与后端 contract
+## 4. 状态与失败闭环
 
-WebUI 是 presentation layer。参数、默认值、能力边界和状态字段由 shell/backend contract 提供，前端不复制 ownership 或硬编码安装状态。基带卡片展示 active/pending、content/effective、contract/hash、runtime receipt 和 radio observed 的分层结果；“目录存在”与“本次启动已验证”必须视觉上区分。
+安装器只负责前置检查和发布迁移意图。安装后由 `post-mount.sh` / `service.sh` 复读：
 
-写请求要求 loopback、随机 token、JSON body、CORS preflight 和 `X-PIXEL9PRO-TOKEN`。mutation 返回 compact verified response，前端随后读取 full state；请求超时不能被渲染成成功。
+1. active module 与版本；
+2. 活动 MetaModule 和 content image；
+3. `/product`、`/vendor` effective path 与 mount；
+4. source/content/effective contract 与关键 hash；
+5. schema 3 runtime receipt、boot ID、freshness 和 migration state。
 
-## 6. 验证与已知限制
+失败时保持明确的 `FAIL` / `clean_reinstall_required`，不能只凭安装退出码发布成功态，也不能由模块自行删除旧目录或清理系统挂载层。
 
-源码 gate、PowerShell/Android shell parser、contract/failure injection、WebUI 资源与 Chromium 回归、设备 TestLab、shadow、确定性 ZIP 和 entry/权限审计按变更影响范围执行。当前 Control source gate 与逻辑 gate 已通过，UECap/NR contract 为 `59/59`，当前源码 fingerprint 和 ZIP 状态以根级审查文档为准。
+## 5. 验证与限制
 
-截至 2026-08-31，caiman/APatch 已完成前一份功能等价候选 ZIP 的安装、重启与 `NR_SA`/n41 复核；当前源码对应 ZIP 已重建并审计，但尚未重新安装。komodo 的 Control UECap 三档和完整实机闭环仍未声明完成；Magisk 下 UECap 三档继续禁用。
+主机门禁覆盖双机 manifest、unknown root、MetaModule 组合、无 UECap payload、21 项 runtime failure injection、安装器 17 项 failure/upgrade cases、3210 个 CarrierSettings、5 个 China MCFG、Shell parser、source validation 和确定性 fingerprint。
 
-## 7. 变更历史
+截至 2026-08-31，caiman/APatch 已完成前一份功能等价候选 ZIP 的安装、重启、有效路径复读，并观察到中国广电 `46015` 的 `NR_SA`/n41。当前源码 ZIP 已重新构建并审计，但尚未重新安装；komodo 尚未完成同 build 实机闭环。NSA parser 只用于其它运营商、地点或漫游下的 LTE anchor/EN-DC 分类，不作为当前 caiman SA 的修复目标。
 
-- `v4.5.05`：完成 Pixel/UGT reboot-selected baseline、fas-rs 双侧 lease、owner/health bounded transaction。
-- `v4.5.07`：将 UECap 与 standalone baseband runtime state 分离，补齐 schema 3 receipt、source/content/effective contract、SKU 边界和 NSA/SA 状态语义。
+## 6. 变更历史
+
+- `v1.0.1`：历史 caiman-only 基带配置与回滚件。
+- `v1.1.0-rc2`：加入 APatch 11224 MetaModule relocation 兼容边界与有效路径复读。
+- `v1.1.0-rc3`：加入 caiman/komodo manifest、schema 3 runtime receipt、条件式直升级/clean reinstall 判定，并移除 standalone 内全部 UECap payload。

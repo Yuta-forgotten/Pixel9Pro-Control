@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#eef4f0">
+<meta name="color-scheme" content="light dark">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' http://127.0.0.1:6210; connect-src 'self' http://127.0.0.1:6210; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' http://127.0.0.1:6210">
+<title>温控调度控制台</title>
+<link rel="stylesheet" href="/app.css?v=4.3.21.1">
+</head>
+<body>
+<div class="app-shell">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="topbar-row">
+        <div class="topbar-copy">
+          <div class="kicker" id="topbar-kicker">加载中…</div>
+          <div class="topbar-title">温控调度控制台</div>
+          <div class="topbar-subtitle" id="topbar-subtitle">状态总览</div>
+        </div>
+        <div class="topbar-actions">
+          <button class="icon-btn" id="theme-open-btn" type="button" aria-label="打开主题设置">
+            <span id="theme-btn-icon" aria-hidden="true"></span>
+          </button>
+          <button class="icon-btn" id="refresh-all-btn" type="button" aria-label="刷新全部数据">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M17.65 6.35A7.95 7.95 0 0012 4V1L7 6l5 5V7a5 5 0 11-4.9 6H5.08A7 7 0 1017.65 6.35z"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="status-strip">
+        <span class="status-chip"><strong id="topbar-profile-chip">读取中</strong></span>
+        <span class="status-chip" id="topbar-thermal-chip">温控配置读取中</span>
+        <span class="status-chip" id="topbar-theme-chip">跟随系统</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="tab-pages" id="tab-pages">
+    <section class="tab-page active" id="page-home" data-tab="home">
+      <div class="page-stack">
+        <article class="hero-card mode-unknown" id="hero">
+          <div class="hero-icon" id="hero-icon" aria-hidden="true"></div>
+          <div class="hero-copy">
+            <div class="kicker">当前模式</div>
+            <div class="hero-mode" id="hero-mode">读取中…</div>
+            <div class="hero-desc" id="hero-desc">正在读取当前配置…</div>
+          </div>
+        </article>
+
+        <div class="section-block">
+          <div class="section-head">
+            <div class="section-copy">
+              <div class="kicker">实时监控</div>
+              <div class="section-title">当前状态</div>
+            </div>
+          </div>
+
+          <article class="surface-card">
+            <div class="panel-head">
+              <div class="panel-copy">
+                <div class="panel-title">机身温度</div>
+              </div>
+              <div class="header-actions">
+                <button class="tiny-btn sm" id="home-temp-chart-btn" type="button">历史</button>
+                <span class="badge default" id="home-mod-badge">+4°C 已启用</span>
+              </div>
+            </div>
+            <div id="home-thermal-skel"><div class="skel" style="height:80px"></div></div>
+            <div id="home-thermal-content" hidden>
+              <div class="home-temp-hero">
+                <div class="metric-value-row">
+                  <div class="metric-value" id="home-temp-num">--</div>
+                  <div class="metric-unit">°C</div>
+                </div>
+                <div class="home-temp-meta">
+                  <div class="home-temp-status" id="home-temp-status">读取中…</div>
+                </div>
+              </div>
+              <div class="sensor-list" id="home-sensor-list"></div>
+            </div>
+          </article>
+
+          <article class="surface-card">
+            <div class="panel-head">
+              <div class="panel-copy">
+                <div class="panel-title">内存与系统</div>
+              </div>
+              <div class="header-actions">
+                <button class="tiny-btn sm" id="energy-btn" type="button">功耗</button>
+              </div>
+            </div>
+            <div class="mini-list">
+              <div class="mini-row"><span>可用内存</span><strong id="rt-mem-avail">—</strong></div>
+              <div class="mini-row"><span>物理内存</span><strong id="rt-mem-total">—</strong></div>
+              <div class="mini-row"><span>ZRAM 占用</span><strong id="rt-zram-usage">—</strong></div>
+              <div class="mini-row"><span>压缩率 / 实占</span><strong id="rt-ratio">—</strong></div>
+              <div class="mini-row"><span>Swap 可用</span><strong id="rt-swap-free">—</strong></div>
+              <div class="mini-row"><span>运行时间</span><strong id="rt-uptime">—</strong></div>
+              <div class="mini-row"><span>WebUI 内存</span><strong id="rt-webui-mem">—</strong></div>
+            </div>
+          </article>
+        </div>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="panel-title">CPU 实时频率</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="refresh-cpu-btn" type="button"><span>刷新</span></button>
+            </div>
+          </div>
+          <div class="home-cpu-rows" id="home-cpu-rows">
+            <div class="skel" style="height:16px"></div>
+            <div class="skel" style="height:16px"></div>
+            <div class="skel" style="height:16px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="kicker">设备信息</div>
+          <div class="data-list" style="margin-top:10px">
+            <div class="data-row"><span class="data-key">设备</span><span class="data-val" id="info-model">—</span></div>
+            <div class="data-row"><span class="data-key">系统</span><span class="data-val" id="info-android">—</span></div>
+            <div class="data-row"><span class="data-key">内核</span><span class="data-val" id="info-kernel">—</span></div>
+            <div class="data-row"><span class="data-key">模块</span><span class="data-val" id="info-module">—</span></div>
+            <div class="data-row"><span class="data-key">作者</span><span class="data-val">Yuta</span></div>
+          </div>
+        </article>
+
+        <div class="log-card" id="log-card">
+          <div class="log-toggle" id="log-toggle">
+            <span class="log-label">操作记录</span>
+            <span class="log-arrow">▾</span>
+          </div>
+          <div class="log-body">
+            <div class="log-inner" id="log-inner"><span class="log-dim">等待操作…</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-perf" data-tab="perf">
+      <div class="page-stack">
+        <article class="summary-card">
+          <div class="kicker">当前策略</div>
+          <div class="summary-title" id="perf-current-name">读取中…</div>
+          <div class="summary-desc" id="perf-current-desc">正在读取当前性能模式。</div>
+          <div class="header-actions" style="margin-top:12px;justify-content:flex-start">
+            <button class="tiny-btn" id="profile-policy-manual-btn" type="button">手动</button>
+            <button class="tiny-btn" id="profile-policy-auto-btn" type="button">自动</button>
+          </div>
+          <div class="section-sub" id="perf-policy-desc" style="margin-top:10px">读取当前调度策略…</div>
+        </article>
+
+        <div class=”section-block”>
+          <div class="section-head">
+            <div class="section-copy">
+              <div class="kicker">实时频率</div>
+              <div class="section-title">CPU 频率状态</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="open-cpu-detail-btn" type="button">参数</button>
+            </div>
+          </div>
+          <article class="surface-card">
+            <div class="cpu-rows" id="cpu-rows">
+              <div class="skel" style="height:48px"></div>
+              <div class="skel" style="height:48px"></div>
+              <div class="skel" style="height:48px"></div>
+            </div>
+          </article>
+        </div>
+
+        <div class="section-block">
+          <div class="section-copy">
+            <div class="kicker">性能模式</div>
+            <div class="section-title">调度策略</div>
+            <div class="section-sub">通过 cpuset 核心分配和 sched_pixel 响应时间控制升频行为，点击卡片切换。</div>
+          </div>
+          <div class="profile-list" id="profile-list"></div>
+        </div>
+
+        <article class="note-card">
+          <div class="note-title">调度原理 · 模式说明</div>
+          <div class="note-body">通过 cpuset 核心分配和 sched_pixel 响应时间控制升频行为，不直接写 scaling_max_freq，不对抗 Thermal HAL。自动模式以 balanced 作为亮屏日常底座，只在热平台持续时慢切换到 battery；VIRTUAL-SKIN ≥ 40.8°C 持续约 90s 压到省电；温度回落后恢复 balanced；息屏后回到 balanced。</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-thermal" data-tab="thermal">
+      <div class="page-stack">
+        <article class="summary-card">
+          <div class="kicker">当前档位</div>
+          <div class="summary-title" id="thermal-current-name">日常推荐</div>
+          <div class="summary-desc" id="thermal-current-desc">默认采用 +4°C 阈值放宽，兼顾性能表现与机身温度。</div>
+        </article>
+
+        <div class="section-block">
+          <div class="section-head">
+            <div class="section-copy">
+              <div class="kicker">机身温度</div>
+              <div class="section-title">温度详情</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="temp-chart-btn" type="button">历史</button>
+            </div>
+          </div>
+          <article class="thermal-card">
+            <div class="panel-head">
+              <div class="panel-title">VIRTUAL-SKIN</div>
+              <span class="badge default" id="th-mod-badge">+4°C 已启用</span>
+            </div>
+            <div id="thermal-skel"><div class="skel" style="height:180px"></div></div>
+            <div id="thermal-content" hidden>
+              <div class="temp-display">
+                <div class="temp-num" id="temp-num">--</div>
+                <div class="temp-unit">°C</div>
+                <div class="temp-meta">
+                  <div class="temp-zone" id="temp-zone">VIRTUAL-SKIN</div>
+                  <div class="temp-status" id="temp-status">读取中</div>
+                </div>
+              </div>
+              <div class="temp-bar-wrap">
+                <div class="temp-bar-track">
+                  <div class="temp-bar-fill" id="temp-fill" style="width:0%"></div>
+                  <div class="temp-marker stock" id="mk-stock" style="left:0%"></div>
+                  <div class="temp-mlbl" id="mk-stock-lbl" style="left:0%">41°C</div>
+                  <div class="temp-marker mod" id="mk-mod" style="left:0%"></div>
+                  <div class="temp-mlbl mod" id="mk-mod-lbl" style="left:0%"></div>
+                </div>
+              </div>
+              <div class="sensor-grid" id="sensor-grid"></div>
+            </div>
+          </article>
+        </div>
+
+        <div class="section-block">
+          <div class="section-copy">
+            <div class="kicker">温控阈值</div>
+            <div class="section-title">档位选择</div>
+            <div class="section-sub">点击卡片切换，点右侧详情按钮查看说明。</div>
+          </div>
+          <div class="profile-list" id="thermal-list"></div>
+        </div>
+
+        <article class="note-card">
+          <div class="note-title">安全提示</div>
+          <div class="note-body">55/59°C 安全阈值保持不变。阈值放宽越多，性能释放越积极，但机身体感温度也会更快上升。</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-optim" data-tab="optim">
+      <div class="page-stack">
+        <article class="summary-card">
+          <div class="kicker">界面与主题</div>
+          <div class="appearance-row">
+            <div class="appearance-copy">
+              <div class="summary-title" style="font-size:20px;line-height:26px">显示模式</div>
+              <div class="section-sub" id="appearance-mode-label">跟随系统</div>
+              <div class="summary-desc" id="appearance-mode-desc">WebUI 主题仅影响界面显示，不改变模块行为。</div>
+            </div>
+            <button class="tiny-btn primary" id="theme-open-btn-2" type="button">主题设置</button>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">网络能力</div>
+              <div class="panel-title">UE 网络能力</div>
+              <div class="panel-desc" id="uecap-desc">选择载波组合配置，切换后自动校验是否生效。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="uecap-detail-btn" type="button">详情</button>
+            </div>
+          </div>
+          <div class="uecap-btn-group" id="uecap-btn-group">
+            <div class="skel" style="height:40px"></div>
+          </div>
+          <div class="data-list" id="uecap-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card" id="baseband-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">基带模块</div>
+              <div class="panel-title">基带配置模块</div>
+              <div class="panel-desc" id="baseband-desc">查看独立基带模块的安装状态与关键配置。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="baseband-detail-btn" type="button">详情</button>
+              <button class="tiny-btn" id="baseband-refresh-btn" type="button">刷新</button>
+            </div>
+          </div>
+          <div class="data-list" id="baseband-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">蜂窝省电</div>
+              <div class="panel-title">NR 息屏降级</div>
+              <div class="panel-desc" id="nr-switch-desc">息屏 5 分钟后将网络模式从 NR 切到 LTE，降低 modem 射频功耗。亮屏自动恢复，热点开启时跳过。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="nr-switch-detail-btn" type="button">详情</button>
+              <button class="tiny-btn primary" id="nr-switch-toggle-btn" type="button"><span id="nr-switch-toggle-label">读取中…</span></button>
+            </div>
+          </div>
+          <div class="data-list" id="nr-switch-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">副卡槽策略</div>
+              <div class="panel-title">SIM2 空槽管理</div>
+              <div class="panel-desc" id="sim2-auto-desc">单卡用户建议开启：息屏时减少 modem 实例数，消除空槽搜网开销。双卡用户请保持关闭。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn primary" id="sim2-auto-toggle-btn" type="button"><span id="sim2-auto-toggle-label">读取中…</span></button>
+            </div>
+          </div>
+          <div class="data-list" id="sim2-auto-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">过夜排障</div>
+              <div class="panel-title">待机隔离模式</div>
+              <div class="panel-desc" id="idle-isolate-desc">仅用于 A/B 排障。开启后息屏阶段暂停模块所有待机干预（NR / SIM2 / 自动调度 / 功耗采样），验证是否为模块阻碍 deep sleep。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn primary" id="idle-isolate-toggle-btn" type="button"><span id="idle-isolate-toggle-label">读取中…</span></button>
+            </div>
+          </div>
+          <div class="data-list" id="idle-isolate-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">后台功耗控制</div>
+              <div class="panel-title">后台应用限制</div>
+              <div class="panel-desc" id="bg-restrict-desc">通过 AOSP 官方 API 限制后台应用活动，降低 CPU 和唤醒开销。列表中的应用将被设为 RESTRICTED + 禁止后台运行。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="bg-restrict-refresh-btn" type="button">刷新</button>
+              <button class="tiny-btn primary" id="bg-restrict-toggle-btn" type="button"><span id="bg-restrict-toggle-label">读取中…</span></button>
+            </div>
+          </div>
+          <div class="data-list" id="bg-restrict-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+          <div id="bg-restrict-add-area" style="margin-top:14px;display:flex;gap:8px;align-items:center">
+            <input type="text" id="bg-restrict-pkg-input" placeholder="com.example.app" style="flex:1;height:36px;padding:0 12px;border:1px solid var(--border);border-radius:18px;background:var(--bg-1);color:var(--text);font-size:13px;outline:none">
+            <button class="tiny-btn primary" id="bg-restrict-add-btn" type="button">添加</button>
+          </div>
+          <div class="note-card" style="margin-top:14px">
+            <div class="note-title">使用说明</div>
+            <div class="note-body">将需要限制后台的应用包名添加到列表，模块会通过系统官方接口降低其后台优先级并禁止其自启后台服务。限制在重启后自动保留。当你正常打开这些应用时，系统会临时恢复权限，前台使用完全不受影响。状态显示"已限制"表示限制已完全生效，"未生效"说明应用刚被使用过、系统临时提升了权限，点击刷新可重新应用。</div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">待机诊断</div>
+              <div class="panel-title">后台 worker 摘要</div>
+              <div class="panel-desc">后台统一工作循环的实时状态，包括当前分支、下次唤醒时间和 NR / 调度状态。</div>
+            </div>
+          </div>
+          <div class="data-list" id="standby-diag-rows" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">内存优化</div>
+              <div class="panel-title">ZRAM / VM 参数</div>
+              <div class="panel-desc" id="swap-desc">Tensor G4 Emerald Hill 硬件压缩引擎，ZRAM 11392MB，VM 参数开机自动配置。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn" id="swap-detail-btn" type="button">详情</button>
+              <button class="tiny-btn primary" id="swap-toggle-btn" type="button"><span id="swap-toggle-label">读取中…</span></button>
+            </div>
+          </div>
+          <div class="data-list" id="swap-rows" style="margin-top:14px">
+            <div class="skel" style="height:140px"></div>
+          </div>
+        </article>
+
+        <article class="surface-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="kicker">时间同步</div>
+              <div class="panel-title">NTP 服务器</div>
+              <div class="panel-desc" id="ntp-desc">选择 NTP 时间同步服务器，修正设备时钟偏差。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn primary" id="ntp-sync-btn" type="button"><span id="ntp-sync-label">立即同步</span></button>
+            </div>
+          </div>
+          <div class="ntp-server-list" id="ntp-server-list" style="margin-top:14px">
+            <div class="skel" style="height:48px"></div>
+          </div>
+          <div class="data-list" id="ntp-info-rows" style="margin-top:10px">
+            <div class="skel" style="height:32px"></div>
+          </div>
+        </article>
+
+        <article class="note-card">
+          <div class="note-title">说明</div>
+          <div class="note-body">WiFi / BLE 后台扫描、Nearby Sharing 和 multicast 屏幕感知由模块开机自动配置，无需手动操作。SIM2 空槽管理仅在副卡槽确实为空时建议开启；待机隔离模式仅用于一晚隔离测试，验证后应关闭。</div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" aria-label="主导航">
+    <button class="tab-item active" id="tab-home" data-tab="home" type="button">
+      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg></span>
+      <span class="ti-label">状态</span>
+    </button>
+    <button class="tab-item" id="tab-perf" data-tab="perf" type="button">
+      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg></span>
+      <span class="ti-label">性能</span>
+    </button>
+    <button class="tab-item" id="tab-thermal" data-tab="thermal" type="button">
+      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82z"/></svg></span>
+      <span class="ti-label">温控</span>
+    </button>
+    <button class="tab-item" id="tab-optim" data-tab="optim" type="button">
+      <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M7.5 5.6L10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8L17 14l1.4 2.5L17 19l2.5-1.4L22 19l-1.4-2.5L22 14zM22 2l-2.5 1.4L17 2l1.4 2.5L17 7l2.5-1.4L22 7l-1.4-2.5zm-7.63 5.29a.996.996 0 00-1.41 0L1.29 18.96c-.39.39-.39 1.02 0 1.41l2.34 2.34c.39.39 1.02.39 1.41 0L16.71 11.04c.39-.39.39-1.02 0-1.41l-2.34-2.34z"/></svg></span>
+      <span class="ti-label">优化</span>
+    </button>
+  </nav>
+</div>
+
+<div class="toast-wrap" id="toast-wrap"></div>
+
+<div class="pull-ind" id="pull-ind" aria-hidden="true">
+  <svg viewBox="0 0 44 44" width="28" height="28">
+    <circle class="pull-arc" cx="22" cy="22" r="10" fill="none" stroke="var(--primary)" stroke-width="2.8" stroke-linecap="round" stroke-dasharray="62.83" stroke-dashoffset="62.83" transform="rotate(-90 22 22)"></circle>
+  </svg>
+</div>
+
+<div class="modal-wrap" id="modal-theme">
+  <div class="modal-bg"></div>
+  <div class="modal-sheet">
+    <div class="sheet-handle"></div>
+    <div class="modal-sheet-body">
+      <div class="modal-s-title">界面主题</div>
+      <div class="modal-s-desc">主题只影响 WebUI 的显示层，不影响温控、调度和系统参数本身。</div>
+      <div class="theme-grid">
+        <button class="theme-choice" type="button" data-theme-option="system">
+          <span class="theme-choice-copy"><span class="theme-choice-title">跟随系统</span><span class="theme-choice-desc">按系统或 WebView 当前配色自动切换。</span></span>
+          <span class="theme-choice-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+        </button>
+        <button class="theme-choice" type="button" data-theme-option="light">
+          <span class="theme-choice-copy"><span class="theme-choice-title">浅色模式</span><span class="theme-choice-desc">适合白天、强光和需要更高可读性的场景。</span></span>
+          <span class="theme-choice-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+        </button>
+        <button class="theme-choice" type="button" data-theme-option="dark">
+          <span class="theme-choice-copy"><span class="theme-choice-title">深色模式</span><span class="theme-choice-desc">适合夜间和低照度环境，降低眩光和视觉噪声。</span></span>
+          <span class="theme-choice-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+        </button>
+      </div>
+      <div class="modal-actions"><button class="mbtn mbtn-ghost" id="theme-close-btn" type="button">关闭</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-wrap" id="modal-reboot">
+  <div class="modal-bg"></div>
+  <div class="modal-sheet">
+    <div class="sheet-handle"></div>
+    <div class="modal-sheet-body">
+      <div class="modal-s-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg></div>
+      <div class="modal-s-title">温控服务未能自动重启</div>
+      <div class="modal-s-desc">温控阈值已保存，但当前无法在线重启 thermal 服务。重启手机后新配置才会生效。</div>
+      <div class="modal-actions">
+        <button class="mbtn mbtn-primary" id="reboot-now-btn" type="button">立即重启</button>
+        <button class="mbtn mbtn-secondary" id="reboot-later-btn" type="button">稍后重启</button>
+        <button class="mbtn mbtn-ghost" id="reboot-cancel-btn" type="button">放弃本次修改</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-wrap" id="modal-detail">
+  <div class="modal-bg"></div>
+  <div class="modal-sheet">
+    <div class="sheet-handle"></div>
+    <div class="modal-sheet-body">
+      <div class="modal-s-title" id="detail-title">详情</div>
+      <div class="detail-content" id="detail-body"></div>
+      <div class="modal-actions"><button class="mbtn mbtn-ghost" id="detail-close-btn" type="button">关闭</button></div>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js?v=4.3.21.1"></script>
+</body>
+</html>

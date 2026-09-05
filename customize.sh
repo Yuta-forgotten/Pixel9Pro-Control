@@ -1,658 +1,454 @@
 #!/system/bin/sh
-# APatch/KernelSU/Magisk installer: detect the device/root implementation,
-# migrate user state, collect first-install choices, and generate thermal JSON.
 
-STOCK_XL="$MODPATH/system/vendor/etc/thermal_stock_xl.json"
-STOCK_ACTIVE="$MODPATH/system/vendor/etc/thermal_stock.json"
-OUT_JSON="$MODPATH/system/vendor/etc/thermal_info_config.json"
-OFFSET_FILE="$MODPATH/.thermal_offset"
-PROFILE_FILE="$MODPATH/.current_profile"
-PROFILE_POLICY_FILE="$MODPATH/.profile_policy"
-PROFILE_MANUAL_FILE="$MODPATH/.profile_manual"
-SCHED_OWNER_FILE="$MODPATH/.cpu_sched_owner"
-SCHED_OWNER_DESIRED_FILE="$MODPATH/.sched_owner_desired"
-GAME_HANDOFF_POLICY_FILE="$MODPATH/.game_handoff_policy"
-GAME_HANDOFF_SOURCE_FILE="$MODPATH/.game_handoff_source"
-DEVICE_FILE="$MODPATH/.device_variant"
+# pixel9pro_baseband_trial installer contract
+#
+# APatch 11219+ and KernelSU with a MetaModule move system/ overlays into the
+# active MetaModule content image. This module deliberately does not mount or
+# write that image itself; it only verifies the active contract and leaves the
+# move to the framework's metainstall.sh hook.
 
-OLDDIR="/data/adb/modules/pixel9pro_control"
+ADB_ROOT="${BASEBAND_ADB_ROOT:-/data/adb}"
+BASEBAND_MODULE_ID="pixel9pro_baseband_trial"
+DEVICE_MANIFEST="$MODPATH/config/baseband_devices.tsv"
+MIGRATION_STATE_FILE="$MODPATH/.migration_state"
+BASEBAND_BOOT_ID_PATH="${BASEBAND_BOOT_ID_PATH:-/proc/sys/kernel/random/boot_id}"
+BASEBAND_MOUNTINFO_PATH="${BASEBAND_MOUNTINFO_PATH:-/proc/self/mountinfo}"
+ACTIVE_METAMODULE=""
+METAMODULE_STATE=""
+METAMODULE_REASON=""
+MIGRATION_STATE="fresh_install_pending_reboot"
+MIGRATION_REASON=""
 
-# Thermal HAL may select an LPM-specific top-level config at runtime.  The
-# selected filename is authoritative; never generate a sibling file that HAL
-# will ignore.  LPM stock is read-only from the current device vendor tree.
-THERMAL_CONFIG_NAME=$(getprop vendor.thermal.config 2>/dev/null)
-[ -n "$THERMAL_CONFIG_NAME" ] || THERMAL_CONFIG_NAME=thermal_info_config.json
-case "$THERMAL_CONFIG_NAME" in
-    thermal_info_config.json)
-        ;;
-    thermal_info_config_lpm.json)
-        # LPM is a top-level overlay that includes thermal_info_config.json;
-        # target sensors live in the included base file, not in this delta.
-        [ -r "/vendor/etc/$THERMAL_CONFIG_NAME" ] || {
-            ui_print "  ✗ 当前 Thermal HAL 配置缺失: $THERMAL_CONFIG_NAME"
-            exit 1
-        }
-        ;;
-    *)
-        ui_print "  ✗ 不支持的 Thermal HAL 配置: $THERMAL_CONFIG_NAME"
-        exit 1
-        ;;
-esac
+device=$(getprop ro.product.device 2>/dev/null | tr -d ' \n\r\t')
+[ -n "$device" ] || device=$(getprop ro.build.product 2>/dev/null | tr -d ' \n\r\t')
 
-if [ ! -r "$MODPATH/scripts/scheduler_detect_lib.sh" ] \
-    || ! . "$MODPATH/scripts/scheduler_detect_lib.sh"; then
-    ui_print "  ✗ 缺少外部调度检测配置, 已中止安装"
-    exit 1
-fi
-if [ ! -r "$MODPATH/scripts/scheduler_owner_lib.sh" ] \
-    || ! . "$MODPATH/scripts/scheduler_owner_lib.sh"; then
-    ui_print "  ✗ 缺少调度所有权配置, 已中止安装"
-    exit 1
-fi
-if [ ! -r "$MODPATH/scripts/scheduler_boot_mode_lib.sh" ]; then
-    ui_print "  ✗ 缺少调度启动模式配置, 已中止安装"
-    exit 1
-fi
-if [ ! -r "$MODPATH/scripts/runtime_defaults_lib.sh" ]; then
-    ui_print "  ✗ 缺少运行默认值配置, 已中止安装"
-    exit 1
-fi
-. "$MODPATH/scripts/runtime_defaults_lib.sh" || exit 1
-if [ ! -r "$MODPATH/scripts/display_state_lib.sh" ] \
-    || ! . "$MODPATH/scripts/display_state_lib.sh"; then
-    ui_print "  ✗ 缺少屏幕状态配置, 已中止安装"
-    exit 1
-fi
+installer_fail() {
+    _message="$1"
+    ui_print "  ✗ $_message"
+    if type abort >/dev/null 2>&1; then
+        abort "$_message"
+    fi
+    return 1
+}
 
-installer_write() {
-    if runtime_write_value "$1" "$2"; then
+load_device_contract() {
+    DEVICE_LABEL=""
+    UECAP_POLICY=""
+
+    [ -f "$DEVICE_MANIFEST" ] || return 1
+    while IFS='|' read -r _device _label _policy _source_rel _target_name _bytes _sha256; do
+        case "$_device" in ''|\#*) continue ;; esac
+        [ "$_device" = "$device" ] || continue
+        DEVICE_LABEL="$_label"
+        UECAP_POLICY="$_policy"
+        UECAP_SOURCE_REL="$_source_rel"
+        UECAP_TARGET_NAME="$_target_name"
+        UECAP_BYTES="$_bytes"
+        UECAP_SHA256="$_sha256"
+        break
+    done < "$DEVICE_MANIFEST"
+
+    [ -n "$DEVICE_LABEL" ] || return 2
+    [ "$UECAP_POLICY" = "external" ] || return 1
+    [ -z "$UECAP_SOURCE_REL$UECAP_TARGET_NAME$UECAP_BYTES$UECAP_SHA256" ]
+}
+
+resolve_metamodule_target() {
+    _link="$ADB_ROOT/metamodule"
+    _target=""
+    _raw=""
+
+    [ -L "$_link" ] || {
+        METAMODULE_REASON="active /data/adb/metamodule link is missing"
+        return 1
+    }
+
+    _raw=$(readlink "$_link" 2>/dev/null)
+    [ -n "$_raw" ] || {
+        METAMODULE_REASON="active /data/adb/metamodule symlink is unreadable"
+        return 1
+    }
+    case "$_raw" in
+        /*) _target="$_raw" ;;
+        *) _target="$(dirname "$_link")/$_raw" ;;
+    esac
+
+    [ -d "$_target" ] || {
+        METAMODULE_REASON="active MetaModule target is not a directory"
+        return 1
+    }
+    [ -f "$_target/module.prop" ] || {
+        METAMODULE_REASON="active MetaModule module.prop is missing"
+        return 1
+    }
+    _marker=$(sed -n 's/^metamodule=//p' "$_target/module.prop" 2>/dev/null | head -n 1 | tr -d ' \n\r\t')
+    [ "$_marker" = "1" ] || {
+        METAMODULE_REASON="active target does not declare metamodule=1"
+        return 1
+    }
+    [ ! -e "$_target/disable" ] || {
+        METAMODULE_REASON="active MetaModule is disabled"
+        return 1
+    }
+    [ -d "$_target/mnt" ] || {
+        METAMODULE_REASON="active MetaModule content directory is missing"
+        return 1
+    }
+
+    ACTIVE_METAMODULE="$_target"
+    METAMODULE_STATE="active"
+    return 0
+}
+
+find_declared_metamodule() {
+    # Compatibility fallback for older KernelSU layouts without the symlink.
+    # No product/module name is assumed; exactly one enabled marker is required.
+    _found=""
+    for _base in "$ADB_ROOT/modules" "$ADB_ROOT/modules_update"; do
+        [ -d "$_base" ] || continue
+        for _dir in "$_base"/*; do
+            [ -d "$_dir" ] || continue
+            [ -f "$_dir/module.prop" ] || continue
+            _marker=$(sed -n 's/^metamodule=//p' "$_dir/module.prop" 2>/dev/null | head -n 1 | tr -d ' \n\r\t')
+            [ "$_marker" = "1" ] || continue
+            [ ! -e "$_dir/disable" ] || continue
+            [ -d "$_dir/mnt" ] || continue
+            if [ -n "$_found" ] && [ "$_found" != "$_dir" ]; then
+                METAMODULE_REASON="multiple enabled modules declare metamodule=1"
+                return 1
+            fi
+            _found="$_dir"
+        done
+    done
+    [ -n "$_found" ] || return 1
+    ACTIVE_METAMODULE="$_found"
+    METAMODULE_STATE="marker-only"
+    return 0
+}
+
+detect_active_metamodule() {
+    ACTIVE_METAMODULE=""
+    METAMODULE_STATE=""
+    METAMODULE_REASON=""
+    if resolve_metamodule_target; then
         return 0
     fi
-    ui_print "  ✗ 无法写入安装状态: ${1##*/}"
-    exit 1
+    find_declared_metamodule && return 0
+    [ -n "$METAMODULE_REASON" ] || METAMODULE_REASON="no enabled module declares metamodule=1"
+    return 1
 }
-if [ ! -r "$MODPATH/scripts/thermal_profile.sh" ]; then
-    ui_print "  ✗ 缺少温控配置库, 已中止安装"
-    exit 1
-fi
-. "$MODPATH/scripts/thermal_profile.sh" || exit 1
-NTP_CONFIG_FILE="$MODPATH/config/ntp_servers.tsv"
-if [ ! -r "$MODPATH/scripts/ntp_config_lib.sh" ] || [ ! -r "$NTP_CONFIG_FILE" ]; then
-    ui_print "  ✗ 缺少 NTP 配置, 已中止安装"
-    exit 1
-fi
-. "$MODPATH/scripts/ntp_config_lib.sh" || exit 1
-if ! ntp_config_validate; then
-    ui_print "  ✗ NTP 配置格式无效, 已中止安装"
-    exit 1
-fi
+
+load_runtime_helpers() {
+    # Reuse the runtime contract's tree/layout/mount helpers during the
+    # install-time migration decision.  Sourcing this file has no side effect;
+    # the runtime check itself is only called after reboot by post-mount/service.
+    [ -f "$MODPATH/scripts/baseband_runtime.sh" ] || {
+        MIGRATION_REASON="新版模块缺少共享 runtime contract helper"
+        return 1
+    }
+    BASEBAND_ADB_ROOT="$ADB_ROOT"
+    BASEBAND_MODULE_ID="$BASEBAND_MODULE_ID"
+    BASEBAND_METAMODULE_LINK="$ADB_ROOT/metamodule"
+    BASEBAND_MOUNTINFO_PATH="$BASEBAND_MOUNTINFO_PATH"
+    . "$MODPATH/scripts/baseband_runtime.sh"
+}
+
+migration_receipt_value() {
+    _receipt="$1"
+    _key="$2"
+    _default="${3:-}"
+    _value=""
+    [ -f "$_receipt" ] && _value=$(sed -n "s/^${_key}=//p" "$_receipt" 2>/dev/null | head -n 1 | tr -d ' \n\r\t')
+    [ -n "$_value" ] && printf '%s' "$_value" || printf '%s' "$_default"
+}
+
+migration_current_boot_id() {
+    _boot=$(cat "$BASEBAND_BOOT_ID_PATH" 2>/dev/null | tr -d ' \n\r\t')
+    [ -n "$_boot" ] || _boot=$(getprop ro.boot.boot_id 2>/dev/null | tr -d ' \n\r\t')
+    case "$_boot" in
+        ''|*[!A-Za-z0-9._:-]*) printf 'unknown' ;;
+        *) printf '%s' "$_boot" ;;
+    esac
+}
+
+migration_contract_rows() {
+    _root_kind="$1"
+    _contract="$2"
+    _rows=""
+    _nl=$(printf '\nx')
+    _nl=${_nl%x}
+    [ -f "$_contract" ] || return 1
+    while IFS='|' read -r _key _path _kind _expected; do
+        case "$_key" in ''|\#*) continue ;; esac
+        _file=""
+        case "$_root_kind" in
+            source) _file="$_MIGRATION_SOURCE_ROOT$_path" ;;
+            effective) _file=$(baseband_effective_path "$_path" 2>/dev/null) || return 1 ;;
+            content) _file=$(baseband_content_path "$_MIGRATION_CONTENT_ROOT" "$_path" 2>/dev/null || true) ;;
+            *) return 1 ;;
+        esac
+        case "$_kind" in
+            sha256)
+                _value=$(baseband_sha256 "$_file" 2>/dev/null || printf missing)
+                _rows="${_rows}${_key}=sha256=${_value}${_nl}"
+                ;;
+            exists)
+                [ "$_expected" = 1 ] && [ -e "$_file" ] && _value=yes || _value=no
+                _rows="${_rows}${_key}=exists=${_value}${_nl}"
+                ;;
+            min_file_count)
+                _value=$(baseband_file_count "$_file")
+                _rows="${_rows}${_key}=count=${_value}${_nl}"
+                ;;
+            *) return 1 ;;
+        esac
+    done < "$_contract"
+    printf '%s' "$_rows"
+}
+
+module_path_equal() {
+    _left="${1%/}"
+    _right="${2%/}"
+    [ -n "$_left" ] && [ -n "$_right" ] && [ "$_left" = "$_right" ]
+}
+
+module_dir_is_empty() {
+    [ -d "$1" ] || return 1
+    [ -z "$(find "$1" -mindepth 1 -print -quit 2>/dev/null)" ]
+}
+
+baseband_migration_receipt_check() {
+    _old_module="$1"
+    _receipt="$_old_module/.runtime_status"
+    _current_boot=$(migration_current_boot_id)
+    _receipt_boot=$(migration_receipt_value "$_receipt" boot_id unknown)
+    [ -f "$_receipt" ] || {
+        MIGRATION_REASON="旧模块 runtime receipt 缺失"
+        return 1
+    }
+    [ "$(migration_receipt_value "$_receipt" schema unknown)" = 3 ] || {
+        MIGRATION_REASON="旧模块使用旧版或未知 runtime receipt schema；必须先卸载旧版普通基带模块、重启，再安装新版"
+        return 1
+    }
+    [ "$_current_boot" != unknown ] && [ "$_receipt_boot" = "$_current_boot" ] || {
+        MIGRATION_REASON="旧模块 runtime receipt 不属于当前 boot"
+        return 1
+    }
+    [ "$(migration_receipt_value "$_receipt" status missing)" = PASS ] \
+        && [ "$(migration_receipt_value "$_receipt" effective_overlay_verified no)" = yes ] \
+        && [ "$(migration_receipt_value "$_receipt" source_contract_verified no)" = yes ] \
+        && [ "$(migration_receipt_value "$_receipt" current_runtime_check_freshness missing)" = current_check ] \
+        && [ "$(migration_receipt_value "$_receipt" runtime_receipt_freshness missing)" = current_check ] \
+        && [ "$(migration_receipt_value "$_receipt" clean_reinstall_required yes)" = no ] || {
+        MIGRATION_REASON="旧模块没有当前 boot 的完整有效 Overlay 复读收据"
+        return 1
+    }
+    _migration_source_root=$(baseband_source_root "$_old_module" 2>/dev/null || true)
+    [ -d "$_migration_source_root" ] || {
+        MIGRATION_REASON="旧模块 active source root 缺失"
+        return 1
+    }
+    [ "$(migration_receipt_value "$_receipt" module_dir missing)" = "$_old_module" ] \
+        && [ "$(migration_receipt_value "$_receipt" source_path missing)" = "$_migration_source_root" ] || {
+        MIGRATION_REASON="旧模块 runtime receipt 的 source/module 路径与 active module 不一致"
+        return 1
+    }
+    _source_contract_hash=$(migration_receipt_value "$_receipt" source_contract_hash unknown)
+    [ "$_source_contract_hash" = unknown ] && _source_contract_hash=$(migration_receipt_value "$_receipt" source_hash unknown)
+    _content_contract_hash=$(migration_receipt_value "$_receipt" content_contract_hash unknown)
+    _effective_contract_hash=$(migration_receipt_value "$_receipt" effective_contract_hash unknown)
+    _effective_verified=$(migration_receipt_value "$_receipt" effective_contract_verified no)
+    case "$_source_contract_hash:$_content_contract_hash:$_effective_contract_hash" in
+        *unknown*|*missing*)
+            MIGRATION_REASON="旧模块 source/content/effective contract hash 不完整"
+            return 1
+            ;;
+    esac
+    [ "$_effective_verified" = yes ] || {
+        MIGRATION_REASON="旧模块 effective declared contract 未验证"
+        return 1
+    }
+    [ "$(find "$_migration_source_root/product" -type f 2>/dev/null | head -n 1)$(find "$_migration_source_root/vendor" -type f 2>/dev/null | head -n 1)" ] || {
+        MIGRATION_REASON="旧模块 active source tree 缺失或为空"
+        return 1
+    }
+    [ -n "$ACTIVE_METAMODULE" ] || {
+        MIGRATION_REASON="活动 MetaModule 未确认"
+        return 1
+    }
+    _content_root="$ACTIVE_METAMODULE/mnt/$BASEBAND_MODULE_ID"
+    baseband_content_layout_valid "$_content_root" || {
+        MIGRATION_REASON="旧模块 MetaModule content image 结构无效或为空"
+        return 1
+    }
+    _content_tree_root=$(baseband_content_tree_root "$_content_root")
+    [ "$(find "$_content_tree_root" -type f 2>/dev/null | head -n 1)" ] || {
+        MIGRATION_REASON="旧模块 MetaModule content image 为空"
+        return 1
+    }
+    [ "$(migration_receipt_value "$_receipt" content_image missing)" = "$_content_root" ] || {
+        MIGRATION_REASON="旧模块 runtime receipt 的 content image 路径不一致"
+        return 1
+    }
+    # Do not require full tree/image hashes here.  Relocation may add a
+    # compatibility directory and effective OverlayFS may merge stock files;
+    # the declared rows are the migration proof.
+    _MIGRATION_SOURCE_ROOT="$_migration_source_root"
+    _MIGRATION_CONTENT_ROOT="$_content_root"
+    _old_contract="$_old_module/config/runtime_contract.tsv"
+    _actual_source_rows=$(migration_contract_rows source "$_old_contract" 2>/dev/null; printf '_')
+    _actual_source_rows=${_actual_source_rows%_}
+    _actual_effective_rows=$(migration_contract_rows effective "$_old_contract" 2>/dev/null; printf '_')
+    _actual_effective_rows=${_actual_effective_rows%_}
+    _actual_content_rows=$(migration_contract_rows content "$_old_contract" 2>/dev/null; printf '_')
+    _actual_content_rows=${_actual_content_rows%_}
+    _actual_source_contract_hash=$(baseband_sha256_text "$_actual_source_rows" 2>/dev/null || printf unknown)
+    _actual_effective_contract_hash=$(baseband_sha256_text "$_actual_effective_rows" 2>/dev/null || printf unknown)
+    _actual_content_contract_hash=$(baseband_sha256_text "$_actual_content_rows" 2>/dev/null || printf unknown)
+    [ "$_actual_source_contract_hash" = "$_source_contract_hash" ] \
+        && [ "$_actual_effective_contract_hash" = "$_effective_contract_hash" ] \
+        && [ "$_actual_content_contract_hash" = "$_content_contract_hash" ] || {
+        MIGRATION_REASON="旧模块各层 declared contract hash 与 receipt 不一致"
+        return 1
+    }
+    case "$ROOT_IMPL" in
+        APatch|KernelSU)
+            [ "$(migration_receipt_value "$_receipt" root_impl unknown)" = "$ROOT_IMPL" ] \
+                && [ "$(migration_receipt_value "$_receipt" content_image_verified no)" = yes ] \
+                && [ "$(migration_receipt_value "$_receipt" mount_observed no)" = yes ] \
+                && [ "$(baseband_mount_observed "$ROOT_IMPL" 2>/dev/null || printf unknown)" = yes ] || {
+                MIGRATION_REASON="旧模块 MetaModule/mount 当前状态无法确认"
+                return 1
+            }
+            ;;
+        Magisk)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+baseband_migration_check() {
+    # A Manager update is not a module migration. A normal module update may
+    # keep the active ordinary module while the current package is staged in
+    # modules_update. Any second, unrelated pending copy or an uncertain
+    # active/content/receipt state requires clean reinstall.
+    MIGRATION_STATE="fresh_install_pending_reboot"
+    MIGRATION_REASON=""
+    _old_module=""
+    _active_module="$ADB_ROOT/modules/$BASEBAND_MODULE_ID"
+    _pending_module="$ADB_ROOT/modules_update/$BASEBAND_MODULE_ID"
+    if [ -d "$_pending_module" ] && ! module_path_equal "$_pending_module" "$MODPATH"; then
+        if ! module_dir_is_empty "$_pending_module"; then
+            MIGRATION_STATE="clean_reinstall_required"
+            MIGRATION_REASON="active module 与另一个 pending update 同时存在"
+            return 1
+        fi
+    fi
+    if [ -d "$_active_module" ] && ! module_path_equal "$_active_module" "$MODPATH"; then
+        if ! module_dir_is_empty "$_active_module"; then
+            _old_module="$_active_module"
+        fi
+    elif [ -d "$_pending_module" ] && ! module_path_equal "$_pending_module" "$MODPATH"; then
+        if ! module_dir_is_empty "$_pending_module"; then
+            MIGRATION_STATE="clean_reinstall_required"
+            MIGRATION_REASON="只有 pending module，没有可确认的 active source"
+            return 1
+        fi
+    fi
+    [ -n "$_old_module" ] || return 0
+
+    [ -f "$_old_module/module.prop" ] \
+        && [ "$(sed -n 's/^id=//p' "$_old_module/module.prop" 2>/dev/null | head -n 1 | tr -d ' \n\r\t')" = "$BASEBAND_MODULE_ID" ] \
+        && [ ! -e "$_old_module/disable" ] && [ ! -e "$_old_module/remove" ] \
+        && [ ! -e "$_old_module/skip_mount" ] || {
+        MIGRATION_STATE="clean_reinstall_required"
+        MIGRATION_REASON="旧模块不是可直接升级的 enabled ordinary module"
+        return 1
+    }
+    if baseband_migration_receipt_check "$_old_module"; then
+        MIGRATION_STATE="verified_overlay"
+        return 0
+    fi
+
+    MIGRATION_STATE="clean_reinstall_required"
+    [ -n "$MIGRATION_REASON" ] || MIGRATION_REASON="旧模块迁移状态无法确认"
+    return 1
+}
 
 detect_root_impl() {
-    if [ "${APATCH:-}" = "true" ] || [ -n "${APATCH_VER_CODE:-}" ] || [ -d /data/adb/ap ]; then
+    if [ "${APATCH:-}" = "true" ] || [ -n "${APATCH_VER_CODE:-}" ] || [ -d "$ADB_ROOT/ap" ]; then
         echo "APatch"
-    elif [ "${KSU:-}" = "true" ] || [ -n "${KSU_VER_CODE:-}" ] || [ -d /data/adb/ksu ]; then
+    elif [ "${KSU:-}" = "true" ] || [ -n "${KSU_VER_CODE:-}" ] || [ -d "$ADB_ROOT/ksu" ]; then
         echo "KernelSU"
-    elif [ -n "${MAGISK_VER_CODE:-}" ] || [ -n "${MAGISK_VER:-}" ] || [ -d /data/adb/magisk ]; then
+    elif [ -n "${MAGISK_VER_CODE:-}" ] || [ -n "${MAGISK_VER:-}" ] || [ -d "$ADB_ROOT/magisk" ]; then
         echo "Magisk"
     else
         echo "Unknown"
     fi
 }
 
-# ── Volume Key Functions ──
-TMPDIR=${TMPDIR:-/dev/tmp}
-mkdir -p "$TMPDIR" 2>/dev/null || {
-    ui_print "  ✗ 无法创建安装临时目录"
-    exit 1
-}
-EVENT_FILE="$TMPDIR/pixel9pro_control_events.$$"
-trap 'rm -f "$EVENT_FILE" 2>/dev/null' EXIT
-trap 'rm -f "$EVENT_FILE" 2>/dev/null; exit 130' INT
-trap 'rm -f "$EVENT_FILE" 2>/dev/null; exit 143' TERM
-
-_flush_keys() { timeout 1 getevent -qlc 1 >/dev/null 2>&1; }
-
-chooseport() {
-    _flush_keys
-    # A bounded wait prevents headless/APatch installs from hanging forever.
-    # Timeout is treated as confirmation of the currently displayed default.
-    if timeout 30 /system/bin/getevent -lc 1 2>&1 \
-        | /system/bin/grep VOLUME | /system/bin/grep " DOWN" > "$EVENT_FILE"; then
-        /system/bin/grep -q VOLUMEUP "$EVENT_FILE" 2>/dev/null && return 0
-        return 1
+load_device_contract
+_contract_rc=$?
+if [ "$_contract_rc" -ne 0 ]; then
+    if [ "$_contract_rc" -eq 2 ]; then
+        installer_fail "不支持的设备: ${device:-unknown}；仅允许 Pixel 9 Pro (caiman) / Pro XL (komodo)" || return 1
     fi
-    ui_print "    （30 秒未检测到音量键，保留当前默认值）"
-    return 1
-}
+    installer_fail "设备适配 manifest 缺失或格式非法" || return 1
+fi
 
-choose_cpu_scheduling() {
-    _sch_step="$1"
-    detect_uperf_module 2>/dev/null || true
-    detect_fas_rs_scheduler 2>/dev/null || true
-    if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
-        # UGT is the reboot-selected daily baseline.  If fas-rs is installed,
-        # game leases temporarily stop UGT and restore the same UGT baseline.
-        installer_write "$SCHED_OWNER_FILE" external
-        installer_write "$SCHED_OWNER_DESIRED_FILE" external
-        if [ "$FAS_RS_MODULE_ENABLED" = "yes" ]; then
-            installer_write "$GAME_HANDOFF_POLICY_FILE" fas_rs
-        else
-            installer_write "$GAME_HANDOFF_POLICY_FILE" off
-        fi
-        installer_write "$GAME_HANDOFF_SOURCE_FILE" default
-        installer_write "$MODPATH/.profile_auto_reason" external_scheduler
-        ui_print "  $_sch_step CPU 调度: 检测到 ${UPERF_MODULE_NAME:-UGT}, 使用 UGT 日常基线"
-        [ "$FAS_RS_MODULE_ENABLED" = "yes" ] \
-            && ui_print "    fas-rs: 命中游戏时临时接管, 退出后恢复 UGT"
-        ui_print ""
-        return
-    fi
-
-    if [ "$FAS_RS_MODULE_ENABLED" = "yes" ]; then
-        installer_write "$GAME_HANDOFF_POLICY_FILE" fas_rs
-    else
-        installer_write "$GAME_HANDOFF_POLICY_FILE" off
-    fi
-    installer_write "$GAME_HANDOFF_SOURCE_FILE" default
-
-    # Without UGT there is no valid daily external baseline. fas-rs, when
-    # present, remains a game-only temporary handoff.
-    ui_print "  $_sch_step CPU 调度:"
-    _SCH_VALS="balanced battery default auto"
-    _SCH_LABEL_balanced="均衡 (本模块, 日常推荐)"
-    _SCH_LABEL_battery="省电 (本模块)"
-    _SCH_LABEL_default="系统默认 (本模块, 恢复内核默认 sched_pixel + 出厂 cpuset/cap)"
-    _SCH_LABEL_auto="自动 (均衡↔省电, 按温度切换)"
-    _sch_idx=0
-    _sch_total=4
-    while true; do
-        _i=0; _sch_cur=""
-        for _v in $_SCH_VALS; do
-            if [ "$_i" -eq "$_sch_idx" ]; then _sch_cur=$_v; break; fi
-            _i=$((_i + 1))
-        done
-        case "$_sch_cur" in
-            balanced) _sch_label="$_SCH_LABEL_balanced" ;;
-            battery) _sch_label="$_SCH_LABEL_battery" ;;
-            default) _sch_label="$_SCH_LABEL_default" ;;
-            auto) _sch_label="$_SCH_LABEL_auto" ;;
-        esac
-        ui_print "    > $_sch_label"
-        if chooseport; then
-            _sch_idx=$(( (_sch_idx + 1) % _sch_total ))
-        else
-            break
-        fi
-    done
-    case "$_sch_cur" in
-        auto)
-            installer_write "$SCHED_OWNER_FILE" pixel
-            installer_write "$SCHED_OWNER_DESIRED_FILE" pixel
-            installer_write "$PROFILE_FILE" balanced
-            installer_write "$PROFILE_MANUAL_FILE" balanced
-            installer_write "$PROFILE_POLICY_FILE" auto
-            installer_write "$MODPATH/.profile_auto_reason" auto_install
-            ;;
-        *)
-            installer_write "$SCHED_OWNER_FILE" pixel
-            installer_write "$SCHED_OWNER_DESIRED_FILE" pixel
-            installer_write "$PROFILE_FILE" "$_sch_cur"
-            installer_write "$PROFILE_MANUAL_FILE" "$_sch_cur"
-            installer_write "$PROFILE_POLICY_FILE" manual
-            installer_write "$MODPATH/.profile_auto_reason" manual_install
-            ;;
-    esac
-    ui_print "    ✓ $_sch_label"
-    ui_print ""
-}
-
-report_optional_module_inventory() {
-    detect_uperf_module 2>/dev/null || true
-    detect_fas_rs_scheduler 2>/dev/null || true
-
-    _baseband_state="未检测到"
-    for _bb_dir in /data/adb/modules/pixel9pro_baseband_trial /data/adb/modules_update/pixel9pro_baseband_trial; do
-        [ -d "$_bb_dir" ] || continue
-        _baseband_state="已检测到"
-        break
-    done
-
-    if [ "$UPERF_DETECTED" = "yes" ]; then
-        _ugt_report="已检测到"
-    else
-        _ugt_report="未检测到"
-    fi
-    if [ "$FAS_RS_DETECTED" = "yes" ]; then
-        _fas_report="已检测到"
-    else
-        _fas_report="未检测到"
-    fi
-
-    ui_print "  可选模块检测（仅报告当前状态）:"
-    ui_print "    UGT: $_ugt_report"
-    ui_print "    fas-rs: $_fas_report"
-    ui_print "    Pixel 9 Pro 基带模块: $_baseband_state"
-    ui_print "    不下载、不推荐或引导安装其他模块"
-    ui_print ""
-}
-
-device=$(getprop ro.product.device 2>/dev/null | tr -d ' \n\r\t')
-[ -n "$device" ] || device=$(getprop ro.build.product 2>/dev/null | tr -d ' \n\r\t')
-[ -n "$device" ] || device=$(getprop ro.product.vendor.device 2>/dev/null | tr -d ' \n\r\t')
 ROOT_IMPL=$(detect_root_impl)
-# 安装横幅版本动态取自 module.prop (发行总版本 SoT), 不硬编码; 组件版本见 versions.prop
-MOD_VER=$(grep '^version=' "$MODPATH/module.prop" 2>/dev/null | cut -d= -f2 | tr -d '\r\n "\\')
-
-ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ui_print "  Pixel 9 Pro 温控调度控制台"
-ui_print "  ${MOD_VER:-(version 见 module.prop)}"
-ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ui_print "  Root: $ROOT_IMPL"
-
 if [ "$ROOT_IMPL" = "Unknown" ]; then
-    ui_print "  ✗ 无法识别 APatch / KernelSU / Magisk 安装环境"
-    exit 1
+    installer_fail "无法识别 APatch / KernelSU / Magisk 安装环境" || return 1
 fi
 
-if [ "$ROOT_IMPL" = "KernelSU" ]; then
-    ui_print "  ⚠ KSU 下需先安装 metamodule"
-    ui_print "    (meta-overlayfs / Hybrid Mount)"
-    ui_print ""
+# A system/ overlay is present in this module. APatch 11224 and KernelSU
+# require an enabled MetaModule to carry it; do not claim a successful install
+# when the active content backend is absent. Magisk keeps its own Magic Mount
+# path and is handled separately below.
+if [ -d "$MODPATH/system" ] && { [ "$ROOT_IMPL" = "APatch" ] || [ "$ROOT_IMPL" = "KernelSU" ]; }; then
+    if ! detect_active_metamodule; then
+        installer_fail "$ROOT_IMPL 需要已启用的 MetaModule（活动 /data/adb/metamodule；metamodule=1）；$METAMODULE_REASON" || return 1
+    fi
+    if [ "$ROOT_IMPL" = "APatch" ] && [ "$METAMODULE_STATE" != "active" ]; then
+        installer_fail "APatch 11224 需要活动 /data/adb/metamodule symlink，不能使用 marker-only 回退" || return 1
+    fi
+    if ! load_runtime_helpers; then
+        installer_fail "$MIGRATION_REASON" || return 1
+    fi
 fi
 
-UECAP_DISABLED=0
-UECAP_DISABLED_REASON=""
-UECAP_EXTERNAL=0
-case "$device" in
-    komodo)
-        ui_print "  机型: Pixel 9 Pro XL (komodo)"
-        if [ -f "$STOCK_XL" ]; then
-            if cp "$STOCK_XL" "$STOCK_ACTIVE" 2>/dev/null; then
-                ui_print "  ✓ Pro XL 温控配置"
-            else
-                ui_print "  ✗ XL 配置复制失败, 已中止安装"
-                exit 1
-            fi
-        else
-            ui_print "  ✗ XL 温控 stock 配置缺失, 已中止安装"
-            exit 1
-        fi
-        # komodo is supported by the device contract, but UECap remains owned
-        # by the device's external/stock path. Keep the runtime script for
-        # read-only status reporting; only remove the embedded caiman payload.
-        UECAP_EXTERNAL=1
-        UECAP_DISABLED_REASON="device_external_stock"
-        installer_write "$DEVICE_FILE" komodo
-        ;;
-    caiman)
-        ui_print "  机型: Pixel 9 Pro (caiman)"
-        ui_print "  ✓ Pro 默认温控配置"
-        installer_write "$DEVICE_FILE" caiman
-        ;;
-    *)
-        ui_print "  ✗ 不支持的设备: ${device:-unknown}"
-        ui_print "    仅允许 Pixel 9 Pro (caiman) / Pro XL (komodo)"
-        exit 1
-        ;;
-esac
+if [ -d "$MODPATH/system" ] && { [ "$ROOT_IMPL" = "APatch" ] || [ "$ROOT_IMPL" = "KernelSU" ]; }; then
+    if ! baseband_migration_check; then
+        installer_fail "$MIGRATION_REASON；请在 Manager 中卸载旧版普通基带模块，重启后再安装新版（不要卸载 APatch Manager）" || return 1
+    fi
+    if ! printf '%s' "$MIGRATION_STATE" > "$MIGRATION_STATE_FILE" 2>/dev/null; then
+        installer_fail "无法写入 MetaModule 迁移状态" || return 1
+    fi
+fi
+
+UECAP_STATUS="由 pixel9pro_control 管理；本模块不携带 UECap payload"
+
+set_perm_recursive "$MODPATH" 0 0 0755 0644
+
 ui_print ""
-
-# Magisk Magic Mount 与 modem cbd 的早期 mmap 存在已验证的启动 race。
-# 只有 caiman 的 managed UECap 覆盖在 Magisk 下需要移除运行脚本；komodo
-# 保留 read-only external runtime，不把设备原生 stock 错报为不支持。
-if [ "$ROOT_IMPL" = "Magisk" ] && [ "$UECAP_EXTERNAL" -eq 0 ]; then
-    UECAP_DISABLED=1
-    UECAP_DISABLED_REASON="magisk_uecap_unavailable"
-fi
-if [ "$UECAP_EXTERNAL" -eq 1 ]; then
-    ui_print "  ✓ Pro XL UECap 使用设备原生 / external stock"
-    rm -f "$MODPATH/system/vendor/firmware/uecapconfig/"* 2>/dev/null \
-        || { ui_print "  ✗ 无法移除不适用于 komodo 的内置 UECap payload"; exit 1; }
-    rmdir "$MODPATH/system/vendor/firmware/uecapconfig" 2>/dev/null || true
-    rmdir "$MODPATH/system/vendor/firmware" 2>/dev/null || true
-    [ -f "$MODPATH/uecap_profile.sh" ] \
-        || { ui_print "  ✗ external UECap runtime script unexpectedly missing"; exit 1; }
-    ui_print "    保留 UECap runtime，仅提供 stock 状态展示，不提供三档写入"
-    ui_print ""
-elif [ "$UECAP_DISABLED" -eq 1 ]; then
-    ui_print "  ⚠ Magisk 下自动停用 caiman UECap 管理"
-    ui_print "    reason: $UECAP_DISABLED_REASON"
-    ui_print "    (规避 Magic Mount × modem cbd 启动 race)"
-    rm -f "$MODPATH/system/vendor/firmware/uecapconfig/"* 2>/dev/null \
-        || { ui_print "  ✗ 无法移除不兼容的 UECap payload"; exit 1; }
-    rmdir "$MODPATH/system/vendor/firmware/uecapconfig" 2>/dev/null || true
-    rmdir "$MODPATH/system/vendor/firmware" 2>/dev/null || true
-    rm -f "$MODPATH/uecap_profile.sh" 2>/dev/null \
-        || { ui_print "  ✗ 无法移除 UECap 运行脚本"; exit 1; }
-    [ ! -e "$MODPATH/uecap_profile.sh" ] \
-        || { ui_print "  ✗ UECap 运行脚本仍存在, 已中止安装"; exit 1; }
-    ui_print ""
-fi
-
-# ── 设置迁移: 从旧模块目录复制用户配置 ──
-_is_upgrade=0
-if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
-    _is_upgrade=1
-    ui_print "  检测到已有配置, 正在迁移..."
-    _migration_failed=0
-    for _sf in .thermal_offset .current_profile .profile_policy .profile_manual .profile_auto_reason .profile_history .nr_screen_switch \
-               .sim2_auto_manage .idle_isolate_mode \
-               .swap_mode .swap_custom .ntp_server .uecap_mode .uecap_manual_mode \
-               .uecap_policy .uecap_reason .sim2_radio_off \
-               .nr_saved_mode .webui_theme \
-               .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .cpu_sched_owner .sched_owner_desired .game_handoff_policy .game_handoff_source \
-               .thermal_history .power_history .power_session; do
-        if [ -f "$OLDDIR/$_sf" ]; then
-            cp "$OLDDIR/$_sf" "$MODPATH/$_sf" 2>/dev/null \
-                && [ -f "$MODPATH/$_sf" ] || _migration_failed=1
-        fi
-    done
-    if [ "$_migration_failed" -ne 0 ]; then
-        ui_print "  ✗ 用户配置迁移不完整, 已中止安装"
-        exit 1
-    fi
-    ui_print "  ✓ 已迁移用户配置"
-    # Retired light/responsive/performance selections migrate to the current
-    # balanced daily baseline. default remains a selectable stock profile.
-    _profile_migrated=0
-    for _mf in "$MODPATH/.current_profile" "$MODPATH/.profile_manual"; do
-        [ -f "$_mf" ] || continue
-        case "$(cat "$_mf" 2>/dev/null | tr -d ' \n\r\t')" in
-            light|responsive|performance)
-                installer_write "$_mf" balanced
-                _profile_migrated=1
-                ;;
-        esac
-    done
-    [ "$_profile_migrated" -eq 1 ] && ui_print "  ✓ 旧性能档已并入均衡 (省电/均衡/系统默认 三档可在 WebUI 选择)"
-    ui_print ""
-fi
-
-# ── 首次安装: 音量键功能选择 ──
-if [ "$_is_upgrade" -eq 0 ]; then
-    report_optional_module_inventory
-    ui_print "  首次安装 — 配置向导"
-    ui_print "  [音量+] = 下一项  [音量-] = 确认"
-    ui_print ""
-
-    # --- 温控阈值: 现行五档 -2 / 0 / +2 / +4 / +6°C ---
-    ui_print "  ① 温控偏移:"
-    _ofs_idx=0
-    _ofs_scan_idx=0
-    _ofs_vals="$THERMAL_ALLOWED_OFFSETS"
-    for _ofs_scan_value in $_ofs_vals; do
-        if [ "$_ofs_scan_value" = "$THERMAL_DEFAULT_OFFSET" ]; then
-            _ofs_idx=$_ofs_scan_idx
-            break
-        fi
-        _ofs_scan_idx=$((_ofs_scan_idx + 1))
-    done
-    set -- $_ofs_vals
-    _ofs_total=$#
-    while true; do
-        _i=0; _ofs_cur=""
-        for _v in $_ofs_vals; do
-            if [ "$_i" -eq "$_ofs_idx" ]; then _ofs_cur=$_v; break; fi
-            _i=$((_i + 1))
-        done
-        case "$_ofs_cur" in
-            -2) _ofs_label="-2°C (提前介入)" ;;
-            0)  _ofs_label="0°C (原厂阈值)" ;;
-            2)  _ofs_label="+2°C (轻度放宽)" ;;
-            4)  _ofs_label="+4°C (日常放宽, 模块默认)" ;;
-            6)  _ofs_label="+6°C (最大放宽)" ;;
-        esac
-        ui_print "    > $_ofs_label"
-        if chooseport; then
-            _ofs_idx=$(( (_ofs_idx + 1) % _ofs_total ))
-        else
-            break
-        fi
-    done
-    installer_write "$OFFSET_FILE" "$_ofs_cur"
-    ui_print "    ✓ $_ofs_label"
-    ui_print ""
-
-    # --- CPU 调度 (外部调度接管 / 本模块均衡·省电 / 自动) ---
-    choose_cpu_scheduling "②"
-
-
-    # --- UECap 网络能力 ---
-    if [ "$UECAP_EXTERNAL" -eq 1 ]; then
-        ui_print "  ③ 网络能力配置: 跳过 (Pixel 9 Pro XL 使用设备原生 UECap)"
-        installer_write "$MODPATH/.uecap_manual_mode" stock
-        installer_write "$MODPATH/.uecap_mode" stock
-        installer_write "$MODPATH/.uecap_policy" external
-        installer_write "$MODPATH/.uecap_reason" device_external_stock
-        ui_print ""
-    elif [ "$UECAP_DISABLED" -eq 1 ]; then
-        ui_print "  ③ 网络能力配置: 跳过 (当前 root 不提供 managed UECap)"
-        installer_write "$MODPATH/.uecap_manual_mode" disabled
-        installer_write "$MODPATH/.uecap_mode" disabled
-        installer_write "$MODPATH/.uecap_policy" disabled
-        installer_write "$MODPATH/.uecap_reason" "$UECAP_DISABLED_REASON"
-        ui_print ""
-    else
-    ui_print "  ③ 网络能力配置:"
-    _UE_VALS=$(sh "$MODPATH/uecap_profile.sh" modes 2>/dev/null) \
-        || { ui_print "  ✗ 无法读取 UECap mode contract"; exit 1; }
-    _ue_default=$(sh "$MODPATH/uecap_profile.sh" default 2>/dev/null) \
-        || { ui_print "  ✗ 无法读取 UECap default contract"; exit 1; }
-    _UE_LABEL_balanced="国内频段 (推荐)"
-    _UE_LABEL_special="全面增强"
-    _UE_LABEL_universal="Google 默认"
-    _ue_idx=0
-    _ue_total=0
-    _ue_scan_idx=0
-    _ue_default_found=0
-    for _ue_scan_value in $_UE_VALS; do
-        if [ "$_ue_scan_value" = "$_ue_default" ]; then
-            _ue_idx=$_ue_scan_idx
-            _ue_default_found=1
-        fi
-        _ue_scan_idx=$((_ue_scan_idx + 1))
-        _ue_total=$((_ue_total + 1))
-    done
-    [ "$_ue_total" -gt 0 ] \
-        || { ui_print "  ✗ UECap mode contract 为空"; exit 1; }
-    [ "$_ue_default_found" -eq 1 ] \
-        || { ui_print "  ✗ UECap default 不在 mode contract 中"; exit 1; }
-    while true; do
-        _i=0; _ue_cur=""
-        for _v in $_UE_VALS; do
-            if [ "$_i" -eq "$_ue_idx" ]; then _ue_cur=$_v; break; fi
-            _i=$((_i + 1))
-        done
-        case "$_ue_cur" in
-            balanced) _ue_label="$_UE_LABEL_balanced" ;;
-            special) _ue_label="$_UE_LABEL_special" ;;
-            universal) _ue_label="$_UE_LABEL_universal" ;;
-        esac
-        ui_print "    > $_ue_label"
-        if chooseport; then
-            _ue_idx=$(( (_ue_idx + 1) % _ue_total ))
-        else
-            break
-        fi
-    done
-    installer_write "$MODPATH/.uecap_manual_mode" "$_ue_cur"
-    installer_write "$MODPATH/.uecap_mode" "$_ue_cur"
-    installer_write "$MODPATH/.uecap_policy" manual
-    ui_print "    ✓ $_ue_label"
-    ui_print ""
-    fi
-
-    # --- NR 息屏降级 ---
-    ui_print "  ④ NR 息屏降级 (息屏自动切 LTE 省电):"
-    ui_print "    [音量+] = 关闭  [音量-] = 开启"
-    if chooseport; then
-        installer_write "$MODPATH/.nr_screen_switch" off
-        ui_print "    ✓ 关闭"
-    else
-        installer_write "$MODPATH/.nr_screen_switch" on
-        ui_print "    ✓ 开启"
-    fi
-    ui_print ""
-
-    # --- NTP ---
-    ui_print "  ⑤ NTP 服务器:"
-    _NTP_VALS=$(ntp_server_hosts)
-    set -- $_NTP_VALS
-    _ntp_idx=0
-    _ntp_total=$#
-    [ "$_ntp_total" -gt 0 ] 2>/dev/null || exit 1
-    while true; do
-        _i=0; _ntp_cur=""
-        for _v in $_NTP_VALS; do
-            if [ "$_i" -eq "$_ntp_idx" ]; then _ntp_cur=$_v; break; fi
-            _i=$((_i + 1))
-        done
-        _ntp_label=$(ntp_server_label "$_ntp_cur")
-        ui_print "    > $_ntp_label"
-        if chooseport; then
-            _ntp_idx=$(( (_ntp_idx + 1) % _ntp_total ))
-        else
-            break
-        fi
-    done
-    installer_write "$MODPATH/.ntp_server" "$_ntp_cur"
-    ui_print "    ✓ $_ntp_label"
-    ui_print ""
-
-    # --- ZRAM / VM 使用共享 contract 的模块默认值 ---
-    installer_write "$MODPATH/.swap_mode" "$VM_MODE_DEFAULT"
-
-else
-    # 升级模式: 确保必要的默认值存在
-    [ -f "$OFFSET_FILE" ] || installer_write "$OFFSET_FILE" "$THERMAL_DEFAULT_OFFSET"
-    [ -f "$PROFILE_FILE" ] || installer_write "$PROFILE_FILE" balanced
-    if [ ! -f "$PROFILE_MANUAL_FILE" ]; then
-        _profile_for_manual=$(cat "$PROFILE_FILE" 2>/dev/null | tr -d ' \n\r\t')
-        case "$_profile_for_manual" in balanced|battery|default) ;;
-            *) _profile_for_manual=balanced ;;
-        esac
-        installer_write "$PROFILE_MANUAL_FILE" "$_profile_for_manual"
-    fi
-    [ -f "$PROFILE_POLICY_FILE" ] || installer_write "$PROFILE_POLICY_FILE" manual
-    if [ ! -f "$SCHED_OWNER_FILE" ]; then
-        detect_uperf_module 2>/dev/null || true
-        if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
-            installer_write "$SCHED_OWNER_FILE" external
-            installer_write "$MODPATH/.profile_auto_reason" external_scheduler
-            ui_print "  新增设置: 检测到 ${UPERF_MODULE_NAME:-UGT}, CPU 日常调度默认交其接管"
-        else
-            installer_write "$SCHED_OWNER_FILE" pixel
-            ui_print "  新增设置: CPU 调度默认本模块 (可在 WebUI 调整)"
-        fi
-    else
-        _sched_owner=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
-        case "$_sched_owner" in
-            pixel|external) ;;
-            *) installer_write "$SCHED_OWNER_FILE" pixel ;;
-        esac
-    fi
-    if [ ! -f "$GAME_HANDOFF_POLICY_FILE" ]; then
-        detect_fas_rs_scheduler 2>/dev/null || true
-        if [ "$FAS_RS_MODULE_ENABLED" = "yes" ]; then
-            installer_write "$GAME_HANDOFF_POLICY_FILE" fas_rs
-        else
-            installer_write "$GAME_HANDOFF_POLICY_FILE" off
-        fi
-    fi
-    [ -f "$MODPATH/.profile_auto_reason" ] || installer_write "$MODPATH/.profile_auto_reason" manual_policy
-    if [ "$UECAP_EXTERNAL" -eq 1 ]; then
-        installer_write "$MODPATH/.uecap_manual_mode" stock
-        installer_write "$MODPATH/.uecap_mode" stock
-        installer_write "$MODPATH/.uecap_policy" external
-        installer_write "$MODPATH/.uecap_reason" device_external_stock
-    elif [ "$UECAP_DISABLED" -eq 0 ]; then
-        _ue_default=$(sh "$MODPATH/uecap_profile.sh" default 2>/dev/null) \
-            || { ui_print "  ✗ 无法读取 UECap default contract"; exit 1; }
-        [ -f "$MODPATH/.uecap_manual_mode" ] || installer_write "$MODPATH/.uecap_manual_mode" "$_ue_default"
-        [ -f "$MODPATH/.uecap_mode" ] || installer_write "$MODPATH/.uecap_mode" "$_ue_default"
-        [ -f "$MODPATH/.uecap_policy" ] || installer_write "$MODPATH/.uecap_policy" manual
-    fi
-    # 不兼容的 root/设备升级时覆盖旧 UECap 状态，避免迁移出不可用档位。
-    if [ "$UECAP_EXTERNAL" -eq 1 ]; then
-        installer_write "$MODPATH/.uecap_manual_mode" stock
-        installer_write "$MODPATH/.uecap_mode" stock
-        installer_write "$MODPATH/.uecap_policy" external
-        installer_write "$MODPATH/.uecap_reason" device_external_stock
-    elif [ "$UECAP_DISABLED" -eq 1 ]; then
-        installer_write "$MODPATH/.uecap_manual_mode" disabled
-        installer_write "$MODPATH/.uecap_mode" disabled
-        installer_write "$MODPATH/.uecap_policy" disabled
-        installer_write "$MODPATH/.uecap_reason" "$UECAP_DISABLED_REASON"
-    else
-        # UECap has no automatic policy. Normalize any retired automatic state so
-        # service/WebUI never need to carry the retired branch.
-        installer_write "$MODPATH/.uecap_policy" manual
-    fi
-    [ -f "$MODPATH/.nr_screen_switch" ] || installer_write "$MODPATH/.nr_screen_switch" "$NR_SCREEN_SWITCH_DEFAULT"
-    [ -f "$MODPATH/.sim2_auto_manage" ] || installer_write "$MODPATH/.sim2_auto_manage" "$SIM2_AUTO_DEFAULT"
-    [ -f "$MODPATH/.idle_isolate_mode" ] || installer_write "$MODPATH/.idle_isolate_mode" "$IDLE_ISOLATE_DEFAULT"
-    [ -f "$MODPATH/.swap_mode" ] || installer_write "$MODPATH/.swap_mode" "$VM_MODE_DEFAULT"
-    if [ ! -f "$MODPATH/.ntp_server" ]; then
-        _ntp_default=$(ntp_server_default) || exit 1
-        installer_write "$MODPATH/.ntp_server" "$_ntp_default"
-    fi
-fi
-
-_offset_raw=$(cat "$OFFSET_FILE" 2>/dev/null | tr -d ' \n\r\t')
-offset=$(thermal_normalize_offset "$_offset_raw" "$THERMAL_DEFAULT_OFFSET")
-installer_write "$OFFSET_FILE" "$offset"
-
-# Split persistent user intent from the effective runtime owner.  For upgrades
-# from v4.4.38 and older, prefer the last explicit WebUI owner action because
-# the legacy arbiter could overwrite .cpu_sched_owner after that action.
-scheduler_owner_init "$MODPATH" "/data/adb/fas_rs"
-if so_migrate_state; then
-    detect_uperf_module 2>/dev/null || true
-    detect_fas_rs_scheduler 2>/dev/null || true
-    _handoff_source=$(so_read_handoff_source)
-    if [ "$_handoff_source" != "user" ]; then
-        _handoff_default=off
-        [ "$FAS_RS_MODULE_ENABLED" = "yes" ] && _handoff_default=fas_rs
-        if ! so_write_handoff_preference "$_handoff_default" default; then
-            ui_print "  ✗ 无法提交游戏接管默认值, 已中止安装"
-            exit 1
-        fi
-    fi
-    if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
-        installer_write "$SCHED_OWNER_DESIRED_FILE" external
-        installer_write "$SCHED_OWNER_FILE" external
-        ui_print "  CPU 启动模式: UGT 日常基线 (重启后验证), 游戏接管: $(so_read_handoff_policy)"
-    else
-        installer_write "$SCHED_OWNER_DESIRED_FILE" pixel
-        installer_write "$SCHED_OWNER_FILE" pixel
-        ui_print "  CPU 启动模式: Pixel (重启后验证), 游戏接管: $(so_read_handoff_policy)"
-    fi
-else
-    if [ ! -f "$SCHED_OWNER_DESIRED_FILE" ]; then
-        _desired_fallback=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
-        case "$_desired_fallback" in pixel|external) ;;
-            *) _desired_fallback=pixel ;;
-        esac
-        installer_write "$SCHED_OWNER_DESIRED_FILE" "$_desired_fallback"
-    fi
-    [ -f "$GAME_HANDOFF_POLICY_FILE" ] || installer_write "$GAME_HANDOFF_POLICY_FILE" off
-    [ -f "$GAME_HANDOFF_SOURCE_FILE" ] || installer_write "$GAME_HANDOFF_SOURCE_FILE" legacy
-    ui_print "  ⚠ CPU 调度状态迁移失败, 已使用安全兼容值"
-fi
-
-# 从当前机型 stock 基线生成配置; 失败时同步回退文件与状态。
-if ! thermal_generate_config "$STOCK_ACTIVE" "$OUT_JSON" "$offset"; then
-    if ! cp "$STOCK_ACTIVE" "$OUT_JSON" 2>/dev/null; then
-        ui_print "  ✗ 温控配置生成失败, 已中止安装"
-        exit 1
-    fi
-    offset=0
-    installer_write "$OFFSET_FILE" 0
-    ui_print "  ⚠ 温控配置生成失败, 已回退到出厂阈值"
-fi
-
-ui_print "  温控偏移: $(thermal_format_offset "$offset")"
+ui_print "  ▸ Pixel 9 Pro / XL 基带配置模块"
 ui_print ""
-ui_print "  安装完成, 重启生效"
-ui_print "  WebUI: http://127.0.0.1:6210"
-ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+ui_print "  Root ............... $ROOT_IMPL"
+ui_print "  Device ............. $DEVICE_LABEL ($device)"
+ui_print "  VoLTE .............. 启用"
+ui_print "  Wi-Fi Calling ...... 启用"
+ui_print "  CarrierSettings .... 全球运营商配置"
+ui_print "  China MCFG ......... 移动/联通/电信/广电"
+ui_print "  UECap .............. $UECAP_STATUS"
+if [ "$ROOT_IMPL" = "APatch" ] || [ "$ROOT_IMPL" = "KernelSU" ]; then
+    ui_print "  MetaModule ......... $ACTIVE_METAMODULE ($METAMODULE_STATE)"
+fi
+ui_print ""
+ui_print "  ✓ $device 不携带 UECap，避免与 pixel9pro_control 冲突"
+if [ "$ROOT_IMPL" = "Magisk" ]; then
+    ui_print "  ✓ Magisk 下保留 CarrierSettings / MCFG / IMS props"
+fi
+ui_print "  ✓ system/ overlay 将由当前 root 框架的挂载后端处理"
+ui_print "  ✓ 重启后由 post-mount/service 复读实际生效路径"
+ui_print ""

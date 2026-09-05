@@ -1,0 +1,3 @@
+# device|label|uecap_policy|target_name|source_dir|mode_order|default_mode
+caiman|Pixel 9 Pro|managed|PLATFORM_9055801516233416490.binarypb|system/vendor/firmware/uecapconfig|balanced,special,universal|balanced
+komodo|Pixel 9 Pro XL|external|PLATFORM_6287228797510365516.binarypb|||disabled

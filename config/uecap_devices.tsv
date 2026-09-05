@@ -1,6 +1,0 @@
-# device|label|uecap_policy|target_name|source_dir|mode_order|default_mode
-# UECap assets are device-scoped.  Only caiman currently has independently
-# audited managed profiles; komodo remains external/stock until same-build
-# stock and all managed profiles have been audited.
-caiman|Pixel 9 Pro|managed|PLATFORM_9055801516233416490.binarypb|system/vendor/firmware/uecapconfig|balanced,special,universal|balanced
-komodo|Pixel 9 Pro XL|external|PLATFORM_6287228797510365516.binarypb|||disabled

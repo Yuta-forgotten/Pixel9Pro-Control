@@ -1,0 +1,23 @@
+2026-04-24 device validation for pixel9pro_control_v4.3.11
+
+1. Package push
+- /sdcard/Download/pixel9pro_control_v4.3.11.zip
+- SHA-256: 92A642521357F90FC65324176D6E282181F227F46207BB5998E78A79143F4B30
+
+2. Install method
+- command: /data/adb/ap/bin/apd module install /sdcard/Download/pixel9pro_control_v4.3.11.zip
+- installer result: success
+- installer notice: reboot required
+
+3. Post-reboot validation
+- /cgi-bin/info.sh:
+  {"model":"Pixel 9 Pro","version":"17","version_code":"46","module_version":"v4.3.11","httpd_rss_kb":184,"webui_token":"abfc1842ad74ae0ff1016ea8858e6b15","baseband_installed":true,"baseband_version":"v1.0.1"}
+- /index.html contains:
+  <script src="/app.js?v=4.3.11"></script>
+- device app.js contains:
+  { id: 'balanced', name: '国内优选', desc: 'trial_minimal_cn_combo · stock +25 组中国组合' },
+
+4. Result
+- v4.3.11 files are active on device
+- WebUI version cache-busting is active
+- baseband module remains detected as v1.0.1
