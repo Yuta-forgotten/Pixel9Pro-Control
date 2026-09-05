@@ -718,6 +718,14 @@ button{border:none;background:none;padding:0;color:inherit}
   font-size:13px;
   line-height:19px;
 }
+.swap-zram-request{margin-top:12px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface-2)}
+.swap-zram-request summary{min-height:44px;padding:12px 14px;cursor:pointer;font-weight:650;display:flex;align-items:center}
+.swap-zram-size-form{padding:0 14px 14px}
+.swap-zram-size-row{display:flex;align-items:center;gap:8px;margin-top:8px}
+.swap-zram-size-row input{flex:1;min-width:0;min-height:40px;padding:0 10px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-variant-numeric:tabular-nums}
+.swap-zram-size-row span{font-size:12px;color:var(--text-2)}
+.swap-zram-size-row .tiny-btn{min-height:40px;white-space:nowrap}
+.field-help{margin-top:7px;font-size:12px;line-height:17px;color:var(--text-2)}
 
 .swap-tune-form{
   display:flex;

@@ -7,6 +7,9 @@
 VM_ZRAM_ALGO="lz77eh"
 VM_ZRAM_SIZE_BYTES="11945377792"
 VM_ZRAM_SIZE_PROPERTY="persist.vendor.zram_swap_size_v2"
+VM_ZRAM_SIZE_MIN_BYTES=1073741824
+VM_ZRAM_SIZE_MAX_BYTES=17179869184
+VM_ZRAM_SIZE_STEP_BYTES=268435456
 
 VM_OPT_SWAPPINESS=100
 VM_OPT_MIN_FREE_KBYTES=131072
@@ -143,14 +146,15 @@ vm_contract_json() {
         "$VM_MIN_FREE_KBYTES_MIN" "$VM_MIN_FREE_KBYTES_MAX" \
         "$VM_WATERMARK_SCALE_MIN" "$VM_WATERMARK_SCALE_MAX" \
         "$VM_VFS_CACHE_PRESSURE_MIN" "$VM_VFS_CACHE_PRESSURE_MAX"
-    printf '"zram_target":{"algorithm":"%s","size_bytes":%s,"property":"%s","policy":"mmd_owned_on_supported_builds"}' "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES" "$VM_ZRAM_SIZE_PROPERTY"
+    printf '"zram_target":{"algorithm":"%s","size_bytes":%s,"property":"%s","policy":"mmd_owned_on_supported_builds"},' "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES" "$VM_ZRAM_SIZE_PROPERTY"
+    printf '"zram_size_limits":{"min_bytes":%s,"max_bytes":%s,"step_bytes":%s}' "$VM_ZRAM_SIZE_MIN_BYTES" "$VM_ZRAM_SIZE_MAX_BYTES" "$VM_ZRAM_SIZE_STEP_BYTES"
 }
 
 vm_zram_size_is_valid() {
     case "$1" in
         ''|*[!0-9%]*) return 1 ;;
         *%) _vm_pct=${1%%%}; [ -n "$_vm_pct" ] && [ "$_vm_pct" -ge 10 ] 2>/dev/null && [ "$_vm_pct" -le 100 ] 2>/dev/null ;;
-        *) [ "$1" -ge 1073741824 ] 2>/dev/null && [ "$1" -le 17179869184 ] 2>/dev/null ;;
+        *) [ "$1" -ge "$VM_ZRAM_SIZE_MIN_BYTES" ] 2>/dev/null && [ "$1" -le "$VM_ZRAM_SIZE_MAX_BYTES" ] 2>/dev/null ;;
     esac
 }
 

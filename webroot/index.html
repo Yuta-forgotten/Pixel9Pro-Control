@@ -618,7 +618,7 @@
     </div>
     <div class="modal-sheet-body">
         <div class="swap-tune-note">下方四个 VM 参数支持真实即时写入、权威复读和失败回滚，并以 custom 模式随下次开机恢复。ZRAM 容量可通过系统持久属性请求在下次重启由 mmd 应用；当前运行态不会被在线 reset。</div>
-        <div class="swap-zram-size-form"><label for="swap-zram-size-number">ZRAM 容量请求（bytes 或百分比）</label><input id="swap-zram-size-number" type="text" inputmode="numeric" value="11945377792"><button class="tiny-btn" id="swap-zram-size-apply-btn" type="button">重启后应用</button></div>
+        <details class="swap-zram-request"><summary>ZRAM 容量（重启后应用）</summary><div class="swap-zram-size-form"><label for="swap-zram-size-number">容量请求</label><div class="swap-zram-size-row"><input id="swap-zram-size-number" type="number" inputmode="numeric" placeholder="读取中…" aria-describedby="swap-zram-size-help"><span>bytes</span><button class="tiny-btn" id="swap-zram-size-apply-btn" type="button">保存请求</button></div><div id="swap-zram-size-help" class="field-help">范围和当前请求由后端 contract 提供；保存后仅写入系统属性，重启后由 mmd 应用。</div></div></details>
       <div class="swap-tune-form">
         <label class="swap-field" for="swap-input-swappiness">
           <span class="swap-field-head"><span>swappiness</span><b id="swap-value-swappiness">100</b></span>

@@ -147,6 +147,7 @@ assert(swapCgi.includes('. "$VM_PROFILE_LIB"') && app.includes('data.zram_target
 assert(swapCgi.includes('zram_active') && swapCgi.includes('zram_owner') && app.includes('zram_target_supported'), 'ZRAM UI must consume authoritative runtime/owner fields');
 assert(swapCgi.includes('VM_ZRAM_SIZE_PROPERTY') && swapCgi.includes('pending_reboot') && swapCgi.includes('setprop'), 'ZRAM size request must use the mmd persistent property and reboot boundary');
 assert(app.includes('applyZramSizeRequest') && html.includes('swap-zram-size-apply-btn'), 'ZRAM size request UI must call the backend contract');
+assert(html.includes('swap-zram-request') && html.includes('swap-zram-size-help') && html.includes('type="number"') && app.includes('min_bytes'), 'ZRAM size input must use an accessible bounded disclosure control');
 assert(cpuProfile.includes('. "$CPU_PROFILE_LIB"') && ownerArbiter.includes('. "$MODDIR/scripts/cpu_profile_lib.sh"'), 'CPU apply and owner verification must share one profile contract');
 assert(cpuProfile.includes('apply_profile_l2') && cpuProfile.includes('verify_profile_runtime'), 'CPU and L2 must be one verified profile transaction');
 assert(!service.includes('cpu_profile.sh" enforce') && !service.includes('POWER_PROFILE_FILE'), 'service must not retain the legacy 15-second L2 writer or .power_profile SoT');

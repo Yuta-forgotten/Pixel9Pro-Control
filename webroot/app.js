@@ -168,6 +168,7 @@ function bindStaticEvents() {
   $('swap-tune-close-btn').addEventListener('click', appFeatures.memory.closeSwapTuneModal);
   $('swap-tune-close-x').addEventListener('click', appFeatures.memory.closeSwapTuneModal);
   $('swap-custom-apply-btn').addEventListener('click', appFeatures.memory.applySwapCustom);
+  $('swap-zram-size-apply-btn').addEventListener('click', appFeatures.memory.applyZramSizeRequest);
   $('swap-preset-optimized').addEventListener('click', () => appFeatures.memory.setSwapTuneValues(appFeatures.memory.getSwapData()?.optimized));
   $('swap-preset-stock').addEventListener('click', () => appFeatures.memory.setSwapTuneValues(appFeatures.memory.getSwapData()?.stock));
   SWAP_KEYS.forEach((key) => {

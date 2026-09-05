@@ -189,6 +189,14 @@ async function refreshSwap() {
     const data = await apiFetch(API.swap, { timeoutMs: 6000 });
     state.swapMode = data.mode || 'custom';
     state.swapData = data;
+    if (refs.swapZramSizeNumber) {
+      const limits = data.zram_size_limits || {};
+      refs.swapZramSizeNumber.min = String(limits.min_bytes || '');
+      refs.swapZramSizeNumber.max = String(limits.max_bytes || '');
+      refs.swapZramSizeNumber.step = String(limits.step_bytes || '');
+      const requested = Number(data.zram_target_current_bytes);
+      if (Number.isFinite(requested) && requested > 0) refs.swapZramSizeNumber.value = String(requested);
+    }
     SWAP_KEYS.forEach((key) => {
       const limit = data.limits?.[key];
       if (!limit) return;
@@ -637,6 +645,12 @@ async function applySwapCustom() {
 async function applyZramSizeRequest() {
   const value = String(refs.swapZramSizeNumber?.value || '').trim();
   if (!value) { showToast('请输入 ZRAM 容量 bytes 或百分比'); return; }
+  const bytes = Number(value);
+  if (!Number.isInteger(bytes) || bytes < 1073741824 || bytes > 17179869184) {
+    showToast('容量必须在 1–16 GiB 范围内');
+    refs.swapZramSizeNumber?.focus();
+    return;
+  }
   try {
     const data = await apiFetch(API.swap, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'zram_size', size_bytes: value }), timeoutMs: 8000 });
     showToast(data.message || 'ZRAM 容量将在重启后由 mmd 应用');
