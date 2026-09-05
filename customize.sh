@@ -114,12 +114,15 @@ _flush_keys() { timeout 1 getevent -qlc 1 >/dev/null 2>&1; }
 
 chooseport() {
     _flush_keys
-    while true; do
-        /system/bin/getevent -lc 1 2>&1 | /system/bin/grep VOLUME | /system/bin/grep " DOWN" > "$EVENT_FILE"
-        if /system/bin/grep -q VOLUME "$EVENT_FILE" 2>/dev/null; then
-            /system/bin/grep -q VOLUMEUP "$EVENT_FILE" 2>/dev/null && return 0 || return 1
-        fi
-    done
+    # A bounded wait prevents headless/APatch installs from hanging forever.
+    # Timeout is treated as confirmation of the currently displayed default.
+    if timeout 30 /system/bin/getevent -lc 1 2>&1 \
+        | /system/bin/grep VOLUME | /system/bin/grep " DOWN" > "$EVENT_FILE"; then
+        /system/bin/grep -q VOLUMEUP "$EVENT_FILE" 2>/dev/null && return 0
+        return 1
+    fi
+    ui_print "    （30 秒未检测到音量键，保留当前默认值）"
+    return 1
 }
 
 choose_cpu_scheduling() {
