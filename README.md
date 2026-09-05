@@ -231,6 +231,10 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 
 ## 免责声明
 
+### 2026-09-05 实机验证边界
+
+在 `caiman / CP41.260814.003.B1 / APatch` 上，VM/ZRAM、NTP、NR 息屏策略、thermal burst、standby idle isolate 和 CPU profile 已完成真实的“修改→权威复读→恢复”验证。温控在线切换已改为在 Thermal HAL 阈值复读一致时才报告 `restarted=true`，否则报告 `pending_reboot`；该修复需安装包含提交 `93eac97` 的版本后再做最终复读。UECap 当前处于 `pre_modem`，只完成 receipt/状态读取，未强制执行 modem reload；SIM2 未在无法建立 slot 回滚基线时执行关闭。实机证据不外推到其它 build、SKU 或 root 实现。
+
 本模块通过修改温控阈值、CPU 调度参数、ZRAM 配置和系统设置来改变设备行为。**使用本模块可能带来以下风险**：
 
 - **过热风险**：提高温控节流阈值会延迟系统降温介入
