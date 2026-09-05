@@ -36,6 +36,11 @@ if [ ! -r "$CPU_PROFILE_LIB" ] || ! . "$CPU_PROFILE_LIB"; then
     echo "cpu_profile: missing CPU profile contract" >&2
     exit 2
 fi
+# Host/fixture runs may not provide Android's log binary; logging must never
+# turn an otherwise verified parameter transaction into a false failure.
+if ! command -v log >/dev/null 2>&1; then
+    log() { :; }
+fi
 
 CPU0="${CPU_PROFILE_CPU0_ROOT:-/sys/devices/system/cpu/cpu0/cpufreq}"
 CPU4="${CPU_PROFILE_CPU4_ROOT:-/sys/devices/system/cpu/cpu4/cpufreq}"

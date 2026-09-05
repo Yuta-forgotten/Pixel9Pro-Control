@@ -17,8 +17,15 @@ CPU7="$TEST_ROOT/cpu7"
 CPUSET="$TEST_ROOT/cpuset"
 VENDOR="$TEST_ROOT/vendor_sched"
 CAP="$TEST_ROOT/uclamp_cap"
+MOCK_BIN="$TEST_ROOT/bin"
 mkdir -p "$MOD/scripts" "$CPU0/sched_pixel" "$CPU4/sched_pixel" "$CPU7/sched_pixel" \
     "$CPUSET/top-app" "$CPUSET/foreground" "$CPUSET/background" "$CPUSET/system-background" "$VENDOR" || exit 2
+mkdir -p "$MOCK_BIN" || exit 2
+cat > "$MOCK_BIN/log" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$MOCK_BIN" || exit 2
 cp "$SOURCE_ROOT/scripts/cpu_profile.sh" "$MOD/scripts/" || exit 2
 cp "$SOURCE_ROOT/scripts/cpu_profile_lib.sh" "$MOD/scripts/" || exit 2
 printf 'pixel\n' > "$MOD/.cpu_sched_owner"
@@ -42,7 +49,7 @@ run_profile() {
     CPU_PROFILE_UCLAMP_PATH="$CAP" \
     CPU_PROFILE_FAIL_ONCE_PATH="${CPU_PROFILE_FAIL_ONCE_PATH:-}" \
     CPU_PROFILE_FAIL_ONCE_MARKER="${CPU_PROFILE_FAIL_ONCE_MARKER:-}" \
-    sh "$MOD/scripts/cpu_profile.sh" "$1" "$MOD" "${2:-}" 2>/dev/null
+    PATH="$MOCK_BIN:$PATH" sh "$MOD/scripts/cpu_profile.sh" "$1" "$MOD" "${2:-}" 2>/dev/null
 }
 
 runtime_signature() {
