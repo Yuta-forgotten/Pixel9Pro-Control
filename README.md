@@ -240,3 +240,5 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 **用户应在充分理解上述风险的前提下自行决定是否安装和使用本模块。作者不对因使用本模块造成的任何直接或间接损害承担责任。**
 
 - **Pixel**、**Android**、**Tensor**、**Material Design** 是 Google LLC 的商标。本项目与 Google LLC 无任何关联。
+
+源码仓库保留 `tests/` 用于 contract、failure injection 和 WebUI 回归；`ADB/` 是本地 TestLab fixture 镜像，不是发布内容。正式安装 ZIP 由固定构建器排除 `tests/`、`ADB/`、`docs/`、Node 依赖和开发配置。日常温控修改可先运行 `npm run test:thermal`，涉及设备行为时再追加设备 TestLab，正式发布仍须执行完整 source gate、确定性构建和 ZIP 审计。

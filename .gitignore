@@ -37,6 +37,9 @@ release-assets/
 # Nested repo copy (accidental, should not exist)
 Pixel9Pro-Control/
 
+# Device/TestLab fixture mirror; never source or release content
+ADB/
+
 # Python
 __pycache__/
 *.pyc

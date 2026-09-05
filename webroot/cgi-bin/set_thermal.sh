@@ -58,6 +58,24 @@ ensure_thermal_service_running() {
     return 1
 }
 
+parse_thermal_offset() {
+    # Accept one unambiguous JSON object only.  The CGI contract intentionally
+    # does not depend on jq/python being present on the device.
+    printf '%s\n' "$1" | awk '
+        BEGIN { value = "" }
+        /^[[:space:]]*\{[[:space:]]*"offset"[[:space:]]*:[[:space:]]*-?[0-9]+[[:space:]]*\}[[:space:]]*$/ {
+            line = $0
+            sub(/^[[:space:]]*\{[[:space:]]*"offset"[[:space:]]*:[[:space:]]*/, "", line)
+            sub(/[[:space:]]*\}[[:space:]]*$/, "", line)
+            value = line
+        }
+        END {
+            if (value != "") print value
+            else exit 1
+        }
+    '
+}
+
 rollback_thermal_change() {
     THERMAL_ROLLBACK_RESULT="incomplete"
     _rollback_config_ok=0
@@ -85,7 +103,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     read_json_body 512
     body="$JSON_BODY"
-    offset=$(printf '%s' "$body" | sed 's/.*"offset"[[:space:]]*:[[:space:]]*\(-\{0,1\}[0-9]*\).*/\1/')
+    offset=$(parse_thermal_offset "$body") || \
+        json_error '400 Bad Request' 'invalid JSON body; expected {"offset":-2|0|2|4|6}'
 
     thermal_is_valid_offset "$offset" \
         || json_error '400 Bad Request' "invalid offset: $offset"
