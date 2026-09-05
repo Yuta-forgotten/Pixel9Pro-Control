@@ -112,6 +112,8 @@ assert(thermalCgi.includes('parse_thermal_offset'), 'thermal CGI must strictly p
 assert(!thermalCgi.includes('sed \'s/.*"offset"'), 'thermal CGI must not use greedy offset extraction');
 assert(thermalCgi.includes('vendor.thermal.config') && thermalCgi.includes('thermal_info_config_lpm.json'), 'thermal CGI must follow the HAL-selected config');
 assert(customize.includes('vendor.thermal.config') && customize.includes('不支持的 Thermal HAL 配置'), 'installer must fail closed for unknown HAL config');
+assert(customize.includes('LPM 是顶层增量配置') || customize.includes('LPM is a top-level overlay'), 'installer must preserve LPM include semantics');
+assert(thermalCgi.includes('LPM includes the base config'), 'thermal CGI must mutate the included base config for LPM');
 assert(!thermalCgi.includes('awk -v off='), 'thermal CGI must not duplicate the thermal transformer');
 assert(customize.includes('. "$MODPATH/scripts/thermal_profile.sh"'), 'installer must use the shared thermal library');
 assert(customize.includes('_ofs_vals="$THERMAL_ALLOWED_OFFSETS"') && customize.includes('"$_ofs_scan_value" = "$THERMAL_DEFAULT_OFFSET"'), 'installer must consume the shared thermal order and default');

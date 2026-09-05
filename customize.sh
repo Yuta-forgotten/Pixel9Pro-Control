@@ -26,9 +26,9 @@ case "$THERMAL_CONFIG_NAME" in
     thermal_info_config.json)
         ;;
     thermal_info_config_lpm.json)
-        STOCK_ACTIVE="/vendor/etc/$THERMAL_CONFIG_NAME"
-        OUT_JSON="$MODPATH/system/vendor/etc/$THERMAL_CONFIG_NAME"
-        [ -r "$STOCK_ACTIVE" ] || {
+        # LPM is a top-level overlay that includes thermal_info_config.json;
+        # target sensors live in the included base file, not in this delta.
+        [ -r "/vendor/etc/$THERMAL_CONFIG_NAME" ] || {
             ui_print "  ✗ 当前 Thermal HAL 配置缺失: $THERMAL_CONFIG_NAME"
             exit 1
         }

@@ -56,8 +56,10 @@ case "$THERMAL_CONFIG_NAME" in
     thermal_info_config.json)
         ;;
     thermal_info_config_lpm.json)
-        STOCK_JSON="/vendor/etc/$THERMAL_CONFIG_NAME"
-        OUT_JSON="$MODDIR/system/vendor/etc/$THERMAL_CONFIG_NAME"
+        # LPM includes the base config; mutate the included base file that
+        # contains the target sensors, while preserving the LPM delta.
+        [ -r "/vendor/etc/$THERMAL_CONFIG_NAME" ] || \
+            json_error '500 Internal Server Error' "selected Thermal HAL config not found: $THERMAL_CONFIG_NAME"
         ;;
     *)
         json_error '500 Internal Server Error' "unsupported Thermal HAL config: $THERMAL_CONFIG_NAME"
