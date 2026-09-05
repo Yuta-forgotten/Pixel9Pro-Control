@@ -47,6 +47,23 @@ thermal_service_log() {
     "$_thermal_bin" "$@"
 }
 
+# Follow the same top-level config selection as the Thermal HAL.  On LPM
+# devices the stock baseline is the read-only vendor file, while the overlay
+# output must use the exact same filename.
+THERMAL_CONFIG_NAME=$(thermal_service_getprop vendor.thermal.config 2>/dev/null)
+[ -n "$THERMAL_CONFIG_NAME" ] || THERMAL_CONFIG_NAME=thermal_info_config.json
+case "$THERMAL_CONFIG_NAME" in
+    thermal_info_config.json)
+        ;;
+    thermal_info_config_lpm.json)
+        STOCK_JSON="/vendor/etc/$THERMAL_CONFIG_NAME"
+        OUT_JSON="$MODDIR/system/vendor/etc/$THERMAL_CONFIG_NAME"
+        ;;
+    *)
+        json_error '500 Internal Server Error' "unsupported Thermal HAL config: $THERMAL_CONFIG_NAME"
+        ;;
+esac
+
 ensure_thermal_service_running() {
     _thermal_service="$1"
     for _thermal_attempt in 1 2; do

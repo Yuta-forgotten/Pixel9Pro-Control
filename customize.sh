@@ -17,6 +17,28 @@ DEVICE_FILE="$MODPATH/.device_variant"
 
 OLDDIR="/data/adb/modules/pixel9pro_control"
 
+# Thermal HAL may select an LPM-specific top-level config at runtime.  The
+# selected filename is authoritative; never generate a sibling file that HAL
+# will ignore.  LPM stock is read-only from the current device vendor tree.
+THERMAL_CONFIG_NAME=$(getprop vendor.thermal.config 2>/dev/null)
+[ -n "$THERMAL_CONFIG_NAME" ] || THERMAL_CONFIG_NAME=thermal_info_config.json
+case "$THERMAL_CONFIG_NAME" in
+    thermal_info_config.json)
+        ;;
+    thermal_info_config_lpm.json)
+        STOCK_ACTIVE="/vendor/etc/$THERMAL_CONFIG_NAME"
+        OUT_JSON="$MODPATH/system/vendor/etc/$THERMAL_CONFIG_NAME"
+        [ -r "$STOCK_ACTIVE" ] || {
+            ui_print "  ✗ 当前 Thermal HAL 配置缺失: $THERMAL_CONFIG_NAME"
+            exit 1
+        }
+        ;;
+    *)
+        ui_print "  ✗ 不支持的 Thermal HAL 配置: $THERMAL_CONFIG_NAME"
+        exit 1
+        ;;
+esac
+
 if [ ! -r "$MODPATH/scripts/scheduler_detect_lib.sh" ] \
     || ! . "$MODPATH/scripts/scheduler_detect_lib.sh"; then
     ui_print "  ✗ 缺少外部调度检测配置, 已中止安装"
