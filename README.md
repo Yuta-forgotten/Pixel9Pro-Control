@@ -6,7 +6,6 @@
 
 - Version: `v4.5.07`
 - versionCode: `112`
-- Package filename: `pixel9pro_control_v4.5.07.zip`；已作为独立 GitHub Release `v4.5.07` 发布。此前功能等价候选已在 caiman/APatch 完成安装、重启和运行态复核；当前发布 ZIP 已完成源码、确定性构建和 ZIP 结构审计，但尚未重新安装。当前 ZIP 的体积、SHA256 和 source fingerprint 统一记录在根级审查文档与日志索引中，不在模块 README 内自引用，避免源码 fingerprint 与 ZIP digest 形成循环漂移
 - Module id: `pixel9pro_control`
 - WebUI: `http://127.0.0.1:6210`
 
@@ -14,7 +13,7 @@
 
 | 设备 | 代号 | 状态 |
 |------|------|------|
-| Pixel 9 Pro | caiman | 当前 active 为此前功能等价的 `v4.5.07/112` 候选；APatch 安装、重启、UECap bind/receipt 与 NR_SA n41 电话注册已复核；GitHub Release `v4.5.07` 发布 ZIP 尚未重新安装 |
+| Pixel 9 Pro | caiman | APatch 安装、重启、UECap bind/receipt 与 NR_SA n41 电话注册已复核 |
 | Pixel 9 Pro XL | komodo | 温控分支已适配；UECap 由系统/外部路径保持 stock，Control 不写入 XL payload；未完成 XL 实机闭环 |
 
 安装时自动检测机型，刷入对应的温控配置。CarrierSettings、APN、China MCFG 和 IMS properties 由独立的 `pixel9pro_baseband_trial` 模块按 `caiman/komodo` manifest 管理；Control 不把独立基带模块重新打包进自身。
@@ -43,7 +42,6 @@ WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电�
 - CPU、cpuset、uclamp cap 与 vendor_sched L2 同属一个 profile 事务；省电 L2 为 `150/80`，均衡/性能为 `200/100`，系统默认恢复 `1024/308`
 - Auto、owner、WebUI profile/handoff 共用同一 transition lock；拿锁后复读 boot mode、desired/effective owner、policy 与当前 profile，旧决策只返回 no-op
 - 周期性 owner/auto 决策遇到锁占用立即跳过并在下一周期重新计算；WebUI 写请求只做短时有界等待，避免旧前台/温度决策排队后补写
-- 自动写入最多 3 次且受 30 秒 deadline 约束，随后发布最终成功/失败；profile/owner terminal 主状态提交失败时写独立 fallback，同一失败 terminal key 不再重复拿锁，显式用户操作可重置后重试
 - 独立 300 秒 health 只读调度节点；先检查 transition lock，再对控制面和 profile 做前后快照。切换中或状态变化时不改持久 health 文件，由 compact GET 动态返回 deferred；fas-rs 临时接管可记录稳定 deferred；首次稳定 mismatch 最多触发一次有界 repair
 
 当实际 `.cpu_sched_owner=external` 时，本模块跳过 Pixel profile/auto 写入；该状态可能是 UGT 日常 baseline，也可能是 fas-rs 游戏 lease，必须结合 `.owner_state` 判断。永久从 UGT 回到 Pixel 仍需先 staging/禁用 UGT 并重启；游戏临时 lease 只在本次 boot 内恢复原 baseline。温控、ZRAM、NR/SIM2、UECap 与 WebUI 始终由本模块负责。
@@ -136,13 +134,6 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 
 **可选模块按需显示**：WebUI 仅在检测到 UGT 时显示启动模式切换，仅在检测到 fas-rs 时显示游戏 handoff / arbiter 控制；独立调度健康状态始终可见，不依赖任一可选模块。`pixel9pro_baseband_trial` 未安装、已禁用或待移除时，基带配置卡完全隐藏。首次安装只报告 UGT、fas-rs 与本项目基带模块是否已检测到，不提供下载、推荐或第三方安装引导。单独残留的 `/data/adb/fas_rs` 状态目录不再被当成 fas-rs 已安装。
 
-**profile API 响应边界**：profile/policy/owner/handoff 写请求只返回本次已复读并提交的 compact 状态；compact GET 同步返回 boot、health 与 profile retry terminal 状态，不触发完整外部模块发现。完整发现放到后台读取；落后于显式 mutation 的旧响应直接丢弃，期间若有更新的 compact auto 状态则在 full discovery 后重新叠加，避免“实际已成功但前端超时”或旧状态覆盖新操作。
-
-**owner arbiter**：`scripts/owner_arbiter.sh` 在 verified Pixel/UGT baseline 上启动。Pixel idle 允许 fas-rs resident process 存在；UGT idle 要求一个 root UGT 且无 fas-rs lease。命中游戏时，Pixel baseline 按 `cpufreq restore → cap=1024 → ensure resident → publish lease` 接管；UGT baseline 先保存 cap、停止并复读 UGT，再恢复 cpufreq、设 cap=1024、启动 fas-rs 并记录精确 PID/start_ticks。退出 lease 时 Pixel 恢复 profile 并保留 resident；UGT 停止精确 lease PID、恢复 pre-lease cap，再仅调用 `libuperf.sh -> uperf_start()` 恢复单实例。失败路径必须恢复原 baseline；若 UGT 恢复失败，则保留可验证的 fas-rs lease而不能发布假成功。所有决策拿共享锁后复读 boot mode、desired/effective owner 和 handoff policy；同一 transition key 最多 3 次/30 秒。
-
-**owner arbiter cpufreq 恢复边界**：低频残留恢复只在 `FAS_LEASED_GAME` / `EXIT_HOLD` 且 ThermalHAL CPU cooling 未激活时尝试。恢复时从 `scaling_available_governors` 保留空格匹配 `sched_pixel` 或 `schedutil`，再按“打开 `scaling_max_freq` 到 `cpuinfo_max_freq` → 切 governor → 再写 max → 等待 `ARB_CPUFREQ_RESTORE_SETTLE_S`（默认 2 秒）→ 复读验证”的顺序执行；首次复读失败只做一轮 guarded retry，并在日志中同时记录 `first_after` 与 `retry_after`。如果仍失败，状态会保持 `cpufreq_restore_failed=yes`，这代表存在 PowerHAL / Scene object / cpufreq QoS 等外层写入者或平台限制，不能用循环抢写 sysfs 当作修复。
-
-**owner arbiter worker**：`service.sh` 在 scheduler boot state=`success/pixel|ugt` 时启动独立 owner worker。屏幕交互态以 `cmd deviceidle get screen` 为主真值；AOD 的 `mWakefulness=Dozing` / `mScreenState=DOZE` 必须归为非交互态，DRM `enabled` 只表示 encoder 仍连接，绝不能单独证明亮屏。非交互或状态未知时 owner 在 scheduler detection、状态迁移、前台 `dumpsys` 和任何调度写入前退出。亮屏默认每 5 秒观察一次；稳定 baseline、重复 disabled 状态和失败 terminal 都不重放参数、不改 `.arbiter_state`、不追加 history。独立 scheduler health 每 300 秒只读控制面；有效 fas-rs lease 在 Pixel/UGT 两种 baseline 下都只发布 deferred，不触发 baseline repair。
 
 ### NTP 服务器选择
 
@@ -150,40 +141,26 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 
 ### WebUI 控制台
 
-端口 6210，`http://127.0.0.1:6210`（仅绑定 127.0.0.1 回环）。采用 Material 3 设计：四个一级标签页、贴边底部导航、四向安全区，支持深色 / 浅色 / 跟随系统及可换主题色。
+端口 6210，`http://127.0.0.1:6210`（仅绑定 127.0.0.1 回环）。采用 Material 3 。
 
-**信息架构（四标签）**
-
-- **状态**：当前模式、机身温度、内存与系统、CPU 实时频率、设备信息、操作记录
-- **性能温控**：调度接管 / 手动·自动、CPU 实时频率与参数、性能模式卡、温度详情、温控阈值档位
-- **网络**：UECap 三档、基带模块状态、NR 息屏降级、SIM2 空槽管理
-- **系统**：ZRAM/VM、后台应用限制、待机隔离、后台 worker 摘要、NTP、主题与配色
 
 **应用与 UID 识别目录**
 
 - `config/app_identities.tsv` 是功耗排行和后台应用限制共用的唯一名称资料源，记录 Android 特殊 UID、系统分项、常用包名、中文名称、类别和限制风险级别。
-- 功耗排行优先使用当前 PackageManager 的 UID→包名关系，再用目录补充易读名称；`UID -5` 会识别为“网络共享 / 热点”，未知负 UID 会标成 Android 特殊统计 UID，不再误报成已卸载 App。
-- 后台限制只把目录中标记为 `normal` / `caution` 且本机已安装的包显示为候选；系统组件只用于识别，不进入候选列表。`caution` 项会提示可能影响通知、VPN、穿戴同步或持续连接。
-- 目录是只读 TSV 数据，后端使用字段白名单解析，绝不作为 shell 脚本 `source` / `eval`；新增常用 App 时只需增加一行，不需要修改 `energy.sh` 或 `app.js`。
+- 功耗排行优先使用当前 PackageManager 的 UID→包名关系，再用目录补充易读名称；`UID -5` 会识别为“网络共享 / 热点”，未知负 UID 标成 Android 特殊统计 UID。
+- 目录是只读 TSV 数据，后端使用字段白名单解析，不作为 shell 脚本 `source` / `eval`；新增常用 App 时只需增加一行，不需要修改 `energy.sh` 或 `app.js`。
 
-**主题与配色（调色盘）**
 
-系统页「主题与配色」卡集成显示模式开关与主题色板：
-
-- 显示模式：跟随系统 / 浅色 / 深色
-- 预设主题色：青绿（默认）/ 天青 / 雾蓝 / 暮紫 / 樱粉 / 暖橙 / 苔绿，并支持自定义十六进制颜色
-- 取色采用 Material 3 Expressive 风格的 tonal 派生：由一个种子色推导 primary / secondary / tertiary 三类强调色与中性表面轻染；强调色、选中态、状态 chips、徽章、整页背景与各级卡片表面均随主题联动；警告（琥珀）、危险（红）、温度色阶等语义色保持固定以确保可辨识
-- 配色仅影响 WebUI 显示，不改变温控、调度或系统参数；选择持久保存，明暗切换自动重新派生
 
 **其它**
 
 - 温度历史窗口：10 分钟 / 30 分钟 / 2.5h / 12h；前端对长窗口做抽稀绘制，保留峰值/低值趋势，降低 canvas 绘制压力
 - 功耗详情区分「当前放电会话 / 今日累计 / 15-30-60 分钟短窗口 / batterystats 窗口」；顶部主题色指标卡突出会话、充放电状态和今日放电，蜂窝功耗同时显示 ODPM 硬件实测与系统估算（系统 `mobile_radio` 仅作失真参考），并可手动导出 15/30/60 分钟或本次窗口的功耗与温度历史到 `/sdcard/Download`
-- 安全：启动时轮换随机 token、`info.sh` 不下发 token、写操作需 `X-PIXEL9PRO-TOKEN` 头、CSP `script-src 'self'`、写操作强制 JSON + CORS preflight；token 可经 `cat .../.webui_token` 或本机 loopback `auth.sh` 静默配对
+
 
 ## 安装
 
-1. 对外安装只使用 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中明确发布且 SHA256 校验一致的 ZIP；Control 当前独立 Release 为 `v4.5.07`；该发布 ZIP 已完成源码/结构审计但尚未重新安装，设备运行证据仍归属于此前功能等价候选；`v4.5.03` 与本地 `v4.5.04` 含 B110 错误合同，禁止安装；需要回滚时使用已验证的 `v4.4.41`
+1. 温控模块使用 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中发布；基带模块 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases#release-v1.1.0-rc3)
 2. KernelSU 用户需先安装 metamodule（如 `meta-overlayfs`）并重启
 3. APatch / KernelSU / Magisk → 模块 → 从存储安装
 4. **首次安装**：音量键交互向导，依次配置温控偏移、CPU 调度（检测到启用中的 UGT 时默认交其接管；否则四选一：均衡／省电／系统默认／自动）、UECap 档位（仅 APatch/KSU）、NR 降级、NTP
@@ -194,8 +171,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 ## 兼容性
 
 - `Pixel 9 Pro (caiman)` / `Pixel 9 Pro XL (komodo)`
-- 当前源码版本：`v4.5.07/112`；已作为独立 GitHub Release 发布，当前发布 ZIP 已完成本地确定性构建和结构审计但尚未重新安装，设备运行证据仍归属于此前功能等价候选
-- `Android 17 QPR1 Beta 1 (SDK 37)` 当前验证基线
+- `Android 17 QPR2 Beta  (SDK 37)` 当前验证基线
 - `APatch 0.10+` 实机验证
 - `KernelSU 0.9+` 代码兼容（需 metamodule，未完成真机闭环）
 - `Magisk v27+` 代码兼容（未完成真机闭环）
@@ -233,7 +209,6 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 
 ### 2026-09-05 实机验证边界
 
-在 `caiman / CP41.260814.003.B1 / APatch` 上，VM/ZRAM、NTP、NR 息屏策略、thermal burst、standby idle isolate 和 CPU profile 已完成真实的“修改→权威复读→恢复”验证。温控在线切换已改为在 Thermal HAL 阈值复读一致时才报告 `restarted=true`，否则报告 `pending_reboot`；该修复需安装包含提交 `93eac97` 的版本后再做最终复读。UECap 当前处于 `pre_modem`，只完成 receipt/状态读取，未强制执行 modem reload；SIM2 未在无法建立 slot 回滚基线时执行关闭。实机证据不外推到其它 build、SKU 或 root 实现。
 
 本模块通过修改温控阈值、CPU 调度参数、ZRAM 配置和系统设置来改变设备行为。**使用本模块可能带来以下风险**：
 
@@ -245,4 +220,3 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 
 - **Pixel**、**Android**、**Tensor**、**Material Design** 是 Google LLC 的商标。本项目与 Google LLC 无任何关联。
 
-源码仓库保留 `tests/` 用于 contract、failure injection 和 WebUI 回归；`ADB/` 是本地 TestLab fixture 镜像，不是发布内容。正式安装 ZIP 由固定构建器排除 `tests/`、`ADB/`、`docs/`、Node 依赖和开发配置。日常温控修改可先运行 `npm run test:thermal`，涉及设备行为时再追加设备 TestLab，正式发布仍须执行完整 source gate、确定性构建和 ZIP 审计。
