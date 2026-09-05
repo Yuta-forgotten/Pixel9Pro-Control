@@ -116,6 +116,8 @@ assert(customize.includes('LPM 是顶层增量配置') || customize.includes('LP
 assert(thermalCgi.includes('LPM includes the base config'), 'thermal CGI must mutate the included base config for LPM');
 assert(customize.includes('timeout 30') && customize.includes('保留当前默认值'), 'installer volume prompts must have a bounded timeout');
 assert(thermalCgi.includes('thermal_hal_effective_matches') && thermalCgi.includes('pending_reboot'), 'thermal CGI must distinguish service restart from HAL effective state');
+const info = fs.readFileSync(path.join(root, 'webroot', 'cgi-bin', 'info.sh'), 'utf8');
+assert(info.includes('baseband_status_json') && info.includes('runtime_verified'), 'info CGI must derive baseband summary from authoritative status JSON');
 assert(!thermalCgi.includes('awk -v off='), 'thermal CGI must not duplicate the thermal transformer');
 assert(customize.includes('. "$MODPATH/scripts/thermal_profile.sh"'), 'installer must use the shared thermal library');
 assert(customize.includes('_ofs_vals="$THERMAL_ALLOWED_OFFSETS"') && customize.includes('"$_ofs_scan_value" = "$THERMAL_DEFAULT_OFFSET"'), 'installer must consume the shared thermal order and default');

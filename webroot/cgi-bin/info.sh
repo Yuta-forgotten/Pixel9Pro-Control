@@ -52,6 +52,11 @@ else
     baseband_version=""
 fi
 baseband_status_json=$(baseband_status_emit_json)
+# Command substitution runs in a subshell, so use the emitted authoritative
+# object for the summary field instead of relying on the helper's global state.
+baseband_runtime_verified=$(printf '%s' "$baseband_status_json" \
+    | sed -n 's/.*"runtime_verified":\(true\|false\).*/\1/p' | head -n 1)
+[ "$baseband_runtime_verified" = true ] || baseband_runtime_verified=false
 
 # 组件版本 (versions.prop, 组件级版本 SoT; 缺失时为空)
 versions_file="$moddir/versions.prop"
