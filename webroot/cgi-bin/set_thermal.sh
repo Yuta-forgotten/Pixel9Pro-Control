@@ -77,6 +77,21 @@ ensure_thermal_service_running() {
     return 1
 }
 
+thermal_hal_effective_matches() {
+    _thermal_expected=$(awk -v target="VIRTUAL-SKIN" '
+        /"Name"/ { n=$0; sub(/.*"Name": *"/, "", n); sub(/".*/, "", n) }
+        n==target && /"HotThreshold"/ { line=$0; sub(/^[^[]*\[/, "", line); sub(/\].*$/, "", line); gsub(/[ "]/, "", line); print line; exit }
+    ' "$OUT_JSON" 2>/dev/null)
+    [ -n "$_thermal_expected" ] || return 1
+    _thermal_actual=$(dumpsys thermalservice 2>/dev/null | awk '
+        /TemperatureThreshold.*mName=VIRTUAL-SKIN,/ { print; exit }
+    ' | sed 's/.*mHotThrottlingThresholds=\[//; s/\].*//; s/ //g')
+    [ -n "$_thermal_actual" ] || return 1
+    # Compare the complete seven-slot list after normalizing NaN spelling.
+    _thermal_expected=$(printf '%s' "$_thermal_expected" | sed 's/NAN/NaN/g')
+    [ "$_thermal_actual" = "$_thermal_expected" ]
+}
+
 parse_thermal_offset() {
     # Accept one unambiguous JSON object only.  The CGI contract intentionally
     # does not depend on jq/python being present on the device.
@@ -163,8 +178,17 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         if thermal_service_stop "$svc" 2>/dev/null; then
             sleep 1
             if ensure_thermal_service_running "$svc"; then
-                restarted=true
-                thermal_service_log -t pixel9pro_ctrl "Thermal service restarted: $svc (offset=${offset}C)"
+                if thermal_hal_effective_matches; then
+                    restarted=true
+                    thermal_service_log -t pixel9pro_ctrl "Thermal service restarted and config verified: $svc (offset=${offset}C)"
+                else
+                    thermal_service_log -t pixel9pro_ctrl "Thermal service restarted but config is pending reboot: $svc (offset=${offset}C)"
+                    json_headers
+                    printf '{"ok":true,"offset":%s,"restarted":false,"reboot_required":true,"effective_state":"pending_reboot","thermal_contract":' "$offset"
+                    thermal_print_ui_contract_json
+                    printf '}\n'
+                    exit 0
+                fi
             else
                 thermal_service_log -t pixel9pro_ctrl "ERROR: thermal service did not return to running: $svc"
                 _thermal_rollback_ok=0
