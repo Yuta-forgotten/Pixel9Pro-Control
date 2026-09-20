@@ -21,10 +21,10 @@
 ## 构建证据
 
 - 候选 ZIP：`pixel9pro_control_v4.6.00-rc1.zip`
-- SHA-256：`e0ecf1385d5ab7a352988cf75921964df795fcf9ef8ee5d9b91062d2e0154fa9`
-- source fingerprint：`d091b410b7bc95ec93ef677668d483c213dcaec67f9738b3b9055f4be8f1fc5c`
+- SHA-256：`73c4c3734cb8efd5bfaa85965e4aa92772ade500b5b75391651546b2663957d0`
+- source fingerprint：`e4361221848a92e82fe8eb00e021e588b965c8974f12229f7cfbabaaa7683fa5`
 - entries：77
-- uncompressed bytes：3506763
+- uncompressed bytes：3507059
 - 双次构建：一致
 - payload devices：`caiman, komodo`
 - 预激活 UECap target：0

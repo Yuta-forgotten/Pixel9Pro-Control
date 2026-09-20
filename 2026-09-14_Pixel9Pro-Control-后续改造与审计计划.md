@@ -675,7 +675,7 @@ ZIP 需要满足：
 - 本计划文档：已按用户修订并实施。
 - 模块源码：C1-C9 核心改造已完成。
 - 新代码 commit：已按功能阶段创建中文 Conventional Commit 链。
-- 新 ZIP：`E:\Pixel ADB\builds\releases\pixel9pro_control_v4.6.00-rc1.zip`，SHA-256 `e0ecf1385d5ab7a352988cf75921964df795fcf9ef8ee5d9b91062d2e0154fa9`。
+- 新 ZIP：`E:\Pixel ADB\builds\releases\pixel9pro_control_v4.6.00-rc1.zip`，SHA-256 `73c4c3734cb8efd5bfaa85965e4aa92772ade500b5b75391651546b2663957d0`。
 - 回滚 ZIP：`E:\Pixel ADB\builds\releases\pixel9pro_control_v4.5.09_rollback.zip`，SHA-256 `6a0342204990356dc97b23567aeb5b2ffeca5580c2e81d91ebf4de2ab2ea7adb`。
 - PRO XL 实机安装：未执行。
 - PRO XL runtime：未验证。
