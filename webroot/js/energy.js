@@ -618,7 +618,7 @@ function renderEnergyDetail(input, options = {}) {
     technical.appendChild(disclosure('system', '系统耗电估算', d._has_full_system ? `${text(d.drain)} mAh · ${systemCacheAge}` : '正在加载', systemBody));
 
     const exportBody = el('div', 'energy-disclosure-body');
-    exportBody.appendChild(el('p', 'energy-export-note', '将指定窗口的功耗与温度原始 CSV 保存到 /sdcard/Download；“本次窗口”从打开当前页面时开始。'));
+  exportBody.appendChild(el('p', 'energy-export-note', '将报告、机器可读摘要、功耗/温度原始采样和 Top 归因保存为原子导出目录；“本次窗口”从打开当前页面时开始。'));
     const exportWrap = el('div', 'energy-export-actions');
     [15, 30, 60].forEach((min) => {
       const btn = el('button', 'tiny-btn', `保存 ${min} 分钟`);
@@ -631,7 +631,7 @@ function renderEnergyDetail(input, options = {}) {
     sessionBtn.addEventListener('click', () => exportHistoryWindow('session', sessionBtn));
     exportWrap.appendChild(sessionBtn);
     exportBody.appendChild(exportWrap);
-    technical.appendChild(disclosure('export', '历史与导出', '导出 15/30/60 分钟或本次窗口 CSV', exportBody));
+  technical.appendChild(disclosure('export', '历史与导出', '导出报告、JSON、CSV 与文件 hash', exportBody));
     root.appendChild(technical);
 
     if (existingRoot?.classList.contains('energy-overview')) reconcileStableDom(existingRoot, root);
@@ -780,4 +780,3 @@ registerFeature('energy', {
   scheduleSystem: scheduleEnergySystemRefresh
 });
 })();
-

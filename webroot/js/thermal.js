@@ -702,8 +702,9 @@ async function exportHistoryWindow(scope, button) {
       timeoutMs: 10000
     });
     if (data && data.ok) {
-      showToast(`已保存到 ${data.path}`, 4200);
-      appendLog(`历史数据已保存: ${data.path}`, 'ok');
+      const fileNames = Array.isArray(data.files) ? data.files.map((file) => file.name).join('、') : '导出文件';
+      showToast(`已保存 ${data.power_samples || 0} 个功耗点 / ${data.thermal_samples || 0} 个温度点`, 4200);
+      appendLog(`功耗导出已保存: ${data.directory} · ${fileNames} · quality=${data.quality || 'unknown'}`, 'ok');
     } else {
       showToast(`保存失败：${data?.error || '未知错误'}`);
     }

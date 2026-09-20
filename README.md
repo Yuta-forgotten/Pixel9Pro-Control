@@ -182,7 +182,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 **其它**
 
 - 温度历史窗口：10 分钟 / 30 分钟 / 2.5h / 12h；前端对长窗口做抽稀绘制，保留峰值/低值趋势，降低 canvas 绘制压力
-- 功耗详情区分「当前放电会话 / 今日累计 / 15-30-60 分钟短窗口 / batterystats 窗口」；顶部主题色指标卡突出会话、充放电状态和今日放电，蜂窝功耗同时显示 ODPM 硬件实测与系统估算（系统 `mobile_radio` 仅作失真参考），并可手动导出 15/30/60 分钟或本次窗口的功耗与温度历史到 `/sdcard/Download`
+- 功耗详情区分「当前放电会话 / 今日累计 / 15-30-60 分钟短窗口 / batterystats 窗口」；蜂窝功耗同时显示 ODPM rail delta 与系统估算（`mobile_radio` 仅作失真参考）。手动导出会在 `/sdcard/Download` 原子生成独立目录，包含 `report.md`、`summary.json`、`power.csv`、`thermal.csv`、`attribution.csv` 及每个文件的 SHA-256；归因只包含系统分项和 Top 10，不导出完整安装包列表。
 
 
 ## 安装
