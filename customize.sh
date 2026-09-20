@@ -696,6 +696,20 @@ else
     installer_write "$OFFSET_FILE" 0
 fi
 
+if [ "$UECAP_BACKEND" = hybrid_mount ]; then
+    if [ "$THERMAL_POLICY" = custom ] && [ -f "$OUT_JSON" ]; then
+        slot_stage_file thermal "$OUT_JSON" \
+            system/vendor/etc/thermal_info_config.json staged "$device" \
+            "$(getprop ro.build.fingerprint 2>/dev/null)" vendor_configs_file \
+            || { ui_print "  ✗ 无法提交 Hybrid thermal pending slot"; abort; }
+    else
+        slot_stage_file thermal "$OUT_JSON" \
+            system/vendor/etc/thermal_info_config.json remove "$device" \
+            "$(getprop ro.build.fingerprint 2>/dev/null)" vendor_configs_file \
+            || { ui_print "  ✗ 无法提交 Hybrid thermal remove slot"; abort; }
+    fi
+fi
+
 ui_print "  温控偏移: $(thermal_format_offset "$offset")"
 ui_print ""
 ui_print "  安装完成, 重启生效"
