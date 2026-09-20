@@ -14,6 +14,10 @@ release_review/
 modules/*/dist/
 release-assets/
 
+# Local evidence, clean-source snapshots and device/build scratch; never ship
+# these private artifacts in the public module repository.
+work/
+
 # Runtime state belongs to the installed module, never the source tree
 /.arbiter_*
 /.bg_*
