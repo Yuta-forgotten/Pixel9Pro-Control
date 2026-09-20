@@ -152,6 +152,43 @@ record_webui_httpd_pid() {
     return 1
 }
 
+start_webui_httpd() {
+    _webui_bb=""
+    for _webui_candidate in /data/adb/ap/bin/busybox \
+                /data/adb/ksu/bin/busybox \
+                /data/adb/magisk/busybox \
+                /sbin/busybox; do
+        [ -x "$_webui_candidate" ] && _webui_bb="$_webui_candidate" && break
+    done
+    if [ -z "$_webui_bb" ]; then
+        _webui_candidate=$(command -v busybox 2>/dev/null)
+        [ -x "$_webui_candidate" ] && _webui_bb="$_webui_candidate"
+    fi
+    [ -n "$_webui_bb" ] || {
+        log -t pixel9pro_ctrl "ERROR[$ROOT_IMPL]: busybox not found; WebUI unavailable"
+        return 1
+    }
+    chmod 755 "$MODDIR/webroot/cgi-bin/"* 2>/dev/null || true
+    stop_webui_httpd
+    for _webui_attempt in 1 2 3; do
+        if "$_webui_bb" nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
+            log -t pixel9pro_ctrl "WebUI port $PORT already in use; preserving existing listener"
+            return 0
+        fi
+        "$_webui_bb" httpd -p "127.0.0.1:$PORT" -h "$MODDIR/webroot" >/dev/null 2>&1 || true
+        for _webui_probe in 1 2 3 4 5; do
+            if record_webui_httpd_pid; then
+                log -t pixel9pro_ctrl "WebUI(loopback)[$ROOT_IMPL]: http://127.0.0.1:$PORT pid=$(cat "$HTTPD_PID_FILE" 2>/dev/null)"
+                return 0
+            fi
+            sleep 1
+        done
+        stop_webui_httpd
+    done
+    log -t pixel9pro_ctrl "ERROR[$ROOT_IMPL]: WebUI httpd failed after bounded retries"
+    return 1
+}
+
 read_onoff_file() {
     runtime_read_onoff "$1" "$2"
 }
@@ -587,6 +624,11 @@ export PIXEL9PRO_WEBUI_PORT="$PORT"
 export PIXEL9PRO_WEBUI_TOKEN_FILE="$TOKEN_FILE"
 export PIXEL9PRO_THERMAL_CACHE="$THERMAL_CACHE"
 export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
+
+# Start the control plane before optional radio/scheduler/VM work.  Those
+# operations may be slow or unavailable during early boot; they must not make
+# the local WebUI disappear.
+start_webui_httpd || true
 
 # ──────────────────────────────────────────────────────────
 # 2. 系统设置优化 (保 5G 分支)
@@ -1603,37 +1645,3 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
     done
 ) &
 log -t pixel9pro_ctrl "Unified background worker started (Doze-friendly)"
-
-# ──────────────────────────────────────────────────────────
-# 5. 启动 HTTP 控制台
-# ──────────────────────────────────────────────────────────
-BB=""
-for _bb in /data/adb/ap/bin/busybox \
-            /data/adb/ksu/bin/busybox \
-            /data/adb/magisk/busybox \
-            /sbin/busybox; do
-    [ -x "$_bb" ] && BB="$_bb" && break
-done
-
-if [ -z "$BB" ]; then
-    _bb=$(command -v busybox 2>/dev/null)
-    [ -n "$_bb" ] && [ -x "$_bb" ] && BB="$_bb"
-fi
-
-if [ -n "$BB" ]; then
-    chmod 755 "$MODDIR/webroot/cgi-bin/"* 2>/dev/null
-    stop_webui_httpd
-    sleep 1
-    if "$BB" nc -z 127.0.0.1 $PORT 2>/dev/null; then
-        log -t pixel9pro_ctrl "WARNING: port $PORT already in use"
-    else
-        if "$BB" httpd -p "127.0.0.1:$PORT" -h "$MODDIR/webroot" \
-            && record_webui_httpd_pid; then
-            log -t pixel9pro_ctrl "WebUI(loopback)[$ROOT_IMPL]: http://127.0.0.1:$PORT"
-        else
-            log -t pixel9pro_ctrl "ERROR[$ROOT_IMPL]: WebUI httpd failed to start or publish its PID"
-        fi
-    fi
-else
-    log -t pixel9pro_ctrl "WARNING[$ROOT_IMPL]: busybox not found"
-fi

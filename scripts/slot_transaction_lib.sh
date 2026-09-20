@@ -126,6 +126,10 @@ slot_promote_pending() {
     _slot_mode=$(sed -n 's/^mode=//p' "$_slot_manifest" | head -n 1)
     _slot_hash=$(sed -n 's/^hash=//p' "$_slot_manifest" | head -n 1)
     _slot_context=$(sed -n 's/^context=//p' "$_slot_manifest" | head -n 1)
+    case "$_slot_context" in
+        vendor_configs_file) _slot_context=u:object_r:vendor_configs_file:s0 ;;
+        vendor_fw_file) _slot_context=u:object_r:vendor_fw_file:s0 ;;
+    esac
     mkdir -p "${_slot_target%/*}" || return 1
     if [ "$_slot_mode" = remove ]; then
         rm -f "$_slot_target" || return 1
@@ -135,7 +139,11 @@ slot_promote_pending() {
         cp -f "$_slot_dir/payload" "$_slot_tmp" || return 1
         chmod 0644 "$_slot_tmp" || return 1
         if [ -n "$_slot_context" ] && [ "$_slot_context" != none ]; then
-            chcon "$_slot_context" "$_slot_tmp" 2>/dev/null || true
+            chcon "$_slot_context" "$_slot_tmp" 2>/dev/null || return 1
+            [ "$(ls -Zd "$_slot_tmp" 2>/dev/null | awk '{print $1}')" = "$_slot_context" ] || {
+                rm -f "$_slot_tmp"
+                return 1
+            }
         fi
         [ "$(slot_hash "$_slot_tmp")" = "$_slot_hash" ] || { rm -f "$_slot_tmp"; return 1; }
         mv -f "$_slot_tmp" "$_slot_target" || return 1

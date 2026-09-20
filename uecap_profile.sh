@@ -822,7 +822,7 @@ uecap_capture_radio_snapshot() {
     fi
 
     _uecap_radio_dump="$MODDIR/.uecap_telephony.$$"
-    dumpsys telephony.registry > "$_uecap_radio_dump" 2>/dev/null || {
+    timeout 5 dumpsys telephony.registry > "$_uecap_radio_dump" 2>/dev/null || {
         rm -f "$_uecap_radio_dump" 2>/dev/null
         return 1
     }

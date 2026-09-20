@@ -43,6 +43,24 @@ audit_log_prepare() {
     [ ! -d "$AUDIT_LOG_FILE" ] || return 1
     [ -e "$AUDIT_LOG_FILE" ] || : > "$AUDIT_LOG_FILE" 2>/dev/null || return 1
     chmod 600 "$AUDIT_LOG_FILE" 2>/dev/null || return 1
+    audit_log_day_roll
+}
+
+audit_log_day_roll() {
+    _al_today=$(date '+%Y-%m-%d' 2>/dev/null || printf unknown)
+    _al_day_file="$AUDIT_LOG_DIR/.events_day"
+    _al_previous=$(cat "$_al_day_file" 2>/dev/null | tr -d ' \r\n\t')
+    if [ -n "$_al_previous" ] && [ "$_al_previous" != "$_al_today" ] && [ -s "$AUDIT_LOG_FILE" ]; then
+        mv "$AUDIT_LOG_FILE" "$AUDIT_LOG_DIR/events-$_al_previous.log" 2>/dev/null || return 1
+        : > "$AUDIT_LOG_FILE" 2>/dev/null || return 1
+        chmod 600 "$AUDIT_LOG_FILE" "$AUDIT_LOG_DIR/events-$_al_previous.log" 2>/dev/null || true
+    fi
+    printf '%s' "$_al_today" > "$_al_day_file" 2>/dev/null || return 1
+    chmod 600 "$_al_day_file" 2>/dev/null || true
+    for _al_daily in "$AUDIT_LOG_DIR"/events-*.log; do
+        [ -f "$_al_daily" ] || continue
+        find "$AUDIT_LOG_DIR" -name "${_al_daily##*/}" -mtime +3 -type f -exec rm -f {} \; 2>/dev/null || true
+    done
 }
 
 audit_log_rotate() {
@@ -93,4 +111,15 @@ audit_log_event() {
         "$_al_phase" "$_al_operation" "$_al_result" "$_al_reason" "$_al_duration" \
         >> "$AUDIT_LOG_FILE" 2>/dev/null || return 1
     chmod 600 "$AUDIT_LOG_FILE" 2>/dev/null
+}
+
+audit_log_clear() {
+    audit_log_prepare || return 1
+    : > "$AUDIT_LOG_FILE" 2>/dev/null || return 1
+    chmod 600 "$AUDIT_LOG_FILE" 2>/dev/null || return 1
+    for _al_rotated in "$AUDIT_LOG_FILE".* "$AUDIT_LOG_DIR"/events-*.log; do
+        [ -f "$_al_rotated" ] || continue
+        rm -f "$_al_rotated" 2>/dev/null || return 1
+    done
+    audit_log_event audit clear success AUDIT_LOG_CLEARED 0
 }
