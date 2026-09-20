@@ -116,6 +116,8 @@ assert(customize.includes('LPM 是顶层增量配置') || customize.includes('LP
 assert(thermalCgi.includes('LPM includes the base config'), 'thermal CGI must mutate the included base config for LPM');
 assert(customize.includes('timeout 30') && customize.includes('保留当前默认值'), 'installer volume prompts must have a bounded timeout');
 assert(thermalCgi.includes('thermal_hal_effective_matches') && thermalCgi.includes('pending_reboot'), 'thermal CGI must distinguish service restart from HAL effective state');
+assert(app.includes('thermalContractRetryAttempts') && app.includes('thermalContractRetryTimer'), 'thermal UI must retry a transient contract read without a permanent blank card list');
+assert(!app.includes('state.contract = null;'), 'thermal UI must not erase a previously valid contract on a transient read failure');
 const info = fs.readFileSync(path.join(root, 'webroot', 'cgi-bin', 'info.sh'), 'utf8');
 assert(info.includes('baseband_status_json') && info.includes('runtime_verified'), 'info CGI must derive baseband summary from authoritative status JSON');
 assert(!thermalCgi.includes('awk -v off='), 'thermal CGI must not duplicate the thermal transformer');
