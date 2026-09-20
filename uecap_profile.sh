@@ -18,10 +18,12 @@ UECAP_TARGET_OVERRIDE="${PIXEL9PRO_UECAP_TARGET:-}"
 UECAP_SPECIAL_OVERRIDE="${PIXEL9PRO_UECAP_SPECIAL:-}"
 UECAP_BALANCED_OVERRIDE="${PIXEL9PRO_UECAP_BALANCED:-}"
 UECAP_UNIVERSAL_OVERRIDE="${PIXEL9PRO_UECAP_UNIVERSAL:-}"
+UECAP_CANDIDATE_OVERRIDE="${PIXEL9PRO_UECAP_CANDIDATE:-}"
 UECAP_TARGET="${UECAP_TARGET_OVERRIDE:-/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.binarypb}"
-UECAP_SPECIAL="${UECAP_SPECIAL_OVERRIDE:-$MODDIR/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.special.binarypb}"
-UECAP_BALANCED="${UECAP_BALANCED_OVERRIDE:-$MODDIR/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.balanced.binarypb}"
-UECAP_UNIVERSAL="${UECAP_UNIVERSAL_OVERRIDE:-$MODDIR/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.universal.binarypb}"
+UECAP_SPECIAL="${UECAP_SPECIAL_OVERRIDE:-$MODDIR/payloads/uecap/caiman/PLATFORM_9055801516233416490.special.binarypb}"
+UECAP_BALANCED="${UECAP_BALANCED_OVERRIDE:-$MODDIR/payloads/uecap/caiman/PLATFORM_9055801516233416490.balanced.binarypb}"
+UECAP_UNIVERSAL="${UECAP_UNIVERSAL_OVERRIDE:-$MODDIR/payloads/uecap/caiman/PLATFORM_9055801516233416490.universal.binarypb}"
+UECAP_CANDIDATE="${UECAP_CANDIDATE_OVERRIDE:-$MODDIR/payloads/uecap/komodo/PLATFORM_6287228797510365516.candidate.binarypb}"
 UECAP_MODE_ORDER="balanced special universal"
 UECAP_DEFAULT_MODE="balanced"
 UECAP_RELOAD_DISPATCHED=false
@@ -29,6 +31,7 @@ UECAP_RELOAD_RESULT="not_run"
 UECAP_APPLY_RESULT="idle"
 UECAP_STATE_ROLLBACK_RESULT="not_needed"
 UECAP_DEVICE_CONTRACT="${PIXEL9PRO_UECAP_CONTRACT:-$MODDIR/config/uecap_devices.tsv}"
+UECAP_PAYLOAD_CONTRACT="${PIXEL9PRO_UECAP_PAYLOAD_CONTRACT:-$MODDIR/config/uecap_payloads.tsv}"
 UECAP_DEVICE="unknown"
 UECAP_DEVICE_LABEL="unknown"
 UECAP_DEVICE_POLICY="unknown"
@@ -82,34 +85,23 @@ uecap_load_device_contract() {
         break
     done < "$_uecap_device_contract"
     [ "$UECAP_DEVICE" != "unknown" ] || return 2
-    case "$UECAP_DEVICE_POLICY" in managed|external) ;; *) return 1 ;; esac
+    case "$UECAP_DEVICE_POLICY" in managed_profiles|single_candidate) ;; *) return 1 ;; esac
     case "$UECAP_TARGET_NAME" in PLATFORM_*.binarypb) ;; *) return 1 ;; esac
     case "$_uecap_device_value:$UECAP_TARGET_NAME" in
         caiman:PLATFORM_9055801516233416490.binarypb|komodo:PLATFORM_6287228797510365516.binarypb) ;;
         *) return 1 ;;
     esac
-    if [ "$UECAP_DEVICE_POLICY" = "managed" ]; then
-        [ -n "$_uecap_modes" ] || return 1
-        UECAP_MODE_ORDER=$(printf '%s' "$_uecap_modes" | tr ',' ' ')
-        UECAP_DEFAULT_MODE="$_uecap_default"
-        case "$UECAP_DEVICE_SOURCE_DIR" in ''|/*|*..*|*\\*) return 1 ;; esac
-        UECAP_TARGET="${UECAP_TARGET_OVERRIDE:-/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME}"
-        # target_name already includes the canonical .binarypb suffix.  Insert
-        # the profile suffix before it instead of creating *.binarypb.<mode>.
-        _uecap_target_stem=${UECAP_TARGET_NAME%.binarypb}
-        UECAP_SPECIAL="${UECAP_SPECIAL_OVERRIDE:-$MODDIR/$UECAP_DEVICE_SOURCE_DIR/${_uecap_target_stem}.special.binarypb}"
-        UECAP_BALANCED="${UECAP_BALANCED_OVERRIDE:-$MODDIR/$UECAP_DEVICE_SOURCE_DIR/${_uecap_target_stem}.balanced.binarypb}"
-        UECAP_UNIVERSAL="${UECAP_UNIVERSAL_OVERRIDE:-$MODDIR/$UECAP_DEVICE_SOURCE_DIR/${_uecap_target_stem}.universal.binarypb}"
-    else
-        UECAP_MODE_ORDER=""
-        UECAP_DEFAULT_MODE="disabled"
-        UECAP_TARGET="${UECAP_TARGET_OVERRIDE:-/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME}"
-    fi
-    if [ "$UECAP_DEVICE_POLICY" = "managed" ]; then
-        uecap_is_valid_mode "$UECAP_DEFAULT_MODE" 2>/dev/null
-    else
-        return 0
-    fi
+    [ -n "$_uecap_modes" ] || return 1
+    UECAP_MODE_ORDER=$(printf '%s' "$_uecap_modes" | tr ',' ' ')
+    UECAP_DEFAULT_MODE="$_uecap_default"
+    case "$UECAP_DEVICE_SOURCE_DIR" in ''|/*|*..*|*\\*) return 1 ;; esac
+    UECAP_TARGET="${UECAP_TARGET_OVERRIDE:-/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME}"
+    _uecap_target_stem=${UECAP_TARGET_NAME%.binarypb}
+    UECAP_SPECIAL="${UECAP_SPECIAL_OVERRIDE:-$MODDIR/$UECAP_DEVICE_SOURCE_DIR/${_uecap_target_stem}.special.binarypb}"
+    UECAP_BALANCED="${UECAP_BALANCED_OVERRIDE:-$MODDIR/$UECAP_DEVICE_SOURCE_DIR/${_uecap_target_stem}.balanced.binarypb}"
+    UECAP_UNIVERSAL="${UECAP_UNIVERSAL_OVERRIDE:-$MODDIR/$UECAP_DEVICE_SOURCE_DIR/${_uecap_target_stem}.universal.binarypb}"
+    UECAP_CANDIDATE="${UECAP_CANDIDATE_OVERRIDE:-$MODDIR/$UECAP_DEVICE_SOURCE_DIR/${_uecap_target_stem}.candidate.binarypb}"
+    uecap_is_valid_mode "$UECAP_DEFAULT_MODE" 2>/dev/null
 }
 
 uecap_refresh_device_contract() {
@@ -126,6 +118,7 @@ uecap_refresh_device_contract() {
     UECAP_SPECIAL="${UECAP_SPECIAL_OVERRIDE:-}"
     UECAP_BALANCED="${UECAP_BALANCED_OVERRIDE:-}"
     UECAP_UNIVERSAL="${UECAP_UNIVERSAL_OVERRIDE:-}"
+    UECAP_CANDIDATE="${UECAP_CANDIDATE_OVERRIDE:-}"
     uecap_load_device_contract "$UECAP_DEVICE_CONTRACT" "$_uecap_current_device"
     _uecap_contract_rc=$?
     case "$_uecap_contract_rc" in
@@ -152,21 +145,21 @@ uecap_refresh_runtime_policy() {
     UECAP_ROOT_IMPL=$(uecap_detect_root_impl)
     UECAP_RUNTIME_POLICY="disabled"
     case "$UECAP_CONTRACT_RESULT:$UECAP_DEVICE_POLICY:$UECAP_ROOT_IMPL" in
-        valid:managed:magisk)
+        valid:managed_profiles:magisk|valid:single_candidate:magisk)
             UECAP_RUNTIME_POLICY="disabled"
             UECAP_STATUS_REASON="magisk_uecap_unavailable"
             ;;
-        valid:managed:apatch|valid:managed:kernelsu)
-            UECAP_RUNTIME_POLICY="managed"
+        valid:managed_profiles:apatch|valid:managed_profiles:kernelsu)
+            UECAP_RUNTIME_POLICY="managed_profiles"
             UECAP_STATUS_REASON="managed_runtime"
             ;;
-        valid:managed:*)
+        valid:single_candidate:apatch|valid:single_candidate:kernelsu)
+            UECAP_RUNTIME_POLICY="single_candidate"
+            UECAP_STATUS_REASON="candidate_runtime"
+            ;;
+        valid:managed_profiles:*|valid:single_candidate:*)
             UECAP_RUNTIME_POLICY="disabled"
             UECAP_STATUS_REASON="unknown_root_backend"
-            ;;
-        valid:external:*)
-            UECAP_RUNTIME_POLICY="external"
-            UECAP_STATUS_REASON="device_external_stock"
             ;;
         unsupported_device:*)
             UECAP_RUNTIME_POLICY="disabled"
@@ -191,6 +184,66 @@ uecap_log_line() {
 
 uecap_hash() {
     sha256sum "$1" 2>/dev/null | awk '{print $1}'
+}
+
+uecap_payload_override() {
+    [ "${PIXEL9PRO_UECAP_TEST_MODE:-0}" = 1 ] || return 1
+    case "$1" in
+        balanced) [ -n "$UECAP_BALANCED_OVERRIDE" ] && printf '%s' "$UECAP_BALANCED_OVERRIDE" ;;
+        special) [ -n "$UECAP_SPECIAL_OVERRIDE" ] && printf '%s' "$UECAP_SPECIAL_OVERRIDE" ;;
+        universal) [ -n "$UECAP_UNIVERSAL_OVERRIDE" ] && printf '%s' "$UECAP_UNIVERSAL_OVERRIDE" ;;
+        candidate) [ -n "$UECAP_CANDIDATE_OVERRIDE" ] && printf '%s' "$UECAP_CANDIDATE_OVERRIDE" ;;
+        *) return 1 ;;
+    esac
+}
+
+uecap_payload_source() {
+    _uecap_payload_mode="$1"
+    [ "$_uecap_payload_mode" != stock ] || return 1
+    _uecap_override=$(uecap_payload_override "$_uecap_payload_mode" 2>/dev/null)
+    if [ -n "$_uecap_override" ]; then
+        [ -f "$_uecap_override" ] || return 1
+        printf '%s' "$_uecap_override"
+        return 0
+    fi
+    [ -r "$UECAP_PAYLOAD_CONTRACT" ] || return 1
+    while IFS='|' read -r _p_device _p_mode _p_source _p_target _p_bytes _p_sha _p_state _p_build; do
+        case "$_p_device" in ''|\#*) continue ;; esac
+        [ "$_p_device" = "$UECAP_DEVICE" ] && [ "$_p_mode" = "$_uecap_payload_mode" ] || continue
+        [ "$_p_target" = "$UECAP_TARGET_NAME" ] || return 1
+        case "$_p_source" in "$UECAP_DEVICE_SOURCE_DIR"/*) ;; *) return 1 ;; esac
+        case "$_p_source" in /*|*..*|*\\*) return 1 ;; esac
+        case "$_p_bytes" in ''|*[!0-9]*) return 1 ;; esac
+        case "$_p_sha" in ''|*[!0-9a-f]*) return 1 ;; esac
+        case "$_p_state" in verified|candidate) ;; *) return 1 ;; esac
+        [ -n "$_p_build" ] || return 1
+        _p_full="$MODDIR/$_p_source"
+        [ -f "$_p_full" ] || return 1
+        [ "$(wc -c < "$_p_full" 2>/dev/null | tr -d ' ')" = "$_p_bytes" ] || return 1
+        [ "$(uecap_hash "$_p_full")" = "$_p_sha" ] || return 1
+        printf '%s' "$_p_full"
+        return 0
+    done < "$UECAP_PAYLOAD_CONTRACT"
+    return 1
+}
+
+uecap_payload_metadata() {
+    _uecap_meta_mode="$1"
+    UECAP_PAYLOAD_STATE=stock
+    UECAP_PAYLOAD_BUILD=system
+    UECAP_PAYLOAD_BYTES=0
+    UECAP_PAYLOAD_SHA=""
+    [ "$_uecap_meta_mode" != stock ] || return 0
+    while IFS='|' read -r _m_device _m_mode _m_source _m_target _m_bytes _m_sha _m_state _m_build; do
+        case "$_m_device" in ''|\#*) continue ;; esac
+        [ "$_m_device" = "$UECAP_DEVICE" ] && [ "$_m_mode" = "$_uecap_meta_mode" ] || continue
+        UECAP_PAYLOAD_STATE="$_m_state"
+        UECAP_PAYLOAD_BUILD="$_m_build"
+        UECAP_PAYLOAD_BYTES="$_m_bytes"
+        UECAP_PAYLOAD_SHA="$_m_sha"
+        return 0
+    done < "$UECAP_PAYLOAD_CONTRACT"
+    return 1
 }
 
 uecap_mount_bind() {
@@ -224,8 +277,8 @@ uecap_is_valid_mode() {
 
 uecap_is_available() {
     [ "$UECAP_CONTRACT_RESULT" = "valid" ] \
-        && [ "$UECAP_RUNTIME_POLICY" = "managed" ] \
-        && [ "$UECAP_DEVICE_POLICY" = "managed" ] \
+        && { [ "$UECAP_RUNTIME_POLICY" = "managed_profiles" ] \
+            || [ "$UECAP_RUNTIME_POLICY" = "single_candidate" ]; } \
         && [ -n "$UECAP_MODE_ORDER" ]
 }
 
@@ -259,8 +312,8 @@ uecap_current_manual_mode() {
 
 uecap_current_policy() {
     case "$UECAP_RUNTIME_POLICY" in
-        managed) printf 'manual' ;;
-        external) printf 'external' ;;
+        managed_profiles) printf 'managed_profiles' ;;
+        single_candidate) printf 'single_candidate' ;;
         *) printf 'disabled' ;;
     esac
 }
@@ -268,7 +321,7 @@ uecap_current_policy() {
 uecap_current_reason() {
     if uecap_is_available; then
         _uecap_reason_value=$(cat "$UECAP_REASON_FILE" 2>/dev/null | tr -d '\n\r')
-        printf '%s' "${_uecap_reason_value:-managed_runtime}"
+        printf '%s' "${_uecap_reason_value:-$UECAP_STATUS_REASON}"
     else
         printf '%s' "$UECAP_STATUS_REASON"
     fi
@@ -276,8 +329,8 @@ uecap_current_reason() {
 
 uecap_disabled_message() {
     case "${UECAP_STATUS_REASON:-}" in
-        device_external_stock)
-            printf '%s' 'Pixel 9 Pro XL 使用设备原生 UECap；Control 仅显示状态，不提供三档写入。'
+        candidate_runtime)
+            printf '%s' 'Pixel 9 Pro XL 默认保持 stock；只有用户明确选择 candidate 才绑定 XL 单文件。'
             ;;
         magisk_uecap_unavailable)
             printf '%s' 'Magisk 下不启用 managed UECap 覆盖；独立基带模块仍可单独提供 CarrierSettings、MCFG、APN 与 IMS。'
@@ -455,7 +508,17 @@ uecap_write_runtime_receipt() {
     _uecap_receipt_now="$(date +%s 2>/dev/null || echo 0)"
     _uecap_receipt_tmp="${UECAP_RECEIPT_FILE}.tmp.$$"
     [ -n "$UECAP_RECEIPT_FILE" ] && [ ! -d "$UECAP_RECEIPT_FILE" ] || return 1
-    _uecap_receipt_bind_status=$(uecap_bind_status "$(uecap_resolve_source "$_uecap_receipt_mode" 2>/dev/null)" "$_uecap_receipt_target_hash")
+    if [ "$_uecap_receipt_mode" = stock ] && ! uecap_target_is_mounted; then
+        _uecap_receipt_bind_status=stock_unmounted
+    else
+        _uecap_receipt_bind_status=$(uecap_bind_status "$(uecap_resolve_source "$_uecap_receipt_mode" 2>/dev/null)" "$_uecap_receipt_target_hash")
+    fi
+    uecap_payload_metadata "$_uecap_receipt_mode" >/dev/null 2>&1 || {
+        UECAP_PAYLOAD_STATE=unverified
+        UECAP_PAYLOAD_BUILD=unknown
+        UECAP_PAYLOAD_BYTES=0
+        UECAP_PAYLOAD_SHA=""
+    }
     {
         printf 'schema=3\n'
         printf 'boot_id=%s\n' "$(uecap_receipt_value "$(uecap_boot_id)")"
@@ -473,6 +536,10 @@ uecap_write_runtime_receipt() {
         printf 'device=%s\n' "$(uecap_receipt_value "${UECAP_DEVICE:-unknown}")"
         printf 'device_policy=%s\n' "$(uecap_receipt_value "${UECAP_DEVICE_POLICY:-unknown}")"
         printf 'target_name=%s\n' "$(uecap_receipt_value "${UECAP_TARGET_NAME:-unknown}")"
+        printf 'payload_state=%s\n' "$(uecap_receipt_value "$UECAP_PAYLOAD_STATE")"
+        printf 'payload_source_build=%s\n' "$(uecap_receipt_value "$UECAP_PAYLOAD_BUILD")"
+        printf 'payload_bytes=%s\n' "$(uecap_receipt_value "$UECAP_PAYLOAD_BYTES")"
+        printf 'payload_sha256=%s\n' "$(uecap_receipt_value "$UECAP_PAYLOAD_SHA")"
         printf 'desired_profile=%s\n' "$(uecap_receipt_value "${UECAP_DESIRED_PROFILE:-unknown}")"
         printf 'bound_profile=%s\n' "$(uecap_receipt_value "${UECAP_BOUND_PROFILE:-unknown}")"
         printf 'modem_load_state=%s\n' "$(uecap_receipt_value "${UECAP_MODEM_LOAD_STATE:-unknown}")"
@@ -542,9 +609,15 @@ uecap_refresh_observed_state() {
         UECAP_MODEM_LOAD_STATE="not_managed"
         UECAP_FUNCTIONAL_STATE="external_or_disabled"
     else
-        _uecap_observed_source=$(uecap_resolve_source "$UECAP_DESIRED_PROFILE" 2>/dev/null || true)
-        _uecap_observed_source_hash=$(uecap_hash "$_uecap_observed_source")
-        if [ -n "$_uecap_observed_target_hash" ] && uecap_target_is_mounted; then
+        if [ "$UECAP_DESIRED_PROFILE" = stock ]; then
+            _uecap_observed_source_hash="$_uecap_observed_target_hash"
+        else
+            _uecap_observed_source=$(uecap_resolve_source "$UECAP_DESIRED_PROFILE" 2>/dev/null || true)
+            _uecap_observed_source_hash=$(uecap_hash "$_uecap_observed_source")
+        fi
+        if [ "$UECAP_DESIRED_PROFILE" = stock ] && ! uecap_target_is_mounted; then
+            UECAP_BOUND_PROFILE=stock
+        elif [ -n "$_uecap_observed_target_hash" ] && uecap_target_is_mounted; then
             UECAP_BOUND_PROFILE=$(uecap_detect_active_mode)
         elif [ -n "$_uecap_observed_target_hash" ]; then
             UECAP_BOUND_PROFILE="stock_or_unmounted"
@@ -600,6 +673,21 @@ uecap_refresh_observed_state() {
 uecap_pre_modem_receipt_is_current() {
     _uecap_pre_modem_mode="$1"
     uecap_is_valid_mode "$_uecap_pre_modem_mode" || return 1
+    if [ "$_uecap_pre_modem_mode" = stock ]; then
+        _uecap_pre_modem_target_hash=$(uecap_hash "$UECAP_TARGET")
+        [ -n "$_uecap_pre_modem_target_hash" ] \
+            && ! uecap_target_is_mounted \
+            && [ "$(uecap_receipt_get schema)" = "3" ] \
+            && [ "$(uecap_receipt_get boot_id)" = "$(uecap_boot_id)" ] \
+            && [ "$(uecap_receipt_get reason)" = "pre_modem" ] \
+            && [ "$(uecap_receipt_get requested_mode)" = stock ] \
+            && [ "$(uecap_receipt_get active_mode)" = stock ] \
+            && [ "$(uecap_receipt_get bind_status)" = stock_unmounted ] \
+            && [ "$(uecap_receipt_get source_hash)" = "$_uecap_pre_modem_target_hash" ] \
+            && [ "$(uecap_receipt_get target_hash)" = "$_uecap_pre_modem_target_hash" ] \
+            && [ "$(uecap_receipt_get reload_result)" = not_required_pre_modem ]
+        return $?
+    fi
     _uecap_pre_modem_source=$(uecap_resolve_source "$_uecap_pre_modem_mode") || return 1
     _uecap_pre_modem_source_hash=$(uecap_hash "$_uecap_pre_modem_source")
     _uecap_pre_modem_target_hash=$(uecap_hash "$UECAP_TARGET")
@@ -645,7 +733,7 @@ uecap_commit_state() {
     UECAP_STATE_ROLLBACK_RESULT="not_needed"
     if uecap_set_mode "$_uecap_commit_mode" \
         && uecap_set_manual_mode "$_uecap_commit_mode" \
-        && uecap_set_policy manual \
+        && uecap_set_policy "$UECAP_DEVICE_POLICY" \
         && uecap_set_reason "$_uecap_commit_reason" \
         && uecap_set_switch_time "$_uecap_commit_time"; then
         return 0
@@ -679,7 +767,7 @@ uecap_set_manual_mode() {
 
 uecap_set_policy() {
     case "$1" in
-        manual) uecap_atomic_write "$UECAP_POLICY_FILE" manual ;;
+        managed_profiles|single_candidate) uecap_atomic_write "$UECAP_POLICY_FILE" "$1" ;;
         *) return 1 ;;
     esac
 }
@@ -695,15 +783,15 @@ uecap_set_switch_time() {
 }
 
 uecap_resolve_source() {
-    case "$1" in
-        universal) echo "$UECAP_UNIVERSAL" ;;
-        special) echo "$UECAP_SPECIAL" ;;
-        balanced) echo "$UECAP_BALANCED" ;;
-        *) return 1 ;;
-    esac
+    uecap_is_valid_mode "$1" || return 1
+    uecap_payload_source "$1"
 }
 
 uecap_print_ui_contract_json() {
+    if ! uecap_is_available; then
+        printf '{"mode_order":[],"default_mode":"disabled"}'
+        return 0
+    fi
     printf '{"mode_order":['
     _uecap_contract_first=1
     for _uecap_contract_mode in $UECAP_MODE_ORDER; do
@@ -759,25 +847,30 @@ uecap_detect_active_mode() {
     _uecap_detect_target_hash=$(uecap_hash "$UECAP_TARGET")
     [ -z "$_uecap_detect_target_hash" ] && { echo "custom"; return; }
 
-    # Prefer the recorded mode if its hash matches — avoids ambiguity
-    # when multiple tiers share the same binarypb
+    # Prefer the recorded mode if its hash matches; then scan this device's
+    # manifest modes only. The other SKU is never a candidate.
     _uecap_detect_requested=$(uecap_current_mode)
-    _uecap_detect_requested_source=$(uecap_resolve_source "$_uecap_detect_requested")
-    _uecap_detect_requested_hash=$(uecap_hash "$_uecap_detect_requested_source")
-    if [ "$_uecap_detect_target_hash" = "$_uecap_detect_requested_hash" ]; then
-        echo "$_uecap_detect_requested"
-        return
+    if [ "$_uecap_detect_requested" != stock ]; then
+        _uecap_detect_requested_source=$(uecap_resolve_source "$_uecap_detect_requested" 2>/dev/null)
+        _uecap_detect_requested_hash=$(uecap_hash "$_uecap_detect_requested_source")
+        if [ -n "$_uecap_detect_requested_hash" ] \
+            && [ "$_uecap_detect_target_hash" = "$_uecap_detect_requested_hash" ]; then
+            echo "$_uecap_detect_requested"
+            return
+        fi
     fi
 
-    _uecap_detect_special_hash=$(uecap_hash "$UECAP_SPECIAL")
-    _uecap_detect_balanced_hash=$(uecap_hash "$UECAP_BALANCED")
-    _uecap_detect_universal_hash=$(uecap_hash "$UECAP_UNIVERSAL")
-
-    if [ "$_uecap_detect_target_hash" = "$_uecap_detect_special_hash" ]; then echo "special"
-    elif [ "$_uecap_detect_target_hash" = "$_uecap_detect_balanced_hash" ]; then echo "balanced"
-    elif [ "$_uecap_detect_target_hash" = "$_uecap_detect_universal_hash" ]; then echo "universal"
-    else echo "custom"
-    fi
+    for _uecap_detect_mode in $UECAP_MODE_ORDER; do
+        [ "$_uecap_detect_mode" != stock ] || continue
+        _uecap_detect_source=$(uecap_resolve_source "$_uecap_detect_mode" 2>/dev/null) || continue
+        _uecap_detect_source_hash=$(uecap_hash "$_uecap_detect_source")
+        if [ -n "$_uecap_detect_source_hash" ] \
+            && [ "$_uecap_detect_target_hash" = "$_uecap_detect_source_hash" ]; then
+            echo "$_uecap_detect_mode"
+            return
+        fi
+    done
+    echo "custom"
 }
 
 uecap_restore_previous_mount() {
@@ -807,6 +900,58 @@ uecap_apply_mode() {
     [ "$_uecap_apply_mode_value" != "unknown" ] || return 1
     _uecap_apply_reason="${2:-manual}"
     case "$_uecap_apply_reason" in ''|*[!A-Za-z0-9_.:-]*) return 1 ;; esac
+
+    if [ "$_uecap_apply_mode_value" = stock ]; then
+        [ -e "$UECAP_TARGET" ] || { UECAP_APPLY_RESULT="target_missing"; return 1; }
+        _uecap_apply_old_mounted=0
+        _uecap_apply_old_source=""
+        _uecap_apply_old_hash=""
+        if uecap_target_is_mounted; then
+            _uecap_apply_old_mounted=1
+            _uecap_apply_old_mode=$(uecap_detect_active_mode)
+            if ! uecap_is_valid_mode "$_uecap_apply_old_mode" \
+                || [ "$_uecap_apply_old_mode" = stock ]; then
+                UECAP_APPLY_RESULT="unknown_active_bind"
+                return 1
+            fi
+            _uecap_apply_old_source=$(uecap_resolve_source "$_uecap_apply_old_mode") || return 1
+            _uecap_apply_old_hash=$(uecap_hash "$_uecap_apply_old_source")
+            [ -n "$_uecap_apply_old_hash" ] || return 1
+            uecap_unmount "$UECAP_TARGET" || { UECAP_APPLY_RESULT="unbind_failed"; return 1; }
+        fi
+        _uecap_apply_target_hash=$(uecap_hash "$UECAP_TARGET")
+        [ -n "$_uecap_apply_target_hash" ] && ! uecap_target_is_mounted \
+            || { UECAP_APPLY_RESULT="stock_readback_unconfirmed"; return 1; }
+        _uecap_apply_switch_time=$(date +%s 2>/dev/null || echo 0)
+        if ! uecap_commit_state stock "$_uecap_apply_reason" "$_uecap_apply_switch_time"; then
+            if uecap_restore_previous_mount "$_uecap_apply_old_mounted" "$_uecap_apply_old_source" "$_uecap_apply_old_hash" \
+                && [ "$UECAP_STATE_ROLLBACK_RESULT" = complete ]; then
+                UECAP_APPLY_RESULT="state_failed_rolled_back"
+                return 1
+            fi
+            UECAP_APPLY_RESULT="state_failed_rollback_incomplete"
+            return 2
+        fi
+        UECAP_DESIRED_PROFILE=stock
+        UECAP_BOUND_PROFILE=stock
+        if uecap_reload_modem "$_uecap_apply_reason"; then
+            UECAP_FUNCTIONAL_STATE="modem_load_unconfirmed"
+            UECAP_RECEIPT_FRESHNESS="current_boot"
+            UECAP_APPLY_RESULT="applied"
+            uecap_capture_radio_snapshot >/dev/null 2>&1 || true
+            uecap_classify_radio_state
+            uecap_write_runtime_receipt stock "$_uecap_apply_target_hash" "$_uecap_apply_target_hash" \
+                "$_uecap_apply_reason" applied stock_unmounted >/dev/null 2>&1 \
+                || uecap_log_line "WARNING: failed to persist stock UECap receipt"
+            return 0
+        fi
+        UECAP_APPLY_RESULT="applied_reload_failed"
+        UECAP_FUNCTIONAL_STATE="unverified"
+        UECAP_RECEIPT_FRESHNESS="stale_after_reload_failure"
+        uecap_write_runtime_receipt stock "$_uecap_apply_target_hash" "$_uecap_apply_target_hash" \
+            "$_uecap_apply_reason" applied_reload_failed unverified >/dev/null 2>&1 || true
+        return 3
+    fi
 
     _uecap_apply_source=$(uecap_resolve_source "$_uecap_apply_mode_value")
     [ -f "$_uecap_apply_source" ] || {
@@ -838,13 +983,12 @@ uecap_apply_mode() {
     if uecap_target_is_mounted; then
         _uecap_apply_old_mounted=1
         _uecap_apply_old_mode=$(uecap_detect_active_mode)
-        case "$_uecap_apply_old_mode" in
-            special|balanced|universal) _uecap_apply_old_source=$(uecap_resolve_source "$_uecap_apply_old_mode") ;;
-            *)
-                uecap_log_line "refuse to replace unknown active bind"
-                return 1
-                ;;
-        esac
+        if ! uecap_is_valid_mode "$_uecap_apply_old_mode" \
+            || [ "$_uecap_apply_old_mode" = stock ]; then
+            uecap_log_line "refuse to replace unknown active bind"
+            return 1
+        fi
+        _uecap_apply_old_source=$(uecap_resolve_source "$_uecap_apply_old_mode") || return 1
         _uecap_apply_old_hash=$(uecap_hash "$_uecap_apply_old_source")
         [ -n "$_uecap_apply_old_hash" ] || return 1
         uecap_unmount "$UECAP_TARGET" || {
@@ -874,6 +1018,7 @@ uecap_apply_mode() {
         uecap_log_line "bind verification failed mode=$_uecap_apply_mode_value rollback=incomplete"
         return 2
     fi
+    UECAP_BOUND_PROFILE="$_uecap_apply_mode_value"
 
     _uecap_apply_switch_time=$(date +%s 2>/dev/null || echo 0)
     if ! uecap_commit_state "$_uecap_apply_mode_value" "$_uecap_apply_reason" "$_uecap_apply_switch_time"; then
@@ -941,6 +1086,15 @@ uecap_print_status_json() {
     _uecap_status_special_hash=$(uecap_hash "$UECAP_SPECIAL")
     _uecap_status_balanced_hash=$(uecap_hash "$UECAP_BALANCED")
     _uecap_status_universal_hash=$(uecap_hash "$UECAP_UNIVERSAL")
+    _uecap_status_candidate_hash=$(uecap_hash "$UECAP_CANDIDATE")
+    _uecap_status_meta_mode="$_uecap_status_requested"
+    [ "$UECAP_DEVICE_POLICY" = single_candidate ] && _uecap_status_meta_mode=candidate
+    uecap_payload_metadata "$_uecap_status_meta_mode" >/dev/null 2>&1 || {
+        UECAP_PAYLOAD_STATE=unverified
+        UECAP_PAYLOAD_BUILD=unknown
+        UECAP_PAYLOAD_BYTES=0
+        UECAP_PAYLOAD_SHA=""
+    }
     _uecap_status_last_switch=$(uecap_last_switch)
     case "$_uecap_status_last_switch" in ''|*[!0-9]*) _uecap_status_last_switch=0 ;; esac
 
@@ -978,15 +1132,17 @@ uecap_print_status_json() {
         _uecap_status_special_hash=""
         _uecap_status_balanced_hash=""
         _uecap_status_universal_hash=""
+        _uecap_status_candidate_hash=""
     fi
 
     case "$_uecap_receipt_schema" in ''|*[!0-9]*) _uecap_receipt_schema=0 ;; esac
     case "$_uecap_receipt_updated_at" in ''|*[!0-9]*) _uecap_receipt_updated_at=0 ;; esac
-    printf '{"device":"%s","device_label":"%s","device_policy":"%s","contract_result":"%s","runtime_policy":"%s","policy":"%s","requested_mode":"%s","manual_mode":"%s","active_mode":"%s","reason":"%s","disabled":%s,"disabled_message":"%s","last_switch":"%s","target_name":"%s","target_hash":"%s","special_hash":"%s","balanced_hash":"%s","universal_hash":"%s","uecap_contract":' \
+    printf '{"device":"%s","device_label":"%s","device_policy":"%s","contract_result":"%s","runtime_policy":"%s","policy":"%s","requested_mode":"%s","manual_mode":"%s","active_mode":"%s","reason":"%s","disabled":%s,"disabled_message":"%s","last_switch":"%s","target_name":"%s","target_hash":"%s","special_hash":"%s","balanced_hash":"%s","universal_hash":"%s","candidate_hash":"%s","payload_state":"%s","payload_source_build":"%s","payload_bytes":%s,"payload_sha256":"%s","uecap_contract":' \
         "$(uecap_json_escape "${UECAP_DEVICE:-unknown}")" "$(uecap_json_escape "${UECAP_DEVICE_LABEL:-unknown}")" "$(uecap_json_escape "${UECAP_DEVICE_POLICY:-unknown}")" "$(uecap_json_escape "${UECAP_CONTRACT_RESULT:-unknown}")" "$(uecap_json_escape "${UECAP_RUNTIME_POLICY:-disabled}")" \
         "$(uecap_json_escape "$_uecap_status_policy")" "$(uecap_json_escape "$_uecap_status_requested")" "$(uecap_json_escape "$_uecap_status_manual")" "$(uecap_json_escape "$_uecap_status_active")" "$(uecap_json_escape "${_uecap_status_reason:-unknown}")" \
-        "$( [ "${UECAP_RUNTIME_POLICY:-disabled}" = "managed" ] && printf false || printf true )" "$(uecap_json_escape "$(uecap_disabled_message)")" "$_uecap_status_last_switch" "$(uecap_json_escape "${UECAP_TARGET_NAME:-unknown}")" \
-        "$(uecap_json_escape "${_uecap_status_target_hash:-unknown}")" "$(uecap_json_escape "${_uecap_status_special_hash:-unknown}")" "$(uecap_json_escape "${_uecap_status_balanced_hash:-unknown}")" "$(uecap_json_escape "${_uecap_status_universal_hash:-unknown}")"
+        "$(uecap_is_available && printf false || printf true)" "$(uecap_json_escape "$(uecap_disabled_message)")" "$_uecap_status_last_switch" "$(uecap_json_escape "${UECAP_TARGET_NAME:-unknown}")" \
+        "$(uecap_json_escape "${_uecap_status_target_hash:-unknown}")" "$(uecap_json_escape "${_uecap_status_special_hash:-unknown}")" "$(uecap_json_escape "${_uecap_status_balanced_hash:-unknown}")" "$(uecap_json_escape "${_uecap_status_universal_hash:-unknown}")" \
+        "$(uecap_json_escape "${_uecap_status_candidate_hash:-unknown}")" "$(uecap_json_escape "$UECAP_PAYLOAD_STATE")" "$(uecap_json_escape "$UECAP_PAYLOAD_BUILD")" "${UECAP_PAYLOAD_BYTES:-0}" "$(uecap_json_escape "$UECAP_PAYLOAD_SHA")"
     uecap_print_ui_contract_json
     printf ',"runtime_receipt":{"schema":%s,"boot_id":"%s","updated_at":"%s","reason":"%s","apply_result":"%s","reload_dispatched":%s,"reload_result":"%s","effective_state":"%s","bind_status":"%s","device":"%s","device_policy":"%s","desired_profile":"%s","bound_profile":"%s","modem_load_state":"%s","modem_loaded_profile":"%s","radio_observed_state":"%s","functional_state":"%s","receipt_freshness":"%s","actual_rat":"%s","nr_available":"%s","endc_available":"%s","nr_registered":"%s","nr_band":"%s","nr_arfcn":"%s","nr_frequency_range":"%s","lte_anchor":"%s","nsa_status":"%s","nsa_reason":"%s"}}' \
         "$_uecap_receipt_schema" "$(uecap_json_escape "$_uecap_receipt_boot_id")" "$_uecap_receipt_updated_at" \
@@ -1020,6 +1176,15 @@ uecap_main() {
             ;;
         default)
             printf '%s\n' "$UECAP_DEFAULT_MODE"
+            ;;
+        policy)
+            printf '%s\n' "$UECAP_DEVICE_POLICY"
+            ;;
+        validate)
+            for _uecap_cli_validate_mode in $UECAP_MODE_ORDER; do
+                [ "$_uecap_cli_validate_mode" != stock ] || continue
+                uecap_resolve_source "$_uecap_cli_validate_mode" >/dev/null || return 1
+            done
             ;;
         *)
             return 1

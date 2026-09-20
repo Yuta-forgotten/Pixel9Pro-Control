@@ -100,9 +100,12 @@ install_state_sync_legacy() {
     install_state_value_is_valid scheduler_capability "$_is_scheduler_capability" || _is_scheduler_capability=unknown
     install_state_write scheduler_capability "$INSTALL_SCHEDULER_CAPABILITY_FILE" "$_is_scheduler_capability" || return 1
 
-    case "$(install_state_read "$INSTALL_STATE_ROOT/.uecap_policy" disabled)" in
-        manual) _is_payload=verified ;;
-        external) _is_payload=stock ;;
+    _is_uecap_policy=$(install_state_read "$INSTALL_STATE_ROOT/.uecap_policy" disabled)
+    _is_uecap_mode=$(install_state_read "$INSTALL_STATE_ROOT/.uecap_manual_mode" disabled)
+    case "$_is_uecap_policy:$_is_uecap_mode" in
+        managed_profiles:*) _is_payload=verified ;;
+        single_candidate:candidate) _is_payload=candidate ;;
+        single_candidate:stock) _is_payload=stock ;;
         *) _is_payload=unverified ;;
     esac
     install_state_write payload_state "$INSTALL_PAYLOAD_STATE_FILE" "$_is_payload" || return 1

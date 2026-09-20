@@ -312,7 +312,7 @@ komodo 只提供：
 - XL 单文件 candidate。
 - 禁用 UECap 写入。
 
-生产安全默认是 komodo stock/external。测试版中用户明确选择后才允许 single candidate。
+生产安全默认是 komodo stock。测试版中用户明确选择后才允许 single candidate；当前用户提供文件为 623788 bytes，SHA-256 `f2c0bc1dc1409b1780dbdf57e56ebfef15cf7f889e76315343d2ae139cb19090`，来源 build 未知，状态必须保持 candidate。
 
 一个 ZIP 必须同时携带两个 SKU 的 staging payload，但不得在 ZIP 的 `system/vendor/firmware/uecapconfig/` 中预置任一 SKU 的 canonical target。建议固定布局：
 

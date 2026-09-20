@@ -8,6 +8,7 @@ export PIXEL9PRO_MODDIR="$MODDIR"
 
 [ -f "$MODDIR/uecap_profile.sh" ] || exit 0
 . "$MODDIR/uecap_profile.sh" 2>/dev/null || exit 0
+uecap_is_available || exit 0
 
 _uecap_post_mount_mode=$(uecap_current_manual_mode)
 if uecap_apply_mode "$_uecap_post_mount_mode" pre_modem >/dev/null 2>&1; then

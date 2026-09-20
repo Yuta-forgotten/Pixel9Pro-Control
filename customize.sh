@@ -345,16 +345,11 @@ fi
 
 UECAP_DISABLED=0
 UECAP_DISABLED_REASON=""
-UECAP_EXTERNAL=0
 case "$device" in
     komodo)
         ui_print "  机型: Pixel 9 Pro XL (komodo)"
         ui_print "  ✓ Pro XL 温控使用运行时 vendor 基线"
-        # komodo is supported by the device contract, but UECap remains owned
-        # by the device's external/stock path. Keep the runtime script for
-        # read-only status reporting; only remove the embedded caiman payload.
-        UECAP_EXTERNAL=1
-        UECAP_DISABLED_REASON="device_external_stock"
+        ui_print "  ✓ Pro XL UECap 默认 stock，可显式选择单文件 candidate"
         installer_write "$DEVICE_FILE" komodo
         ;;
     caiman)
@@ -373,34 +368,15 @@ install_state_write root_family "$INSTALL_ROOT_FAMILY_FILE" "$(install_state_roo
 ui_print ""
 
 # Magisk Magic Mount 与 modem cbd 的早期 mmap 存在已验证的启动 race。
-# 只有 caiman 的 managed UECap 覆盖在 Magisk 下需要移除运行脚本；komodo
-# 保留 read-only external runtime，不把设备原生 stock 错报为不支持。
-if [ "$ROOT_IMPL" = "Magisk" ] && [ "$UECAP_EXTERNAL" -eq 0 ]; then
+# staging payload 可保留在模块私有目录，但 Magisk 不执行任何 UECap bind。
+if [ "$ROOT_IMPL" = "Magisk" ]; then
     UECAP_DISABLED=1
     UECAP_DISABLED_REASON="magisk_uecap_unavailable"
 fi
-if [ "$UECAP_EXTERNAL" -eq 1 ]; then
-    ui_print "  ✓ Pro XL UECap 使用设备原生 / external stock"
-    rm -f "$MODPATH/system/vendor/firmware/uecapconfig/"* 2>/dev/null \
-        || { ui_print "  ✗ 无法移除不适用于 komodo 的内置 UECap payload"; exit 1; }
-    rmdir "$MODPATH/system/vendor/firmware/uecapconfig" 2>/dev/null || true
-    rmdir "$MODPATH/system/vendor/firmware" 2>/dev/null || true
-    [ -f "$MODPATH/uecap_profile.sh" ] \
-        || { ui_print "  ✗ external UECap runtime script unexpectedly missing"; exit 1; }
-    ui_print "    保留 UECap runtime，仅提供 stock 状态展示，不提供三档写入"
-    ui_print ""
-elif [ "$UECAP_DISABLED" -eq 1 ]; then
-    ui_print "  ⚠ Magisk 下自动停用 caiman UECap 管理"
+if [ "$UECAP_DISABLED" -eq 1 ]; then
+    ui_print "  ⚠ Magisk 下自动停用 UECap 激活"
     ui_print "    reason: $UECAP_DISABLED_REASON"
     ui_print "    (规避 Magic Mount × modem cbd 启动 race)"
-    rm -f "$MODPATH/system/vendor/firmware/uecapconfig/"* 2>/dev/null \
-        || { ui_print "  ✗ 无法移除不兼容的 UECap payload"; exit 1; }
-    rmdir "$MODPATH/system/vendor/firmware/uecapconfig" 2>/dev/null || true
-    rmdir "$MODPATH/system/vendor/firmware" 2>/dev/null || true
-    rm -f "$MODPATH/uecap_profile.sh" 2>/dev/null \
-        || { ui_print "  ✗ 无法移除 UECap 运行脚本"; exit 1; }
-    [ ! -e "$MODPATH/uecap_profile.sh" ] \
-        || { ui_print "  ✗ UECap 运行脚本仍存在, 已中止安装"; exit 1; }
     ui_print ""
 fi
 
@@ -524,14 +500,7 @@ if [ "$_is_upgrade" -eq 0 ]; then
 
 
     # --- UECap 网络能力 ---
-    if [ "$UECAP_EXTERNAL" -eq 1 ]; then
-        ui_print "  ③ 网络能力配置: 跳过 (Pixel 9 Pro XL 使用设备原生 UECap)"
-        installer_write "$MODPATH/.uecap_manual_mode" stock
-        installer_write "$MODPATH/.uecap_mode" stock
-        installer_write "$MODPATH/.uecap_policy" external
-        installer_write "$MODPATH/.uecap_reason" device_external_stock
-        ui_print ""
-    elif [ "$UECAP_DISABLED" -eq 1 ]; then
+    if [ "$UECAP_DISABLED" -eq 1 ]; then
         ui_print "  ③ 网络能力配置: 跳过 (当前 root 不提供 managed UECap)"
         installer_write "$MODPATH/.uecap_manual_mode" disabled
         installer_write "$MODPATH/.uecap_mode" disabled
@@ -540,13 +509,19 @@ if [ "$_is_upgrade" -eq 0 ]; then
         ui_print ""
     else
     ui_print "  ③ 网络能力配置:"
+    sh "$MODPATH/uecap_profile.sh" validate >/dev/null 2>&1 \
+        || { ui_print "  ✗ 当前 SKU 的 UECap payload/hash 合同无效"; exit 1; }
     _UE_VALS=$(sh "$MODPATH/uecap_profile.sh" modes 2>/dev/null) \
         || { ui_print "  ✗ 无法读取 UECap mode contract"; exit 1; }
     _ue_default=$(sh "$MODPATH/uecap_profile.sh" default 2>/dev/null) \
         || { ui_print "  ✗ 无法读取 UECap default contract"; exit 1; }
+    _ue_policy=$(sh "$MODPATH/uecap_profile.sh" policy 2>/dev/null) \
+        || { ui_print "  ✗ 无法读取 UECap policy contract"; exit 1; }
     _UE_LABEL_balanced="国内频段 (推荐)"
     _UE_LABEL_special="全面增强"
     _UE_LABEL_universal="Google 默认"
+    _UE_LABEL_stock="保持 XL 系统原生 (默认)"
+    _UE_LABEL_candidate="XL 单文件 candidate (测试，未完成实机验证)"
     _ue_idx=0
     _ue_total=0
     _ue_scan_idx=0
@@ -573,6 +548,8 @@ if [ "$_is_upgrade" -eq 0 ]; then
             balanced) _ue_label="$_UE_LABEL_balanced" ;;
             special) _ue_label="$_UE_LABEL_special" ;;
             universal) _ue_label="$_UE_LABEL_universal" ;;
+            stock) _ue_label="$_UE_LABEL_stock" ;;
+            candidate) _ue_label="$_UE_LABEL_candidate" ;;
         esac
         ui_print "    > $_ue_label"
         if chooseport; then
@@ -583,7 +560,8 @@ if [ "$_is_upgrade" -eq 0 ]; then
     done
     installer_write "$MODPATH/.uecap_manual_mode" "$_ue_cur"
     installer_write "$MODPATH/.uecap_mode" "$_ue_cur"
-    installer_write "$MODPATH/.uecap_policy" manual
+    installer_write "$MODPATH/.uecap_policy" "$_ue_policy"
+    installer_write "$MODPATH/.uecap_reason" install_choice
     ui_print "    ✓ $_ue_label"
     ui_print ""
     fi
@@ -666,33 +644,31 @@ else
         fi
     fi
     [ -f "$MODPATH/.profile_auto_reason" ] || installer_write "$MODPATH/.profile_auto_reason" manual_policy
-    if [ "$UECAP_EXTERNAL" -eq 1 ]; then
-        installer_write "$MODPATH/.uecap_manual_mode" stock
-        installer_write "$MODPATH/.uecap_mode" stock
-        installer_write "$MODPATH/.uecap_policy" external
-        installer_write "$MODPATH/.uecap_reason" device_external_stock
-    elif [ "$UECAP_DISABLED" -eq 0 ]; then
-        _ue_default=$(sh "$MODPATH/uecap_profile.sh" default 2>/dev/null) \
-            || { ui_print "  ✗ 无法读取 UECap default contract"; exit 1; }
-        [ -f "$MODPATH/.uecap_manual_mode" ] || installer_write "$MODPATH/.uecap_manual_mode" "$_ue_default"
-        [ -f "$MODPATH/.uecap_mode" ] || installer_write "$MODPATH/.uecap_mode" "$_ue_default"
-        [ -f "$MODPATH/.uecap_policy" ] || installer_write "$MODPATH/.uecap_policy" manual
-    fi
-    # 不兼容的 root/设备升级时覆盖旧 UECap 状态，避免迁移出不可用档位。
-    if [ "$UECAP_EXTERNAL" -eq 1 ]; then
-        installer_write "$MODPATH/.uecap_manual_mode" stock
-        installer_write "$MODPATH/.uecap_mode" stock
-        installer_write "$MODPATH/.uecap_policy" external
-        installer_write "$MODPATH/.uecap_reason" device_external_stock
-    elif [ "$UECAP_DISABLED" -eq 1 ]; then
+    # Root/SKU 变化时只迁移仍属于当前设备合同的 desired mode。
+    if [ "$UECAP_DISABLED" -eq 1 ]; then
         installer_write "$MODPATH/.uecap_manual_mode" disabled
         installer_write "$MODPATH/.uecap_mode" disabled
         installer_write "$MODPATH/.uecap_policy" disabled
         installer_write "$MODPATH/.uecap_reason" "$UECAP_DISABLED_REASON"
     else
-        # UECap has no automatic policy. Normalize any retired automatic state so
-        # service/WebUI never need to carry the retired branch.
-        installer_write "$MODPATH/.uecap_policy" manual
+        sh "$MODPATH/uecap_profile.sh" validate >/dev/null 2>&1 \
+            || { ui_print "  ✗ 当前 SKU 的 UECap payload/hash 合同无效"; exit 1; }
+        _UE_VALS=$(sh "$MODPATH/uecap_profile.sh" modes 2>/dev/null) \
+            || { ui_print "  ✗ 无法读取 UECap mode contract"; exit 1; }
+        _ue_default=$(sh "$MODPATH/uecap_profile.sh" default 2>/dev/null) \
+            || { ui_print "  ✗ 无法读取 UECap default contract"; exit 1; }
+        _ue_policy=$(sh "$MODPATH/uecap_profile.sh" policy 2>/dev/null) \
+            || { ui_print "  ✗ 无法读取 UECap policy contract"; exit 1; }
+        _ue_migrated=$(cat "$MODPATH/.uecap_manual_mode" 2>/dev/null | tr -d ' \r\n\t')
+        _ue_migrated_valid=0
+        for _ue_allowed in $_UE_VALS; do
+            [ "$_ue_allowed" = "$_ue_migrated" ] && _ue_migrated_valid=1 && break
+        done
+        [ "$_ue_migrated_valid" -eq 1 ] || _ue_migrated="$_ue_default"
+        installer_write "$MODPATH/.uecap_manual_mode" "$_ue_migrated"
+        installer_write "$MODPATH/.uecap_mode" "$_ue_migrated"
+        installer_write "$MODPATH/.uecap_policy" "$_ue_policy"
+        installer_write "$MODPATH/.uecap_reason" upgrade_migrated
     fi
     [ -f "$MODPATH/.nr_screen_switch" ] || installer_write "$MODPATH/.nr_screen_switch" "$NR_SCREEN_SWITCH_DEFAULT"
     [ -f "$MODPATH/.sim2_auto_manage" ] || installer_write "$MODPATH/.sim2_auto_manage" "$SIM2_AUTO_DEFAULT"

@@ -169,9 +169,11 @@ const UECAP_MODE_PRESENTATION = {
   balanced: { name: '国内频段', desc: '原厂 +25 组中国 NR 组合 · 推荐' },
   special: { name: '全面增强', desc: '原厂 +52 组全球 NR 组合' },
   universal: { name: 'Google 默认', desc: '原厂能力表 · 不做任何修改' },
+  stock: { name: 'XL 系统原生', desc: '不绑定 candidate，使用 komodo 当前 vendor 原文件' },
+  candidate: { name: 'XL Candidate', desc: 'BP3A.251105.015 单文件测试候选 · 尚未完成 XL 实机验证' },
 };
 
-const UECAP_DETAIL = '<b>UE 网络能力配置</b><br><br>UECap 告诉基站”手机支持哪些载波组合”，基站据此分配频段。<b>不直接影响功耗</b>——功耗取决于信号强度和 modem 活跃时间。<br><br><b>国内频段</b>（推荐）<br>原厂 +25 组中国 NR 组合（n28 / n41 / n79），只增不删。<br><br><b>全面增强</b><br>原厂 +52 组全球 NR 组合，含国际 n78 / EN-DC。国内多出的组合基本用不到。<br><br><b>Google 默认</b><br>原厂能力表，不做任何修改。<br><br>切换只重启蜂窝 modem，不影响 Wi-Fi / 蓝牙。';
+const UECAP_DETAIL = '<b>UE 网络能力配置</b><br><br>UECap 告诉基站“手机支持哪些载波组合”，基站据此分配频段。<b>不直接影响功耗</b>——功耗取决于信号强度和 modem 活跃时间。<br><br><b>Pixel 9 Pro</b><br>提供国内频段、全面增强和 Google 默认三档。<br><br><b>Pixel 9 Pro XL</b><br>默认保持系统原生；单文件 candidate 只有用户明确选择后才绑定，来源 build 未知且尚未完成实机验证。<br><br>切换只重启蜂窝 modem，不影响 Wi-Fi / 蓝牙。';
 const BASEBAND_DETAIL = '<b>基带配置模块 (pixel9pro_baseband_trial)</b><br><br><b>提供内容</b><br>- 5G / IMS 属性：VoLTE、Wi-Fi Calling 开关<br>- CarrierSettings：运营商配置覆盖<br>- China MCFG：移动 / 联通 / 电信相关 modem 配置<br><br><b>不包含</b><br>- UECap binarypb 管理（由 pixel9pro_control 负责）<br>- 温控、CPU 调度、ZRAM 和 WebUI';
 const UECAP_VERIFY_INTERVAL_MS = 1500;
 const UECAP_VERIFY_TIMEOUT_MS = 15000;

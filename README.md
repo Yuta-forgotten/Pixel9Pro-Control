@@ -30,9 +30,9 @@ SHA-256：`AE743049B87D3FA217465057EDCB7730B09898C135D0D4074B71D8A8C76DB761`
 | 设备 | 代号 | 状态 |
 |------|------|------|
 | Pixel 9 Pro | caiman | APatch 安装、重启、UECap bind/receipt 与 NR_SA n41 电话注册已复核 |
-| Pixel 9 Pro XL | komodo | 温控分支已适配；UECap 由系统/外部路径保持 stock，Control 不写入 XL payload；未完成 XL 实机闭环 |
+| Pixel 9 Pro XL | komodo | 默认保持 stock；可显式选择单文件 candidate，来源 build 未知且尚未完成 XL 实机闭环 |
 
-安装时自动检测机型，刷入对应的温控配置。CarrierSettings、APN、China MCFG 和 IMS properties 由独立的 `pixel9pro_baseband_trial` 模块按 `caiman/komodo` manifest 管理；Control 不把独立基带模块重新打包进自身。
+安装时自动检测机型；温控默认不添加配置，UECap 只解析当前 SKU 的 staging 合同。CarrierSettings、APN、China MCFG 和 IMS properties 由独立的 `pixel9pro_baseband_trial` 模块按 `caiman/komodo` manifest 管理；Control 不把独立基带模块重新打包进自身。
 
 ## 功能
 
@@ -123,10 +123,10 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 - 切换只重启蜂窝 modem，不影响 Wi-Fi / 蓝牙
 - WebUI 切换后自动校验配置摘要，确认一致后才提示成功
 
-UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control 管理的
-`balanced/special/universal` 三档；`komodo` 在当前源码中是
-`external/stock`，Control 只读展示设备、modem、radio 和 receipt 证据，不写入
-`PLATFORM_6287228797510365516.binarypb`。两个 `PLATFORM_*` 文件属于不同 SKU，不能改名或交叉替换。
+UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
+`balanced/special/universal` 三档；`komodo` 只有 `stock/candidate` 两态，默认 stock，只有用户明确选择后才 bind
+`PLATFORM_6287228797510365516.binarypb`。XL 文件由用户提供，大小 `623788`、SHA-256
+`f2c0bc1dc1409b1780dbdf57e56ebfef15cf7f889e76315343d2ae139cb19090`，来源 build 未知，因此只能标记 candidate。两个 `PLATFORM_*` 文件属于不同 SKU，不能改名或交叉替换。
 
 ### 独立模块与外部调度协同
 
@@ -134,7 +134,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 
 | 模块 | 归属 | 详情 |
 |------|------|------|
-| `pixel9pro_control` | 本项目 | 温控、ZRAM、UECap 三档切换（仅 caiman + APatch/KSU）、NR 降级、SIM2 管理、后台限制、WebUI；未让出时管理 Pixel 原厂 CPU 调度 |
+| `pixel9pro_control` | 本项目 | 可选温控、ZRAM、caiman 三档/komodo candidate UECap、NR 降级、SIM2 管理、后台限制、WebUI；未关闭或让出时管理 Pixel 原厂 CPU 调度 |
 | `pixel9pro_baseband_trial` | 本项目可选基带模块 | 支持 caiman/komodo 的 CarrierSettings、APN、China MCFG 与 VoLTE/WFC properties；不携带、不写入任何 UECap `binarypb` |
 | Uperf Game Turbo / fas-rs / 其它外部调度器 | 第三方或独立外部调度模块 | CPU scene 调度、输入/前台/游戏线程调度、frame-aware 调度、per-app 性能模式；由各自上游独立维护 |
 
@@ -145,7 +145,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 - 控制模块 + fas-rs：fas-rs 在 Pixel boot 常驻待机；仅有效游戏 lease 进入接管，退出后恢复 Pixel 日常 profile，不通过 PID 存在单独判断 active owner
 - 三者都安装：Pixel 或 UGT 作为日常 baseline；fas-rs 命中游戏时临时成为唯一调度写入者，退出后恢复进入 lease 前的同一 baseline；基带模块独立负责运营商配置增强
 
-**基带模块兼容性**：`pixel9pro_baseband_trial` 当前源码 manifest 只允许 `caiman` / `komodo`，两机共用 CarrierSettings、APN、China MCFG 和 IMS properties，但不携带 UECap payload。Control 的 UECap binarypb 仍按 SKU 独立管理：`caiman` 使用 `PLATFORM_9055801516233416490.binarypb` 三档，`komodo` 使用系统/外部原生路径并保持 stock；不能用 caiman 文件代替 XL 文件。
+**基带模块兼容性**：`pixel9pro_baseband_trial` 当前源码 manifest 只允许 `caiman` / `komodo`，两机共用 CarrierSettings、APN、China MCFG 和 IMS properties，但不携带 UECap payload。Control 的 UECap binarypb 按 SKU 独立 staging：`caiman` 使用 `PLATFORM_9055801516233416490.binarypb` 三档，`komodo` 使用独立的 `PLATFORM_6287228797510365516.binarypb` candidate；不能交叉解析或改名替代。
 
 **基带模块升级规则**：升级的是普通基带模块时，不要求卸载 APatch Manager，也不应由普通模块删除 `/data/adb/modules`、修改 `modules.img` 或自行写入 MetaModule content image。若旧模块的 active source、MetaModule content image、effective overlay、source/content/effective hash 及同一 boot 的 runtime receipt 都能复读确认，可以直接安装新版并在重启后复读；只有这些证据缺失、为空、冲突、跨 boot 或失败时，才进入 clean reinstall：Root Manager 卸载旧的普通基带模块 → 重启 → 安装新版 → 再重启 → 复读 active module、MetaModule content image、effective path、mount 和 runtime receipt。
 
@@ -200,7 +200,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 | 功能 | APatch / KSU+metamodule | Magisk |
 |---|---|---|
 | 温控阈值偏移、CPU 调度、ZRAM、后台应用限制、SIM2、NR 降级、WebUI | ✅ | ✅ |
-| UECap 三档基带切换 (balanced/special/universal) | ✅（仅 caiman） | ❌ 不支持 |
+| UECap：caiman 三档 / komodo stock+candidate | ✅（按 SKU） | ❌ 不激活 |
 | 独立基带模块 CarrierSettings/APN/China MCFG/IMS properties | ✅（caiman/komodo，需按各自挂载契约复读） | ✅（使用 Magic Mount；不承担 UECap） |
 
 ## 已知问题

@@ -9,9 +9,9 @@
 UECap ownership 按 SKU 固定：
 
 - caiman：Control 管理 `PLATFORM_9055801516233416490.binarypb` 的 `balanced`、`special`、`universal` 三档；
-- komodo：Control 保持 `external/stock`，不写入 `PLATFORM_6287228797510365516.binarypb`。
+- komodo：Control 默认保持 stock，只在用户显式选择时绑定独立 `PLATFORM_6287228797510365516.binarypb` candidate。
 
-这意味着安装框架、状态机、WebUI、通用 contract 可以复用，但 UECap filename、payload、hash、MCFG、firmware、`mcfg_hw`、Saipan 和 SKU-specific thermal stock 必须分别确认。
+发布 ZIP 同时携带两机私有 staging payload，但设备合同只能解析当前 `ro.product.device` 的 source/target/hash。komodo candidate 为用户提供文件，来源 build 未知、SHA-256 为 `f2c0bc1dc1409b1780dbdf57e56ebfef15cf7f889e76315343d2ae139cb19090`；未完成实机验证前不得升级为 verified。
 
 ## 2. UECap 状态模型
 

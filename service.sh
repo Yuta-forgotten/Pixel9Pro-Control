@@ -175,13 +175,23 @@ restore_ntp_server() {
 apply_uecap_profile() {
     if [ -f "$MODDIR/uecap_profile.sh" ]; then
         . "$MODDIR/uecap_profile.sh"
+        if ! uecap_is_available; then
+            log -t pixel9pro_ctrl "UECap runtime disabled: $(uecap_current_reason)"
+            return 0
+        fi
         _mode=$(uecap_current_manual_mode)
         if uecap_pre_modem_receipt_is_current "$_mode"; then
-            _source=$(uecap_resolve_source "$_mode")
+            _source_hash=""
+            if [ "$_mode" = stock ]; then
+                _source_hash=$(uecap_hash "$UECAP_TARGET")
+            else
+                _source=$(uecap_resolve_source "$_mode")
+                _source_hash=$(uecap_hash "$_source")
+            fi
             uecap_capture_radio_snapshot >/dev/null 2>&1 || true
             UECAP_RELOAD_DISPATCHED=false
             UECAP_RELOAD_RESULT="not_required_pre_modem"
-            uecap_write_runtime_receipt "$_mode" "$(uecap_hash "$_source")" \
+            uecap_write_runtime_receipt "$_mode" "$_source_hash" \
                 "$(uecap_hash "$UECAP_TARGET")" pre_modem applied pre_modem_observed \
                 >/dev/null 2>&1 || log -t pixel9pro_ctrl "WARNING: failed to refresh UECap pre-modem receipt"
             log -t pixel9pro_ctrl "UECap bind receipt refreshed: $_mode; modem load remains unconfirmed, actual_rat=$(uecap_receipt_get actual_rat 2>/dev/null || echo unknown), nr_registered=$(uecap_receipt_get nr_registered 2>/dev/null || echo unknown)"

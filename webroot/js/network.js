@@ -13,6 +13,7 @@ const state = {
   standbyDiag: null,
   uecapContract: null,
   uecapMode: 'unknown',
+  uecapPolicy: 'disabled',
   uecapActiveMode: 'unknown',
   uecapBusy: false,
   uecapPendingMode: '',
@@ -185,6 +186,7 @@ function applyUecapContract(data) {
 
 function getUecapModeHash(data, mode) {
   if (!data || !mode) return '';
+  if (mode === 'stock') return data.target_hash || '';
   return data[`${mode}_hash`] || '';
 }
 
@@ -250,6 +252,7 @@ function renderUecapRows(data) {
     : (data.requested_mode || state.uecapMode || state.uecapContract.defaultMode);
   const active = data.active_mode || receipt.bound_profile || (disabled ? 'stock' : 'custom');
   state.uecapMode = requested;
+  state.uecapPolicy = data.policy || data.runtime_policy || 'disabled';
   state.uecapActiveMode = active;
   const modeInfo = UECAP_MODE_PRESENTATION[requested];
   refs.uecapDesc.textContent = disabled
@@ -301,6 +304,8 @@ function renderUecapRows(data) {
     { label: 'Functional state', value: receipt.functional_state || 'unknown', cls: receipt.functional_state === 'verified' ? 'good' : 'warn' },
     { label: 'Receipt freshness', value: receipt.receipt_freshness || 'missing', cls: isCurrentReceipt ? 'good' : 'warn' },
     { label: 'Target', value: `${data.target_name || 'unknown'} / ${(data.target_hash || 'unknown').slice(0, 16)}`, cls: 'off' },
+    { label: 'Payload 状态', value: `${data.payload_state || 'unknown'} · ${data.payload_source_build || 'unknown'}`, cls: data.payload_state === 'verified' ? 'good' : data.payload_state === 'candidate' ? 'warn' : 'off' },
+    { label: 'Payload 合同', value: `${data.payload_bytes || 0} bytes / ${(data.payload_sha256 || 'unknown').slice(0, 16)}`, cls: 'off' },
     { label: '实际无线', value: radioResult, cls: observedRat === 'NR_SA' || observedRat === 'NR_NSA' ? 'good' : 'off' },
     { label: 'SA', value: observedRat === 'NR_SA' ? 'observed · 不要求 EN-DC' : 'not observed', cls: observedRat === 'NR_SA' ? 'good' : 'off' },
     { label: 'NSA', value: `${nsaStatus} · ${nsaReason}`, cls: nsaStatus === 'observed' ? 'good' : 'off' },
@@ -332,6 +337,7 @@ async function refreshUecap() {
     const data = await apiFetch(API.uecap, { timeoutMs: 6000 });
     applyUecapContract(data);
     state.uecapMode = data.requested_mode || state.uecapContract.defaultMode;
+    state.uecapPolicy = data.policy || data.runtime_policy || 'disabled';
     state.uecapActiveMode = data.active_mode || (state.uecapContract.disabled ? 'stock' : 'custom');
     const expectedHash = getUecapModeHash(data, state.uecapMode);
     if (!state.uecapPendingMode && state.uecapVerifyState === 'failed' && state.uecapMode === state.uecapActiveMode && (!expectedHash || expectedHash === data.target_hash)) {
@@ -414,6 +420,9 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
   state.uecapExpectedHash = expectedHash || '';
   state.uecapVerifyState = 'switching';
   renderUecapRows(lastData || {
+    policy: state.uecapPolicy,
+    disabled: false,
+    uecap_contract: { mode_order: state.uecapContract?.modeOrder || [], default_mode: state.uecapContract?.defaultMode || mode },
     requested_mode: mode,
     active_mode: state.uecapActiveMode || 'custom',
     target_hash: expectedHash || 'unknown'
@@ -500,6 +509,9 @@ async function setUecapMode(mode) {
   state.uecapVerifyState = 'switching';
   state.uecapVerifyMessage = `${label}：正在提交切换`;
   renderUecapRows({
+    policy: state.uecapPolicy,
+    disabled: false,
+    uecap_contract: { mode_order: state.uecapContract.modeOrder, default_mode: state.uecapContract.defaultMode },
     requested_mode: state.uecapMode || mode,
     active_mode: state.uecapActiveMode || 'custom',
     target_hash: state.uecapExpectedHash || 'unknown'
@@ -508,7 +520,7 @@ async function setUecapMode(mode) {
     const data = await apiFetch(API.uecap, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ policy: 'manual', mode }),
+      body: JSON.stringify({ policy: state.uecapPolicy, mode }),
       timeoutMs: 12000
     });
     if (data.ok) {
@@ -769,4 +781,3 @@ registerFeature('network', {
   },
 });
 })();
-

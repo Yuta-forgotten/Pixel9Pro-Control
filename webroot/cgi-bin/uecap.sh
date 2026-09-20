@@ -1,6 +1,6 @@
 #!/system/bin/sh
-# GET returns the device-scoped UECap state. POST switches a managed caiman tier;
-# external komodo and unsupported runtime combinations are read-only.  This
+# GET returns device-scoped UECap state. POST switches caiman profiles or the
+# explicit komodo stock/candidate choice; unsupported roots remain read-only. This
 # endpoint reports UECap ownership only; standalone baseband availability is
 # queried independently through check_baseband.sh.
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
@@ -40,8 +40,16 @@ case "$REQUEST_METHOD" in
         mode=$(printf '%s' "$body" | sed -n 's/.*"mode" *: *"\([a-z]*\)".*/\1/p')
         uecap_is_valid_mode "$mode" \
             || json_error '400 Bad Request' 'invalid mode'
-        policy=$(printf '%s' "$body" | sed -n 's/.*"policy" *: *"\([a-z]*\)".*/\1/p')
-        case "$policy" in ''|manual) ;; *) json_error '400 Bad Request' 'UECap policy is fixed to manual' ;; esac
+        policy=$(printf '%s' "$body" | sed -n 's/.*"policy" *: *"\([a-z_]*\)".*/\1/p')
+        _uecap_expected_policy=$(uecap_current_policy)
+        case "$policy" in
+            '') ;;
+            managed_profiles|single_candidate)
+                [ "$policy" = "$_uecap_expected_policy" ] \
+                    || json_error '409 Conflict' 'UECap policy does not match current SKU'
+                ;;
+            *) json_error '400 Bad Request' 'invalid UECap policy' ;;
+        esac
 
         _uecap_rc=0
         uecap_apply_mode "$mode" "manual_locked" || _uecap_rc=$?
