@@ -1,8 +1,8 @@
 # v4.6.00-rc1-hybrid3 — UI 第一轮候选 / Hybrid Mount 风险警告
 
-## 唯一发行警告
+## 发行警告
 
-**此版本的温度阈值修改有问题。APatch/KernelSU + MetaModule 方案下，运行期修改温控 source 可能造成 stale OverlayFS、source/effective hash 不一致、SELinux context 不一致或重启后卡第二屏。Magisk 运行期修改也不宣称安全；只有离线更新并重启后复读才进入可验证路径。**
+**此版本的温度阈值修改有问题。APatch/KernelSU + MetaModule 方案下，运行期修改温控 source 可能造成 stale OverlayFS、source/effective hash 不一致、SELinux context 不一致或重启后卡第二屏。**
 
 ## 曲线救国策略
 
@@ -23,4 +23,4 @@
 - 软件耗电排行与后台日志导出入口。
 - Hybrid Mount regular source readback receipt 改进。
 
-本 RC 不是稳定版；温控 A/B pending-slot 和 pre-mount promotion 仍在后续计划中，详见 `docs/后续验收与发布计划-20260921.md`。
+本 RC 不是稳定版；
