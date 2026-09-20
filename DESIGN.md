@@ -46,6 +46,8 @@ custom 目标 sensor 只展示真正改变阈值的 `-2/+2/+4/+6°C`，0°C 仅�
 
 NR 息屏降级、SIM2、后台限制和功耗采样是使用层策略，不裁剪设备能力表。当前 caiman 已有 `NR_SA`/n41 实机证据，NSA 仅保留兼容解析；LTE 快照不能单独证明 Control 失效。
 
+VM/ZRAM 默认 `system`，service 不写 sysctl、dirty 参数、ZRAM property 或设备节点；`optimized` 才允许这些 mutation，`disabled` 保留只读状态但禁用模块写入口。
+
 ## 5. WebUI 与后端 contract
 
 WebUI 是 presentation layer。参数、默认值、能力边界和状态字段由 shell/backend contract 提供，前端不复制 ownership 或硬编码安装状态。基带卡片展示 active/pending、content/effective、contract/hash、runtime receipt 和 radio observed 的分层结果；“目录存在”与“本次启动已验证”必须视觉上区分。

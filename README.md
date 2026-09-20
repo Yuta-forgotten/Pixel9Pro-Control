@@ -84,7 +84,7 @@ WebUI 实时温度优先读取后台 worker 维护的 `.thermal_cache.json`，�
 - 算法：由当前系统 owner 初始化；caiman / `CP41.260814.003.B1` 实机为 `lz77eh`（Emerald Hill 硬件加速）
 - 容量：WebUI 显示设备实际 `disksize` 与 swap 状态；当前 build 实测约 `7.6GiB`，历史 `11392MB` 仅作为目标/兼容性实验值，不覆盖 mmd-owned 配置
 - VM 参数：`swappiness=100`、`min_free_kbytes=131072`、`watermark_scale_factor=200`、`vfs_cache_pressure=60`
-- WebUI 支持模块默认、原厂恢复和手动调节四个 VM 参数；手动值即时生效并随 custom 模式开机恢复。ZRAM 算法/容量在 mmd-owned build 上只读显示 owner、实际容量、`/proc/swaps` 活跃状态和 `SwapTotal`，不提供伪在线调节。
+- 首次安装默认 `feature_vm=system`，模块不写 VM、ZRAM 或 dirty 参数。用户可显式选择模块优化或禁用本模块写入；WebUI 的模块优化/手动值均属于显式 mutation。ZRAM 算法/容量在 mmd-owned build 上只读显示 owner、实际容量、`/proc/swaps` 活跃状态和 `SwapTotal`，不提供伪在线调节。
 
 ### 待机与 modem 策略（以 Google 默认机制为主）
 
@@ -182,7 +182,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 1. 温控模块使用 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中发布；基带模块 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases#release-v1.1.0-rc3)
 2. KernelSU 用户需先安装 metamodule（如 `meta-overlayfs`）并重启
 3. APatch / KernelSU / Magisk → 模块 → 从存储安装
-4. **首次安装**：音量键交互向导，温控默认选择“不修改温控（不添加配置）”；只有选择 custom 后才继续选择真实偏移。CPU 调度可选“启用本模块性能调度”或“不启用本模块调度”；能力不完整时强制 fail closed 到 off。随后配置 UECap 档位（仅 APatch/KSU）、NR 降级和 NTP。
+4. **首次安装**：音量键交互向导依次配置温控、CPU 调度、按 SKU 的 UECap、NR、SIM2、VM/ZRAM 和 NTP；最终摘要后再次倒计时确认。安全默认是温控不添加配置、NR 关闭、VM/ZRAM system no-write，调度能力不完整时强制 off，komodo UECap 保持 stock。
 5. **升级安装**：Control 自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline。独立普通基带模块按上面的“基带模块升级规则”判断直接升级或 clean reinstall，不因 APatch Manager 更新本身强制卸载 Manager
 6. 重启
 7. 打开 `http://127.0.0.1:6210` 验证

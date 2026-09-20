@@ -3,6 +3,7 @@
 (() => {
 const state = {
   swapMode: 'unknown',
+  featureVm: 'system',
   swapData: null,
   swapBusy: false,
   swapLoading: false,
@@ -55,7 +56,9 @@ function describeVfs(v) {
 }
 function swapModeIntro(mode) {
   if (mode === 'optimized') return '<b>当前方案：模块默认</b><br>面向 Pixel 9 Pro 日常使用与 Tensor G4 低热取向的一组平衡 VM 参数。';
-  if (mode === 'stock') return '<b>当前方案：原厂</b><br>已恢复 Google 出厂 VM 参数，模块不再干预内存回收节奏。';
+  if (mode === 'system') return '<b>当前方案：系统默认</b><br>模块不写 VM、ZRAM 或 dirty 参数；下方数值仅为只读状态。';
+  if (mode === 'disabled') return '<b>当前方案：模块写入禁用</b><br>模块只读取当前状态，不修改 VM/ZRAM。';
+  if (mode === 'stock') return '<b>当前方案：系统参数口径</b><br>当前数值接近已知 stock 参考值。';
   return '<b>当前方案：自定义</b><br>以下为基于你手动设定值的实时分析；应用后以 custom 模式随下次开机恢复。';
 }
 function buildSwapDetail(data) {
@@ -76,7 +79,7 @@ function buildSwapDetail(data) {
   const targetSizeGB = d.zram_target_current_bytes > 0 ? (d.zram_target_current_bytes / 1073741824).toFixed(1) : '—';
   const sizeBlock = `<b>ZRAM 实际大小: ${sizeGB}GB${ramPct}</b><br>当前 owner: ${owner}；开机请求: ${escapeHtml(String(d.zram_size_requested || '50%'))}（约 ${targetSizeGB}GB）（${d.zram_target_supported === false ? '由系统 owner 在重启时应用' : '可尝试配置'}）。`;
   return [
-    swapModeIntro(d.mode),
+    swapModeIntro(d.feature_vm || d.mode),
     algoBlock,
     sizeBlock,
     `<b>swappiness: ${d.swappiness}</b><br>${describeSwappiness(d.swappiness)}`,
@@ -169,6 +172,7 @@ function renderSwapCard(data) {
     ? `Emerald Hill 硬件压缩 · 压缩率 ${ratio}% · 实占 ${fmtBytes(data.zram_mem_used_bytes)}`
     : `算法 ${data.zram_algo} · 目标 ${target.algorithm || 'unknown'}`;
   const rows = [
+    { label: '模块 VM 策略', value: data.feature_vm || 'system', cls: data.feature_vm === 'optimized' ? 'good' : 'off' },
     { label: 'ZRAM 状态', value: zramActive ? `已启用（${zramOwner}）` : '异常：未启用', cls: zramActive ? 'good' : 'off' },
     { label: 'ZRAM 算法', value: isEH ? '硬件加速' : data.zram_algo, cls: isEH && zramActive ? 'good' : 'warn' },
     { label: 'ZRAM 实际大小', value: `${sizeGB}GB`, cls: zramActive ? 'good' : 'off' },
@@ -188,6 +192,7 @@ async function refreshSwap() {
   try {
     const data = await apiFetch(API.swap, { timeoutMs: 6000 });
     state.swapMode = data.mode || 'custom';
+    state.featureVm = ['system', 'optimized', 'disabled'].includes(data.feature_vm) ? data.feature_vm : 'system';
     state.swapData = data;
     if (refs.swapZramSizeNumber) {
       const limits = data.zram_size_limits || {};
@@ -207,7 +212,7 @@ async function refreshSwap() {
       refs.swapTuneNumbers[key].max = String(limit.max);
       refs.swapTuneNumbers[key].step = String(limit.step);
     });
-    refs.swapToggleLabel.textContent = state.swapMode === 'optimized' ? '恢复原厂' : '应用模块默认';
+    refs.swapToggleLabel.textContent = state.featureVm === 'optimized' ? '使用系统默认' : '应用模块优化';
     renderSwapCard(data);
     refs.rtZramUsage.textContent = `${data.zram_disksize > 0 ? ((data.zram_orig_bytes / data.zram_disksize) * 100).toFixed(0) : '0'}% (${fmtBytes(data.zram_orig_bytes)} / ${(data.zram_disksize / 1073741824).toFixed(1)}GB)`;
     refs.rtRatio.textContent = data.zram_orig_bytes > 0 ? `${((data.zram_compr_bytes / data.zram_orig_bytes) * 100).toFixed(1)}% → 实占 ${fmtBytes(data.zram_mem_used_bytes)}` : '—';
@@ -601,13 +606,14 @@ async function bgRestrictRemove(pkg) {
 async function toggleSwapMode() {
   if (state.swapBusy) return;
   state.swapBusy = true;
-  const newMode = state.swapMode === 'optimized' ? 'stock' : 'optimized';
+  const newMode = state.featureVm === 'optimized' ? 'stock' : 'optimized';
   try {
     const data = await apiFetch(API.swap, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: newMode }), timeoutMs: 8000 });
     state.swapMode = data.mode || newMode;
+    state.featureVm = data.feature_vm || (newMode === 'optimized' ? 'optimized' : 'system');
     state.swapData = data;
-    showToast(newMode === 'optimized' ? '已应用模块默认 VM 参数' : '已恢复原厂 VM 参数');
-    appendLog(newMode === 'optimized' ? 'Swap 模块默认已应用' : 'Swap 已恢复原厂', 'ok');
+    showToast(newMode === 'optimized' ? '已应用模块优化 VM 参数' : '已切换为系统默认，后续开机不再写 VM/ZRAM');
+    appendLog(newMode === 'optimized' ? 'VM 模块优化已应用' : 'VM/ZRAM 已切换为系统默认 no-write', 'ok');
     renderSwapCard(data);
     refreshSwap();
   } catch (_) {
@@ -629,6 +635,7 @@ async function applySwapCustom() {
       timeoutMs: 8000
     });
     state.swapMode = data.mode || 'custom';
+    state.featureVm = data.feature_vm || 'optimized';
     state.swapData = data;
     showToast('自定义 VM 参数已应用');
     appendLog('Swap 自定义参数已应用', 'ok');
@@ -643,6 +650,7 @@ async function applySwapCustom() {
 }
 
 async function applyZramSizeRequest() {
+  if (state.featureVm !== 'optimized') { showToast('请先启用模块 VM 优化'); return; }
   const value = String(refs.swapZramSizeNumber?.value || '').trim();
   if (!value) { showToast('请输入 ZRAM 容量 bytes 或百分比'); return; }
   const bytes = Number(value);
@@ -663,7 +671,7 @@ registerFeature('memory', {
   refresh: refreshSwap,
   refreshRestrictions: refreshBgRestrict,
   isRefreshing: () => state.swapLoading,
-  getSwapMode: () => state.swapMode,
+  getSwapMode: () => state.featureVm,
   getSwapData: () => state.swapData,
   friendlyPackageLabel,
   buildSwapDetail,
@@ -681,4 +689,3 @@ registerFeature('memory', {
   forceRefreshBgRestrict
 });
 })();
-

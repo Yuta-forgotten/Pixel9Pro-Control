@@ -7,6 +7,7 @@ require_loopback
 
 SWAP_MODE_FILE="$MODDIR/.swap_mode"
 SWAP_CUSTOM_FILE="$MODDIR/.swap_custom"
+VM_FEATURE_FILE="$MODDIR/.feature_vm"
 VM_PROFILE_LIB="$MODDIR/scripts/vm_profile_lib.sh"
 
 [ -r "$VM_PROFILE_LIB" ] && . "$VM_PROFILE_LIB" \
@@ -31,7 +32,18 @@ restore_vm_state() {
         || _vm_restore_failed=1
     cgi_restore_file "$SWAP_CUSTOM_FILE" "$_old_custom_existed" "$_old_custom" >/dev/null 2>&1 \
         || _vm_restore_failed=1
+    cgi_restore_file "$VM_FEATURE_FILE" "$_old_feature_existed" "$_old_feature" >/dev/null 2>&1 \
+        || _vm_restore_failed=1
     [ "$_vm_restore_failed" -eq 0 ]
+}
+
+restore_vm_policy_state() {
+    _vm_policy_restore_failed=0
+    cgi_restore_file "$SWAP_MODE_FILE" "$_old_mode_existed" "$_old_mode" >/dev/null 2>&1 \
+        || _vm_policy_restore_failed=1
+    cgi_restore_file "$VM_FEATURE_FILE" "$_old_feature_existed" "$_old_feature" >/dev/null 2>&1 \
+        || _vm_policy_restore_failed=1
+    [ "$_vm_policy_restore_failed" -eq 0 ]
 }
 
 vm_write_error() {
@@ -69,12 +81,14 @@ emit_state() {
     stock_zram_bytes=$(awk '/MemTotal/{printf "%.0f", $2 * 512}' /proc/meminfo 2>/dev/null)
 
     mode=$(vm_detect_mode)
+    feature_vm=$(cat "$VM_FEATURE_FILE" 2>/dev/null | tr -d ' \r\n\t')
+    case "$feature_vm" in system|optimized|disabled) ;; *) feature_vm=system ;; esac
     contract=$(vm_contract_json)
 
-    printf '{"swappiness":%s,"min_free_kbytes":%s,"watermark_scale_factor":%s,"vfs_cache_pressure":%s,"zram_algo":"%s","zram_disksize":%s,"zram_active":%s,"zram_swap_kb":%s,"swap_total_kb":%s,"zram_owner":"%s","zram_target_supported":%s,"zram_size_property":"%s","zram_size_requested":"%s","zram_target_current_bytes":%s,"stock_zram_size":%s,"zram_orig_bytes":%s,"zram_compr_bytes":%s,"zram_mem_used_bytes":%s,"mode":"%s",%s}' \
+    printf '{"swappiness":%s,"min_free_kbytes":%s,"watermark_scale_factor":%s,"vfs_cache_pressure":%s,"zram_algo":"%s","zram_disksize":%s,"zram_active":%s,"zram_swap_kb":%s,"swap_total_kb":%s,"zram_owner":"%s","zram_target_supported":%s,"zram_size_property":"%s","zram_size_requested":"%s","zram_target_current_bytes":%s,"stock_zram_size":%s,"zram_orig_bytes":%s,"zram_compr_bytes":%s,"zram_mem_used_bytes":%s,"mode":"%s","feature_vm":"%s",%s}' \
         "${sw:-0}" "${mfk:-0}" "${wsf:-0}" "${vcp:-0}" "$(json_escape "${algo:-unknown}")" \
         "${disksize:-0}" "$zram_active" "${swap_kb:-0}" "${swap_total_kb:-0}" "$([ "$mmd_owned" = true ] && echo mmd || echo module)" "$([ "$mmd_owned" = true ] && echo false || echo true)" "$target_property" "$target_value" "$target_size_bytes" "${stock_zram_bytes:-0}" \
-        "${orig:-0}" "${compr:-0}" "${mem_used:-0}" "$mode" "$contract"
+        "${orig:-0}" "${compr:-0}" "${mem_used:-0}" "$mode" "$feature_vm" "$contract"
 }
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
@@ -87,14 +101,18 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     _old_vm_params=$(vm_current_params)
     _old_mode_existed=0
     _old_custom_existed=0
+    _old_feature_existed=0
     [ -e "$SWAP_MODE_FILE" ] && _old_mode_existed=1
     [ -e "$SWAP_CUSTOM_FILE" ] && _old_custom_existed=1
+    [ -e "$VM_FEATURE_FILE" ] && _old_feature_existed=1
     _old_mode=$(cat "$SWAP_MODE_FILE" 2>/dev/null)
     _old_custom=$(cat "$SWAP_CUSTOM_FILE" 2>/dev/null)
+    _old_feature=$(cat "$VM_FEATURE_FILE" 2>/dev/null)
     case "$mode" in
         optimized)
             set -- $(vm_profile_params optimized)
-            if persist_value "$SWAP_MODE_FILE" optimized \
+            if persist_value "$VM_FEATURE_FILE" optimized \
+                && persist_value "$SWAP_MODE_FILE" optimized \
                 && vm_write_params "$1" "$2" "$3" "$4"; then
                 emit_state
             else
@@ -102,12 +120,12 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             fi
             ;;
         stock)
-            set -- $(vm_profile_params stock)
-            if persist_value "$SWAP_MODE_FILE" stock \
-                && vm_write_params "$1" "$2" "$3" "$4"; then
+            if persist_value "$VM_FEATURE_FILE" system \
+                && persist_value "$SWAP_MODE_FILE" stock; then
                 emit_state
             else
-                vm_write_error
+                restore_vm_policy_state >/dev/null 2>&1 || true
+                json_error '500 Internal Server Error' 'failed to persist system VM policy; previous state restored'
             fi
             ;;
         custom)
@@ -135,6 +153,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                     } > "$_custom_tmp" 2>/dev/null \
                     && mv "$_custom_tmp" "$SWAP_CUSTOM_FILE" 2>/dev/null \
                     && [ -f "$SWAP_CUSTOM_FILE" ] \
+                    && persist_value "$VM_FEATURE_FILE" optimized \
                     && persist_value "$SWAP_MODE_FILE" custom \
                     && vm_write_params "$sw" "$mfk" "$wsf" "$vcp"; then
                     emit_state
@@ -144,7 +163,18 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                 fi
             fi
             ;;
+        disabled)
+            if persist_value "$VM_FEATURE_FILE" disabled \
+                && persist_value "$SWAP_MODE_FILE" disabled; then
+                emit_state
+            else
+                restore_vm_policy_state >/dev/null 2>&1 || true
+                json_error '500 Internal Server Error' 'failed to persist disabled VM policy; previous state restored'
+            fi
+            ;;
         zram_size)
+            [ "$(cat "$VM_FEATURE_FILE" 2>/dev/null | tr -d ' \r\n\t')" = optimized ] \
+                || json_error '409 Conflict' 'VM optimization is not enabled'
             _zram_requested=$(printf '%s' "$body" | sed -n 's/.*"size_bytes"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9][0-9]*%\{0,1\}\)"\{0,1\}.*/\1/p')
             vm_zram_size_is_valid "$_zram_requested" \
                 || json_error '400 Bad Request' 'invalid zram size_bytes (1GiB..16GiB or percent)'

@@ -568,18 +568,67 @@ if [ "$_is_upgrade" -eq 0 ]; then
 
     # --- NR 息屏降级 ---
     ui_print "  ④ NR 息屏降级 (息屏自动切 LTE 省电):"
-    ui_print "    [音量+] = 关闭  [音量-] = 开启"
-    if chooseport; then
-        installer_write "$MODPATH/.nr_screen_switch" off
-        ui_print "    ✓ 关闭"
-    else
-        installer_write "$MODPATH/.nr_screen_switch" on
-        ui_print "    ✓ 开启"
-    fi
+    _nr_vals="off on"
+    _nr_idx=0
+    while true; do
+        _i=0; _nr_choice=""
+        for _v in $_nr_vals; do
+            if [ "$_i" -eq "$_nr_idx" ]; then _nr_choice=$_v; break; fi
+            _i=$((_i + 1))
+        done
+        [ "$_nr_choice" = on ] && _nr_label="开启" || _nr_label="关闭 (安全默认)"
+        ui_print "    > $_nr_label"
+        if chooseport; then _nr_idx=$(( (_nr_idx + 1) % 2 )); else break; fi
+    done
+    installer_write "$MODPATH/.nr_screen_switch" "$_nr_choice"
+    ui_print "    ✓ $_nr_label"
+    ui_print ""
+
+    # --- SIM2 空槽管理 ---
+    ui_print "  ⑤ SIM2 空槽管理:"
+    _sim2_vals="on off"
+    _sim2_idx=0
+    while true; do
+        _i=0; _sim2_choice=""
+        for _v in $_sim2_vals; do
+            if [ "$_i" -eq "$_sim2_idx" ]; then _sim2_choice=$_v; break; fi
+            _i=$((_i + 1))
+        done
+        [ "$_sim2_choice" = on ] && _sim2_label="开启 (空槽自动管理)" || _sim2_label="关闭"
+        ui_print "    > $_sim2_label"
+        if chooseport; then _sim2_idx=$(( (_sim2_idx + 1) % 2 )); else break; fi
+    done
+    installer_write "$MODPATH/.sim2_auto_manage" "$_sim2_choice"
+    ui_print "    ✓ $_sim2_label"
+    ui_print ""
+
+    # --- VM/ZRAM 策略 ---
+    ui_print "  ⑥ VM/ZRAM 策略:"
+    _vm_vals="system optimized disabled"
+    _vm_idx=0
+    while true; do
+        _i=0; _vm_choice=""
+        for _v in $_vm_vals; do
+            if [ "$_i" -eq "$_vm_idx" ]; then _vm_choice=$_v; break; fi
+            _i=$((_i + 1))
+        done
+        case "$_vm_choice" in
+            system) _vm_label="系统默认 (推荐，不写 VM/ZRAM)" ;;
+            optimized) _vm_label="模块优化" ;;
+            disabled) _vm_label="禁用本模块 VM/ZRAM 写入" ;;
+        esac
+        ui_print "    > $_vm_label"
+        if chooseport; then _vm_idx=$(( (_vm_idx + 1) % 3 )); else break; fi
+    done
+    case "$_vm_choice" in system) _swap_choice=stock ;; *) _swap_choice="$_vm_choice" ;; esac
+    installer_write "$MODPATH/.swap_mode" "$_swap_choice"
+    install_state_write feature_vm "$INSTALL_FEATURE_VM_FILE" "$_vm_choice" \
+        || { ui_print "  ✗ 无法提交 VM feature 状态"; exit 1; }
+    ui_print "    ✓ $_vm_label"
     ui_print ""
 
     # --- NTP ---
-    ui_print "  ⑤ NTP 服务器:"
+    ui_print "  ⑦ NTP 服务器:"
     _NTP_VALS=$(ntp_server_hosts)
     set -- $_NTP_VALS
     _ntp_idx=0
@@ -602,9 +651,6 @@ if [ "$_is_upgrade" -eq 0 ]; then
     installer_write "$MODPATH/.ntp_server" "$_ntp_cur"
     ui_print "    ✓ $_ntp_label"
     ui_print ""
-
-    # --- ZRAM / VM 使用共享 contract 的模块默认值 ---
-    installer_write "$MODPATH/.swap_mode" "$VM_MODE_DEFAULT"
 
 else
     # 升级模式: 确保必要的默认值存在

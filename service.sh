@@ -13,6 +13,7 @@ TOKEN_FILE="$MODDIR/.webui_token"
 THERMAL_CACHE="$MODDIR/.thermal_cache.json"
 LOCKDIR_BASE="$MODDIR/.locks"
 ZRAM_STATE_FILE="$MODDIR/.zram_state"
+VM_FEATURE_FILE="$MODDIR/.feature_vm"
 SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 SCHED_OWNER_DESIRED_FILE="$MODDIR/.sched_owner_desired"
 GAME_HANDOFF_POLICY_FILE="$MODDIR/.game_handoff_policy"
@@ -85,6 +86,18 @@ VM_PROFILE_AVAILABLE=0
 if [ -r "$MODDIR/scripts/vm_profile_lib.sh" ]; then
     . "$MODDIR/scripts/vm_profile_lib.sh" 2>/dev/null && VM_PROFILE_AVAILABLE=1
 fi
+VM_FEATURE_MODE=$(cat "$VM_FEATURE_FILE" 2>/dev/null | tr -d ' \r\n\t')
+case "$VM_FEATURE_MODE" in
+    system|optimized|disabled) ;;
+    *)
+        case "$(cat "$MODDIR/.swap_mode" 2>/dev/null | tr -d ' \r\n\t')" in
+            optimized|custom) VM_FEATURE_MODE=optimized ;;
+            disabled) VM_FEATURE_MODE=disabled ;;
+            *) VM_FEATURE_MODE=system ;;
+        esac
+        runtime_write_value "$VM_FEATURE_FILE" "$VM_FEATURE_MODE" >/dev/null 2>&1 || true
+        ;;
+esac
 scheduler_owner_init "$MODDIR" "/data/adb/fas_rs"
 sbm_init "$MODDIR" "/data/adb/fas_rs"
 
@@ -643,7 +656,7 @@ manage_sim2_radio
 ip link set wlan0 multicast off 2>/dev/null
 
 # === 内核 I/O 参数优化 ===
-if [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
+if [ "$VM_PROFILE_AVAILABLE" -eq 1 ] && [ "$VM_FEATURE_MODE" = optimized ]; then
     vm_apply_dirty_params \
         || log -t pixel9pro_ctrl "WARNING: failed to apply one or more VM dirty-page parameters"
 fi
@@ -652,7 +665,7 @@ fi
 # battery use 0; default and the internal performance baseline use 1024.
 
 # === ZRAM / VM 配置 ===
-if [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
+if [ "$VM_PROFILE_AVAILABLE" -eq 1 ] && [ "$VM_FEATURE_MODE" = optimized ]; then
 zram_record_state() {
     _zr_algo=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | sed 's/.*\[\(.*\)\].*/\1/')
     _zr_size=$(cat /sys/block/zram0/disksize 2>/dev/null | tr -d ' \n\r')
@@ -758,7 +771,11 @@ case "$SWAP_MODE" in
         ;;
 esac
 else
-    log -t pixel9pro_ctrl "WARNING: VM profile library missing, skipped ZRAM/VM restore"
+    if [ "$VM_PROFILE_AVAILABLE" -ne 1 ]; then
+        log -t pixel9pro_ctrl "WARNING: VM profile library missing, skipped ZRAM/VM restore"
+    else
+        log -t pixel9pro_ctrl "VM/ZRAM mode=$VM_FEATURE_MODE: no module writes applied"
+    fi
 fi
 
 log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: boot policy restore completed; warnings above remain authoritative"
