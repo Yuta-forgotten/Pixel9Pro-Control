@@ -48,6 +48,7 @@ UECAP_READBACK_EFFECTIVE_HASH=""
 UECAP_READBACK_CONTENT_PATH="none"
 UECAP_READBACK_CONTENT_CONTEXT="none"
 UECAP_READBACK_EFFECTIVE_CONTEXT="unknown"
+UECAP_HYBRID_CONFIG="/data/adb/hybrid-mount/config.toml"
 UECAP_DEVICE="unknown"
 UECAP_DEVICE_LABEL="unknown"
 UECAP_DEVICE_POLICY="unknown"
@@ -175,8 +176,7 @@ uecap_active_metamodule() {
         *) return 1 ;;
     esac
     [ ! -e "$_uecap_meta_target/skip_mount" ] || return 1
-    [ ! -e "$_uecap_meta_target/disable" ] && [ ! -e "$_uecap_meta_target/remove" ] \
-        && mountpoint -q "$_uecap_meta_target/mnt" 2>/dev/null
+    [ ! -e "$_uecap_meta_target/disable" ] && [ ! -e "$_uecap_meta_target/remove" ]
 }
 
 uecap_metamodule_declared() {
@@ -192,11 +192,26 @@ uecap_metamodule_declared() {
     [ ! -e "$_uecap_meta_target/skip_mount" ]
 }
 
+uecap_hybrid_mount_active() {
+    uecap_active_metamodule || return 1
+    _uecap_hybrid_target=$(readlink -f "$UECAP_METAMODULE_LINK" 2>/dev/null) || return 1
+    _uecap_hybrid_id=$(sed -n 's/^id=//p' "$_uecap_hybrid_target/module.prop" 2>/dev/null | head -n 1 | tr -d ' \n\r\t')
+    _uecap_hybrid_name=$(sed -n 's/^name=//p' "$_uecap_hybrid_target/module.prop" 2>/dev/null | head -n 1 | tr -d '\r')
+    case "$_uecap_hybrid_id:$_uecap_hybrid_name" in
+        hybrid_mount:*|hybrid-mount:*|*:Hybrid\ Mount*) ;;
+        *) [ -x "$_uecap_hybrid_target/hybrid-mount" ] || [ -r "$UECAP_HYBRID_CONFIG" ] || return 1 ;;
+    esac
+    [ -r "$UECAP_HYBRID_CONFIG" ] || return 1
+    return 0
+}
+
 uecap_refresh_runtime_policy() {
     UECAP_ROOT_IMPL=$(uecap_detect_root_impl)
     UECAP_RUNTIME_POLICY="disabled"
     if [ "$UECAP_ROOT_IMPL" = apatch ] || [ "$UECAP_ROOT_IMPL" = kernelsu ]; then
-        if uecap_active_metamodule; then
+        if uecap_hybrid_mount_active; then
+            UECAP_BACKEND="hybrid_mount"
+        elif uecap_active_metamodule; then
             UECAP_BACKEND="metamodule_content"
         else
             UECAP_BACKEND="metamodule_unavailable"
@@ -466,6 +481,63 @@ uecap_meta_vendor_overlay_has_module() {
         | grep -F "lowerdir=$_uecap_overlay_legacy" >/dev/null 2>&1
 }
 
+uecap_hybrid_mount_observed() {
+    _uecap_hybrid_source="/data/adb/modules/${MODDIR##*/}/system/vendor"
+    _uecap_hybrid_source_alias="/data/adb/modules/${MODDIR##*/}/vendor"
+    _uecap_hybrid_target="/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME"
+    _uecap_hybrid_mounts=$(grep -F " /vendor " /proc/self/mountinfo 2>/dev/null || true)
+    printf '%s\n' "$_uecap_hybrid_mounts" | grep -F "lowerdir=$_uecap_hybrid_source" >/dev/null 2>&1 && return 0
+    printf '%s\n' "$_uecap_hybrid_mounts" | grep -F "lowerdir=$_uecap_hybrid_source_alias" >/dev/null 2>&1 && return 0
+    grep -F " $_uecap_hybrid_target " /proc/self/mountinfo >/dev/null 2>&1
+}
+
+uecap_hybrid_readback_mode() {
+    _uecap_readback_mode="$1"
+    UECAP_READBACK_RESULT=failed
+    UECAP_READBACK_MODE="$_uecap_readback_mode"
+    UECAP_READBACK_SOURCE_HASH=""
+    UECAP_READBACK_CONTENT_HASH=""
+    UECAP_READBACK_EFFECTIVE_HASH=""
+    UECAP_READBACK_CONTENT_PATH=none
+    UECAP_READBACK_CONTENT_CONTEXT=none
+    UECAP_READBACK_EFFECTIVE_CONTEXT=unknown
+    UECAP_CONTEXT_VERIFIED=false
+    [ "$UECAP_BACKEND" = hybrid_mount ] || return 1
+    uecap_is_valid_mode "$_uecap_readback_mode" || return 1
+    _uecap_hybrid_effective_hash=$(uecap_hash "$UECAP_TARGET")
+    _uecap_hybrid_effective_context=$(ls -Zd "$UECAP_TARGET" 2>/dev/null | awk '{print $1}')
+    [ -n "$_uecap_hybrid_effective_hash" ] \
+        && [ "$_uecap_hybrid_effective_context" = u:object_r:vendor_fw_file:s0 ] || return 1
+    UECAP_READBACK_EFFECTIVE_HASH="$_uecap_hybrid_effective_hash"
+    UECAP_READBACK_EFFECTIVE_CONTEXT="$_uecap_hybrid_effective_context"
+    if [ "$_uecap_readback_mode" = stock ]; then
+        _uecap_hybrid_baseline=$(cat "$UECAP_STOCK_BASELINE_FILE" 2>/dev/null | tr -d ' \n\r\t')
+        [ "$UECAP_READBACK_EFFECTIVE_HASH" = "$_uecap_hybrid_baseline" ] || return 1
+        UECAP_MOUNT_OBSERVED=stock
+        UECAP_READBACK_SOURCE_HASH="$_uecap_hybrid_baseline"
+        UECAP_READBACK_CONTENT_HASH=none
+        UECAP_READBACK_CONTENT_PATH=none
+        UECAP_READBACK_CONTENT_CONTEXT=none
+    else
+        _uecap_hybrid_source="$MODDIR/system/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME"
+        _uecap_hybrid_source_hash=$(uecap_hash "$(uecap_resolve_source "$_uecap_readback_mode")")
+        _uecap_hybrid_source_context=$(ls -Zd "$_uecap_hybrid_source" 2>/dev/null | awk '{print $1}')
+        [ -n "$_uecap_hybrid_source_hash" ] \
+            && [ "$(uecap_hash "$_uecap_hybrid_source")" = "$_uecap_hybrid_source_hash" ] \
+            && [ "$_uecap_hybrid_source_context" = u:object_r:vendor_fw_file:s0 ] \
+            && [ "$_uecap_hybrid_source_hash" = "$UECAP_READBACK_EFFECTIVE_HASH" ] || return 1
+        uecap_hybrid_mount_observed || return 1
+        UECAP_READBACK_SOURCE_HASH="$_uecap_hybrid_source_hash"
+        UECAP_READBACK_CONTENT_HASH="$_uecap_hybrid_source_hash"
+        UECAP_READBACK_CONTENT_PATH="$_uecap_hybrid_source"
+        UECAP_READBACK_CONTENT_CONTEXT="$_uecap_hybrid_source_context"
+        UECAP_MOUNT_OBSERVED=hybrid_mount
+    fi
+    UECAP_CONTEXT_VERIFIED=true
+    UECAP_READBACK_RESULT=verified
+    return 0
+}
+
 uecap_meta_readback_mode() {
     _uecap_readback_mode="$1"
     UECAP_READBACK_RESULT=failed
@@ -477,6 +549,10 @@ uecap_meta_readback_mode() {
     UECAP_READBACK_CONTENT_CONTEXT=none
     UECAP_READBACK_EFFECTIVE_CONTEXT=unknown
     UECAP_CONTEXT_VERIFIED=false
+    if [ "$UECAP_BACKEND" = hybrid_mount ]; then
+        uecap_hybrid_readback_mode "$_uecap_readback_mode"
+        return $?
+    fi
     [ "$UECAP_BACKEND" = metamodule_content ] || return 1
     uecap_is_valid_mode "$_uecap_readback_mode" || return 1
 
@@ -540,9 +616,52 @@ uecap_meta_readback_mode() {
     return 0
 }
 
+uecap_hybrid_stage_mode() {
+    _uecap_hybrid_stage_mode="$1"
+    _uecap_hybrid_stage_root="$MODDIR/system/vendor/firmware/uecapconfig"
+    _uecap_hybrid_stage_target="$_uecap_hybrid_stage_root/$UECAP_TARGET_NAME"
+    case "$_uecap_hybrid_stage_mode" in
+        disabled|stock)
+            rm -f "$_uecap_hybrid_stage_target" 2>/dev/null || return 1
+            _uecap_hybrid_baseline=$(uecap_hash "$UECAP_TARGET")
+            _uecap_hybrid_context=$(ls -Zd "$UECAP_TARGET" 2>/dev/null | awk '{print $1}')
+            [ -n "$_uecap_hybrid_baseline" ] \
+                && [ "$_uecap_hybrid_context" = u:object_r:vendor_fw_file:s0 ] || return 1
+            uecap_atomic_write "$UECAP_STOCK_BASELINE_FILE" "$_uecap_hybrid_baseline" || return 1
+            uecap_atomic_write "$MODDIR/.uecap_content_image" metadata_staging || return 1
+            uecap_atomic_write "$MODDIR/.uecap_backend" hybrid_mount || return 1
+            UECAP_CONTENT_IMAGE=metadata_staging
+            UECAP_STAGE_RESULT=stock
+            return 0
+            ;;
+    esac
+    _uecap_hybrid_stage_source=$(uecap_resolve_source "$_uecap_hybrid_stage_mode") || return 1
+    [ -f "$_uecap_hybrid_stage_source" ] || return 1
+    mkdir -p "$_uecap_hybrid_stage_root" || return 1
+    chcon --reference=/vendor "$MODDIR/system/vendor" 2>/dev/null || return 1
+    chcon --reference=/vendor/firmware "$MODDIR/system/vendor/firmware" 2>/dev/null || return 1
+    chcon --reference=/vendor/firmware/uecapconfig "$_uecap_hybrid_stage_root" 2>/dev/null || return 1
+    cp -f "$_uecap_hybrid_stage_source" "$_uecap_hybrid_stage_target" || return 1
+    chmod 0644 "$_uecap_hybrid_stage_target" || return 1
+    chcon --reference=/vendor/firmware/uecapconfig "$_uecap_hybrid_stage_target" 2>/dev/null \
+        || chcon u:object_r:vendor_fw_file:s0 "$_uecap_hybrid_stage_target" 2>/dev/null \
+        || return 1
+    [ "$(ls -Zd "$_uecap_hybrid_stage_target" 2>/dev/null | awk '{print $1}')" = u:object_r:vendor_fw_file:s0 ] || return 1
+    [ "$(uecap_hash "$_uecap_hybrid_stage_target")" = "$(uecap_hash "$_uecap_hybrid_stage_source")" ] || return 1
+    uecap_atomic_write "$MODDIR/.uecap_content_image" metadata_staging || return 1
+    uecap_atomic_write "$MODDIR/.uecap_backend" hybrid_mount || return 1
+    UECAP_CONTENT_IMAGE="$_uecap_hybrid_stage_target"
+    UECAP_STAGE_RESULT=staged
+    return 0
+}
+
 uecap_stage_mode() {
     _uecap_stage_mode="$1"
     UECAP_STAGE_RESULT="failed"
+    if [ "$UECAP_BACKEND" = hybrid_mount ]; then
+        uecap_hybrid_stage_mode "$_uecap_stage_mode"
+        return $?
+    fi
     [ "$UECAP_BACKEND" = metamodule_content ] || {
         UECAP_STAGE_RESULT="not_metamodule"
         return 0
@@ -598,6 +717,7 @@ uecap_stage_mode() {
 uecap_verify_staged_mode() {
     _uecap_verify_mode="$1"
     uecap_meta_readback_mode "$_uecap_verify_mode" || return 1
+    rm -f "$MODDIR/.uecap_reboot_required" 2>/dev/null || true
     UECAP_CONTENT_IMAGE="$UECAP_READBACK_CONTENT_PATH"
     UECAP_DESIRED_PROFILE="$_uecap_verify_mode"
     UECAP_BOUND_PROFILE="$_uecap_verify_mode"
@@ -749,7 +869,7 @@ uecap_bind_status() {
         && [ -n "$_uecap_bind_source_hash" ] \
         && [ "$_uecap_bind_source_hash" = "$_uecap_bind_target_hash" ] \
         && [ "$_uecap_bind_context" = "$_uecap_bind_expected_context" ] \
-        && { [ "$UECAP_BACKEND" = metamodule_content ] || uecap_target_is_mounted; } \
+        && { [ "$UECAP_BACKEND" = metamodule_content ] || [ "$UECAP_BACKEND" = hybrid_mount ] || uecap_target_is_mounted; } \
         && printf 'verified' \
         || printf 'unverified'
 }
@@ -918,7 +1038,7 @@ uecap_refresh_observed_state() {
             _uecap_observed_source=$(uecap_resolve_source "$UECAP_DESIRED_PROFILE" 2>/dev/null || true)
             _uecap_observed_source_hash=$(uecap_hash "$_uecap_observed_source")
         fi
-        if [ "$UECAP_BACKEND" = metamodule_content ]; then
+        if [ "$UECAP_BACKEND" = metamodule_content ] || [ "$UECAP_BACKEND" = hybrid_mount ]; then
             uecap_meta_readback_mode "$UECAP_DESIRED_PROFILE" >/dev/null 2>&1 || true
             UECAP_BOUND_PROFILE=$(uecap_detect_active_mode)
         elif [ "$UECAP_DESIRED_PROFILE" = stock ] && ! uecap_target_is_mounted; then
@@ -981,14 +1101,14 @@ uecap_refresh_observed_state() {
 uecap_pre_modem_receipt_is_current() {
     _uecap_pre_modem_mode="$1"
     uecap_is_valid_mode "$_uecap_pre_modem_mode" || return 1
-    if [ "$UECAP_BACKEND" = metamodule_content ]; then
+    if [ "$UECAP_BACKEND" = metamodule_content ] || [ "$UECAP_BACKEND" = hybrid_mount ]; then
         uecap_meta_readback_mode "$_uecap_pre_modem_mode" || return 1
         [ "$(uecap_receipt_get schema)" = "3" ] \
             && [ "$(uecap_receipt_get boot_id)" = "$(uecap_boot_id)" ] \
             && [ "$(uecap_receipt_get reason)" = "pre_modem" ] \
             && [ "$(uecap_receipt_get requested_mode)" = "$_uecap_pre_modem_mode" ] \
             && [ "$(uecap_receipt_get active_mode)" = "$_uecap_pre_modem_mode" ] \
-            && [ "$(uecap_receipt_get backend)" = metamodule_content ] \
+            && [ "$(uecap_receipt_get backend)" = "$UECAP_BACKEND" ] \
             && [ "$(uecap_receipt_get reload_result)" = not_required_pre_modem ] \
             && [ "$(uecap_receipt_get mount_observed)" = "$UECAP_MOUNT_OBSERVED" ] \
             && [ "$(uecap_receipt_get context_verified)" = true ] \
@@ -1184,7 +1304,7 @@ uecap_detect_active_mode() {
         echo unknown
         return 0
     fi
-    if [ "$UECAP_BACKEND" = metamodule_content ]; then
+    if [ "$UECAP_BACKEND" = metamodule_content ] || [ "$UECAP_BACKEND" = hybrid_mount ]; then
         for _uecap_detect_mode in $UECAP_MODE_ORDER; do
             if uecap_meta_readback_mode "$_uecap_detect_mode" >/dev/null 2>&1; then
                 echo "$_uecap_detect_mode"
@@ -1254,6 +1374,27 @@ uecap_apply_mode() {
     [ "$_uecap_apply_mode_value" != "unknown" ] || return 1
     _uecap_apply_reason="${2:-manual}"
     case "$_uecap_apply_reason" in ''|*[!A-Za-z0-9_.:-]*) return 1 ;; esac
+
+    if [ "$UECAP_BACKEND" = hybrid_mount ]; then
+        uecap_stage_mode "$_uecap_apply_mode_value" || {
+            UECAP_APPLY_RESULT="hybrid_stage_failed"
+            return 1
+        }
+        _uecap_hybrid_switch_time=$(date +%s 2>/dev/null || echo 0)
+        uecap_commit_state "$_uecap_apply_mode_value" "$_uecap_apply_reason" "$_uecap_hybrid_switch_time" || {
+            UECAP_APPLY_RESULT="hybrid_state_commit_failed"
+            return 1
+        }
+        uecap_atomic_write "$MODDIR/.uecap_reboot_required" 1 || {
+            UECAP_APPLY_RESULT="hybrid_reboot_marker_failed"
+            return 1
+        }
+        UECAP_APPLY_RESULT=staged_reboot_required
+        UECAP_MOUNT_OBSERVED=pending_reboot
+        UECAP_RELOAD_RESULT=not_required_pre_modem
+        UECAP_FUNCTIONAL_STATE=pending_reboot
+        return 5
+    fi
 
     if [ "$_uecap_apply_mode_value" = stock ]; then
         [ -e "$UECAP_TARGET" ] || { UECAP_APPLY_RESULT="target_missing"; return 1; }
@@ -1510,7 +1651,11 @@ uecap_print_status_json() {
         "$(uecap_json_escape "$_uecap_receipt_backend")" "$(uecap_json_escape "$_uecap_receipt_content_image")" "$(uecap_json_escape "$_uecap_receipt_content_hash")" "$(uecap_json_escape "$_uecap_receipt_effective_hash")" "$(uecap_json_escape "$_uecap_receipt_mount_observed")" \
         "$( [ "$_uecap_receipt_context_verified" = true ] && printf true || printf false )" "$(uecap_json_escape "$_uecap_receipt_content_context")" "$(uecap_json_escape "$_uecap_receipt_effective_context")"
     uecap_print_ui_contract_json
-    printf ',"reinstall_required":%s' "$( [ "$UECAP_BACKEND" = metamodule_content ] && printf true || printf false )"
+    _uecap_reboot_required=false
+    [ -f "$MODDIR/.uecap_reboot_required" ] && _uecap_reboot_required=true
+    printf ',"reinstall_required":%s,"reboot_required":%s' \
+        "$( [ "$UECAP_BACKEND" = metamodule_content ] && printf true || printf false )" \
+        "$_uecap_reboot_required"
     printf ',"runtime_receipt":{"schema":%s,"boot_id":"%s","updated_at":"%s","reason":"%s","apply_result":"%s","reload_dispatched":%s,"reload_result":"%s","effective_state":"%s","bind_status":"%s","backend":"%s","content_image":"%s","content_hash":"%s","effective_hash":"%s","mount_observed":"%s","context_verified":%s,"content_context":"%s","effective_context":"%s","device":"%s","device_policy":"%s","desired_profile":"%s","bound_profile":"%s","modem_load_state":"%s","modem_loaded_profile":"%s","radio_observed_state":"%s","functional_state":"%s","receipt_freshness":"%s","actual_rat":"%s","nr_available":"%s","endc_available":"%s","nr_registered":"%s","nr_band":"%s","nr_arfcn":"%s","nr_frequency_range":"%s","lte_anchor":"%s","nsa_status":"%s","nsa_reason":"%s"}}' \
         "$_uecap_receipt_schema" "$(uecap_json_escape "$_uecap_receipt_boot_id")" "$_uecap_receipt_updated_at" \
         "$(uecap_json_escape "$_uecap_receipt_reason")" "$(uecap_json_escape "$_uecap_receipt_apply")" \

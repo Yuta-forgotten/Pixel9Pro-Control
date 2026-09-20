@@ -15,14 +15,17 @@ THERMAL_POLICY_LIB="$MODDIR/scripts/thermal_policy_lib.sh"
 
 THERMAL_METAMODULE_ACTIVE=0
 THERMAL_METAMODULE_CONTENT_ROOT=""
+THERMAL_MOUNT_BACKEND=none
 if [ -r "$MODDIR/uecap_profile.sh" ] && . "$MODDIR/uecap_profile.sh" 2>/dev/null \
     && uecap_active_metamodule; then
     THERMAL_METAMODULE_ACTIVE=1
+    THERMAL_MOUNT_BACKEND="${UECAP_BACKEND:-metamodule_content}"
     THERMAL_METAMODULE_CONTENT_ROOT=$(uecap_meta_content_root 2>/dev/null || true)
 fi
 
 thermal_metamodule_guard() {
-    [ "$THERMAL_METAMODULE_ACTIVE" -eq 1 ] || return 0
+    [ "$THERMAL_METAMODULE_ACTIVE" -eq 1 ] \
+        && [ "$THERMAL_MOUNT_BACKEND" = metamodule_content ] || return 0
     [ -n "$THERMAL_METAMODULE_CONTENT_ROOT" ] \
         || json_error '500 Internal Server Error' '无法解析 MetaModule content image 路径'
     case "$1" in
@@ -147,10 +150,10 @@ emit_thermal_state() {
     [ -f "$OUT_JSON" ] && _ts_overlay=true || _ts_overlay=false
     if thermal_policy_validate_stock "$STOCK_JSON"; then _ts_custom=true; else _ts_custom=false; fi
     _ts_reinstall_required=false
-    [ "$THERMAL_METAMODULE_ACTIVE" -eq 1 ] && _ts_reinstall_required=true
-    printf '"policy":"%s","offset":%s,"overlay_present":%s,"custom_available":%s,"metamodule_active":%s,"reinstall_required":%s,"thermal_contract":' \
+    [ "$THERMAL_MOUNT_BACKEND" = metamodule_content ] && _ts_reinstall_required=true
+    printf '"policy":"%s","offset":%s,"overlay_present":%s,"custom_available":%s,"metamodule_active":%s,"mount_backend":"%s","reinstall_required":%s,"thermal_contract":' \
         "$_ts_policy" "$_ts_offset" "$_ts_overlay" "$_ts_custom" \
-        "$([ "$THERMAL_METAMODULE_ACTIVE" -eq 1 ] && printf true || printf false)" \
+        "$([ "$THERMAL_METAMODULE_ACTIVE" -eq 1 ] && printf true || printf false)" "$THERMAL_MOUNT_BACKEND" \
         "$_ts_reinstall_required"
     thermal_print_ui_contract_json
 }

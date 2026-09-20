@@ -1,8 +1,7 @@
 #!/system/bin/sh
 
-# MetaModule mount runs before this stage. Bind the selected managed UECap
-# payload here; this verifies the target view before late service runs, but it
-# does not by itself prove that the modem has loaded the payload.
+# The selected MetaModule backend runs before this stage. Verify the effective
+# UECap target before late service runs; this does not prove modem load.
 MODDIR="${0%/*}"
 export PIXEL9PRO_MODDIR="$MODDIR"
 
@@ -14,9 +13,9 @@ if ! uecap_is_available; then
 fi
 
 _uecap_post_mount_mode=$(uecap_current_manual_mode)
-if [ "$UECAP_BACKEND" = metamodule_content ]; then
+if [ "$UECAP_BACKEND" = metamodule_content ] || [ "$UECAP_BACKEND" = hybrid_mount ]; then
     if uecap_verify_staged_mode "$_uecap_post_mount_mode" >/dev/null 2>&1; then
-        log -t pixel9pro_ctrl "UECap effective target verified from MetaModule content image: $_uecap_post_mount_mode; modem load remains unconfirmed"
+        log -t pixel9pro_ctrl "UECap effective target verified from $UECAP_BACKEND: $_uecap_post_mount_mode; modem load remains unconfirmed"
     else
         UECAP_MOUNT_OBSERVED=content_readback_failed
         uecap_write_runtime_receipt "$_uecap_post_mount_mode" "" "" \

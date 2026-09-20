@@ -40,6 +40,14 @@ const showToast = (...args) => core().showToast(...args);
 const sleep = (...args) => core().sleep(...args);
 const syncOptionalModuleUi = () => requireFeature('profile').syncOptionalModuleUi();
 
+function formatDuration(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return '—';
+  if (value >= 3600) return `${Math.floor(value / 3600)}小时${Math.floor((value % 3600) / 60)}分`;
+  if (value >= 60) return `${Math.floor(value / 60)}分${Math.floor(value % 60)}秒`;
+  return `${Math.floor(value)}秒`;
+}
+
 function buildNrSwitchDetail() {
   const contract = state.nrContract || {};
   const delay = Number.isFinite(contract.screenOffDelayS) ? contract.screenOffDelayS : null;
@@ -102,13 +110,14 @@ function formatStandbyTimestamp(value) {
 }
 
 function renderStandbyGuard(data) {
+  const updatedAt = Number(data.diag_updated_at || data.diag_updated_epoch || 0);
   state.sim2AutoManage = data.sim2_auto_manage === 'on' ? 'on' : 'off';
   state.idleIsolateMode = data.idle_isolate_mode === 'on' ? 'on' : 'off';
   state.standbyDiag = {
-    updatedAt: data.diag_updated_at || '',
+    updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : '',
     screen: data.diag_screen || 'unknown',
     workerMode: data.diag_worker_mode || 'unknown',
-    nextSleepSecs: data.diag_next_sleep_secs || '',
+    nextSleepSecs: data.diag_next_sleep_secs || data.diag_next_sleep_sec || '',
     burstActive: data.diag_burst_active || '0',
     nrSwitch: data.diag_nr_switch || 'off',
     nrState: data.diag_nr_state || 'unknown',
@@ -151,12 +160,14 @@ function renderStandbyGuard(data) {
     const profileLabel = `${state.standbyDiag.profilePolicy === 'auto' ? '自动' : '手动'} / ${state.standbyDiag.activeProfile || 'unknown'}`;
     [
       { label: '最近更新', value: formatStandbyTimestamp(state.standbyDiag.updatedAt), cls: 'off' },
-      { label: '当前屏幕', value: state.standbyDiag.screen === 'on' ? '亮屏' : state.standbyDiag.screen === 'off' ? '息屏' : '未知', cls: state.standbyDiag.screen === 'on' ? 'warn' : 'good' },
-      { label: 'worker 分支', value: standbyWorkerModeLabel(state.standbyDiag.workerMode), cls: standbyWorkerModeClass(state.standbyDiag.workerMode) },
-      { label: '下次复查', value: state.standbyDiag.nextSleepSecs ? `${state.standbyDiag.nextSleepSecs}s` : '—', cls: 'off' },
+      { label: '当前屏幕', value: state.standbyDiag.screen === 'on' ? '亮屏' : state.standbyDiag.screen === 'off' ? '息屏' : '未知', cls: state.standbyDiag.screen === 'on' ? 'good' : state.standbyDiag.screen === 'off' ? 'off' : 'warn' },
+      { label: '当前工作', value: standbyWorkerModeLabel(state.standbyDiag.workerMode), cls: standbyWorkerModeClass(state.standbyDiag.workerMode) },
+      { label: '下次检查约', value: state.standbyDiag.nextSleepSecs ? formatDuration(Number(state.standbyDiag.nextSleepSecs)) : '—', cls: 'off' },
+      { label: '温度采样', value: state.standbyDiag.screen === 'on' ? '亮屏约每 15 秒' : '息屏暂停', cls: state.standbyDiag.screen === 'on' ? 'good' : 'off' },
+      { label: '功耗采样', value: state.standbyDiag.screen === 'on' ? '亮屏约每 60 秒' : '息屏约每 10 分钟', cls: 'off' },
       { label: 'NR 状态', value: nrLabel, cls: state.standbyDiag.nrState === 'lte' ? 'warn' : 'off' },
       { label: '调度状态', value: profileLabel, cls: 'off' },
-      { label: '循环计数', value: state.standbyDiag.cycleCount || '0', cls: 'off' },
+      { label: '检查次数', value: state.standbyDiag.cycleCount || '0', cls: 'off' },
     ].forEach((row) => refs.standbyDiagRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
   }
 
@@ -562,6 +573,16 @@ async function setUecapMode(mode) {
     if (data.ok) {
       state.uecapMode = data.requested_mode || mode;
       state.uecapActiveMode = data.active_mode || state.uecapActiveMode || 'custom';
+      if (data.reboot_required) {
+        state.uecapBusy = false;
+        state.uecapPendingMode = '';
+        state.uecapExpectedHash = '';
+        state.uecapVerifyState = 'idle';
+        renderUecapRows(data);
+        showToast(`${label}：已写入 Hybrid Mount staging，重启后生效`, 4200);
+        appendLog(`UE 配置已写入 staging: ${label}，等待重启`, 'warn');
+        return;
+      }
       const expectedHash = getUecapModeHash(data, mode) || data.target_hash || '';
       state.uecapExpectedHash = expectedHash;
       state.uecapVerifyState = data.reloading ? 'switching' : 'verifying';
@@ -685,31 +706,42 @@ function syncDeviceClockForTab() {
 
 function renderNtpCard(data) {
   refs.ntpServerList.replaceChildren();
+  refs.ntpServerList.setAttribute('role', 'radiogroup');
+  refs.ntpServerList.setAttribute('aria-label', 'NTP 服务器');
   const servers = Array.isArray(data.servers)
-    ? data.servers.filter((server) => server && server.id && server.name)
+    ? data.servers.map((server) => ({
+      ...server,
+      id: server?.id || server?.host || '',
+      name: server?.name || server?.label || server?.host || '',
+      desc: server?.desc || server?.region || ''
+    })).filter((server) => server.id)
     : state.ntpServers;
   if (!servers.length) {
     refs.ntpServerList.appendChild(errorBlock('NTP 服务器配置为空'));
     return;
   }
   state.ntpServers = servers;
-  const current = data.ntp_server || data.default_server || servers[0].id;
+  const requested = data.ntp_server || data.current || data.server || data.default_server || servers[0].id;
+  const current = servers.some((server) => server.id === requested) ? requested : servers[0].id;
   state.ntpServer = current;
   servers.forEach((srv) => {
-    const card = document.createElement('div');
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.setAttribute('role', 'radio');
+    card.setAttribute('aria-checked', String(srv.id === current));
     card.className = `opt-item${srv.id === current ? ' ntp-selected' : ''}`;
-    card.style.cursor = 'pointer';
+    card.setAttribute('aria-label', `${srv.name || srv.id}，${srv.id === current ? '当前服务器' : '切换到此服务器'}`);
     const head = document.createElement('div');
     head.className = 'opt-item-head';
     const label = document.createElement('div');
     label.className = 'opt-label';
-    label.textContent = srv.name;
+    label.textContent = srv.name || srv.id;
     const badge = document.createElement('span');
     badge.className = `badge ${srv.id === current ? 'good' : 'off'}`;
     badge.textContent = srv.id === current ? '当前' : '切换';
     const meta = document.createElement('div');
     meta.className = 'opt-meta';
-    meta.textContent = `${srv.id} · ${srv.desc}`;
+    meta.textContent = `${srv.id} · ${srv.desc || '系统提供的时间同步服务器'}`;
     head.append(label, badge);
     card.append(head, meta);
     card.addEventListener('click', () => setNtpServer(srv.id));

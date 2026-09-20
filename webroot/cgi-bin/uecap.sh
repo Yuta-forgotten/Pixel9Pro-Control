@@ -25,6 +25,13 @@ emit_apply_failure() {
         "$_applied" "$(json_escape "$1")" "$_json"
 }
 
+emit_staged_reboot() {
+    _json=$(uecap_print_status_json)
+    _json=${_json#\{}
+    printf '{"ok":true,"applied":false,"reboot_required":true,"reloading":false,"error":"%s",%s\n' \
+        "$(json_escape "$1")" "$_json"
+}
+
 case "$REQUEST_METHOD" in
     GET)
         json_headers
@@ -75,6 +82,10 @@ case "$REQUEST_METHOD" in
             4)
                 json_status_headers '409 Conflict'
                 emit_apply_failure '活动 MetaModule 使用 content image；UECap 档位变更需卸载 Control、重启后重新安装' false
+                ;;
+            5)
+                json_headers
+                emit_staged_reboot 'Hybrid Mount staging 已更新；重启后复读有效 /vendor'
                 ;;
             *)
                 json_error '500 Internal Server Error' "uecap apply failed ($UECAP_APPLY_RESULT)"

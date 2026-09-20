@@ -378,19 +378,23 @@ if [ "$ROOT_IMPL" = "APatch" ] || [ "$ROOT_IMPL" = "KernelSU" ]; then
         ui_print "  ✗ 无法解析活动 MetaModule target"
         exit 1
     }
-    mountpoint -q "$_meta_target/mnt" 2>/dev/null || {
-        ui_print "  ✗ MetaModule content image 未挂载，拒绝继续安装"
-        exit 1
-    }
-    if [ ! -r "$MODPATH/scripts/metamodule_compat.sh" ] \
-        || ! . "$MODPATH/scripts/metamodule_compat.sh"; then
-        ui_print "  ✗ 当前 MetaModule hook 未通过 context contract，拒绝安装"
-        ui_print "    需要支持 canonical SELinux context 的 MetaModule"
-        exit 1
-    fi
-    if uecap_meta_content_exists; then
-        ui_print "  ✗ 检测到旧 Control content image；必须先卸载旧 Control、重启，再安装本包"
-        exit 1
+    if [ "$UECAP_BACKEND" = hybrid_mount ]; then
+        ui_print "  ✓ Hybrid Mount detected: regular module source will be mounted after reboot"
+    else
+        mountpoint -q "$_meta_target/mnt" 2>/dev/null || {
+            ui_print "  ✗ MetaModule content image 未挂载，拒绝继续安装"
+            exit 1
+        }
+        if [ ! -r "$MODPATH/scripts/metamodule_compat.sh" ] \
+            || ! . "$MODPATH/scripts/metamodule_compat.sh"; then
+            ui_print "  ✗ 当前 MetaModule hook 未通过 context contract，拒绝安装"
+            ui_print "    需要支持 canonical SELinux context 的 MetaModule"
+            exit 1
+        fi
+        if uecap_meta_content_exists; then
+            ui_print "  ✗ 检测到旧 MetaModule content image；必须先执行 cleanup、重启，再安装本包"
+            exit 1
+        fi
     fi
 fi
 case "$device" in
@@ -789,7 +793,7 @@ else
 fi
 
 if [ "$UECAP_DISABLED" -eq 0 ] \
-    && [ "$UECAP_BACKEND" = "metamodule_content" ]; then
+    && { [ "$UECAP_BACKEND" = "metamodule_content" ] || [ "$UECAP_BACKEND" = "hybrid_mount" ]; }; then
     _stage_mode=$(cat "$MODPATH/.uecap_mode" 2>/dev/null | tr -d ' \r\n\t')
     PIXEL9PRO_MODDIR="$MODPATH" sh "$MODPATH/uecap_profile.sh" stage "$_stage_mode"
     _stage_rc=$?
@@ -800,7 +804,11 @@ if [ "$UECAP_DISABLED" -eq 0 ] \
         ui_print "  ✗ 无法将 UECap 写入 MetaModule content image staging"
         exit 1
     fi
-    ui_print "  UECap: $_stage_mode 已写入 MetaModule content image staging，重启后复读有效 /vendor"
+    if [ "$UECAP_BACKEND" = hybrid_mount ]; then
+        ui_print "  UECap: $_stage_mode 已写入 Hybrid Mount regular module staging，重启后复读有效 /vendor"
+    else
+        ui_print "  UECap: $_stage_mode 已写入 MetaModule content image staging，重启后复读有效 /vendor"
+    fi
 fi
 
 _offset_raw=$(cat "$OFFSET_FILE" 2>/dev/null | tr -d ' \n\r\t')
@@ -931,7 +939,8 @@ case "$THERMAL_POLICY" in
         ;;
 esac
 
-if [ "$ROOT_IMPL" = APatch ] || [ "$ROOT_IMPL" = KernelSU ]; then
+if { [ "$ROOT_IMPL" = APatch ] || [ "$ROOT_IMPL" = KernelSU ]; } \
+    && [ "$UECAP_BACKEND" = metamodule_content ]; then
     meta_module_prepare_hook "$_meta_target" || {
         ui_print "  ✗ MetaModule hook 未通过版本/hash 合同，拒绝安装"
         exit 1
