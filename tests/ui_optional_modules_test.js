@@ -161,7 +161,10 @@ assert(schedulerBootLib.includes('module "$_sbm_apd_action"') && schedulerBootLi
 assert(schedulerReconcile.includes('SBM_MAX_WRITE_ATTEMPTS') && schedulerReconcile.includes('sr_verify_profile_stable'), 'scheduler reconcile must bound writes and verify stability');
 assert(schedulerGuard.includes('retry_budget_exhausted') && schedulerGuard.includes('STG_TERMINAL=yes'), 'scheduler transition guard must latch a final retry result');
 assert(schedulerGuard.includes('STG_TERMINAL_FILE') && schedulerGuard.includes('stg_commit_terminal_bounded'), 'scheduler transition guard must preserve terminal success/failure through a fallback channel');
-assert(service.includes('scheduler_reconcile.sh" health') && service.includes('SBM_HEALTH_INTERVAL_S'), 'service must run the independent low-frequency read-only health worker');
+assert(service.includes('scheduler_reconcile.sh" health')
+  && service.includes('CPU_PROFILE_HEALTH_INTERVAL_S')
+  && service.includes('CPU profile contract unavailable')
+  && !service.includes('SBM_HEALTH_INTERVAL_S'), 'service must run the independent low-frequency read-only health worker from the CPU contract');
 assert(app.includes('refs.schedulerHealthRow.hidden = false'), 'scheduler health UI must not be coupled to optional UGT visibility');
 assert(app.includes('检查延后 · 调度切换中') && app.includes('检查延后 · 外部调度接管中'), 'deferred scheduler health must explain transition and external-owner states');
 assert(schedulerOwnerLib.includes('SO_TRANSITION_LOCK_INIT_GRACE_S') && schedulerOwnerLib.includes('so_reclaim_transition_lock()'), 'owner lock contract must distinguish initialization grace from bounded stale reclaim');

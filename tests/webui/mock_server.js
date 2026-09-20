@@ -28,10 +28,29 @@ let telemetrySession = null;
 const cpuContract = {
   foreground_cpus: '0-6',
   background_cpus: '0-3',
+  system_background_cpus: '0-3',
+  schema: 2,
+  ownership: {
+    foreground_cpus: 'framework',
+    top_app_cpus: 'pixel_best_effort',
+    background_cpus: 'pixel_transaction',
+    system_background_cpus: 'pixel_transaction',
+    response_time_ms: 'pixel_best_effort',
+    sched_util_clamp_min: 'pixel_best_effort',
+    vendor_sched_l2: 'pixel_best_effort',
+    scaling_min_max_freq: 'thermal_powerhal_scene',
+  },
+  writeback_policy: 'apply_verify_once_then_observe',
+  health_interval_s: 300,
+  auto: {
+    profiles: ['balanced', 'battery'],
+    discharge: { hot_temp_mc: 38800, hot_hold_s: 60, cool_temp_mc: 37500, cool_hold_s: 120 },
+    charging: { thermal_status_min: 2, hot_temp_mc: 39800, hot_hold_s: 60, cool_temp_mc: 37500, cool_hold_s: 120 },
+  },
   profiles: {
     performance: { response_ms: [12, 20, 80], uclamp_cap: 1024, top_app_cpus: '0-7' },
-    balanced: { response_ms: [16, 40, 200], uclamp_cap: 0, top_app_cpus: '0-7' },
-    battery: { response_ms: [28, 80, 320], uclamp_cap: 0, top_app_cpus: '0-6' },
+    balanced: { response_ms: [16, 64, 240], uclamp_cap: 0, top_app_cpus: '0-6' },
+    battery: { response_ms: [16, 96, 320], uclamp_cap: 0, top_app_cpus: '0-6' },
     default: { response_ms: null, uclamp_cap: 1024, top_app_cpus: '0-7' },
   },
 };

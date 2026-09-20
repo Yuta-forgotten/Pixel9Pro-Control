@@ -92,21 +92,21 @@ const PROFILES = {
   },
   balanced: {
     name: '均衡',
-    summary: '兼顾前台响应与日常功耗，适合作为常用档位。',
-    desc: '保留全核调度能力，同时控制不必要的升频。',
+    summary: '把普通前台负载留在小中核，保留突发响应并压低长亮屏功耗。',
+    desc: '日常前台优先小中核，控制视频、网页和系统 UI 的稳态升频。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     modeClass: 'mode-balanced',
-    detail: '日常均衡基线：保留全核调度能力，同时抑制不必要的 per-task boost。'
+    detail: '日常均衡基线：top-app 使用 cpu0-6；小核保持及时响应，中核与 X4 延后升频，抑制不必要的 per-task boost。'
   },
   battery: {
     name: '省电',
-    summary: '减少大核参与并放缓升频，降低轻中负载功耗。',
-    desc: '优先使用小中核，适合待机与轻度使用。',
+    summary: '在热平台或低电量时进一步放慢中大核响应，保持小核效率。',
+    desc: '优先小中核并延后突发大核，适合久热、导航和长时间视频。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     modeClass: 'mode-battery',
-    detail: '日常省电基线：放缓升频并让 top-app 避开大核 X4，降低轻中负载功耗。'
+    detail: '日常省电基线：top-app 使用 cpu0-6；小核仍保持 16ms 响应，避免低频高占用，中核/X4 仅在更明显的突发需求时补位。'
   },
   default: {
     name: '系统默认',
@@ -115,7 +115,7 @@ const PROFILES = {
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     modeClass: 'mode-stock',
-    detail: '恢复内核当前提供的 response_time_ms_nom、出厂 cpuset 与完整 boost 上限；具体数值由运行态 contract 提供。'
+    detail: '恢复内核当前提供的 response_time_ms_nom、出厂 top-app/background 路由与完整 boost 上限；foreground 仍由 framework 管理，具体数值由运行态 contract 提供。'
   },
   off: {
     name: '不启用本模块调度',

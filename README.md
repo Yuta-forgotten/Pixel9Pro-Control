@@ -49,21 +49,24 @@ WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电�
 
 | 模式 (WebUI 顺序) | top-app | response_time_ms (小/中/大) | uclamp.min cap | 说明 |
 |------|---------|------|------|------|
-| ① 省电 | cpu0-6 | 32 / 96 / 200 | 0 | 放慢升频；top-app 排除大核 X4 |
-| ② 均衡 | cpu0-7 | 16 / 40 / 200 | 0 | 中等升频速率；top-app 全核（默认档） |
+| ① 省电 | cpu0-6 | 16 / 96 / 320 | 0 | 保持小核效率；延后中核/X4，适合久热与长时间使用 |
+| ② 均衡 | cpu0-6 | 16 / 64 / 240 | 0 | 日常前台优先小中核；保留突发响应并压低长亮屏功耗 |
 | ③ 系统默认 | cpu0-7 | 内核 nom（本机 9 / 52 / 165） | 1024 | 恢复内核出厂调度：response 回写只读 `response_time_ms_nom`、cpuset 与 cap 还原出厂值，不压制 boost |
 | 性能优先 | cpu0-7 | 12 / 20 / 80 | 1024 | 内部基线 (force/CLI)，不在 WebUI；不参与自动策略 |
 
 - 调度通过 `cpuset` 和 `sched_pixel response_time_ms` 控制；不直接写 `scaling_max_freq`
-- `foreground/cpus` 会被 framework 重置到 `0-6`，模块主要托管 `top-app/background/system-background`
-- 自动模式以均衡为日常底座，温度持续偏高时收口至省电，回落后恢复；死区设有粘滞，避免边界来回抖动
+- `foreground/cpus` 是 framework-owned：只读观察，模块不写、不快照、不回滚，也不把它作为 profile 成功条件；模块主要托管 `top-app/background/system-background`
+- `top-app`、`response_time_ms`、uclamp cap 与 vendor_sched L2 都是 volatile best-effort：每次明确事务只写入并立即复读一次，后续被 Scene/PowerHAL/framework 回写时只记录漂移
+- 自动模式以均衡为日常底座；放电 `VIRTUAL-SKIN ≥38.8°C/60s`、充电 `≥39.8°C/60s` 或 Thermal Status ≥2 时收口至省电，回落到 `≤37.5°C/120s` 后恢复；死区设有粘滞，避免边界来回抖动
 - `.scheduler_boot_state` 区分 pending / verifying / success / failed；`.sched_owner_desired` 与 `.cpu_sched_owner` 只在重启后验证通过时提交，fas-rs 游戏 lease 不覆盖启动模式
 - Pixel 日常调度下，fas-rs 常驻 PID 只表示服务可用；有效游戏 lease 才令 `effective=external`，退出后恢复原 Pixel auto/manual 状态并保留 resident process
 - UGT 日常调度下，owner worker 只在游戏 lease 边界暂停/恢复 UGT；进入 lease 前必须确认单一 UGT baseline，退出后只调用 UGT lifecycle helper 恢复单实例，不重放完整 boot 初始化
 - CPU、cpuset、uclamp cap 与 vendor_sched L2 同属一个 profile 事务；省电 L2 为 `150/80`，均衡/性能为 `200/100`，系统默认恢复 `1024/308`
 - Auto、owner、WebUI profile/handoff 共用同一 transition lock；拿锁后复读 boot mode、desired/effective owner、policy 与当前 profile，旧决策只返回 no-op
 - 周期性 owner/auto 决策遇到锁占用立即跳过并在下一周期重新计算；WebUI 写请求只做短时有界等待，避免旧前台/温度决策排队后补写
-- 独立 300 秒 health 只读调度节点；先检查 transition lock，再对控制面和 profile 做前后快照。切换中或状态变化时不改持久 health 文件，由 compact GET 动态返回 deferred；fas-rs 临时接管可记录稳定 deferred；首次稳定 mismatch 最多触发一次有界 repair
+- 独立 300 秒 health 只读调度节点；先检查 transition lock，再对控制面和 profile 做前后快照。切换中或状态变化时不改持久 health 文件，由 compact GET 动态返回 deferred；fas-rs 临时接管可记录稳定 deferred；发现系统回写只记录 drift，不由后台 worker 自动 repair
+
+调度参数的所有权由 `scripts/cpu_profile_lib.sh` 的 JSON contract 统一声明：`foreground/cpus=framework`（observe-only）；`top-app/response_time_ms/sched_util_clamp_min/vendor_sched L2=pixel_best_effort`；`background/system-background=pixel_transaction`；`scaling_min/max_freq=thermal_powerhal_scene`。因此一次写成功只代表本次事务的 readback，不代表跨场景永久占有；需要恢复时由下一次明确的 profile/owner 事务触发。
 
 当实际 `.cpu_sched_owner=external` 时，本模块跳过 Pixel profile/auto 写入；该状态可能是 UGT 日常 baseline，也可能是 fas-rs 游戏 lease，必须结合 `.owner_state` 判断。永久从 UGT 回到 Pixel 仍需先 staging/禁用 UGT 并重启；游戏临时 lease 只在本次 boot 内恢复原 baseline。温控、ZRAM、NR/SIM2、UECap 与 WebUI 始终由本模块负责。
 

@@ -211,8 +211,12 @@ function bindStaticEvents() {
     const detailState = appFeatures.profile.getCpuDetailState();
     const contract = detailState.cpuContract;
     const profileContract = contract?.profiles?.[detailState.currentProfile];
+    const ownership = contract?.ownership || {};
+    const foreground = contract?.foreground_cpus || contract?.cpusets?.foreground?.cpus || 'unknown';
+    const background = contract?.background_cpus || contract?.cpusets?.background?.cpus || 'unknown';
+    const systemBackground = contract?.system_background_cpus || contract?.cpusets?.system_background?.cpus || background;
     const cpuSet = profileContract && contract
-      ? `top-app: cpu${profileContract.top_app_cpus}\nforeground: cpu${contract.foreground_cpus}\nbackground: cpu${contract.background_cpus}`
+      ? `top-app: cpu${profileContract.top_app_cpus}\nforeground: cpu${foreground} (${ownership.foreground_cpus || 'framework'}，只读观察)\nbackground: cpu${background}\nsystem-background: cpu${systemBackground}`
       : '运行参数尚未读取';
     let html = `<b>当前模式</b><br>${(PROFILES[detailState.currentProfile] || PROFILES.unknown).name}<br><br>`;
     html += detailState.schedOwner === 'external'
@@ -229,6 +233,10 @@ function bindStaticEvents() {
         html += `governor: ${appFeatures.core.escapeHtml(cluster.gov || '—')}`;
       });
     } else html += '<br><br>暂无频率快照，请先刷新一次。';
+    if (contract) {
+      html += `<br><br><b>参数所有权</b><br>top-app / response / uclamp / vendor L2：${appFeatures.core.escapeHtml(ownership.top_app_cpus || 'pixel_best_effort')}<br>foreground：${appFeatures.core.escapeHtml(ownership.foreground_cpus || 'framework')}（系统回写，模块不抢写）<br>频率上下限：${appFeatures.core.escapeHtml(ownership.scaling_min_max_freq || 'thermal_powerhal_scene')}`;
+      html += `<br><b>写回策略</b>：${appFeatures.core.escapeHtml(contract.writeback_policy || 'apply_verify_once_then_observe')}；health ${Number(contract.health_interval_s) || 300}s 只读`;
+    }
     openDetail('CPU 调度参数详情', html);
   });
   refs.detailModal.querySelector('.modal-bg').addEventListener('click', appFeatures.ui.closeDetailModal);

@@ -128,18 +128,26 @@ sr_publish_owner_transaction() {
 
 sr_verify_profile_stable() {
     _sr_verify_deadline="$1"
+    # The profile script has already performed the authoritative write/readback
+    # transaction.  Do one immediate strict verify, then only observe later
+    # samples.  Scene/PowerHAL/framework are allowed to rewrite volatile
+    # best-effort nodes after that point; treating such writeback as a failed
+    # boot transaction would cause repeated profile writes.
+    _sr_verify_now=$(sbm_now)
+    [ "$_sr_verify_now" -le "$_sr_verify_deadline" ] 2>/dev/null || return 1
+    sh "$MODDIR/scripts/cpu_profile.sh" verify "$MODDIR" >/dev/null 2>&1 || return 1
     _sr_sample=1
-    while [ "$_sr_sample" -le "$SBM_VERIFY_SAMPLES" ] 2>/dev/null; do
+    while [ "$_sr_sample" -lt "$SBM_VERIFY_SAMPLES" ] 2>/dev/null; do
+        _sr_verify_now=$(sbm_now)
+        _sr_verify_remaining=$((_sr_verify_deadline - _sr_verify_now))
+        [ "$_sr_verify_remaining" -ge "$SBM_VERIFY_INTERVAL_S" ] 2>/dev/null || break
+        sleep "$SBM_VERIFY_INTERVAL_S"
         _sr_verify_now=$(sbm_now)
         [ "$_sr_verify_now" -le "$_sr_verify_deadline" ] 2>/dev/null || return 1
-        sh "$MODDIR/scripts/cpu_profile.sh" verify "$MODDIR" >/dev/null 2>&1 || return 1
-        _sr_sample=$((_sr_sample + 1))
-        if [ "$_sr_sample" -le "$SBM_VERIFY_SAMPLES" ] 2>/dev/null; then
-            _sr_verify_now=$(sbm_now)
-            _sr_verify_remaining=$((_sr_verify_deadline - _sr_verify_now))
-            [ "$_sr_verify_remaining" -ge "$SBM_VERIFY_INTERVAL_S" ] 2>/dev/null || return 1
-            sleep "$SBM_VERIFY_INTERVAL_S"
+        if [ -f "$MODDIR/scripts/cpu_profile.sh" ]; then
+            sh "$MODDIR/scripts/cpu_profile.sh" observe "$MODDIR" >/dev/null 2>&1 || true
         fi
+        _sr_sample=$((_sr_sample + 1))
     done
     return 0
 }

@@ -91,9 +91,15 @@ function buildProfileDetail(key) {
   const response = Array.isArray(values.response_ms)
     ? values.response_ms.map((value) => `${value}ms`).join(' / ')
     : '内核 response_time_ms_nom（运行时复读）';
-  html += `<br><br><b>cpuset</b>: top-app → cpu${escapeHtml(values.top_app_cpus || 'unknown')}，foreground → cpu${escapeHtml(contract.foreground_cpus || 'unknown')}，background → cpu${escapeHtml(contract.background_cpus || 'unknown')}`;
+  const ownership = contract.ownership || {};
+  const foreground = contract.foreground_cpus || contract.cpusets?.foreground?.cpus || 'unknown';
+  const background = contract.background_cpus || contract.cpusets?.background?.cpus || 'unknown';
+  const systemBackground = contract.system_background_cpus || contract.cpusets?.system_background?.cpus || background;
+  html += `<br><br><b>cpuset</b>: top-app → cpu${escapeHtml(values.top_app_cpus || 'unknown')}，background → cpu${escapeHtml(background)}，system-background → cpu${escapeHtml(systemBackground)}`;
+  html += `<br><b>foreground</b>: cpu${escapeHtml(foreground)}（${escapeHtml(ownership.foreground_cpus || 'framework')}，只读观察，系统可回写）`;
   html += `<br><b>response_time_ms</b>: ${escapeHtml(response)}`;
   html += `<br><b>sched_util_clamp_min</b>: ${Number.isFinite(values.uclamp_cap) ? values.uclamp_cap : 'unknown'}`;
+  html += `<br><b>回写边界</b>: ${escapeHtml(contract.writeback_policy || 'apply_verify_once_then_observe')}；健康检查每 ${Number(contract.health_interval_s) || 300}s 只读观察`;
   return html;
 }
 
@@ -315,7 +321,7 @@ function syncOwnerArbiterUi() {
     const health = state.schedulerHealth;
     refs.schedulerHealthLabel.textContent = health.status === 'healthy'
       ? '控制面健康'
-      : health.status === 'drift' ? `检测到漂移 · ${health.reason || 'profile 不一致'}`
+      : health.status === 'drift' ? `检测到漂移 · ${health.reason || 'profile 不一致'}（仅观察，不抢写）`
         : health.status === 'blocked' ? `已阻断 · ${health.reason || '外部残留'}`
           : health.status === 'deferred'
             ? (health.reason === 'fas_rs_runtime_lease' || health.reason === 'effective_owner_external'
@@ -434,7 +440,7 @@ function syncProfileUi() {
   const pixelPolicyDesc = isAuto
     ? (autoTransitionFailed
       ? '自动切档连续失败并已停止；切到手动档后可重新启用自动。'
-      : `自动模式：按“${describeAutoReason(state.autoReason)}”在均衡与省电间切换；点击模式卡片转为手动。`)
+       : `自动模式：按“${describeAutoReason(state.autoReason)}”在均衡与省电间切换；系统回写的调度参数只记录漂移，不在后台抢写；点击模式卡片转为手动。`)
     : `手动模式：固定为「${profile.name}」；切换为自动后，仅在温度持续偏高时收口至省电。`;
   refs.perfPolicyDesc.textContent = hasExternalScheduler() ? `${pixelPolicyDesc} ${getSchedulerPixelDesc()}` : pixelPolicyDesc;
   refs.profilePolicyManualBtn.className = `seg-btn${!isAuto ? ' active' : ''}`;

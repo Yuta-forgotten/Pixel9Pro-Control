@@ -13,7 +13,6 @@ TOKEN_FILE="$MODDIR/.webui_token"
 THERMAL_CACHE="$MODDIR/.thermal_cache.json"
 LOCKDIR_BASE="$MODDIR/.locks"
 ZRAM_STATE_FILE="$MODDIR/.zram_state"
-VM_FEATURE_FILE="$MODDIR/.feature_vm"
 SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 SCHED_OWNER_DESIRED_FILE="$MODDIR/.sched_owner_desired"
 GAME_HANDOFF_POLICY_FILE="$MODDIR/.game_handoff_policy"
@@ -30,16 +29,6 @@ log -t pixel9pro_ctrl "service entry moddir=$MODDIR pid=$$"
 [ -r "$MODDIR/scripts/runtime_defaults_lib.sh" ] \
     && . "$MODDIR/scripts/runtime_defaults_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: runtime defaults contract missing"; exit 1; }
-[ -r "$MODDIR/scripts/audit_log_lib.sh" ] \
-    && . "$MODDIR/scripts/audit_log_lib.sh" 2>/dev/null \
-    && audit_log_init "$MODDIR" \
-    || { log -t pixel9pro_ctrl "ERROR: audit log contract missing"; exit 1; }
-audit_log_event service boot started SERVICE_ENTER 0 >/dev/null 2>&1 || true
-[ -r "$MODDIR/scripts/scheduler_capability_lib.sh" ] \
-    && . "$MODDIR/scripts/scheduler_capability_lib.sh" 2>/dev/null \
-    && scheduler_capability_init "$MODDIR" \
-    || { log -t pixel9pro_ctrl "ERROR: scheduler capability contract missing"; exit 1; }
-SCHEDULER_MODE=$(scheduler_mode_read)
 [ -r "$MODDIR/scripts/display_state_lib.sh" ] \
     && . "$MODDIR/scripts/display_state_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: display state contract missing"; exit 1; }
@@ -91,20 +80,15 @@ VM_PROFILE_AVAILABLE=0
 if [ -r "$MODDIR/scripts/vm_profile_lib.sh" ]; then
     . "$MODDIR/scripts/vm_profile_lib.sh" 2>/dev/null && VM_PROFILE_AVAILABLE=1
 fi
-VM_FEATURE_MODE=$(cat "$VM_FEATURE_FILE" 2>/dev/null | tr -d ' \r\n\t')
-case "$VM_FEATURE_MODE" in
-    system|optimized|disabled) ;;
-    *)
-        case "$(cat "$MODDIR/.swap_mode" 2>/dev/null | tr -d ' \r\n\t')" in
-            optimized|custom) VM_FEATURE_MODE=optimized ;;
-            disabled) VM_FEATURE_MODE=disabled ;;
-            *) VM_FEATURE_MODE=system ;;
-        esac
-        runtime_write_value "$VM_FEATURE_FILE" "$VM_FEATURE_MODE" >/dev/null 2>&1 || true
-        ;;
-esac
 scheduler_owner_init "$MODDIR" "/data/adb/fas_rs"
 sbm_init "$MODDIR" "/data/adb/fas_rs"
+so_migrate_state >/dev/null 2>&1 \
+    || log -t pixel9pro_ctrl "WARNING: scheduler-owner state migration failed"
+detect_external_scheduler_fresh >/dev/null 2>&1
+_scheduler_inventory_rc=$?
+if [ "$_scheduler_inventory_rc" -gt 1 ] 2>/dev/null; then
+    log -t pixel9pro_ctrl "WARNING: scheduler inventory refresh failed"
+fi
 
 detect_root_impl() {
     if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
@@ -193,32 +177,13 @@ restore_ntp_server() {
 apply_uecap_profile() {
     if [ -f "$MODDIR/uecap_profile.sh" ]; then
         . "$MODDIR/uecap_profile.sh"
-        if ! uecap_is_available; then
-            log -t pixel9pro_ctrl "UECap runtime disabled: $(uecap_current_reason)"
-            return 0
-        fi
         _mode=$(uecap_current_manual_mode)
         if uecap_pre_modem_receipt_is_current "$_mode"; then
-            _source_hash=""
-            if [ "$_mode" = stock ]; then
-                _source_hash=$(uecap_hash "$UECAP_TARGET")
-            else
-                _source=$(uecap_resolve_source "$_mode")
-                _source_hash=$(uecap_hash "$_source")
-            fi
-            # Telephony registry can block while the modem service is still
-            # publishing records. Defer the diagnostic snapshot so WebUI and
-            # the rest of late_start never wait on a radio binder call.
-            UECAP_RADIO_SNAPSHOT_RESULT=deferred
+            _source=$(uecap_resolve_source "$_mode")
+            uecap_capture_radio_snapshot >/dev/null 2>&1 || true
             UECAP_RELOAD_DISPATCHED=false
             UECAP_RELOAD_RESULT="not_required_pre_modem"
-            UECAP_DESIRED_PROFILE="$_mode"
-            UECAP_BOUND_PROFILE="$_mode"
-            UECAP_MODEM_LOAD_STATE="pre_modem_bind"
-            UECAP_MODEM_LOADED_PROFILE="unknown"
-            UECAP_FUNCTIONAL_STATE="modem_load_unconfirmed"
-            UECAP_RECEIPT_FRESHNESS="current_boot"
-            uecap_write_runtime_receipt "$_mode" "$_source_hash" \
+            uecap_write_runtime_receipt "$_mode" "$(uecap_hash "$_source")" \
                 "$(uecap_hash "$UECAP_TARGET")" pre_modem applied pre_modem_observed \
                 >/dev/null 2>&1 || log -t pixel9pro_ctrl "WARNING: failed to refresh UECap pre-modem receipt"
             log -t pixel9pro_ctrl "UECap bind receipt refreshed: $_mode; modem load remains unconfirmed, actual_rat=$(uecap_receipt_get actual_rat 2>/dev/null || echo unknown), nr_registered=$(uecap_receipt_get nr_registered 2>/dev/null || echo unknown)"
@@ -465,7 +430,6 @@ apply_profile_state() {
     _expected_policy="${3:-}"
     PROFILE_APPLY_OUTCOME=failed
 
-    scheduler_mode_is_active || { PROFILE_APPLY_OUTCOME=scheduler_off; return 69; }
     [ "$CPU_PROFILE_AVAILABLE" -eq 1 ] || return 1
     valid_profile "$_target" || return 1
     case "$_expected_policy" in ''|manual|auto) ;; *) return 1 ;; esac
@@ -601,19 +565,6 @@ until [ "$(getprop sys.boot_completed)" = "1" ]; do
     sleep 5
 done
 sleep 20
-scheduler_capability_enforce_mode readonly >/dev/null 2>&1 \
-    || scheduler_mode_write off >/dev/null 2>&1 \
-    || { log -t pixel9pro_ctrl "ERROR: cannot fail closed scheduler mode"; exit 1; }
-SCHEDULER_MODE=$(scheduler_mode_read)
-if [ "$SCHEDULER_MODE" = active ]; then
-    so_migrate_state >/dev/null 2>&1 \
-        || log -t pixel9pro_ctrl "WARNING: scheduler-owner state migration failed"
-    detect_external_scheduler_fresh >/dev/null 2>&1
-    _scheduler_inventory_rc=$?
-    if [ "$_scheduler_inventory_rc" -gt 1 ] 2>/dev/null; then
-        log -t pixel9pro_ctrl "WARNING: scheduler inventory refresh failed"
-    fi
-fi
 
 # ──────────────────────────────────────────────────────────
 # 1.1 WebUI 安全: token 生成 + 环境变量导出
@@ -670,7 +621,7 @@ manage_sim2_radio
 ip link set wlan0 multicast off 2>/dev/null
 
 # === 内核 I/O 参数优化 ===
-if [ "$VM_PROFILE_AVAILABLE" -eq 1 ] && [ "$VM_FEATURE_MODE" = optimized ]; then
+if [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
     vm_apply_dirty_params \
         || log -t pixel9pro_ctrl "WARNING: failed to apply one or more VM dirty-page parameters"
 fi
@@ -679,7 +630,7 @@ fi
 # battery use 0; default and the internal performance baseline use 1024.
 
 # === ZRAM / VM 配置 ===
-if [ "$VM_PROFILE_AVAILABLE" -eq 1 ] && [ "$VM_FEATURE_MODE" = optimized ]; then
+if [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
 zram_record_state() {
     _zr_algo=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | sed 's/.*\[\(.*\)\].*/\1/')
     _zr_size=$(cat /sys/block/zram0/disksize 2>/dev/null | tr -d ' \n\r')
@@ -785,27 +736,20 @@ case "$SWAP_MODE" in
         ;;
 esac
 else
-    if [ "$VM_PROFILE_AVAILABLE" -ne 1 ]; then
-        log -t pixel9pro_ctrl "WARNING: VM profile library missing, skipped ZRAM/VM restore"
-    else
-        log -t pixel9pro_ctrl "VM/ZRAM mode=$VM_FEATURE_MODE: no module writes applied"
-    fi
+    log -t pixel9pro_ctrl "WARNING: VM profile library missing, skipped ZRAM/VM restore"
 fi
 
 log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: boot policy restore completed; warnings above remain authoritative"
-audit_log_event service restore success BOOT_POLICY_RESTORED 0 >/dev/null 2>&1 || true
 
 # ──────────────────────────────────────────────────────────
 # 2.5 持久后台策略。CPU/L2 由同一 profile transaction 应用。
 # ──────────────────────────────────────────────────────────
-if [ "$SCHEDULER_MODE" = active ]; then
-    [ -f "$SCHED_OWNER_FILE" ] || runtime_write_value "$SCHED_OWNER_FILE" pixel \
-        || log -t pixel9pro_ctrl "WARNING: failed to initialize scheduler owner state"
-    [ -f "$SCHED_OWNER_DESIRED_FILE" ] || runtime_write_value "$SCHED_OWNER_DESIRED_FILE" "$(read_valid_sched_owner)" \
-        || log -t pixel9pro_ctrl "WARNING: failed to initialize desired scheduler owner"
-    [ -f "$GAME_HANDOFF_POLICY_FILE" ] || runtime_write_value "$GAME_HANDOFF_POLICY_FILE" off \
-        || log -t pixel9pro_ctrl "WARNING: failed to initialize game handoff policy"
-fi
+[ -f "$SCHED_OWNER_FILE" ] || runtime_write_value "$SCHED_OWNER_FILE" pixel \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize scheduler owner state"
+[ -f "$SCHED_OWNER_DESIRED_FILE" ] || runtime_write_value "$SCHED_OWNER_DESIRED_FILE" "$(read_valid_sched_owner)" \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize desired scheduler owner"
+[ -f "$GAME_HANDOFF_POLICY_FILE" ] || runtime_write_value "$GAME_HANDOFF_POLICY_FILE" off \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize game handoff policy"
 apply_l1_persistent_limits
 
 # 延迟复写：NTP 服务器和扫描类设置可能在用户解锁后被系统回写。
@@ -825,17 +769,15 @@ apply_l1_persistent_limits
 # 3. 有界恢复 CPU 调度方案 (CPU + cpuset + cap + vendor_sched L2)
 # ──────────────────────────────────────────────────────────
 PROFILE=$(profile_state_read_profile "$PROFILE_FILE" 'balanced')
-if [ "$SCHEDULER_MODE" != active ]; then
-    log -t pixel9pro_ctrl "Scheduler mode=$SCHEDULER_MODE: skipped profile restore and scheduler mutations"
-elif [ "$CPU_PROFILE_AVAILABLE" -ne 1 ]; then
+[ -f "$PROFILE_MANUAL_FILE" ] || runtime_write_value "$PROFILE_MANUAL_FILE" "$PROFILE" \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize manual profile state"
+[ -f "$PROFILE_POLICY_FILE" ] || runtime_write_value "$PROFILE_POLICY_FILE" manual \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize profile policy"
+[ -f "$PROFILE_AUTO_REASON_FILE" ] || runtime_write_value "$PROFILE_AUTO_REASON_FILE" manual_policy \
+    || log -t pixel9pro_ctrl "WARNING: failed to initialize profile reason"
+if [ "$CPU_PROFILE_AVAILABLE" -ne 1 ]; then
     log -t pixel9pro_ctrl "WARNING: CPU profile contract missing, skipped profile restore"
 else
-    [ -f "$PROFILE_MANUAL_FILE" ] || runtime_write_value "$PROFILE_MANUAL_FILE" "$PROFILE" \
-        || log -t pixel9pro_ctrl "WARNING: failed to initialize manual profile state"
-    [ -f "$PROFILE_POLICY_FILE" ] || runtime_write_value "$PROFILE_POLICY_FILE" manual \
-        || log -t pixel9pro_ctrl "WARNING: failed to initialize profile policy"
-    [ -f "$PROFILE_AUTO_REASON_FILE" ] || runtime_write_value "$PROFILE_AUTO_REASON_FILE" manual_policy \
-        || log -t pixel9pro_ctrl "WARNING: failed to initialize profile reason"
     if sh "$MODDIR/scripts/scheduler_reconcile.sh" boot "$MODDIR" >/dev/null 2>&1; then
         log -t pixel9pro_ctrl "Scheduler boot reconcile completed"
     else
@@ -847,14 +789,13 @@ else
         fi
     fi
 fi
-[ "$SCHEDULER_MODE" = active ] && ensure_profile_history_baseline
+ensure_profile_history_baseline
 
 # Owner arbiter needs a faster wake->game reaction than the main standby
 # worker can provide after it enters the 600s deep-standby sleep.  Keep this
 # loop cheap while screen-off and only run top-app/window IPC when display is on.
 sbm_load_state
-if [ "$SCHEDULER_MODE" = active ] \
-    && [ "$SBM_PHASE" = "success" ] \
+if [ "$SBM_PHASE" = "success" ] \
     && { [ "$SBM_EFFECTIVE_MODE" = "pixel" ] || [ "$SBM_EFFECTIVE_MODE" = "ugt" ]; }; then
 (
     # Periodic observation never waits behind a user or boot transaction. A
@@ -881,7 +822,6 @@ if [ "$SCHEDULER_MODE" = active ] \
     _owner_arbiter_long_paused=0
 
     while true; do
-        scheduler_mode_is_active || exit 0
         _owner_arbiter_now=$(date +%s 2>/dev/null || echo 0)
         display_state_read >/dev/null 2>&1 || true
         _oa_screen=$(display_state_legacy_screen)
@@ -921,28 +861,32 @@ else
 fi
 
 # Fixed-interval scheduler health worker. The health action is scheduler-node
-# read-only. A first Pixel drift may enqueue one bounded repair generation;
-# after that generation reaches a terminal state, later probes never write.
-if [ "$SCHEDULER_MODE" = active ]; then
-(
-    while true; do
-        sleep "$SBM_HEALTH_INTERVAL_S"
-        scheduler_mode_is_active || exit 0
-        sh "$MODDIR/scripts/scheduler_reconcile.sh" health "$MODDIR" >/dev/null 2>&1
-        _scheduler_health_rc=$?
-        if [ "$_scheduler_health_rc" -eq 5 ]; then
-            sbm_load_state
-            if [ "$SBM_EFFECTIVE_MODE" = "pixel" ] \
-                && [ "$SBM_AUTO_REPAIR_USED" != "yes" ] \
-                && [ "$SBM_PHASE" = "success" ]; then
-                sh "$MODDIR/scripts/scheduler_reconcile.sh" repair "$MODDIR" >/dev/null 2>&1 || true
+# read-only. Android framework/Scene/PowerHAL may write back volatile CPU
+# controls after a successful profile transaction; record that drift and wait
+# for an explicit profile/owner transaction instead of replaying parameters from
+# a background loop. This is the critical "apply once, verify once, observe"
+# boundary for daily use. If the optional CPU contract is unavailable, do not
+# start a loop with an empty sleep interval: the worker is disabled until the
+# contract is present on the next module start.
+if [ "$CPU_PROFILE_AVAILABLE" -eq 1 ]; then
+    _cpu_profile_health_interval_s="$CPU_PROFILE_HEALTH_INTERVAL_S"
+    case "$_cpu_profile_health_interval_s" in
+        ''|*[!0-9]*) _cpu_profile_health_interval_s=300 ;;
+    esac
+    [ "$_cpu_profile_health_interval_s" -ge 60 ] 2>/dev/null || _cpu_profile_health_interval_s=60
+    (
+        while true; do
+            sleep "$_cpu_profile_health_interval_s"
+            sh "$MODDIR/scripts/scheduler_reconcile.sh" health "$MODDIR" >/dev/null 2>&1
+            _scheduler_health_rc=$?
+            if [ "$_scheduler_health_rc" -eq 5 ]; then
+                log -t pixel9pro_ctrl "Scheduler health observed profile drift; no automatic repair (system writeback boundary)"
             fi
-        fi
-    done
-) &
-log -t pixel9pro_ctrl "Scheduler read-only health worker started (${SBM_HEALTH_INTERVAL_S}s)"
+        done
+    ) &
+    log -t pixel9pro_ctrl "Scheduler read-only health worker started (${_cpu_profile_health_interval_s}s)"
 else
-    log -t pixel9pro_ctrl "Scheduler workers disabled by scheduler_mode=$SCHEDULER_MODE"
+    log -t pixel9pro_ctrl "Scheduler read-only health worker disabled: CPU profile contract unavailable"
 fi
 
 # ──────────────────────────────────────────────────────────
@@ -1328,15 +1272,6 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
     case "$_power_history_lines" in ''|*[!0-9]*) _power_history_lines=0 ;; esac
     _compact_thermal_history_if_needed
     _compact_power_history_if_needed
-    _AUTO_BATTERY_TEMP=40800
-    _AUTO_BATTERY_HOLD=90
-    _AUTO_BALANCED_COOL_TEMP=40400
-    _AUTO_BALANCED_COOL_HOLD=60
-    _AUTO_CHARGING_SEV=2
-    _AUTO_CHARGING_COMFORT_TEMP=41000
-    _AUTO_CHARGING_COMFORT_HOLD=120
-    _AUTO_CHARGING_COMFORT_COOL_TEMP=39500
-    _AUTO_CHARGING_COMFORT_COOL_HOLD=90
     _auto_hot_since=0
     _auto_cool_since=0
     _auto_charge_hot_since=0
@@ -1349,12 +1284,10 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
         _now=$(date +%s 2>/dev/null || echo 0)
         _cycle_count=$((_cycle_count + 1))
         _active_profile=$(profile_state_read_profile "$PROFILE_FILE" "$_active_profile")
-        SCHEDULER_MODE=$(scheduler_mode_read)
         _sched_owner=$(read_valid_sched_owner)
         sbm_load_state
         _scheduler_profile_writable=0
-        if [ "$SCHEDULER_MODE" = active ] \
-            && [ "$SBM_PHASE" = "success" ] && [ "$SBM_EFFECTIVE_MODE" = "pixel" ] \
+        if [ "$SBM_PHASE" = "success" ] && [ "$SBM_EFFECTIVE_MODE" = "pixel" ] \
             && [ "$_sched_owner" = "pixel" ]; then
             _scheduler_profile_writable=1
         else
@@ -1556,15 +1489,15 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
                     _auto_cool_since=0
                     _sev=$(dumpsys thermalservice 2>/dev/null | grep "Thermal Status:" | head -1 | sed 's/.*Thermal Status:[[:space:]]*//' | tr -d ' \n\r')
                     case "$_sev" in ''|*[!0-9]*) _sev=0 ;; esac
-                    if [ "$_sev" -ge "$_AUTO_CHARGING_SEV" ] 2>/dev/null; then
+                    if [ "$_sev" -ge "$CPU_PROFILE_AUTO_CHARGING_THERMAL_STATUS_MIN" ] 2>/dev/null; then
                         _auto_charge_cool_since=0
                         _target_profile="battery"
                         _target_reason="charging_thermal_mitigation"
                     else
-                        if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$_AUTO_CHARGING_COMFORT_TEMP" ] 2>/dev/null; then
+                        if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$CPU_PROFILE_AUTO_CHARGING_HOT_TEMP_MC" ] 2>/dev/null; then
                             [ "$_auto_charge_hot_since" -eq 0 ] && _auto_charge_hot_since=$_now
                             _auto_charge_cool_since=0
-                        elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$_AUTO_CHARGING_COMFORT_COOL_TEMP" ] 2>/dev/null; then
+                        elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$CPU_PROFILE_AUTO_CHARGING_COOL_TEMP_MC" ] 2>/dev/null; then
                             [ "$_auto_charge_cool_since" -eq 0 ] && _auto_charge_cool_since=$_now
                             _auto_charge_hot_since=0
                         else
@@ -1572,13 +1505,13 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
                             _auto_charge_cool_since=0
                         fi
 
-                        if [ "$_active_profile" = "battery" ] && [ "$_auto_charge_cool_since" -gt 0 ] && [ $((_now - _auto_charge_cool_since)) -ge "$_AUTO_CHARGING_COMFORT_COOL_HOLD" ]; then
+                        if [ "$_active_profile" = "battery" ] && [ "$_auto_charge_cool_since" -gt 0 ] && [ $((_now - _auto_charge_cool_since)) -ge "$CPU_PROFILE_AUTO_CHARGING_COOL_HOLD_S" ]; then
                             _target_profile="balanced"
                             _target_reason="charging_comfort_cooldown"
                         elif [ "$_active_profile" = "battery" ]; then
                             _target_profile="battery"
                             _target_reason="charging_comfort_hot"
-                        elif [ "$_auto_charge_hot_since" -gt 0 ] && [ $((_now - _auto_charge_hot_since)) -ge "$_AUTO_CHARGING_COMFORT_HOLD" ]; then
+                        elif [ "$_auto_charge_hot_since" -gt 0 ] && [ $((_now - _auto_charge_hot_since)) -ge "$CPU_PROFILE_AUTO_CHARGING_HOT_HOLD_S" ]; then
                             _target_profile="battery"
                             _target_reason="charging_comfort_hot"
                         else
@@ -1587,14 +1520,15 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
                         fi
                     fi
                 else
-                    # Discharge uses the VIRTUAL-SKIN thresholds and hold times
-                    # defined by the _AUTO_BATTERY_* / _AUTO_BALANCED_* contract.
+                    # Discharge uses the shared CPU profile contract. It enters
+                    # battery before the previous 40.8C/90s gate so a normal
+                    # long video/feed session does not first build a hot shell.
                     _auto_charge_hot_since=0
                     _auto_charge_cool_since=0
-                    if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$_AUTO_BATTERY_TEMP" ] 2>/dev/null; then
+                    if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$CPU_PROFILE_AUTO_DISCHARGE_HOT_TEMP_MC" ] 2>/dev/null; then
                         [ "$_auto_hot_since" -eq 0 ] && _auto_hot_since=$_now
                         _auto_cool_since=0
-                    elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$_AUTO_BALANCED_COOL_TEMP" ] 2>/dev/null; then
+                    elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$CPU_PROFILE_AUTO_DISCHARGE_COOL_TEMP_MC" ] 2>/dev/null; then
                         [ "$_auto_cool_since" -eq 0 ] && _auto_cool_since=$_now
                         _auto_hot_since=0
                     else
@@ -1602,7 +1536,7 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
                         _auto_cool_since=0
                     fi
 
-                    if [ "$_active_profile" = "battery" ] && [ "$_auto_cool_since" -gt 0 ] && [ $((_now - _auto_cool_since)) -ge "$_AUTO_BALANCED_COOL_HOLD" ]; then
+                    if [ "$_active_profile" = "battery" ] && [ "$_auto_cool_since" -gt 0 ] && [ $((_now - _auto_cool_since)) -ge "$CPU_PROFILE_AUTO_DISCHARGE_COOL_HOLD_S" ]; then
                         _target_profile="balanced"
                         _target_reason="hot_cooldown"
                     elif [ "$_active_profile" = "battery" ]; then
@@ -1611,7 +1545,7 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
                         # bypass the cool hold and make the profile oscillate.
                         _target_profile="battery"
                         _target_reason="steady_hot_guard"
-                    elif [ "$_auto_hot_since" -gt 0 ] && [ $((_now - _auto_hot_since)) -ge "$_AUTO_BATTERY_HOLD" ]; then
+                    elif [ "$_auto_hot_since" -gt 0 ] && [ $((_now - _auto_hot_since)) -ge "$CPU_PROFILE_AUTO_DISCHARGE_HOT_HOLD_S" ]; then
                         _target_profile="battery"
                         _target_reason="steady_hot_guard"
                     else

@@ -64,15 +64,29 @@ runtime_signature() {
 
 printf 'TAP version 13\n'
 if run_profile battery; then ok 'battery transaction applies'; else not_ok 'battery transaction applies'; fi
-assert_eq 'battery response contract' '32/96/200' "$(cat "$CPU0/sched_pixel/response_time_ms")/$(cat "$CPU4/sched_pixel/response_time_ms")/$(cat "$CPU7/sched_pixel/response_time_ms")"
+assert_eq 'battery response contract' '16/96/320' "$(cat "$CPU0/sched_pixel/response_time_ms")/$(cat "$CPU4/sched_pixel/response_time_ms")/$(cat "$CPU7/sched_pixel/response_time_ms")"
 assert_eq 'battery L2 follows current profile' '150/80' "$(cat "$VENDOR/ug_bg_uclamp_max")/$(cat "$VENDOR/ug_bg_group_throttle")"
 assert_eq 'battery cap' 0 "$(cat "$CAP")"
+
+# The framework owns foreground/cpus. A framework writeback must neither be
+# overwritten by a profile transaction nor make read-only verification fail.
+printf '4-6\n' > "$CPUSET/foreground/cpus"
+if run_profile verify; then ok 'framework foreground writeback is ignored by verify'; else not_ok 'framework foreground writeback is ignored by verify'; fi
+assert_eq 'framework foreground writeback remains intact' '4-6' "$(cat "$CPUSET/foreground/cpus")"
+_t_before_observe=$(runtime_signature)
+_t_observe_output=$(run_profile observe)
+assert_eq 'observe command is read-only' "$_t_before_observe" "$(runtime_signature)"
+case "$_t_observe_output" in
+    OBSERVED:battery\ foreground=*) ok 'observe command reports a structured runtime snapshot' ;;
+    *) not_ok 'observe command reports a structured runtime snapshot' ;;
+esac
 
 printf 'balanced\n' > "$MOD/.power_profile"
 if run_profile verify; then ok 'verify is read-only and ignores legacy power profile'; else not_ok 'verify is read-only and ignores legacy power profile'; fi
 
 printf 'balanced\n' > "$MOD/.current_profile"
 if run_profile balanced; then ok 'balanced transaction applies'; else not_ok 'balanced transaction applies'; fi
+printf '4-6\n' > "$CPUSET/foreground/cpus"
 _t_before=$(runtime_signature)
 printf 'battery\n' > "$MOD/.current_profile"
 FAIL_MARKER="$TEST_ROOT/fail_once"
@@ -85,6 +99,7 @@ _t_rc=$?
 unset CPU_PROFILE_FAIL_ONCE_PATH CPU_PROFILE_FAIL_ONCE_MARKER
 assert_eq 'partial L2 failure reports rolled back transaction' 3 "$_t_rc"
 assert_eq 'partial L2 failure restores full runtime snapshot' "$_t_before" "$(runtime_signature)"
+assert_eq 'framework foreground writeback survives rollback' '4-6' "$(cat "$CPUSET/foreground/cpus")"
 
 printf '1..%s\n' "$TOTAL"
 printf '# pass=%s fail=%s root=%s\n' "$PASS" "$FAIL" "$TEST_ROOT"
