@@ -1,0 +1,114 @@
+/* Pixel9Pro-Control WebUI — design tokens and reset. Shared tokens only; no bundler. */
+:root{
+  color-scheme:light;
+  /* M3 表面色阶 (浅色: 越高越深, 用容器层级分层而非阴影) */
+  --sc-lowest:#ffffff;
+  --sc-low:#f3f6f3;
+  --sc:#eceeec;
+  --sc-high:#e6e9e7;
+  --sc-highest:#e0e3e1;
+  --bg:#f8fbf8;
+  --bg-canvas:linear-gradient(180deg,#f4faf6 0%,#eef4f0 52%,#f1f3ee 100%);
+  --surface:var(--sc-lowest);          /* 内容卡: 干净白, 在 bg 上读出抬升 */
+  --surface-2:var(--sc);               /* 内部 chip / 次级按钮 / 输入框 */
+  --surface-3:var(--sc-high);          /* 进度条轨道 / skeleton */
+  --surface-4:var(--sc-highest);
+  --nav-bg:var(--sc);                  /* topbar / bottom-nav: 接地平面, 区别于白卡 */
+  --line:rgba(20,34,28,.10);
+  --line-2:rgba(20,34,28,.20);
+  --outline:#707974;
+  --outline-variant:#c2ccc5;
+  --text:#171d1b;
+  --text-2:rgba(23,29,27,.74);
+  --text-3:rgba(23,29,27,.52);
+  --primary:#006b57;
+  --on-primary:#ffffff;
+  --primary-container:#d3efe3;         /* 清新淡青绿 (柔和不刺眼) */
+  --on-primary-container:#00382c;
+  --secondary-container:#d5e8df;
+  --secondary-ink:#12201b;
+  --tertiary:#5c6300;
+  --tertiary-container:#e2efc8;
+  --on-tertiary-container:#1a1f00;
+  --success:#217a49;
+  --success-container:#d9f0e1;
+  --warn:#9c6800;
+  --warn-container:#fff0ce;
+  --danger:#ba1a1a;
+  --danger-container:#ffdad6;
+  --info:#2f6cb7;
+  --info-container:#dce7ff;
+  --shadow:0 1px 2px rgba(10,30,25,.04),0 1px 3px rgba(10,30,25,.06);
+  --radius-sm:12px;
+  --radius-md:16px;
+  --radius-lg:20px;
+  --radius-xl:28px;
+  --font-ui:"MiSans VF","Google Sans Text","Roboto","PingFang SC","Noto Sans SC",system-ui,sans-serif;
+  --fast:120ms;
+  --mid:200ms;
+  --slow:320ms;
+  --ease:cubic-bezier(.2,0,0,1);
+  --topbar-h:64px;
+  --bottombar-h:74px;
+  background:var(--bg);
+  overscroll-behavior:none;
+}
+
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --sc-lowest:#0b0f0d;
+  --sc-low:#191c1b;
+  --sc:#1d201f;
+  --sc-high:#282b29;
+  --sc-highest:#333735;
+  --bg:#101513;
+  --bg-canvas:linear-gradient(180deg,#101513 0%,#0f1412 52%,#141917 100%);
+  --surface:var(--sc);                 /* 内容卡 */
+  --surface-2:var(--sc-high);
+  --surface-3:var(--sc-highest);
+  --surface-4:#3b403d;
+  --nav-bg:var(--sc-low);              /* topbar / bottom-nav */
+  --line:rgba(234,243,238,.10);
+  --line-2:rgba(234,243,238,.20);
+  --outline:#89938d;
+  --outline-variant:#404944;
+  --text:#e0e3e1;
+  --text-2:rgba(224,227,225,.78);
+  --text-3:rgba(224,227,225,.55);
+  --primary:#84dcc5;                   /* 清新薄荷 (柔和不刺眼) */
+  --on-primary:#00382c;
+  --primary-container:#0f4739;
+  --on-primary-container:#a6f0db;
+  --secondary-container:#3e665b;
+  --secondary-ink:#d5e8df;
+  --tertiary:#cdd99a;
+  --tertiary-container:#3f4419;
+  --on-tertiary-container:#e6f0c4;
+  --success:#86d8aa;
+  --success-container:#173525;
+  --warn:#ebcb7a;
+  --warn-container:#40300d;
+  --danger:#ffb4ab;
+  --danger-container:#4e1717;
+  --info:#8dbbff;
+  --info-container:#172b48;
+  --shadow:0 1px 3px rgba(0,0,0,.34),0 1px 2px rgba(0,0,0,.28);
+}
+
+*,
+*::before,
+*::after{box-sizing:border-box}
+
+html,body{height:100%}
+
+body{
+  margin:0;
+  font-family:var(--font-ui);
+  color:var(--text);
+  background:var(--bg-canvas);
+  overflow:hidden;
+}
+
+button,input,textarea,select{font:inherit}
+button{border:none;background:none;padding:0;color:inherit}
+[hidden]{display:none!important}

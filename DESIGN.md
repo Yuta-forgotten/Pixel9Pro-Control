@@ -13,6 +13,8 @@ UECap ownership 按 SKU 固定，但挂载后端必须先满足启动安全边�
 
 APatch 无 MetaModule 时不提供 managed UECap。活动 MetaModule 下，安装器在确认同 ID content image 为空后，把当前 SKU 的 canonical target 写入 `system/vendor/firmware/uecapconfig` staging，由 MetaModule 在重启前挂载；检测到旧 content image 时拒绝原地覆盖并要求 clean reinstall + reboot。post-mount 只复读有效路径/hash，不再执行动态 bind `/vendor`。
 
+Hybrid Mount 是另一条 MetaModule backend：它把 regular module source 作为只读输入，在下一次 boot 按 overlay/magic/vfs 规则建立挂载。Control 检测到 Hybrid Mount 时不执行 `meta-overlayfs` hook patch、不检查 ext4 content image，也不要求卸载 Control；UECap/thermal 只写 regular module staging，重启后由 Hybrid Mount 复读有效 `/vendor`。该 backend 必须先在真实设备确认当前规则选择的是可接受的 `overlay` 或 `magic`，未知/失败仍 fail closed。
+
 安装前还必须通过 `scripts/metamodule_compat.sh` 的 hook contract；它只接受已知的 MetaModule metainstall 形状，并修正错误的 mode/context 参数。未知或不兼容 hook 直接拒绝安装。
 
 MetaModule content image 在安装阶段提交后，运行期 WebUI 不直接写 metadata 目录来假装改变有效 `/vendor`。UECap 档位和自定义温控请求会返回 `409 Conflict` 并要求重新安装；system 温控请求只有在 content image 不含任何旧 thermal 文件时才提交状态。这样不会出现“接口成功、重启后仍使用旧 image”的假状态。
@@ -66,6 +68,18 @@ WebUI 是 presentation layer。参数、默认值、能力边界和状态字段�
 
 功耗导出采用原子目录合同：人读报告、schema 1 JSON、功耗/温度原始 CSV 和受限 Top 归因分离；每个文件返回 bytes/hash。ODPM、batterystats 和采样 coverage 必须分别标注来源与可信边界，未知值不得伪装为 0。
 
+### 5.1 WebUI shared primitives 与分析入口
+
+WebUI 统一使用 `page-hero`、`surface-card/preference-card`、`summary-grid`、`disclosure`、`inline-alert` 和 `analytics-sheet` 六类共享 primitive。按钮只分为 Filled（当前主要动作）、Tonal（次要动作）、Text（低强调操作）和 Icon（无文字图标动作）四级；触控目标至少 `44px`，卡片选择统一使用 `primary-container` 与文字状态，不再由功能页各自定义强调色。
+
+样式按职责拆分：`app.css` 只保留入口注释；`css/tokens.css`、`layout.css`、`components.css`、`controls.css`、`surfaces.css`、`modal.css`、`settings.css`、`analytics-legacy.css`、`analytics.css` 和 `diagnostics.css` 分别承载 token、布局、组件、控制项、表面层、Sheet 壳、设置页、旧统计兼容层、统一分析界面和诊断状态。所有文件均由 `index.html` 以同一版本占位加载，避免继续把业务样式堆回单一文件。运行记录实现位于 `diagnostics.js`，功耗趋势实现位于 `analytics_model.js` / `analytics_view.js`；`common.js` 与 `energy.js` 只保留请求协调和兼容代理。
+
+温度历史与功耗统计共用 `analytics-sheet`：固定标题、单一范围选择、Hero 摘要、Canvas 趋势、构成卡片、更多统计和导出动作。Sheet 可收起为贴边状态条，收起期间仍允许轻量请求原位更新；页面隐藏、冻结或关闭时必须取消请求和前台 burst。功耗趋势接口只读取模块低频历史，不触发 `batterystats`，完整系统归因继续串行延后加载。
+
+操作记录、错误详情、后台任务状态和过夜隔离分层表达：操作记录保留短摘要，失败项可展开脱敏错误；后台任务状态显示“最近一次 worker 快照”与用户可读的亮屏/息屏采样节奏，原始 worker 分支和循环计数只作为技术字段；过夜隔离明确是一次性对照实验，验证后关闭。
+
+记录会话不启动新的高频常驻 worker。点击“开始低功耗记录”只标记导出起点并复用现有后台采样：亮屏温度约 15 秒、息屏停止温度采样，功耗亮屏约 60 秒、息屏约 10 分钟。导出包固定包含 `power.csv`、`thermal.csv`、`summary.json`、`attribution.csv` 和 `report.md`，并在报告中标明缺测区间、数据来源和可信边界。
+
 ## 6. 验证与已知限制
 
 源码 gate、PowerShell/Android shell parser、contract/failure injection、WebUI 资源与 Chromium 回归、设备 TestLab、shadow、确定性 ZIP 和 entry/权限审计按变更影响范围执行。当前 Control source gate 与逻辑 gate 已通过，UECap/NR contract 为 `59/59`，当前源码 fingerprint 和 ZIP 状态以根级审查文档为准。
@@ -76,3 +90,4 @@ WebUI 是 presentation layer。参数、默认值、能力边界和状态字段�
 
 - `v4.5.05`：完成 Pixel/UGT reboot-selected baseline、fas-rs 双侧 lease、owner/health bounded transaction。
 - `v4.5.07`：将 UECap 与 standalone baseband runtime state 分离，补齐 schema 3 receipt、source/content/effective contract、SKU 边界和 NSA/SA 状态语义。
+- `v4.6.00`：统一分析 Sheet、运行记录与错误详情入口；增加轻量功耗趋势读取、可收起详情与温度 Sheet 导出入口。息屏唤醒复查仍由原有 30 秒恢复契约控制，避免牺牲亮屏恢复时效。

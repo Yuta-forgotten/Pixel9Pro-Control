@@ -1,0 +1,248 @@
+/* Pixel9Pro-Control WebUI — shell, navigation and base layout. Shared tokens only; no bundler. */
+.app-shell{
+  height:100%;
+  display:flex;
+  flex-direction:column;
+}
+
+.topbar{
+  flex-shrink:0;
+  background:var(--nav-bg);
+  border-bottom:1px solid var(--line);
+  transition:box-shadow var(--mid) var(--ease);
+}
+
+/* 滚动时仅加一道浅阴影 (compositor 友好), 不再动画收缩高度 —— 杜绝逐帧 reflow 卡顿 */
+.topbar.compact{box-shadow:0 2px 8px rgba(0,0,0,.06)}
+
+.topbar-inner{
+  min-height:var(--topbar-h);
+  padding:calc(env(safe-area-inset-top,0px) + 10px) max(16px,env(safe-area-inset-right,0px)) 12px max(16px,env(safe-area-inset-left,0px));
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+
+.topbar-row,
+.section-head,
+.panel-head,
+.appearance-row{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+}
+
+.header-actions{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:8px;
+  flex-wrap:wrap;
+  flex-shrink:0;
+  min-width:0;
+  max-width:100%;
+}
+
+.topbar-copy,
+.section-copy,
+.panel-copy,
+.appearance-copy,
+.profile-copy,
+.theme-choice-copy{min-width:0}
+
+.topbar-copy,
+.section-copy,
+.panel-copy,
+.appearance-copy{flex:1 1 auto}
+
+.theme-choice-copy{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+
+.kicker{
+  font-size:12px;
+  line-height:16px;
+  font-weight:700;
+  letter-spacing:.02em;
+  text-transform:uppercase;
+  color:var(--text-3);
+}
+
+.topbar-title{
+  margin-top:2px;
+  font-size:24px;
+  line-height:30px;
+  font-weight:700;
+  letter-spacing:-.02em;
+}
+
+.topbar-subtitle,
+.section-sub,
+.panel-desc,
+.summary-desc,
+.note-body{
+  margin-top:4px;
+  font-size:13px;
+  line-height:18px;
+  color:var(--text-2);
+  overflow-wrap:anywhere;
+}
+
+.topbar-actions,
+.status-strip{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
+.icon-btn,
+.card-info{
+  width:44px;
+  height:44px;
+  border-radius:var(--radius-md);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  color:var(--text-2);
+  cursor:pointer;
+  -webkit-tap-highlight-color:transparent;
+  transition:background var(--mid) var(--ease),transform var(--fast) var(--ease),color var(--mid) var(--ease);
+}
+
+.icon-btn:active,
+.card-info:active,
+.tiny-btn:active,
+.tab-item:active,
+.mbtn:active{transform:scale(.97)}
+
+.tiny-btn{
+  min-height:36px;
+  padding:8px 14px;
+  border-radius:var(--radius-sm);
+  background:var(--surface-2);
+  color:var(--text-2);
+  border:1px solid var(--line);
+  font-size:13px;
+  line-height:18px;
+  font-weight:600;
+  white-space:nowrap;
+  cursor:pointer;
+  -webkit-tap-highlight-color:transparent;
+  transition:background var(--mid) var(--ease),color var(--mid) var(--ease),border-color var(--mid) var(--ease),transform var(--fast) var(--ease);
+}
+
+.tiny-btn:disabled{opacity:.5;cursor:not-allowed}
+
+.tiny-btn.primary{
+  background:var(--primary);
+  color:var(--on-primary);
+  border-color:transparent;
+}
+
+.tiny-btn.tonal{
+  background:var(--primary-container);
+  color:var(--on-primary-container);
+  border-color:transparent;
+}
+
+.status-chip,
+.badge{
+  min-height:28px;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:0 11px;
+  border-radius:999px;
+  border:1px solid transparent;
+  font-size:12px;
+  line-height:16px;
+  font-weight:700;
+  white-space:normal;
+  overflow-wrap:anywhere;
+  text-align:center;
+  justify-content:center;
+  max-width:100%;
+  padding-top:5px;
+  padding-bottom:5px;
+}
+
+.status-chip{
+  background:var(--secondary-container);
+  color:var(--secondary-ink);
+  border-color:var(--line);
+}
+
+.badge.default{
+  background:var(--primary-container);
+  color:var(--on-primary-container);
+}
+
+.badge.off{
+  background:var(--secondary-container);
+  color:var(--text-2);
+  border-color:var(--line);
+}
+
+.badge.good{
+  background:var(--success-container);
+  color:var(--success);
+}
+
+.badge.warn{
+  background:var(--warn-container);
+  color:var(--warn);
+}
+
+.badge.err{
+  background:var(--danger-container);
+  color:var(--danger);
+}
+
+.tab-pages{
+  flex:1;
+  position:relative;
+  overflow:hidden;
+  touch-action:pan-y;
+  overscroll-behavior-x:none;
+}
+
+.tab-page{
+  position:absolute;
+  inset:0;
+  display:none;
+  overflow-y:auto;
+  -webkit-overflow-scrolling:touch;
+  overscroll-behavior-y:contain;
+  padding:16px max(16px,env(safe-area-inset-right,0px)) 28px max(16px,env(safe-area-inset-left,0px));
+}
+
+.tab-page.active{display:block}
+
+.page-stack{
+  display:flex;
+  flex-direction:column;
+  gap:16px;
+  padding-bottom:10px;
+}
+
+.section-block,
+.profile-list,
+.mini-list,
+.data-list,
+.cpu-rows,
+.home-cpu-rows,
+.sensor-list,
+.theme-grid,
+.modal-actions,
+.opt-grid,
+.ntp-server-list{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}

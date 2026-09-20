@@ -24,6 +24,8 @@ const API = {
   energy: '/cgi-bin/energy.sh',
   energyFast: '/cgi-bin/energy.sh?fast=1',
   historyExport: '/cgi-bin/history_export.sh',
+  telemetry: '/cgi-bin/telemetry.sh',
+  auditLog: '/cgi-bin/audit_log.sh',
   auth: '/cgi-bin/auth.sh',
   checkBaseband: '/cgi-bin/check_baseband.sh',
   standbyGuard: '/cgi-bin/standby_guard.sh',
@@ -55,7 +57,6 @@ const PALETTE_VARS = [
   '--sc-lowest', '--sc-low', '--sc', '--sc-high', '--sc-highest',
   '--bg', '--bg-canvas',
 ];
-const WEBUI_SESSION_START_TS = Math.floor(Date.now() / 1000);
 const TAB_ORDER = ['home', 'tune', 'network', 'system'];
 const TAB_META = {
   home: '状态总览',

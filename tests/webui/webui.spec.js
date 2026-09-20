@@ -52,14 +52,14 @@ test('所有主导航页无浏览器错误和横向溢出', async ({ page }, tes
   await page.locator('#tab-home').click();
   await expect(page.locator('#swap-rows')).toContainText('mmd');
   await expect(page.locator('#swap-rows')).toContainText('已启用');
-  await expect(page.locator('#profile-list .profile-option')).toHaveCount(3);
+  await expect(page.locator('#profile-list .profile-option')).toHaveCount(4);
 
   for (const tab of ['home', 'tune', 'network', 'system']) {
     await page.locator(`#tab-${tab}`).click();
     await expect(page.locator(`#page-${tab}`)).toHaveClass(/active/);
     if (tab === 'tune') {
       await expect(page.locator('#thermal-list .thermal-option')).toHaveCount(5);
-      expect(await page.locator('#thermal-list .thermal-option').evaluateAll((items) => items.map((item) => Number(item.dataset.offset)))).toEqual([-2, 0, 2, 4, 6]);
+      expect(await page.locator('#thermal-list .thermal-option').evaluateAll((items) => items.map((item) => Number(item.dataset.offset)).filter(Number.isFinite))).toEqual([-2, 2, 4, 6]);
     }
     if (tab === 'network') {
       await expect(page.locator('#uecap-btn-group .uecap-btn')).toHaveCount(3);
@@ -95,15 +95,22 @@ test('性能、温控与详情交互保持可用', async ({ page }) => {
   await expect(page.locator('#thermal-list > [data-offset="2"]')).toHaveClass(/selected/);
 
   await page.locator('#temp-chart-btn').click();
-  await expect(page.locator('#modal-detail')).toHaveClass(/history-mode/);
+  await expect(page.locator('#modal-detail')).toHaveClass(/analytics-mode/);
   await expect(page.locator('#modal-detail')).toHaveClass(/open/);
+  await expect(page.locator('.analytics-overview')).toBeVisible();
+  await expect(page.locator('.analytics-export-actions')).toContainText('导出当前区间');
   await page.locator('#detail-close-x').click();
   await expect(page.locator('#modal-detail')).not.toHaveClass(/open/);
 
   await page.locator('#tab-home').click();
   await page.locator('#energy-btn').click();
-  await expect(page.locator('#modal-detail')).toHaveClass(/energy-mode/);
+  await expect(page.locator('#modal-detail')).toHaveClass(/analytics-mode/);
   await expect(page.locator('#modal-detail')).toHaveClass(/open/);
+  await expect(page.locator('.analytics-overview')).toBeVisible();
+  await page.locator('#detail-minimize-btn').click();
+  await expect(page.locator('#modal-detail')).toHaveClass(/detail-minimized/);
+  await page.locator('#detail-minimize-btn').click();
+  await expect(page.locator('#modal-detail')).not.toHaveClass(/detail-minimized/);
   await page.locator('#detail-close-x').click();
   await expect(page.locator('#modal-detail')).not.toHaveClass(/open/);
 

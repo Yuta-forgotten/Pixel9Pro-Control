@@ -36,6 +36,10 @@ function initRefs() {
   refs.infoModule = $('info-module');
   refs.logCard = $('log-card');
   refs.logInner = $('log-inner');
+  refs.logToggle = $('log-toggle');
+  refs.logPreview = $('log-preview');
+  refs.logMeta = $('log-meta');
+  refs.logClearBtn = $('log-clear-btn');
   refs.perfCurrentName = $('perf-current-name');
   refs.perfCurrentDesc = $('perf-current-desc');
   refs.perfPolicyDesc = $('perf-policy-desc');
@@ -140,6 +144,7 @@ function initRefs() {
   refs.detailModal = $('modal-detail');
   refs.detailTitle = $('detail-title');
   refs.detailBody = $('detail-body');
+  refs.detailMinimizeBtn = $('detail-minimize-btn');
   refs.toastWrap = $('toast-wrap');
   refs.pullInd = $('pull-ind');
   refs.pullText = $('pull-text');
@@ -202,8 +207,12 @@ function closeRebootModal() {
 function openDetail(title, html) {
   stopTempChartRefresh();
   stopEnergyDetailRefresh();
+  requireFeature('analytics').stop();
   refs.detailModal.classList.remove('energy-mode');
   refs.detailModal.classList.remove('history-mode');
+  refs.detailModal.classList.remove('analytics-mode');
+  refs.detailModal.classList.remove('detail-minimized');
+  refs.detailMinimizeBtn?.setAttribute('aria-expanded', 'true');
   refs.detailTitle.textContent = title;
   setStaticHtml(refs.detailBody, html);
   refs.detailModal.classList.add('open');
@@ -212,12 +221,24 @@ function openDetail(title, html) {
   core.queueNextPoll(core.computeNextPollDelay());
 }
 
+function toggleDetailMinimized() {
+  if (!refs.detailModal.classList.contains('energy-mode') && !refs.detailModal.classList.contains('history-mode') && !refs.detailModal.classList.contains('analytics-mode')) return;
+  const minimized = refs.detailModal.classList.toggle('detail-minimized');
+  refs.detailMinimizeBtn?.setAttribute('aria-expanded', String(!minimized));
+  refs.detailMinimizeBtn?.setAttribute('aria-label', minimized ? '展开详情' : '缩小详情');
+  requireFeature('core').showToast(minimized ? '详情已缩小，后台继续加载' : '详情已展开', 1800);
+}
+
 function closeDetailModal(){
   stopTempChartRefresh();
   stopEnergyDetailRefresh();
+  requireFeature('analytics').stop();
   refs.detailModal.classList.remove('open');
   refs.detailModal.classList.remove('energy-mode');
   refs.detailModal.classList.remove('history-mode');
+  refs.detailModal.classList.remove('analytics-mode');
+  refs.detailModal.classList.remove('detail-minimized');
+  refs.detailMinimizeBtn?.setAttribute('aria-expanded', 'true');
   popModalIfTop('detail');
   requireFeature('core').queueNextPoll(POLL_MIN_DELAY_MS);
 }
@@ -257,6 +278,7 @@ registerFeature('ui', {
   openRebootModal,
   closeRebootModal,
   openDetail,
+  toggleDetailMinimized,
   closeDetailModal,
   stopTemperature: stopTempChartRefresh,
   stopEnergy: stopEnergyDetailRefresh,

@@ -20,6 +20,7 @@ action=$(printf '%s' "$body" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([
 mode=$(printf '%s' "$body" | sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([a-zA-Z0-9_]*\)".*/\1/p')
 minutes=$(printf '%s' "$body" | sed -n 's/.*"minutes"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
 start_ts=$(printf '%s' "$body" | sed -n 's/.*"start_ts"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+end_ts=$(printf '%s' "$body" | sed -n 's/.*"end_ts"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
 [ "$action" = export ] || json_error '400 Bad Request' 'invalid action'
 
 export_mode=minutes
@@ -34,14 +35,25 @@ case "$mode" in
         minutes_json=null
         ;;
     *)
-        case "$minutes" in 15|30|60) ;; *) json_error '400 Bad Request' 'invalid minutes' ;; esac
-        cutoff=$((now - minutes * 60))
+        case "$minutes" in ''|*[!0-9]*) json_error '400 Bad Request' 'invalid minutes' ;; esac
+        [ "$minutes" -ge 1 ] 2>/dev/null && [ "$minutes" -le 720 ] 2>/dev/null \
+            || json_error '400 Bad Request' 'minutes must be between 1 and 720'
+        if [ -n "$end_ts" ]; then
+            case "$end_ts" in ''|*[!0-9]*) json_error '400 Bad Request' 'invalid end_ts' ;; esac
+            [ "$end_ts" -le "$now" ] 2>/dev/null || end_ts="$now"
+            cutoff=$((end_ts - minutes * 60))
+        else
+            end_ts="$now"
+            cutoff=$((now - minutes * 60))
+        fi
         window_label="last_${minutes}_minutes"
         suffix="${minutes}min"
         minutes_json="$minutes"
         ;;
 esac
-elapsed_sec=$((now - cutoff))
+if [ -z "$end_ts" ]; then end_ts="$now"; fi
+[ "$end_ts" -ge "$cutoff" ] 2>/dev/null || json_error '400 Bad Request' 'end_ts is before start'
+elapsed_sec=$((end_ts - cutoff))
 [ "$elapsed_sec" -ge 0 ] 2>/dev/null || elapsed_sec=0
 
 stamp=$(date '+%Y%m%d_%H%M%S' 2>/dev/null || printf '%s' "$now")
@@ -73,12 +85,12 @@ report_md="$tmp_dir/report.md"
 {
     printf 'ts,level,charge_uah,status\n'
     [ ! -s "$POWER_HISTORY" ] \
-        || awk -F, -v cutoff="$cutoff" '$1 + 0 >= cutoff { print }' "$POWER_HISTORY" 2>/dev/null
+        || awk -F, -v cutoff="$cutoff" -v finish="$end_ts" '$1 + 0 >= cutoff && $1 + 0 <= finish { print }' "$POWER_HISTORY" 2>/dev/null
 } > "$power_csv" 2>/dev/null || json_error '500 Internal Server Error' 'cannot write power CSV'
 {
     printf 'ts,virtual_skin_millicelsius\n'
     [ ! -s "$THERMAL_HISTORY" ] \
-        || awk -F, -v cutoff="$cutoff" '$1 + 0 >= cutoff && $2 + 0 > 0 { print }' "$THERMAL_HISTORY" 2>/dev/null
+        || awk -F, -v cutoff="$cutoff" -v finish="$end_ts" '$1 + 0 >= cutoff && $1 + 0 <= finish && $2 + 0 > 0 { print }' "$THERMAL_HISTORY" 2>/dev/null
 } > "$thermal_csv" 2>/dev/null || json_error '500 Internal Server Error' 'cannot write thermal CSV'
 
 power_samples=$(( $(wc -l < "$power_csv" 2>/dev/null) - 1 ))
@@ -105,17 +117,17 @@ case "$_summary_compact" in *'"ok":false'*) json_error '500 Internal Server Erro
 
 scope_quality=$(printf '%s' "$_summary_compact" | sed -n 's/.*"scope":{[^}]*"quality":"\([^"]*\)".*/\1/p')
 [ -n "$scope_quality" ] || scope_quality=unknown
-coverage_ratio=$(awk -F, -v expected="$elapsed_sec" 'NR>1 { if(!first) first=$1; last=$1 } END { if(first && last && expected>0) { r=(last-first)/expected; if(r>1)r=1; if(r<0)r=0; printf "%.3f",r } else printf "0" }' "$power_csv")
+coverage_ratio=$(awk -F, -v expected="$elapsed_sec" -v finish="$end_ts" 'NR>1 && $1 + 0 <= finish { if(!first) first=$1; last=$1 } END { if(first && last && expected>0) { r=(last-first)/expected; if(r>1)r=1; if(r<0)r=0; printf "%.3f",r } else printf "0" }' "$power_csv")
 odpm_total=$(printf '%s' "$_summary_compact" | sed -n 's/.*"odpm_modem":{[^}]*"total_mah":\([-0-9.][0-9.]*\).*/\1/p')
 [ -n "$odpm_total" ] || odpm_total=null
 odpm_quality=$(printf '%s' "$_summary_compact" | sed -n 's/.*"odpm_modem":{[^}]*"quality":"\([^"]*\)".*/\1/p')
 [ -n "$odpm_quality" ] || odpm_quality=unknown
 {
-    printf '{"schema":1,"generated_at":%s,"window":{"mode":"%s","label":"%s","start_ts":%s,"elapsed_sec":%s,"minutes":%s},' \
-        "$now" "$export_mode" "$window_label" "$cutoff" "$elapsed_sec" "$minutes_json"
+    printf '{"schema":1,"generated_at":%s,"window":{"mode":"%s","label":"%s","start_ts":%s,"end_ts":%s,"elapsed_sec":%s,"minutes":%s},' \
+        "$now" "$export_mode" "$window_label" "$cutoff" "$end_ts" "$elapsed_sec" "$minutes_json"
     printf '"samples":{"power":%s,"thermal":%s,"coverage_ratio":%s,"scope_quality":"%s"},' \
         "$power_samples" "$thermal_samples" "$coverage_ratio" "$(json_escape "$scope_quality")"
-    printf '"thermal":{"min_c":%s,"avg_c":%s,"max_c":%s},"energy":%s}\n' \
+    printf '"thermal":{"min_c":%s,"avg_c":%s,"max_c":%s},"system_scope":"current_batterystats_snapshot","energy":%s}\n' \
         "$thermal_min" "$thermal_avg" "$thermal_max" "$_summary_compact"
 } > "$summary_json" 2>/dev/null || json_error '500 Internal Server Error' 'cannot write summary JSON'
 rm -f "$energy_json" 2>/dev/null
@@ -159,7 +171,7 @@ battery_level=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null | tr -d
 {
     printf '# Pixel9Pro-Control 功耗导出\n\n'
     printf '## 窗口与质量\n\n'
-    printf -- '- schema: 1\n- generated_at_epoch: %s\n- mode: %s\n- window: %s\n- start_epoch: %s\n- elapsed_sec: %s\n' "$now" "$export_mode" "$window_label" "$cutoff" "$elapsed_sec"
+    printf -- '- schema: 1\n- generated_at_epoch: %s\n- mode: %s\n- window: %s\n- start_epoch: %s\n- end_epoch: %s\n- elapsed_sec: %s\n' "$now" "$export_mode" "$window_label" "$cutoff" "$end_ts" "$elapsed_sec"
     printf -- '- power_samples: %s\n- thermal_samples: %s\n- scope_quality: %s\n- coverage_ratio: %s\n\n' "$power_samples" "$thermal_samples" "$scope_quality" "$coverage_ratio"
     printf '## 当前电池与温度\n\n'
     printf -- '- battery_status: %s\n- battery_level: %s\n- thermal_min_c: %s\n- thermal_avg_c: %s\n- thermal_max_c: %s\n\n' "${battery_status:-unknown}" "${battery_level:-unknown}" "$thermal_min" "$thermal_avg" "$thermal_max"
@@ -169,7 +181,7 @@ battery_level=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null | tr -d
     printf -- '- `summary.json`: 完整 energy CGI 快照，含会话、15/30/60 分钟窗口、ODPM、batterystats 和 Top 10。\n'
     printf -- '- `power.csv` / `thermal.csv`: 本窗口原始采样。\n'
     printf -- '- ODPM 仅表示 modem/RFFE rail delta，不等于整机功耗。\n'
-    printf -- '- Android mobile_radio 和应用归因为系统模型估算，不等于硬件电表。\n'
+    printf -- '- Android mobile_radio 和应用归因为系统模型估算，不等于硬件电表；system_scope 为当前 batterystats 快照，不能视作所选区间归因。\n'
     printf -- '- 未导出完整 installed package list、原始 dumpsys/logcat 或设备个人标识。\n'
 } > "$report_md" 2>/dev/null || json_error '500 Internal Server Error' 'cannot write report'
 
@@ -194,6 +206,6 @@ done
     || true
 EXPORT_SUCCESS=1
 json_headers
-printf '{"ok":true,"schema":1,"directory":"%s","mode":"%s","window_label":"%s","start_ts":%s,"elapsed_sec":%s,"minutes":%s,"power_samples":%s,"thermal_samples":%s,"quality":"%s","files":[%s]}\n' \
-    "$(json_escape "$final_dir")" "$export_mode" "$window_label" "$cutoff" "$elapsed_sec" "$minutes_json" \
+printf '{"ok":true,"schema":1,"directory":"%s","mode":"%s","window_label":"%s","start_ts":%s,"end_ts":%s,"elapsed_sec":%s,"minutes":%s,"power_samples":%s,"thermal_samples":%s,"quality":"%s","files":[%s]}\n' \
+    "$(json_escape "$final_dir")" "$export_mode" "$window_label" "$cutoff" "$end_ts" "$elapsed_sec" "$minutes_json" \
     "$power_samples" "$thermal_samples" "$(json_escape "$scope_quality")" "$file_json"

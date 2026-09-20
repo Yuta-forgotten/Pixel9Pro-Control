@@ -42,6 +42,10 @@ REQUIRED_ENTRIES: Final = frozenset(
         "service.sh",
         "versions.prop",
         "webroot/index.html",
+        "scripts/telemetry_lib.sh",
+        "scripts/telemetry_worker.sh",
+        "webroot/cgi-bin/telemetry.sh",
+        "webroot/cgi-bin/audit_log.sh",
     }
 )
 EXCLUDED_PARTS: Final = frozenset(

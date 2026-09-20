@@ -7,6 +7,8 @@ const appFeatures = Object.freeze({
   auth: requireFeature('auth'),
   shell: requireFeature('shell'),
   ui: requireFeature('ui'),
+  diagnostics: requireFeature('diagnostics'),
+  analytics: requireFeature('analytics'),
   theme: requireFeature('theme'),
   profile: requireFeature('profile'),
   thermal: requireFeature('thermal'),
@@ -107,6 +109,7 @@ function pauseForegroundWork() {
   stopPolling();
   appFeatures.thermal.pause();
   appFeatures.energy.pause();
+  appFeatures.analytics.pause();
   appFeatures.network.stopDeviceClock();
 }
 
@@ -119,14 +122,7 @@ function resumeForegroundWork() {
   refreshCurrentTabData();
   startPolling();
   appFeatures.network.syncDeviceClockForTab();
-  if (refs.detailModal?.classList.contains('history-mode') && appFeatures.thermal.isChartActive()) {
-    appFeatures.thermal.triggerBurst({ prompt: false });
-    appFeatures.thermal.scheduleChart(250);
-  }
-  if (refs.detailModal?.classList.contains('energy-mode')) {
-    appFeatures.energy.scheduleDetail(250);
-    appFeatures.energy.scheduleSystem(800);
-  }
+  if (appFeatures.analytics.isActive()) appFeatures.analytics.resume();
 }
 
 function bindStaticEvents() {
@@ -195,13 +191,19 @@ function bindStaticEvents() {
   $('baseband-detail-btn').addEventListener('click', () => openDetail('基带模块说明', BASEBAND_DETAIL));
   $('baseband-refresh-btn').addEventListener('click', appFeatures.network.refreshBaseband);
   $('ntp-sync-btn').addEventListener('click', appFeatures.network.syncNtp);
-  $('temp-chart-btn').addEventListener('click', appFeatures.thermal.openChart);
-  $('energy-btn').addEventListener('click', appFeatures.energy.open);
-  $('home-temp-chart-btn').addEventListener('click', appFeatures.thermal.openChart);
-  $('log-toggle').addEventListener('click', () => refs.logCard.classList.toggle('open'));
+  $('temp-chart-btn').addEventListener('click', () => appFeatures.analytics.open('thermal'));
+  $('energy-btn').addEventListener('click', () => appFeatures.analytics.open('power'));
+  $('home-temp-chart-btn').addEventListener('click', () => appFeatures.analytics.open('thermal'));
+  $('log-toggle').addEventListener('click', () => {
+    refs.logCard.classList.toggle('open');
+    $('log-toggle').setAttribute('aria-expanded', String(refs.logCard.classList.contains('open')));
+  });
+  $('log-clear-btn').addEventListener('click', appFeatures.core.clearLogs);
+  $('log-audit-btn').addEventListener('click', appFeatures.diagnostics.openAuditLog);
   $('theme-close-btn').addEventListener('click', appFeatures.ui.closeThemeSheet);
   $('detail-close-btn').addEventListener('click', appFeatures.ui.closeDetailModal);
   $('detail-close-x').addEventListener('click', appFeatures.ui.closeDetailModal);
+  $('detail-minimize-btn').addEventListener('click', appFeatures.ui.toggleDetailMinimized);
   $('reboot-now-btn').addEventListener('click', appFeatures.thermal.rebootDevice);
   $('reboot-later-btn').addEventListener('click', appFeatures.ui.closeRebootModal);
   $('reboot-cancel-btn').addEventListener('click', appFeatures.thermal.cancelPendingRebootChange);
@@ -250,7 +252,9 @@ function bindStaticEvents() {
     if (refs.detailModal.classList.contains('open')) {
       appFeatures.thermal.stopChart();
       appFeatures.energy.stop();
-      refs.detailModal.classList.remove('open', 'energy-mode', 'history-mode');
+      appFeatures.analytics.stop();
+      refs.detailModal.classList.remove('open', 'energy-mode', 'history-mode', 'analytics-mode', 'detail-minimized');
+      $('detail-minimize-btn').setAttribute('aria-expanded', 'true');
       return;
     }
     if (refs.swapTuneModal.classList.contains('open')) { refs.swapTuneModal.classList.remove('open'); appFeatures.core.queueNextPoll(POLL_MIN_DELAY_MS); return; }

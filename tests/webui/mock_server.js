@@ -23,6 +23,7 @@ const runtime = {
   bgEnabled: 'on',
   ntpServer: 'time.android.com',
 };
+let telemetrySession = null;
 
 const cpuContract = {
   foreground_cpus: '0-6',
@@ -275,7 +276,11 @@ async function handleApi(req, res, url) {
     return json(res, { ok: false, error: 'invalid token' }, 403);
   }
   switch (pathname) {
-    case '/cgi-bin/status.sh': return json(res, { ok: true, service: 'mock' });
+    case '/cgi-bin/status.sh': return json(res, [
+      { cur: 960000, max: 1950000, gov: 'sched_pixel', resp_ms: 16, down_us: 8000 },
+      { cur: 1400000, max: 2600000, gov: 'sched_pixel', resp_ms: 40, down_us: 12000 },
+      { cur: 1800000, max: 3105000, gov: 'sched_pixel', resp_ms: 80, down_us: 16000 },
+    ]);
     case '/cgi-bin/auth.sh': return json(res, { token });
     case '/cgi-bin/info.sh': return json(res, {
       model: 'Pixel 9 Pro', version: '17', android: '17', kernel: '6.1-test', module_version: CURRENT_MODULE_VERSION,
@@ -297,8 +302,8 @@ async function handleApi(req, res, url) {
     case '/cgi-bin/set_thermal.sh':
       if (Number.isFinite(body.offset)) runtime.offset = body.offset;
       return json(res, req.method === 'POST'
-        ? { ok: true, offset: runtime.offset, restarted: true, thermal_contract: { offsets: [-2, 0, 2, 4, 6], default_offset: 4 } }
-        : { offset: runtime.offset, thermal_contract: { offsets: [-2, 0, 2, 4, 6], default_offset: 4 } });
+        ? { ok: true, policy: 'custom', offset: runtime.offset, restarted: true, thermal_contract: { policies: ['system', 'custom'], default_policy: 'custom', offsets: [-2, 2, 4, 6], default_offset: 4 } }
+        : { policy: 'custom', offset: runtime.offset, thermal_contract: { policies: ['system', 'custom'], default_policy: 'custom', offsets: [-2, 2, 4, 6], default_offset: 4 } });
     case '/cgi-bin/swap.sh':
       if (body.mode) runtime.swapMode = body.mode;
       return json(res, swapState());
@@ -340,7 +345,40 @@ async function handleApi(req, res, url) {
           { host: 'ntp.aliyun.com', label: 'Aliyun', region: 'cn', default: false },
         ],
       });
-    case '/cgi-bin/energy.sh': return json(res, energyState(url.searchParams.get('fast') === '1'));
+    case '/cgi-bin/energy.sh': {
+      if (url.searchParams.get('trend') === '1') {
+        const now = Math.floor(Date.now() / 1000);
+        return json(res, { points: [[now - 900, 82, 4200000, 'Discharging'], [now - 450, 80, 4192000, 'Discharging'], [now, 78, 4184000, 'Discharging']], count: 3, source: 'module_power_history' });
+      }
+      return json(res, energyState(url.searchParams.get('fast') === '1'));
+    }
+    case '/cgi-bin/telemetry.sh': {
+      const now = Math.floor(Date.now() / 1000);
+      if (req.method === 'GET' && url.searchParams.get('action') === 'status') return json(res, { ok: true, schema: 1, session: telemetrySession });
+      if (req.method === 'GET' && url.searchParams.get('action') === 'history') {
+        return json(res, {
+          ok: true, schema: 1, session_id: telemetrySession?.id || 'mock-session',
+          window: { start_ts: now - 900, end_ts: now, coverage_ratio: 1, quality: 'good' },
+          power: [
+            { ts: now - 900, screen: 'on', status: 'Discharging', level_pct: 82, charge_uah: 4200000, current_ua: -420000, voltage_uv: 3910000 },
+            { ts: now - 450, screen: 'on', status: 'Discharging', level_pct: 80, charge_uah: 4192000, current_ua: -430000, voltage_uv: 3910000 },
+            { ts: now, screen: 'on', status: 'Discharging', level_pct: 78, charge_uah: 4184000, current_ua: -440000, voltage_uv: 3910000 },
+          ],
+          thermal: [[now - 900, 35100], [now - 450, 36200], [now, 36500]],
+          attribution: { source: 'mock', quality: 'independent_snapshots' },
+        });
+      }
+      if (req.method === 'POST' && body.action === 'start') {
+        telemetrySession = { id: `mock-${now}`, status: 'running', start_ts: now, duration_sec: body.duration_sec || 0, sample_count: 0, bytes: 0, quality: 'complete' };
+        return json(res, { ok: true, schema: 1, session: telemetrySession });
+      }
+      if (req.method === 'POST' && body.action === 'stop') {
+        if (telemetrySession) telemetrySession = { ...telemetrySession, status: 'stopped', end_ts: now };
+        return json(res, { ok: true, schema: 1, session: telemetrySession });
+      }
+      if (req.method === 'POST' && body.action === 'export') return json(res, { ok: true, schema: 1, directory: '/sdcard/Download/mock-telemetry', files: [] });
+      return json(res, { ok: false, error: 'invalid telemetry action' }, 400);
+    }
     case '/cgi-bin/thermal_burst.sh': return json(res, { ok: true, active: body.action !== 'stop' });
     case '/cgi-bin/history_export.sh': return json(res, { ok: true, path: '/sdcard/Download/pixel9pro-control-test.csv' });
     case '/cgi-bin/owner_arbiter.sh': return json(res, profileState());

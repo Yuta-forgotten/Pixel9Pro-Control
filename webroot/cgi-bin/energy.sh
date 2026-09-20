@@ -36,6 +36,36 @@ _tmp="$LOCKDIR_BASE/tmp/energy_$$"
 trap 'rm -f "${_tmp}"_*' EXIT
 json_headers
 
+# 轻量时间序列：只读模块电量历史，不触发 batterystats、包名解析或系统锁。
+# WebUI 先用这一路绘制趋势，再按需加载完整系统归因。
+case "$QUERY_STRING" in *trend=1*)
+    _trend_minutes=30
+    case "$QUERY_STRING" in *minutes=*)
+        _trend_minutes=$(printf '%s' "$QUERY_STRING" | sed 's/.*minutes=\([0-9]*\).*/\1/')
+        case "$_trend_minutes" in ''|*[!0-9]*) _trend_minutes=30 ;; esac
+        ;;
+    esac
+    [ "$_trend_minutes" -gt 720 ] 2>/dev/null && _trend_minutes=720
+    [ "$_trend_minutes" -lt 1 ] 2>/dev/null && _trend_minutes=1
+    _trend_cutoff=$(( $(date +%s) - _trend_minutes * 60 ))
+    if [ -s "$POWER_HISTORY" ]; then
+        awk -F, -v cutoff="$_trend_cutoff" -v now="$(date +%s)" '
+            BEGIN { printf "{\"points\":["; first=1; count=0 }
+            $1 ~ /^[0-9]+$/ && $1 + 0 >= cutoff && $1 + 0 <= now {
+                if (!first) printf ","; first=0
+                status=$4; gsub(/[^A-Za-z ]/, "", status)
+                printf "[%d,%d,%d,\"%s\"]", $1 + 0, $2 + 0, $3 + 0, status
+                count++
+            }
+            END { printf "],\"count\":%d,\"source\":\"module_power_history\"}\n", count }
+        ' "$POWER_HISTORY"
+    else
+        printf '{"points":[],"count":0,"source":"module_power_history"}\n'
+    fi
+    exit 0
+    ;;
+esac
+
 json_num_or_null() {
     _json_number="$1"
     case "$_json_number" in

@@ -453,7 +453,9 @@ function syncProfileUi() {
     const disabled = !isOff && (strategyBusy || !isVerifiedPixelBoot());
     card.classList.toggle('disabled', disabled);
     card.setAttribute('aria-disabled', disabled ? 'true' : 'false');
-    card.classList.toggle('selected', card.dataset.profile === state.currentProfile);
+    const selected = card.dataset.profile === state.currentProfile;
+    card.classList.toggle('selected', selected);
+    card.setAttribute('aria-checked', String(selected));
   });
   syncCurrentStrategyTransitionCopy();
   syncOwnerArbiterUi();
@@ -629,10 +631,14 @@ function applyProfileMutationState(data) {
 
 function renderProfileCards() {
   refs.profileList.replaceChildren();
+  refs.profileList.setAttribute('role', 'radiogroup');
+  refs.profileList.setAttribute('aria-label', '性能模式');
   ['battery', 'balanced', 'default', 'off'].forEach((key) => {
     const p = PROFILES[key];
     const card = document.createElement('article');
     card.className = 'profile-card profile-option';
+    card.setAttribute('role', 'radio');
+    card.setAttribute('aria-checked', String(key === state.currentProfile));
     card.dataset.profile = key;
     card.tabIndex = 0;
     const detailAction = key === 'off' ? '' : `
@@ -836,11 +842,15 @@ async function refreshCpu() {
     state.cpuRows = null;
     state.homeCpuRows = null;
     const el = document.createElement('div');
-    el.className = 'note-body';
-    el.style.color = 'var(--danger)';
-    el.textContent = '获取频率失败：' + err.message;
+    el.className = 'error-panel';
+    const title = document.createElement('strong');
+    title.textContent = '获取频率失败';
+    const detail = document.createElement('pre');
+    detail.textContent = err.message;
+    el.append(title, detail);
     refs.cpuRows.replaceChildren();
     refs.cpuRows.appendChild(el);
+    appendLog(`CPU 频率读取失败：${err.message}`, 'err');
   } finally {
     if (refs.refreshBtn) refs.refreshBtn.disabled = false;
     state.cpuBusy = false;

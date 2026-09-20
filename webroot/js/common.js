@@ -14,33 +14,19 @@ const shellState = {
   },
   pull: { y0: 0, active: false, dist: 0, busy: false }
 };
-
 function boolValue(value) {
   return value === true || value === 'true' || value === 'yes' || value === 1 || value === '1';
 }
 
-function errorBlock(msg) {
-  const el = document.createElement('div');
-  el.className = 'note-body';
-  el.style.cssText = 'color:var(--danger)';
-  el.textContent = msg;
-  return el;
-}
-
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;'
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[ch]));
 }
 
 function showToast(msg, dur = 2500, type = '') {
   const el = document.createElement('div');
   el.className = 'toast';
-  // 显式 type 优先; 否则对明确失败措辞自动上 err 状态色 (成功/中性保持沉稳反白)
   if (!type && /失败|无效|错误|出错|超时/.test(msg)) type = 'err';
   if (type) el.classList.add(type);
   el.textContent = msg;
@@ -52,15 +38,9 @@ function showToast(msg, dur = 2500, type = '') {
   }, dur);
 }
 
-function appendLog(text, type = '') {
-  if (refs.logInner.querySelector('.log-dim:only-child')) refs.logInner.replaceChildren();
-  const row = document.createElement('div');
-  if (type) row.className = `log-${type}`;
-  row.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
-  refs.logInner.appendChild(row);
-  while (refs.logInner.childNodes.length > 30) refs.logInner.removeChild(refs.logInner.firstChild);
-  refs.logInner.scrollTop = refs.logInner.scrollHeight;
-}
+function errorBlock(msg) { return requireFeature('diagnostics').errorBlock(msg); }
+function appendLog(...args) { return requireFeature('diagnostics').appendLog(...args); }
+function clearLogs() { return requireFeature('diagnostics').clearLogs(); }
 
 function setWebuiToken(token) {
   const clean = String(token || '').trim();
@@ -145,7 +125,18 @@ async function apiFetch(path, opts = {}) {
   }
   if (!response.ok) {
     if (response.status === 403 && method !== 'GET') clearWebuiToken();
-    throw new Error(response.status === 403 ? 'WebUI token 无效或已过期' : `HTTP ${response.status}`);
+    let detail = '';
+    try {
+      const payload = await response.clone().json();
+      detail = payload?.error || payload?.message || JSON.stringify(payload);
+    } catch (_) {
+      try { detail = (await response.clone().text()).trim(); } catch (_) {}
+    }
+    const message = response.status === 403 ? 'WebUI token 无效或已过期' : `HTTP ${response.status}`;
+    const error = new Error(detail ? `${message} · ${detail}` : message);
+    error.status = response.status;
+    error.detail = detail;
+    throw error;
   }
   return response.json();
 }
@@ -506,6 +497,7 @@ registerFeature('shell', {
 registerFeature('core', {
   apiFetch,
   appendLog,
+  clearLogs,
   boolValue,
   buildInfoRow,
   computeNextPollDelay,
@@ -521,4 +513,3 @@ registerFeature('core', {
   switchTab
 });
 })();
-

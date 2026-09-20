@@ -19,6 +19,10 @@ function getThemeLabel(mode) {
   return '跟随系统';
 }
 
+function normalizeThemeMode(mode) {
+  return mode === 'light' || mode === 'dark' || mode === 'system' ? mode : 'system';
+}
+
 function syncThemeUi() {
   const resolved = getResolvedTheme(state.mode);
   document.documentElement.dataset.theme = resolved;
@@ -26,16 +30,20 @@ function syncThemeUi() {
   requireFeature('ui').setStaticHtml(refs.themeBtnIcon, THEME_ICONS[state.mode] || THEME_ICONS.system);
   refs.topbarThemeChip.textContent = `界面 · ${getThemeLabel(state.mode)}`;
   refs.themeChoices.forEach((choice) => {
-    choice.classList.toggle('selected', choice.dataset.themeOption === state.mode);
+    const selected = choice.dataset.themeOption === state.mode;
+    choice.classList.toggle('selected', selected);
+    choice.setAttribute('aria-pressed', String(selected));
   });
   document.querySelectorAll('[data-seg-theme]').forEach((b) => {
-    b.classList.toggle('active', b.dataset.segTheme === state.mode);
+    const selected = b.dataset.segTheme === state.mode;
+    b.classList.toggle('active', selected);
+    b.setAttribute('aria-pressed', String(selected));
   });
 }
 
 function applyTheme(mode, persist = true) {
-  state.mode = mode;
-  if (persist) { localStorage.setItem(STORAGE_THEME_KEY, mode); saveThemeToServer(); }
+  state.mode = normalizeThemeMode(mode);
+  if (persist) { localStorage.setItem(STORAGE_THEME_KEY, state.mode); saveThemeToServer(); }
   syncThemeUi();
   // 自定义/预设主题色在明暗下取色不同, 切换模式时按新明暗重新派生
   if (state.paletteName && state.paletteName !== 'default') applyPalette(state.paletteName, false);
@@ -175,7 +183,9 @@ function applyPalette(name, persist = true) {
 
 function syncPaletteUi() {
   document.querySelectorAll('#swatch-row .swatch').forEach((b) => {
-    b.classList.toggle('active', b.dataset.palette === state.paletteName);
+    const selected = b.dataset.palette === state.paletteName;
+    b.classList.toggle('active', selected);
+    b.setAttribute('aria-pressed', String(selected));
   });
   const preview = document.getElementById('palette-custom-preview');
   if (preview) {
@@ -199,6 +209,7 @@ function renderPaletteSwatches() {
     btn.dataset.palette = p.name;
     btn.style.setProperty('--swatch', p.seed);
     btn.setAttribute('aria-label', `主题色 ${p.label}`);
+    btn.setAttribute('aria-pressed', String(p.name === state.paletteName));
     btn.title = p.label;
     requireFeature('ui').setStaticHtml(btn, '<span class="swatch-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>');
     row.appendChild(btn);
@@ -268,4 +279,3 @@ registerFeature('theme', {
   getThemeLabel
 });
 })();
-

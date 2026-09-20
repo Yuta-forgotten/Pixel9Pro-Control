@@ -10,6 +10,16 @@
 <meta http-equiv="Expires" content="0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' http://127.0.0.1:6210; connect-src 'self' http://127.0.0.1:6210; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self' http://127.0.0.1:6210">
 <title>温控调度控制台</title>
+<link rel="stylesheet" href="/css/tokens.css?v=__WEBUI_VER__">
+<link rel="stylesheet" href="/css/layout.css?v=__WEBUI_VER__">
+<link rel="stylesheet" href="/css/components.css?v=__WEBUI_VER__">
+<link rel="stylesheet" href="/css/controls.css?v=__WEBUI_VER__">
+<link rel="stylesheet" href="/css/surfaces.css?v=__WEBUI_VER__">
+<link rel="stylesheet" href="/css/modal.css?v=__WEBUI_VER__">
+<link rel="stylesheet" href="/css/settings.css?v=__WEBUI_VER__">
+<link rel="stylesheet" href="/css/analytics-legacy.css?v=__WEBUI_VER__">
+<link rel="stylesheet" href="/css/analytics.css?v=__WEBUI_VER__">
+<link rel="stylesheet" href="/css/diagnostics.css?v=__WEBUI_VER__">
 <link rel="stylesheet" href="/app.css?v=__WEBUI_VER__">
 </head>
 <body>
@@ -147,11 +157,15 @@
         </details>
 
         <div class="log-card" id="log-card">
-          <div class="log-toggle" id="log-toggle">
-            <span class="log-label">操作记录</span>
-            <span class="log-arrow">▾</span>
+          <div class="log-head">
+            <button class="log-toggle" id="log-toggle" type="button" aria-expanded="false" aria-controls="log-body">
+              <span class="log-copy"><span class="log-label">运行记录</span><small id="log-preview">暂无操作</small></span>
+              <span class="log-arrow" aria-hidden="true">▾</span>
+            </button>
+            <button class="tiny-btn sm text-btn" id="log-clear-btn" type="button">清空</button>
           </div>
-          <div class="log-body">
+          <div class="log-body" id="log-body">
+            <div class="log-toolbar"><span id="log-meta">本次会话 · 最多保留 40 条</span><span class="log-toolbar-actions"><span>失败项可展开</span><button class="tiny-btn sm text-btn" id="log-audit-btn" type="button">后台日志</button></span></div>
             <div class="log-inner" id="log-inner"><span class="log-dim">等待操作…</span></div>
           </div>
         </div>
@@ -453,7 +467,7 @@
             <div class="panel-copy">
               <div class="kicker">过夜排障</div>
               <div class="panel-title">待机隔离模式</div>
-              <div class="panel-desc" id="idle-isolate-desc">暂停模块的息屏优化，用于判断待机异常是否由模块引起。</div>
+              <div class="panel-desc" id="idle-isolate-desc">仅用于一晚对照：暂停模块的息屏优化，判断待机异常是否由模块引起。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn primary" id="idle-isolate-toggle-btn" type="button"><span id="idle-isolate-toggle-label">读取中…</span></button>
@@ -467,12 +481,16 @@
 
         <details class="disclosure advanced-card">
           <summary class="disclosure-summary">
-            <span class="disclosure-copy"><strong>后台任务状态</strong><small>最近运行、下次检查与待机策略</small></span>
+            <span class="disclosure-copy"><strong>后台任务状态</strong><small>最近一次 worker 快照（只读）</small></span>
             <span class="disclosure-chevron" aria-hidden="true">›</span>
           </summary>
           <div class="disclosure-body">
             <div class="data-list" id="standby-diag-rows">
               <div class="skel" style="height:48px"></div>
+            </div>
+            <div class="support-copy task-status-help">
+              <p>这里显示后台 worker 最近一次检查的结果，不是任务队列。亮屏时约每 15 秒检查并记录温度，息屏时保持深待机，功耗约每 10 分钟采样一次。</p>
+              <p>打开温度历史只会在当前页面、亮屏期间临时提高采样频率；页面隐藏、息屏或关闭 Sheet 后会自动停止。</p>
             </div>
           </div>
         </details>
@@ -595,6 +613,9 @@
     <div class="sheet-handle"></div>
     <div class="sheet-head">
       <div class="modal-s-title" id="detail-title">详情</div>
+      <button class="sheet-close-btn sheet-minimize-btn" id="detail-minimize-btn" type="button" aria-label="缩小详情" aria-expanded="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M6 11h12v2H6z"/></svg>
+      </button>
       <button class="sheet-close-btn" id="detail-close-x" type="button" aria-label="关闭">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
       </button>
@@ -657,6 +678,11 @@
 <script src="/js/theme.js?v=__WEBUI_VER__"></script>
 <script src="/js/ui.js?v=__WEBUI_VER__"></script>
 <script src="/js/common.js?v=__WEBUI_VER__"></script>
+<script src="/js/diagnostics.js?v=__WEBUI_VER__"></script>
+<script src="/js/analytics_model.js?v=__WEBUI_VER__"></script>
+<script src="/js/capture.js?v=__WEBUI_VER__"></script>
+<script src="/js/analytics_view.js?v=__WEBUI_VER__"></script>
+<script src="/js/analytics.js?v=__WEBUI_VER__"></script>
 <script src="/js/profile.js?v=__WEBUI_VER__"></script>
 <script src="/js/thermal.js?v=__WEBUI_VER__"></script>
 <script src="/js/memory.js?v=__WEBUI_VER__"></script>

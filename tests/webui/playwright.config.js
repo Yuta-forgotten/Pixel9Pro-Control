@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { defineConfig } = require('@playwright/test');
+const { chromium } = require('playwright');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 const projectRoot = path.resolve(repoRoot, '..');
@@ -10,24 +11,27 @@ const artifactRoot = process.env.PIXEL_WEBUI_ARTIFACT_DIR
   || path.join(projectRoot, 'work', 'pixel9pro_control_webui_playwright');
 
 function resolveChromiumExecutable() {
-  if (!fs.existsSync(runtimeRoot)) {
-    throw new Error(`Playwright runtime not found: ${runtimeRoot}`);
-  }
-  const revisions = fs.readdirSync(runtimeRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && /^chromium-\d+$/.test(entry.name))
-    .map((entry) => entry.name)
-    .sort((a, b) => Number(b.split('-')[1]) - Number(a.split('-')[1]));
-  const suffixes = [
-    path.join('chrome-win64', 'chrome.exe'),
-    path.join('chrome-win', 'chrome.exe'),
-  ];
-  for (const revision of revisions) {
-    for (const suffix of suffixes) {
-      const executable = path.join(runtimeRoot, revision, suffix);
-      if (fs.existsSync(executable)) return executable;
+  if (fs.existsSync(runtimeRoot)) {
+    const revisions = fs.readdirSync(runtimeRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^chromium-\d+$/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort((a, b) => Number(b.split('-')[1]) - Number(a.split('-')[1]));
+    const suffixes = [
+      path.join('chrome-win64', 'chrome.exe'),
+      path.join('chrome-win', 'chrome.exe'),
+    ];
+    for (const revision of revisions) {
+      for (const suffix of suffixes) {
+        const executable = path.join(runtimeRoot, revision, suffix);
+        if (fs.existsSync(executable)) return executable;
+      }
     }
   }
-  throw new Error(`Chromium executable not found under ${runtimeRoot}`);
+  const configured = process.env.PIXEL_CHROME_PATH;
+  if (configured && fs.existsSync(configured)) return configured;
+  const bundled = chromium.executablePath();
+  if (fs.existsSync(bundled)) return bundled;
+  throw new Error(`Chromium executable not found. Set PIXEL_CHROME_PATH or install Playwright Chromium; checked ${runtimeRoot}`);
 }
 
 module.exports = defineConfig({

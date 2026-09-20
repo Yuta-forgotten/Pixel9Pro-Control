@@ -11,6 +11,11 @@ const expectedScripts = [
   '/js/theme.js?v=__WEBUI_VER__',
   '/js/ui.js?v=__WEBUI_VER__',
   '/js/common.js?v=__WEBUI_VER__',
+  '/js/diagnostics.js?v=__WEBUI_VER__',
+  '/js/analytics_model.js?v=__WEBUI_VER__',
+  '/js/capture.js?v=__WEBUI_VER__',
+  '/js/analytics_view.js?v=__WEBUI_VER__',
+  '/js/analytics.js?v=__WEBUI_VER__',
   '/js/profile.js?v=__WEBUI_VER__',
   '/js/thermal.js?v=__WEBUI_VER__',
   '/js/memory.js?v=__WEBUI_VER__',
@@ -44,6 +49,11 @@ const privateStateContracts = {
   'theme.js': ['const state = {'],
   'ui.js': ['const state = {'],
   'common.js': ['const authState = {', 'const shellState = {'],
+  'diagnostics.js': ['const state = {'],
+  'analytics_model.js': ["registerFeature('analyticsModel'"],
+  'capture.js': ['const state = {'],
+  'analytics_view.js': ["registerFeature('analyticsView'"],
+  'analytics.js': ['const state = {', "registerFeature('analytics'"],
   'profile.js': ['const state = {'],
   'thermal.js': ['const state = {'],
   'memory.js': ['const state = {'],
@@ -55,7 +65,7 @@ for (const [file, markers] of Object.entries(privateStateContracts)) {
   assert(source.includes('(() => {'), `${file} 必须用私有 scope 隔离 feature state`);
   for (const marker of markers) assert(source.includes(marker), `${file} 缺少私有 state：${marker}`);
 }
-for (const feature of ['core', 'auth', 'shell', 'ui', 'theme', 'profile', 'thermal', 'memory', 'network', 'energy']) {
+for (const feature of ['core', 'auth', 'shell', 'ui', 'diagnostics', 'analytics', 'theme', 'profile', 'thermal', 'memory', 'network', 'energy']) {
   assert(bootstrap.includes(`requireFeature('${feature}')`), `bootstrap 未声明功能依赖：${feature}`);
 }
 assert(bootstrap.includes("registerFeature('app'"), 'bootstrap 必须注册 poll coordinator API');
