@@ -209,6 +209,12 @@ apply_uecap_profile() {
             uecap_capture_radio_snapshot >/dev/null 2>&1 || true
             UECAP_RELOAD_DISPATCHED=false
             UECAP_RELOAD_RESULT="not_required_pre_modem"
+            UECAP_DESIRED_PROFILE="$_mode"
+            UECAP_BOUND_PROFILE="$_mode"
+            UECAP_MODEM_LOAD_STATE="pre_modem_bind"
+            UECAP_MODEM_LOADED_PROFILE="unknown"
+            UECAP_FUNCTIONAL_STATE="modem_load_unconfirmed"
+            UECAP_RECEIPT_FRESHNESS="current_boot"
             uecap_write_runtime_receipt "$_mode" "$_source_hash" \
                 "$(uecap_hash "$UECAP_TARGET")" pre_modem applied pre_modem_observed \
                 >/dev/null 2>&1 || log -t pixel9pro_ctrl "WARNING: failed to refresh UECap pre-modem receipt"
