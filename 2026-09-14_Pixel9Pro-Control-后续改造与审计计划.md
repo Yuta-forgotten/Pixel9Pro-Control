@@ -319,7 +319,7 @@ komodo 只提供：
 - `payloads/uecap/caiman/PLATFORM_9055801516233416490.{balanced,special,universal}.binarypb`
 - `payloads/uecap/komodo/PLATFORM_6287228797510365516.candidate.binarypb`
 
-安装器读取 `ro.product.device` 后，只解析当前设备在 `config/uecap_devices.tsv` 和 `config/uecap_payloads.tsv` 中的行，校验 source 路径、文件大小和 SHA-256，再将匹配文件放入模块私有 runtime staging。MetaModule mount 完成后只 bind 当前设备的 canonical target：
+安装器读取 `ro.product.device` 后，只解析当前设备在 `config/uecap_devices.tsv` 和 `config/uecap_payloads.tsv` 中的行，校验 source 路径、文件大小和 SHA-256，再将匹配文件写入安装期 content staging。MetaModule 在下一次启动建立 OverlayFS 后，有效 `/vendor` 只允许出现当前设备的 canonical target；Control 的 post-mount 只做 readback，不再 bind：
 
 - caiman → `/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.binarypb`
 - komodo → `/vendor/firmware/uecapconfig/PLATFORM_6287228797510365516.binarypb`
@@ -333,7 +333,7 @@ komodo 只提供：
 - komodo 文件改名为 caiman。
 - 设备变化后沿用旧 SKU 状态。
 
-APatch/KernelSU 需要在 MetaModule mount 完成后执行 canonical target bind、有效 /vendor 复读、hash 对比和 runtime receipt。Magisk 不激活 UECap。
+APatch/KernelSU 需要在安装期完成 content copy，重启后执行 canonical target、有效 `/vendor`、context、hash 和 same-boot receipt 复读。Magisk 不激活 UECap；运行期不做 late bind。
 
 ## 11. 功耗统计与导出合同
 

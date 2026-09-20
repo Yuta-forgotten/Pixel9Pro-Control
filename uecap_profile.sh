@@ -482,14 +482,14 @@ uecap_meta_vendor_overlay_has_module() {
 }
 
 uecap_hybrid_mount_observed() {
-    _uecap_hybrid_source="/data/adb/modules/${MODDIR##*/}/system/vendor"
-    _uecap_hybrid_source_alias="/data/adb/modules/${MODDIR##*/}/vendor"
+    _uecap_hybrid_lower_source="/data/adb/modules/${MODDIR##*/}/system/vendor"
+    _uecap_hybrid_lower_source_alias="/data/adb/modules/${MODDIR##*/}/vendor"
     _uecap_hybrid_suffix="/${MODDIR##*/}/system/vendor"
     _uecap_hybrid_suffix_alias="/${MODDIR##*/}/vendor"
     _uecap_hybrid_target="/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME"
     _uecap_hybrid_mounts=$(grep -F " /vendor " /proc/self/mountinfo 2>/dev/null || true)
-    printf '%s\n' "$_uecap_hybrid_mounts" | grep -F "lowerdir=$_uecap_hybrid_source" >/dev/null 2>&1 && return 0
-    printf '%s\n' "$_uecap_hybrid_mounts" | grep -F "lowerdir=$_uecap_hybrid_source_alias" >/dev/null 2>&1 && return 0
+    printf '%s\n' "$_uecap_hybrid_mounts" | grep -F "lowerdir=$_uecap_hybrid_lower_source" >/dev/null 2>&1 && return 0
+    printf '%s\n' "$_uecap_hybrid_mounts" | grep -F "lowerdir=$_uecap_hybrid_lower_source_alias" >/dev/null 2>&1 && return 0
     printf '%s\n' "$_uecap_hybrid_mounts" | grep -F "$_uecap_hybrid_suffix" >/dev/null 2>&1 && return 0
     printf '%s\n' "$_uecap_hybrid_mounts" | grep -F "$_uecap_hybrid_suffix_alias" >/dev/null 2>&1 && return 0
     grep -F " $_uecap_hybrid_target " /proc/self/mountinfo >/dev/null 2>&1 && return 0

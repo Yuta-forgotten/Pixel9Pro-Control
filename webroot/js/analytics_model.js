@@ -2,11 +2,11 @@
 (() => {
   // Pure transforms for the shared history sheet. No DOM or request state lives here.
   const RANGES = Object.freeze([
-    { id: '15', minutes: 15, label: '15 分钟' },
-    { id: '30', minutes: 30, label: '30 分钟' },
-    { id: '60', minutes: 60, label: '60 分钟' },
-    { id: '720', minutes: 720, label: '12 小时' },
-    { id: 'custom', minutes: 0, label: '自定义' }
+    { id: '15', minutes: 15, label: '15 分钟', shortLabel: '15 分' },
+    { id: '30', minutes: 30, label: '30 分钟', shortLabel: '30 分' },
+    { id: '60', minutes: 60, label: '60 分钟', shortLabel: '60 分' },
+    { id: '720', minutes: 720, label: '12 小时', shortLabel: '12 小时' },
+    { id: 'custom', minutes: 0, label: '自定义', shortLabel: '自定义' }
   ]);
 
   const finite = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
@@ -127,7 +127,7 @@
         gaps.push([previous, point]);
         continue;
       }
-      if (previous.chargeUah !== null && point.chargeUah !== null) {
+      if (Number.isFinite(previous.chargeUah) && Number.isFinite(point.chargeUah)) {
         const deltaUah = previous.chargeUah - point.chargeUah;
         // Only positive charge-counter drops prove discharge. Charge gain is not
         // silently turned into negative consumption.
@@ -136,17 +136,22 @@
           activeSec += deltaSec;
         }
       }
-      if (previous.currentUa !== null && previous.voltageUv !== null) {
+      if (Number.isFinite(previous.currentUa) && Number.isFinite(previous.voltageUv)) {
         const mw = Math.abs(previous.currentUa * previous.voltageUv) / 1e9;
         if (Number.isFinite(mw) && mw >= 0) {
           measuredMw += mw * deltaSec;
           measuredSec += deltaSec;
         }
       }
-      if (point.chargeUah !== null && previous.chargeUah !== null) {
+      let chargeSeriesAdded = false;
+      if (Number.isFinite(point.chargeUah) && Number.isFinite(previous.chargeUah)) {
         const net = previous.chargeUah - point.chargeUah;
-        series.push({ ts: point.ts, value: net > 0 ? (net / 1000) * 3600 / deltaSec : 0, unit: 'mAh/h' });
-      } else if (previous.currentUa !== null && previous.voltageUv !== null) {
+        if (net > 0 && previous.status !== 'Charging' && point.status !== 'Charging') {
+          series.push({ ts: point.ts, value: (net / 1000) * 3600 / deltaSec, unit: 'mAh/h' });
+          chargeSeriesAdded = true;
+        }
+      }
+      if (!chargeSeriesAdded && Number.isFinite(previous.currentUa) && Number.isFinite(previous.voltageUv)) {
         series.push({ ts: point.ts, value: Math.abs(previous.currentUa * previous.voltageUv) / 1e9, unit: 'mW' });
       }
     }

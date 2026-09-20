@@ -10,6 +10,7 @@ require_loopback
 
 TELEMETRY_WORKER="${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/scripts/telemetry_worker.sh"
 DOWNLOAD_DIR="${PIXEL9PRO_DOWNLOAD_DIR:-/sdcard/Download}"
+TELEMETRY_MAX_HISTORY_AGE_SEC=604800
 
 query_value() {
     _tg_key="$1"
@@ -102,6 +103,14 @@ history_bounds() {
     TG_END_FILTER=$(query_value end_ts)
     TG_START_FILTER=$(query_value start_ts)
     TG_MINUTES=$(query_value minutes)
+    TG_GRANULARITY=$(query_value granularity)
+    TG_BUCKET_SEC=0
+    case "$TG_GRANULARITY" in
+        hour) TG_BUCKET_SEC=3600 ;;
+        minute) TG_BUCKET_SEC=60 ;;
+        '') ;;
+        *) json_error '400 Bad Request' 'invalid granularity' ;;
+    esac
     [ -n "$TG_END_FILTER" ] || TG_END_FILTER="$TG_NOW"
     validate_epoch "$TG_END_FILTER" || json_error '400 Bad Request' 'invalid end_ts'
     if [ -n "$TG_START_FILTER" ]; then
@@ -116,6 +125,8 @@ history_bounds() {
     fi
     [ "$TG_START_FILTER" -le "$TG_END_FILTER" ] 2>/dev/null \
         || json_error '400 Bad Request' 'start_ts is after end_ts'
+    [ "$TG_START_FILTER" -ge $((TG_END_FILTER - TELEMETRY_MAX_HISTORY_AGE_SEC)) ] 2>/dev/null \
+        || json_error '400 Bad Request' 'history range exceeds 7 days'
 }
 
 emit_history_array() {
@@ -123,9 +134,11 @@ emit_history_array() {
     _tg_kind="$2"
     _tg_start="$3"
     _tg_end="$4"
-    awk -F, -v start="$_tg_start" -v end="$_tg_end" -v kind="$_tg_kind" '
-        BEGIN { first=1 }
+    _tg_bucket="$5"
+    awk -F, -v start="$_tg_start" -v end="$_tg_end" -v kind="$_tg_kind" -v bucket="$_tg_bucket" '
+        BEGIN { first=1; last_bucket=-1 }
         $1 ~ /^[0-9]+$/ && $1 + 0 >= start && $1 + 0 <= end {
+            if (bucket > 0) { current_bucket = int(($1 + 0) / bucket); if (current_bucket == last_bucket) next; last_bucket = current_bucket }
             if (!first) printf ","; first=0
             if (kind == "power") {
                 printf "{\"ts\":%s,\"screen\":\"%s\",\"status\":\"%s\",\"level_pct\":", $1, $2, $3
@@ -155,9 +168,11 @@ emit_legacy_array() {
     _tg_kind="$2"
     _tg_start="$3"
     _tg_end="$4"
-    awk -F, -v start="$_tg_start" -v end="$_tg_end" -v kind="$_tg_kind" '
-        BEGIN { first=1 }
+    _tg_bucket="$5"
+    awk -F, -v start="$_tg_start" -v end="$_tg_end" -v kind="$_tg_kind" -v bucket="$_tg_bucket" '
+        BEGIN { first=1; last_bucket=-1 }
         $1 ~ /^[0-9]+$/ && $1 + 0 >= start && $1 + 0 <= end {
+            if (bucket > 0) { current_bucket = int(($1 + 0) / bucket); if (current_bucket == last_bucket) next; last_bucket = current_bucket }
             if (!first) printf ","; first=0
             if (kind == "power") {
                 printf "{\"ts\":%s,\"screen\":\"unknown\",\"status\":\"%s\",\"level_pct\":", $1, $4
@@ -199,19 +214,19 @@ emit_history() {
     _tg_json_start=$(telemetry_num "$TG_START_FILTER")
     _tg_json_end=$(telemetry_num "$TG_END_FILTER")
     json_headers
-    printf '{"ok":true,"schema":%s,"session_id":"%s","window":{"start_ts":%s,"end_ts":%s,"coverage_ratio":%s,"quality":"%s"},"power":[' \
+    printf '{"ok":true,"schema":%s,"session_id":"%s","window":{"start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_ratio":%s,"quality":"%s"},"power":[' \
         "$TELEMETRY_SCHEMA" "$(telemetry_json_escape "$TG_ID")" "$_tg_json_start" "$_tg_json_end" \
-        "$_tg_coverage" "$(telemetry_json_escape "$_tg_quality")"
+        "$(telemetry_json_escape "$TG_GRANULARITY")" "$_tg_coverage" "$(telemetry_json_escape "$_tg_quality")"
     if [ "$_tg_legacy" -eq 1 ]; then
-        emit_legacy_array "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.power_history" power "$TG_START_FILTER" "$TG_END_FILTER"
+        emit_legacy_array "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.power_history" power "$TG_START_FILTER" "$TG_END_FILTER" "$TG_BUCKET_SEC"
     else
-        emit_history_array "$_tg_csv" power "$TG_START_FILTER" "$TG_END_FILTER"
+        emit_history_array "$_tg_csv" power "$TG_START_FILTER" "$TG_END_FILTER" "$TG_BUCKET_SEC"
     fi
     printf '],"thermal":['
     if [ "$_tg_legacy" -eq 1 ]; then
-        emit_legacy_array "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.thermal_history" thermal "$TG_START_FILTER" "$TG_END_FILTER"
+        emit_legacy_array "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.thermal_history" thermal "$TG_START_FILTER" "$TG_END_FILTER" "$TG_BUCKET_SEC"
     else
-        emit_history_array "$_tg_csv" thermal "$TG_START_FILTER" "$TG_END_FILTER"
+        emit_history_array "$_tg_csv" thermal "$TG_START_FILTER" "$TG_END_FILTER" "$TG_BUCKET_SEC"
     fi
     printf '],"attribution":{"source":"%s","quality":"%s","start_snapshot":%s,"end_snapshot":%s}}\n' \
         "$(telemetry_json_escape "$_tg_attr_source")" "$(telemetry_json_escape "$_tg_quality")" \

@@ -40,12 +40,13 @@
     return data;
   }
 
-  async function history({ sessionId = '', startTs = null, endTs = null } = {}) {
+  async function history({ sessionId = '', startTs = null, endTs = null, granularity = '' } = {}) {
     if (!requireFeature('auth').hasToken()) throw new Error('missing WebUI token');
     const params = { action: 'history' };
     if (sessionId) params.session_id = String(sessionId);
     if (Number.isFinite(Number(startTs))) params.start_ts = String(Math.floor(Number(startTs)));
     if (Number.isFinite(Number(endTs))) params.end_ts = String(Math.floor(Number(endTs)));
+    if (granularity === 'hour' || granularity === 'minute') params.granularity = granularity;
     return enqueue((controller) => apiFetch(query(params), { timeoutMs: 8000, controller }));
   }
 

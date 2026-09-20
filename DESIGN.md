@@ -74,7 +74,7 @@ WebUI 统一使用 `page-hero`、`surface-card/preference-card`、`summary-grid`
 
 样式按职责拆分：`app.css` 只保留入口注释；`css/tokens.css`、`layout.css`、`components.css`、`controls.css`、`surfaces.css`、`modal.css`、`settings.css`、`analytics-legacy.css`、`analytics.css` 和 `diagnostics.css` 分别承载 token、布局、组件、控制项、表面层、Sheet 壳、设置页、旧统计兼容层、统一分析界面和诊断状态。所有文件均由 `index.html` 以同一版本占位加载，避免继续把业务样式堆回单一文件。运行记录实现位于 `diagnostics.js`，功耗趋势实现位于 `analytics_model.js` / `analytics_view.js`；`common.js` 与 `energy.js` 只保留请求协调和兼容代理。
 
-温度历史与功耗统计共用 `analytics-sheet`：固定标题、单一范围选择、Hero 摘要、Canvas 趋势、构成卡片、更多统计和导出动作。Sheet 可收起为贴边状态条，收起期间仍允许轻量请求原位更新；页面隐藏、冻结或关闭时必须取消请求和前台 burst。功耗趋势接口只读取模块低频历史，不触发 `batterystats`，完整系统归因继续串行延后加载。
+温度历史与功耗统计共用 `analytics-sheet`：固定标题、单一范围选择、Hero 摘要、Canvas 趋势、构成卡片、更多统计和导出动作。自定义范围只允许最近 1–7 天，并按小时或分钟聚合；前端限制必须由 telemetry CGI 的 7 天边界再次兜底。Sheet 可收起为贴边状态条，收起期间仍允许轻量请求原位更新；来源切换优先复用缓存，后台再刷新，避免重复 status 请求阻塞趋势首屏。功耗趋势接口只读取模块低频历史，不触发 `batterystats`；系统总账、软件耗电排行和系统分项在完整快照到达后分层渲染，电荷计无正向差分时不绘制 0 值假曲线。
 
 操作记录、错误详情、后台任务状态和过夜隔离分层表达：操作记录保留短摘要，失败项可展开脱敏错误；后台任务状态显示“最近一次 worker 快照”与用户可读的亮屏/息屏采样节奏，原始 worker 分支和循环计数只作为技术字段；过夜隔离明确是一次性对照实验，验证后关闭。
 
@@ -91,3 +91,4 @@ WebUI 统一使用 `page-hero`、`surface-card/preference-card`、`summary-grid`
 - `v4.5.05`：完成 Pixel/UGT reboot-selected baseline、fas-rs 双侧 lease、owner/health bounded transaction。
 - `v4.5.07`：将 UECap 与 standalone baseband runtime state 分离，补齐 schema 3 receipt、source/content/effective contract、SKU 边界和 NSA/SA 状态语义。
 - `v4.6.00`：统一分析 Sheet、运行记录与错误详情入口；增加轻量功耗趋势读取、可收起详情与温度 Sheet 导出入口。息屏唤醒复查仍由原有 30 秒恢复契约控制，避免牺牲亮屏恢复时效。
+- `v4.6.00-ui`：恢复统一分析页的软件耗电排行，收紧自定义历史范围与采样粒度，修正功耗无证据时的 Canvas 坐标和假曲线；运行记录将清除动作移入后台日志工具栏，并支持脱敏后台日志导出。

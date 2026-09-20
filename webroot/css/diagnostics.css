@@ -52,7 +52,12 @@
 .log-entry details{grid-column:2;min-width:0}
 .log-entry summary{color:currentColor;cursor:pointer;font-size:10px;line-height:16px}
 .log-entry pre{max-height:140px;margin:6px 0 0;padding:8px;border-radius:8px;background:var(--surface-2);color:var(--danger);font:10px/15px "Roboto Mono",Consolas,monospace;white-space:pre-wrap;overflow:auto}
+.log-toolbar-actions .tiny-btn{flex:0 0 auto;white-space:nowrap}
+.danger-btn{background:var(--danger-container);border-color:color-mix(in srgb,var(--danger) 35%,var(--line));color:var(--danger)}
+.danger-btn:hover{background:color-mix(in srgb,var(--danger) 16%,var(--danger-container))}
 .text-btn{background:transparent;border-color:transparent;color:var(--text-3)}
+.audit-log-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+.audit-log-actions .tiny-btn{min-width:96px}
 .error-panel{display:grid;gap:8px;padding:14px;border:1px solid color-mix(in srgb,var(--danger) 28%,transparent);border-radius:var(--radius-md);background:var(--danger-container);color:var(--danger);font-size:13px;line-height:19px}
 .error-panel pre{margin:0;max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:11px/16px "Roboto Mono",Consolas,monospace}
 .audit-log-pre{max-height:55vh;margin:12px 0 0;padding:12px;border-radius:var(--radius-md);background:var(--surface-2);color:var(--text-2);font:11px/17px "Roboto Mono",Consolas,monospace;white-space:pre-wrap;overflow:auto}

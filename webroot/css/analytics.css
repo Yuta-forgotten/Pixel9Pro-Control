@@ -7,6 +7,7 @@
 .analytics-section-desc{font-size:12px;line-height:18px;color:var(--text-3);overflow-wrap:anywhere}
 .analytics-range,.analytics-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:4px;border-radius:var(--radius-md);background:var(--surface-2)}
 .analytics-range[aria-label="数据类型"]{grid-template-columns:repeat(2,minmax(0,1fr))}
+.analytics-range[aria-label="统计区间"]{grid-template-columns:repeat(5,minmax(0,1fr))}
 .analytics-range-btn,.analytics-tab{position:relative;min-height:44px;padding:8px 10px;border:0;border-radius:calc(var(--radius-md) - 4px);background:transparent;color:var(--text-2);font-size:13px;line-height:18px;font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:background var(--mid) var(--ease),color var(--mid) var(--ease),transform var(--fast) var(--ease)}
 .analytics-range-btn:hover,.analytics-tab:hover{background:color-mix(in srgb,var(--primary) 8%,transparent)}
 .analytics-range-btn:active,.analytics-tab:active{transform:scale(.97)}
@@ -67,14 +68,15 @@
 .analytics-disclosure-summary small{margin-top:2px;font-size:11px;line-height:16px;color:var(--text-3);overflow-wrap:anywhere}
 .analytics-disclosure-chevron{flex:0 0 auto;font-size:24px;line-height:24px;color:var(--text-3);transform:rotate(90deg);transition:transform var(--mid) var(--ease)}
 .analytics-disclosure[open] .analytics-disclosure-chevron{transform:rotate(-90deg)}
-.analytics-disclosure-body{padding:0 14px 14px;border-top:1px solid var(--line)}
+.analytics-disclosure-body{max-height:0;overflow:hidden;opacity:0;padding:0 14px;border-top:0;transition:max-height .28s var(--ease),opacity .2s var(--ease),padding .28s var(--ease),border-color .28s var(--ease)}
+.analytics-disclosure[open] .analytics-disclosure-body{max-height:2200px;opacity:1;padding:0 14px 14px;border-top:1px solid var(--line)}
 .analytics-disclosure-body > .data-list{margin-top:12px}
 .analytics-actions{display:flex;gap:8px;flex-wrap:wrap}
 .analytics-actions > *{flex:1 1 120px}
 .analytics-capture-card{display:grid;gap:10px;padding:14px;border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--surface)}
 .analytics-capture-state{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;line-height:19px;color:var(--text-2)}
 .analytics-custom-range{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.analytics-custom-range input{min-width:0;min-height:44px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface-2);color:var(--text);font-size:13px}
+.analytics-custom-range input,.analytics-custom-range select{min-width:0;min-height:44px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface-2);color:var(--text);font-size:13px}
 .analytics-custom-field{display:grid;gap:4px;min-width:0}
 .analytics-custom-field > span{font-size:12px;line-height:16px;color:var(--text-3)}
 .analytics-custom-range > .tiny-btn{grid-column:1 / -1}
@@ -118,8 +120,17 @@
 
 @media (max-width:359px){
   .analytics-range,.analytics-tabs,.energy-range-tabs,.range-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .analytics-range[aria-label="统计区间"]{grid-template-columns:repeat(3,minmax(0,1fr))}
   .analytics-summary-grid,.history-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .analytics-summary-item:nth-child(3),.history-summary-item:nth-child(3){grid-column:1 / -1}
+}
+
+@media (max-width:320px){
+  .analytics-range[aria-label="统计区间"]{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
+@media (prefers-reduced-motion: reduce){
+  .analytics-disclosure-body,.analytics-disclosure-chevron{transition:none}
 }
 
 /* Legacy energy cards also need the narrow layout after their base rules. */

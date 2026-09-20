@@ -1,7 +1,7 @@
 'use strict';
 (() => {
   const state = {
-    open: false, source: 'thermal', rangeId: '30', customStart: null, customEnd: null,
+    open: false, source: 'thermal', rangeId: '30', customDays: 1, customGranularity: 'hour',
     view: null, cache: new Map(), requestId: 0, request: null, timer: null,
     summary: null, observer: null
   };
@@ -16,17 +16,20 @@
   const endpoint = () => (globalThis.API && API.telemetry) || '/cgi-bin/telemetry.sh';
 
   function key() {
-    return `${state.source}:${state.rangeId}:${state.customStart || ''}:${state.customEnd || ''}`;
+    return `${state.source}:${state.rangeId}:${state.customDays}:${state.customGranularity}`;
   }
   function query(path, params) {
     const search = new URLSearchParams(params);
     return `${path}${path.includes('?') ? '&' : '?'}${search.toString()}`;
   }
   function rangeBounds() {
-    if (state.rangeId === 'custom') return { startTs: state.customStart, endTs: state.customEnd };
+    if (state.rangeId === 'custom') {
+      const endTs = Math.floor(Date.now() / 1000);
+      return { startTs: endTs - state.customDays * 86400, endTs, granularity: state.customGranularity };
+    }
     const minutes = model().rangeFor(state.rangeId).minutes;
     const endTs = Math.floor(Date.now() / 1000);
-    return { startTs: endTs - minutes * 60, endTs };
+    return { startTs: endTs - minutes * 60, endTs, granularity: '' };
   }
   function abort(reason = 'analytics-replaced') {
     state.requestId += 1;
@@ -49,12 +52,12 @@
   function ensureView() {
     if (state.view) return state.view;
     state.view = viewFeature().create({
-      onSource: (source) => { state.source = source; state.summary = null; if (source !== 'thermal') stopBurst(); load(true); },
-      onRange: (rangeId) => { state.rangeId = rangeId; if (rangeId === 'custom' && (!state.customStart || !state.customEnd)) { viewFeature().loading(state.view, state.source, rangeId); state.view.stateLine.textContent = '请选择开始和结束时间'; return; } load(true); },
-      onCustom: (start, end) => {
-        const a = Date.parse(start); const b = Date.parse(end);
-        if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) { showToast('自定义时段无效，请检查开始和结束时间'); return; }
-        state.customStart = Math.floor(a / 1000); state.customEnd = Math.floor(b / 1000); state.rangeId = 'custom'; load(true);
+      onSource: (source) => { state.source = source; if (source !== 'thermal') stopBurst(); load(false); },
+      onRange: (rangeId) => { state.rangeId = rangeId; if (rangeId === 'custom') { viewFeature().setCustomValues(state.view, state.customDays, state.customGranularity); viewFeature().promptCustom(state.view); return; } load(false); },
+      onCustom: (days, granularity) => {
+        const parsedDays = Math.floor(Number(days));
+        if (!Number.isFinite(parsedDays) || parsedDays < 1 || parsedDays > 7 || !['hour', 'minute'].includes(granularity)) { showToast('自定义范围请选择 1–7 天，并选择小时或分钟粒度'); return; }
+        state.customDays = parsedDays; state.customGranularity = granularity; state.rangeId = 'custom'; load(false);
       },
       onCapture: async (button, duration) => {
         button.disabled = true;
@@ -85,14 +88,7 @@
     const session = capture().getSession();
     const cached = state.cache.get(key());
     if (!cached) return;
-    viewFeature().update(state.view, { source: state.source, rangeId: state.rangeId, stats: cached.stats, status: cached.status, capture: { session } });
-    const hasSystemSnapshot = state.summary && (Number(state.summary.system_generated_at) > 0 || state.summary.fast !== true);
-    if (state.source === 'power' && hasSystemSnapshot && state.view.moreBody) {
-      const title = document.createElement('strong'); title.textContent = '系统总账（当前 batterystats 窗口）'; state.view.moreBody.appendChild(title);
-      const list = document.createElement('div'); list.className = 'data-list'; state.view.moreBody.appendChild(list);
-      const summary = state.summary; const values = [['系统估算总耗电', summary.drain], ['CPU 分项', summary.cpu], ['亮屏分项', summary.scron], ['息屏分项', summary.scroff]];
-      values.forEach(([label, value]) => { if (value !== null && value !== undefined && value !== '') { const item = document.createElement('div'); item.className = 'data-row'; const key = document.createElement('span'); key.className = 'data-key'; key.textContent = label; const val = document.createElement('span'); val.className = 'data-val'; val.textContent = `${value} mAh`; item.append(key, val); list.appendChild(item); } });
-    }
+    viewFeature().update(state.view, { source: state.source, rangeId: state.rangeId, stats: cached.stats, status: cached.status, summary: state.summary, capture: { session } });
   }
   function normalizeResponse(data, bounds) {
     const source = state.source;
@@ -107,9 +103,8 @@
     const params = { action: 'history' };
     if (bounds.startTs !== null && Number.isFinite(Number(bounds.startTs))) params.start_ts = Math.floor(bounds.startTs);
     if (bounds.endTs !== null && Number.isFinite(Number(bounds.endTs))) params.end_ts = Math.floor(bounds.endTs);
-    await capture().status().catch(() => {});
     const session = capture().getSession(); if (session?.id) params.session_id = session.id;
-    return capture().history({ sessionId: params.session_id, startTs: params.start_ts, endTs: params.end_ts });
+    return capture().history({ sessionId: params.session_id, startTs: params.start_ts, endTs: params.end_ts, granularity: bounds.granularity });
   }
   async function fetchEnergySummary() {
     if (state.source !== 'power') return;
@@ -123,7 +118,7 @@
     const view = ensureView(); const bounds = rangeBounds(); const cacheKey = key();
     abort('new-range'); state.requestId += 1; const requestId = state.requestId;
     if (!force && state.cache.has(cacheKey)) { updateView(); schedule(); return; }
-    viewFeature().loading(view, state.source, state.rangeId);
+    if (!state.cache.has(cacheKey)) viewFeature().loading(view, state.source, state.rangeId);
     try {
       const data = await fetchSource(bounds); if (requestId !== state.requestId || !data) return;
       const normalized = normalizeResponse(data, bounds); state.cache.set(cacheKey, normalized); updateView();

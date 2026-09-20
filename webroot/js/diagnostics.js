@@ -69,9 +69,18 @@
       const data = await requireFeature('core').apiFetch(`${API.auditLog}?limit=80`, { timeoutMs: 5000 });
       const lines = Array.isArray(data?.lines) ? data.lines : [];
       const body = lines.length
-        ? `<pre class="audit-log-pre">${requireFeature('core').escapeHtml(lines.join('\n'))}</pre>`
+        ? '<pre class="audit-log-pre">' + requireFeature('core').escapeHtml(lines.join('\n')) + '</pre>'
         : '<div class="energy-empty">暂无后台审计记录。</div>';
-      requireFeature('ui').openDetail('后台审计日志', `<div class="detail-content"><p>仅显示已脱敏的结构化事件；原始请求、路径和设备隐私不会进入 WebUI。</p>${body}</div>`);
+      const exportAction = '<div class="audit-log-actions"><button class="tiny-btn tonal" id="audit-log-export" type="button">导出日志</button></div>';
+      requireFeature('ui').openDetail('后台审计日志', '<div class="detail-content"><p>仅显示已脱敏的结构化事件；原始请求、路径和设备隐私不会进入 WebUI。</p>' + exportAction + body + '</div>');
+      const exportButton = document.getElementById('audit-log-export');
+      exportButton?.addEventListener('click', () => {
+        const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'pixel9pro-audit-log.txt';
+        document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url);
+        requireFeature('core').showToast('后台日志已导出');
+      });
     } catch (err) {
       requireFeature('core').showToast(`后台日志读取失败：${err.message || err}`);
       appendLog(`后台日志读取失败：${err.message || err}`, 'err');

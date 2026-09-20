@@ -18,6 +18,7 @@
 - ZIP 同时携带 caiman 三档和 komodo 单文件 candidate，但运行时只解析当前 SKU；
 - 增加隐私安全审计日志、真实 HTTP 错误、确定性构建和 ZIP 门禁；
 - 功耗导出升级为 report/JSON/CSV/attribution 原子目录。
+- 统一分析页保留软件耗电排行；自定义统计限制最近 1–7 天并支持小时/分钟粒度；运行记录支持脱敏后台日志导出。
 
 安装包：`pixel9pro_control_v4.6.00-rc1.zip`
 
@@ -192,7 +193,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 1. 温控模块使用 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中发布；基带模块 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases#release-v1.1.0-rc3)
 2. KernelSU 用户需先安装 metamodule（如 `meta-overlayfs`）并重启
 3. APatch / KernelSU / Magisk → 模块 → 从存储安装
-4. **首次安装**：音量键交互向导依次配置温控、CPU 调度、按 SKU 的 UECap、NR、SIM2、VM/ZRAM 和 NTP；最终摘要后再次倒计时确认。安全默认是温控不添加配置、NR 关闭、VM/ZRAM system no-write，调度能力不完整时强制 off，komodo UECap 保持 stock。活动 MetaModule 时，安装器先通过 `metamodule_compat.sh` 固定 hook 的 mode/context contract，再把选定 UECap 写入 `system/vendor/firmware/uecapconfig` content staging，由 MetaModule 在下次启动前挂载；运行期不再动态 bind `/vendor`。
+4. **首次安装**：音量键交互向导依次配置温控、CPU 调度、按 SKU 的 UECap、NR、SIM2、VM/ZRAM 和 NTP；最终摘要后再次倒计时确认。安全默认是温控不添加配置、NR 关闭、VM/ZRAM system no-write，调度能力不完整时强制 off，komodo UECap 保持 stock。`meta-overlayfs` backend 使用 content staging；Hybrid Mount backend 使用 regular module source staging；两者都在重启后复读有效 `/vendor`，不执行运行期动态 bind。
 5. **升级安装**：Control 自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline。若 MetaModule content image 仍有旧 Control 内容，安装器会拒绝覆盖并要求先卸载旧 Control、重启，再安装新包，避免 stale thermal/UECap 文件残留。独立普通基带模块按上面的“基带模块升级规则”判断直接升级或 clean reinstall，不因 APatch Manager 更新本身强制卸载 Manager
 6. 重启
 7. 打开 `http://127.0.0.1:6210` 验证
@@ -202,15 +203,15 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 - `Pixel 9 Pro (caiman)` / `Pixel 9 Pro XL (komodo)`
 - `Android 17 QPR2 Beta  (SDK 37)` 当前验证基线
 - `APatch 0.10+` 实机验证
-- `KernelSU 0.9+` 代码兼容（需 metamodule，未完成真机闭环）
-- `Magisk v27+` 代码兼容（未完成真机闭环）
+- `KernelSU 0.9+` 代码兼容（需已审核的 MetaModule；KernelSU 真机闭环待补）
+- `Magisk v27+` 普通功能代码兼容；UECap managed profiles 明确停用，Magisk 真机闭环待补
 
 ### Root 实现差异
 
 | 功能 | APatch / KSU+metamodule | Magisk |
 |---|---|---|
 | 温控阈值偏移、CPU 调度、ZRAM、后台应用限制、SIM2、NR 降级、WebUI | ✅ | ✅ |
-| UECap：caiman 三档 / komodo stock+candidate | 安装阶段写入 MetaModule content image，重启后复读有效 `/vendor` | ❌ 不激活 |
+| UECap：caiman 三档 / komodo stock+candidate | `meta-overlayfs` 写 content image；Hybrid Mount 写 regular source，重启后复读有效 `/vendor` | ❌ 不激活 |
 | 独立基带模块 CarrierSettings/APN/China MCFG/IMS properties | ✅（caiman/komodo，需按各自挂载契约复读） | ✅（使用 Magic Mount；不承担 UECap） |
 
 ## 已知问题
