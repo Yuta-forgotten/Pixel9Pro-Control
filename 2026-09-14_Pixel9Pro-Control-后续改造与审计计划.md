@@ -672,11 +672,12 @@ ZIP 需要满足：
 
 ## 21. 当前执行状态
 
-- 本计划文档：已创建。
-- 模块源码：本轮未修改。
-- 新代码 commit：本轮未创建。
-- 新 ZIP：本轮未生成。
+- 本计划文档：已按用户修订并实施。
+- 模块源码：C1-C9 核心改造已完成。
+- 新代码 commit：已按功能阶段创建中文 Conventional Commit 链。
+- 新 ZIP：`E:\Pixel ADB\builds\releases\pixel9pro_control_v4.6.00-rc1.zip`，SHA-256 `e0ecf1385d5ab7a352988cf75921964df795fcf9ef8ee5d9b91062d2e0154fa9`。
+- 回滚 ZIP：`E:\Pixel ADB\builds\releases\pixel9pro_control_v4.5.09_rollback.zip`，SHA-256 `6a0342204990356dc97b23567aeb5b2ffeca5580c2e81d91ebf4de2ab2ea7adb`。
 - PRO XL 实机安装：未执行。
 - PRO XL runtime：未验证。
 
-下一步从 C0 文档合同提交开始，然后按 C1 → C9 顺序逐阶段实施、验证、提交和审计。komodo candidate 只有在取得真实文件、来源 build、bytes、SHA-256 和设备侧证据后才能进入可安装 ZIP；不得以占位文件或 caiman 改名文件绕过门禁。
+下一步是通过 ADB 穿透完成 caiman 安装/重启/回滚验证；komodo candidate 已取得用户提供文件和 bytes/hash，但来源 build 与 XL 设备侧证据仍未知，因此保持 candidate/[unverified]，不得作为稳定适配发布。

@@ -10,20 +10,22 @@
 
 ## 本次发行说明
 
-本版本修复了以下问题：
+`v4.6.00-rc1` 是候选测试版，主要变化：
 
-- 修复 Pixel Thermal HAL 对 LPM Include 配置的处理，保留正确的 stock include 边界；
-- 增强 Thermal effective 状态回读，避免仅凭写入结果报告成功；
-- 补齐 CPU transaction 测试依赖，减少测试环境与实际源码依赖不一致；
-- 修复基带状态摘要聚合，改善 Control 与独立基带模块的状态展示；
-- 限制安装器音量键等待，避免输入缺失时无限阻塞安装流程；
-- 清理发布包中的测试、构建和临时文件，避免非运行时内容污染安装包。
+- 温控默认不添加任何 vendor 配置，只在显式 custom 时生成 overlay；
+- 性能页增加“不启用本模块调度”，off 会停止全部调度 mutation 和 worker；
+- 首次安装完整询问温控、调度、UECap、NR、SIM2、VM/ZRAM 与 NTP；
+- ZIP 同时携带 caiman 三档和 komodo 单文件 candidate，但运行时只解析当前 SKU；
+- 增加隐私安全审计日志、真实 HTTP 错误、确定性构建和 ZIP 门禁；
+- 功耗导出升级为 report/JSON/CSV/attribution 原子目录。
 
-安装包：`pixel9pro_control_v4.5.09.zip`
+安装包：`pixel9pro_control_v4.6.00-rc1.zip`
 
-SHA-256：`AE743049B87D3FA217465057EDCB7730B09898C135D0D4074B71D8A8C76DB761`
+SHA-256：`E0ECF1385D5AB7A352988CF75921964DF795FCF9EF8EE5D9B91062D2E0154FA9`
 
-该摘要对应本地完成结构审计、推送并在 caiman / Android `CP41.260814.003.B1` 上完成重启后模块加载验证的安装包。版本号和发行文件名仍应以实际 GitHub Release 资产为准。
+回滚包：`pixel9pro_control_v4.5.09_rollback.zip`，SHA-256 `6A0342204990356DC97B23567AEB5B2FFECA5580C2E81D91EBF4DE2AB2EA7ADB`。该回滚包由 Git 基线 `1966613` 使用当前确定性构建器重建，不是旧 GitHub Release 原资产。
+
+当前仅完成主机/parser/包级验证。komodo candidate 来源 build 未知，XL 安装、modem load、重启持久化与网络功能仍为 `[unverified]`；不得作为稳定版发布。
 
 ## 支持设备
 
