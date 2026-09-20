@@ -13,6 +13,39 @@ THERMAL_POLICY_LIB="$MODDIR/scripts/thermal_policy_lib.sh"
 [ -r "$THERMAL_POLICY_LIB" ] && . "$THERMAL_POLICY_LIB" && thermal_policy_init "$MODDIR" \
     || json_error '500 Internal Server Error' 'thermal policy library not found'
 
+THERMAL_METAMODULE_ACTIVE=0
+THERMAL_METAMODULE_CONTENT_ROOT=""
+if [ -r "$MODDIR/uecap_profile.sh" ] && . "$MODDIR/uecap_profile.sh" 2>/dev/null \
+    && uecap_active_metamodule; then
+    THERMAL_METAMODULE_ACTIVE=1
+    THERMAL_METAMODULE_CONTENT_ROOT=$(uecap_meta_content_root 2>/dev/null || true)
+fi
+
+thermal_metamodule_guard() {
+    [ "$THERMAL_METAMODULE_ACTIVE" -eq 1 ] || return 0
+    [ -n "$THERMAL_METAMODULE_CONTENT_ROOT" ] \
+        || json_error '500 Internal Server Error' '无法解析 MetaModule content image 路径'
+    case "$1" in
+        custom)
+            json_error '409 Conflict' \
+                '活动 MetaModule 使用 content image；自定义温控需重新安装模块并重启'
+            ;;
+        system)
+            for _ts_meta_file in \
+                thermal_info_config.json \
+                thermal_info_config_lpm.json \
+                thermal_info_config_proto.json \
+                thermal_info_config_charge.json \
+                thermal_info_config_bg_tasks_throttling.json; do
+                [ ! -e "$THERMAL_METAMODULE_CONTENT_ROOT/vendor/etc/$_ts_meta_file" ] \
+                    && [ ! -e "$THERMAL_METAMODULE_CONTENT_ROOT/system/vendor/etc/$_ts_meta_file" ] \
+                    || json_error '409 Conflict' \
+                        'MetaModule content image 仍有旧温控文件；请卸载 Control、重启后重新安装'
+            done
+            ;;
+    esac
+}
+
 DEVICE=$(cat "$MODDIR/.device_variant" 2>/dev/null | tr -d ' \r\n\t')
 case "$DEVICE" in caiman|komodo) ;; *) json_error '500 Internal Server Error' 'invalid device variant' ;; esac
 STOCK_JSON=$(thermal_policy_snapshot_path "$DEVICE") \
@@ -113,8 +146,12 @@ emit_thermal_state() {
     _ts_offset=$(thermal_normalize_offset "$_ts_offset" "$THERMAL_DEFAULT_OFFSET")
     [ -f "$OUT_JSON" ] && _ts_overlay=true || _ts_overlay=false
     if thermal_policy_validate_stock "$STOCK_JSON"; then _ts_custom=true; else _ts_custom=false; fi
-    printf '"policy":"%s","offset":%s,"overlay_present":%s,"custom_available":%s,"thermal_contract":' \
-        "$_ts_policy" "$_ts_offset" "$_ts_overlay" "$_ts_custom"
+    _ts_reinstall_required=false
+    [ "$THERMAL_METAMODULE_ACTIVE" -eq 1 ] && _ts_reinstall_required=true
+    printf '"policy":"%s","offset":%s,"overlay_present":%s,"custom_available":%s,"metamodule_active":%s,"reinstall_required":%s,"thermal_contract":' \
+        "$_ts_policy" "$_ts_offset" "$_ts_overlay" "$_ts_custom" \
+        "$([ "$THERMAL_METAMODULE_ACTIVE" -eq 1 ] && printf true || printf false)" \
+        "$_ts_reinstall_required"
     thermal_print_ui_contract_json
 }
 
@@ -140,6 +177,8 @@ else
     _ts_saved_offset=$(cat "$THERMAL_OFFSET_FILE" 2>/dev/null | tr -d ' \r\n\t')
     offset=$(thermal_normalize_offset "$_ts_saved_offset" "$THERMAL_DEFAULT_OFFSET")
 fi
+
+thermal_metamodule_guard "$policy"
 
 mkdir -p "$LOCKDIR_BASE/tmp" 2>/dev/null \
     && chmod 700 "$LOCKDIR_BASE/tmp" 2>/dev/null \

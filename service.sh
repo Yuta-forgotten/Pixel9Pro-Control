@@ -206,7 +206,10 @@ apply_uecap_profile() {
                 _source=$(uecap_resolve_source "$_mode")
                 _source_hash=$(uecap_hash "$_source")
             fi
-            uecap_capture_radio_snapshot >/dev/null 2>&1 || true
+            # Telephony registry can block while the modem service is still
+            # publishing records. Defer the diagnostic snapshot so WebUI and
+            # the rest of late_start never wait on a radio binder call.
+            UECAP_RADIO_SNAPSHOT_RESULT=deferred
             UECAP_RELOAD_DISPATCHED=false
             UECAP_RELOAD_RESULT="not_required_pre_modem"
             UECAP_DESIRED_PROFILE="$_mode"

@@ -22,14 +22,20 @@
 
 - Thermal custom 生成器对 `HotThreshold` 与下一档 `HotHysteresis` 使用严格 `<` 约束，并保留 `0.1°C` 安全间隔；修复等号边界触发 `ThermalHAL could not be initialized properly` 的启动失败。
 - 实机取证曾在 caiman 升级迁移的 custom `+4°C` 配置上复现 ThermalHAL invalid-components；修复后的生产生成器对 pro/xl、`-2/0/+2/+4/+6` 全组合完成 JSON 与严格约束复核。
+- caiman 实机 A/B 隔离证明 Control 与活动 MetaModule 组合时，post-mount 动态 bind `/vendor` 会触发卡第二屏；修复方案改为安装阶段写入 canonical target，重启后只做有效路径/hash 复读，并拒绝覆盖残留 content image。
+- 若检测到旧 Control content image，安装器拒绝原地覆盖并要求 clean reinstall + reboot，避免旧 thermal/UECap 文件残留。
+- APatch/KernelSU 安装前通过 `scripts/metamodule_compat.sh` 对已知 MetaModule hook 做版本/形状门禁；不匹配时拒绝安装，不把未知 context 行为带入启动链。
+- 活动 MetaModule 下，WebUI 的 UECap 档位和自定义温控接口返回 `409 Conflict` 并要求重新安装；禁止把只写 metadata 目录的假成功状态带入下一次启动。
+- MetaModule adapter 固定 `meta-overlayfs 1.3.1 / versionCode 13100` 的原始 hook hash，并在安装失败时恢复 hook；content 提交使用隔离目录、canonical `vendor_configs_file`/`vendor_fw_file` context、hash readback 和 `/vendor` lowerdir readback。
+- 启动期不再同步等待 telephony registry 的 radio snapshot；UECap receipt 先提交 content 合同，radio 观察延后，避免 late_start 阻塞 WebUI。
 
 ## 构建证据
 
 - 候选 ZIP：`pixel9pro_control_v4.6.00-rc1.zip`
-- SHA-256：`20d37ad755f0a982aa491bbdd761d670d9c4779641e970b3225212508f1680f2`
-- source fingerprint：`bc485c8eea7798146a5814a5e09e9df053dcde31b1a862fde81070a8c50cfabd`
-- entries：77
-- uncompressed bytes：3507220
+- SHA-256：`ad17c757d807ce4fc4ee7cd3ac14433db6236d9c741e3e81270fbc68b5450f65`
+- source fingerprint：`bcf528ad8aab521ab928c630b3c4205cddd2e969ebefe0be26f6cbbafcaf3840`
+- entries：78
+- uncompressed bytes：3544801
 - 双次构建：一致
 - payload devices：`caiman, komodo`
 - 预激活 UECap target：0
@@ -45,6 +51,10 @@
 ## 已验证
 
 - Shell/Node/Python parser 与源码合同。
+- caiman (Pixel 9 Pro) APatch + `meta-overlayfs 1.3.1` stage4 实机启动：`sys.boot_completed=1`，`/system`/`/vendor` KSU overlay 存在，Control/Meta 无 disable/remove。
+- 实机 effective thermal 为 stock hash `1cbfbe13aa6e4a498b79b741039a964e28aebb12cbb0d65b8e772cbfaeeb1111`、`vendor_configs_file`，Meta content 无 thermal 文件；Thermal AIDL `Ready=true`，无新 thermal AVC/SIGABRT。
+- 实机 UECap balanced 的 source/content/effective hash 均为 `2870ba9c94145930ad75f1666c6ec2755ac207a7efc0aa4277bdde13cabaae0c`，content/effective 均为 `vendor_fw_file`；新 readback helper 返回 `verified`，JSON receipt 输出 `backend/content_hash/effective_hash/context`。
+- 安装日志无 `chcon: invalid context`；WebUI `127.0.0.1:6210` HTTP 200，热控服务 `HAL Ready=true`。
 - system/custom 温控事务与缺失 stock fail-closed。
 - scheduler capability、off 五层门禁和 WebUI 交互。
 - caiman/komodo 跨 SKU 拒绝及 candidate→stock 回滚。

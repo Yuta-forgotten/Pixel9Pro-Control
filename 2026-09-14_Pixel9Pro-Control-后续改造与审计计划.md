@@ -265,8 +265,8 @@ system 是唯一不创建 overlay 的模式；不得再增加“本模块不管�
 6. 保留 NAN 和最终 SHUTDOWN 槽位。
 7. 校验阈值严格递增。
 8. 校验 HotThreshold/HotHysteresis overlap，且保留 0.1°C 严格间隔，拒绝等号边界。
-9. 写入 overlay。
-10. 复读有效路径。
+9. APatch/KernelSU + MetaModule 只在安装阶段写入 content image staging，禁止 post-mount 动态 bind；Magisk 不激活 UECap。
+10. 重启后复读有效路径、hash、mount 和 same-boot receipt。
 11. 失败时删除 overlay 并恢复系统配置。
 
 非官方或未知内核默认使用系统配置。自定义温控必须先确认 Thermal HAL、sensor、cooling device 和 overlay 能力。

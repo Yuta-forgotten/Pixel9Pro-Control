@@ -9,11 +9,15 @@ const state = {
   thermalBadReads: 0,
   lastSkinTempC: null,
   thermalApplyBusy: false,
+  metamoduleActive: false,
+  reinstallRequired: false,
   sensorRefs: null,
   homeSensorRefs: null,
   thermalModal: { pending: null, prev: null },
   tempChart: { timer: null, draw: null, activeRange: 10, requestId: 0 }
 };
+
+const THERMAL_REINSTALL_NOTICE = '更改配置需卸载本模块、重启后重新安装并在向导选择';
 
 const THERMAL_POLICY_PRESETS = {
   system: {
@@ -91,6 +95,16 @@ function formatThermalOffset(policy, offset) {
   return `${value > 0 ? '+' : ''}${value}°C 已启用`;
 }
 
+function updateThermalRuntimeGuard(data) {
+  if (!data || typeof data !== 'object') return;
+  if (Object.prototype.hasOwnProperty.call(data, 'metamodule_active')) {
+    state.metamoduleActive = data.metamodule_active === true || data.metamodule_active === 'true';
+  }
+  if (Object.prototype.hasOwnProperty.call(data, 'reinstall_required')) {
+    state.reinstallRequired = data.reinstall_required === true || data.reinstall_required === 'true';
+  }
+}
+
 function isThermalZoneValid(zone) {
   if (!zone || typeof zone.zone !== 'string') return false;
   const temp = Number(zone.temp);
@@ -131,6 +145,7 @@ function syncHeroDesc() {
   if (swapMode === 'optimized') parts.push('内存已优化');
   else if (swapMode === 'disabled') parts.push('VM 写入关闭');
   else if (swapMode === 'system') parts.push('内存系统默认');
+  if (state.reinstallRequired) parts.push(THERMAL_REINSTALL_NOTICE);
   refs.heroDesc.textContent = parts.join(' · ') || '正在读取配置…';
 }
 
@@ -141,7 +156,9 @@ function syncThermalUi() {
   if (!preset) return;
   refs.topbarThermalChip.textContent = `温控 ${preset.name}`;
   refs.thermalCurrentName.textContent = preset.name;
-  refs.thermalCurrentDesc.textContent = preset.summary;
+  refs.thermalCurrentDesc.textContent = state.reinstallRequired
+    ? `${preset.summary} · ${THERMAL_REINSTALL_NOTICE}`
+    : preset.summary;
   const label = formatThermalOffset(state.currentPolicy, state.currentOffset);
   [refs.homeModBadge, refs.thModBadge].forEach((el) => {
     el.textContent = label;
@@ -151,6 +168,9 @@ function syncThermalUi() {
     const selected = card.dataset.policy === state.currentPolicy
       && (state.currentPolicy !== 'custom' || Number(card.dataset.offset) === state.currentOffset);
     card.classList.toggle('selected', selected);
+    card.classList.toggle('disabled', state.reinstallRequired);
+    card.setAttribute('aria-disabled', String(state.reinstallRequired));
+    card.tabIndex = state.reinstallRequired ? -1 : 0;
   });
   positionMarkers();
 }
@@ -160,10 +180,11 @@ function renderThermalCards() {
   if (!state.contract) return;
   const appendCard = (policy, preset, offset = null) => {
     const card = document.createElement('article');
-    card.className = 'profile-card thermal-option';
+    card.className = `profile-card thermal-option${state.reinstallRequired ? ' disabled' : ''}`;
     card.dataset.policy = policy;
     if (offset !== null) card.dataset.offset = String(offset);
-    card.tabIndex = 0;
+    card.tabIndex = state.reinstallRequired ? -1 : 0;
+    card.setAttribute('aria-disabled', String(state.reinstallRequired));
     const detailAction = policy === 'custom'
       ? `<button class="card-info" type="button" data-action="thermal-detail" data-offset="${offset}" aria-label="查看${preset.name}详情">
            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M11 17h2v-6h-2v6zm0-8h2V7h-2v2zm1-7C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
@@ -181,9 +202,11 @@ function renderThermalCards() {
       </div>`);
     card.addEventListener('click', (evt) => {
       if (evt.target.closest('[data-action="thermal-detail"]')) return;
+      if (state.reinstallRequired) return;
       applyThermalSelection(policy, offset);
     });
     card.addEventListener('keydown', (evt) => {
+      if (state.reinstallRequired) return;
       if (evt.key === 'Enter' || evt.key === ' ') {
         evt.preventDefault();
         applyThermalSelection(policy, offset);
@@ -245,6 +268,7 @@ function ensureSensorRefs(container, key, zones, className) {
 async function loadThermalPreset() {
   try {
     const data = await apiFetch(API.thermalSet);
+    updateThermalRuntimeGuard(data);
     applyThermalContract(data);
     state.currentPolicy = state.contract.policies.includes(data.policy)
       ? data.policy
@@ -732,7 +756,7 @@ function stopThermalBurst() {
 }
 
 async function applyThermalSelection(policy, offset) {
-  if (!state.contract?.policies.includes(policy) || state.thermalApplyBusy) return;
+  if (state.reinstallRequired || !state.contract?.policies.includes(policy) || state.thermalApplyBusy) return;
   if (policy === 'custom' && !state.contract.offsets.includes(offset)) return;
   if (policy === state.currentPolicy && (policy !== 'custom' || offset === state.currentOffset)) return;
   const prev = { policy: state.currentPolicy, offset: state.currentOffset };
@@ -780,6 +804,10 @@ async function applyThermalSelection(policy, offset) {
 
 async function cancelThermalChange() {
   refs.rebootModal.classList.remove('open');
+  if (state.reinstallRequired) {
+    showToast(THERMAL_REINSTALL_NOTICE, 4200);
+    return;
+  }
   try {
     const previous = state.thermalModal.prev;
     const data = await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(previous), timeoutMs: 8000 });

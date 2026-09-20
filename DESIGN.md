@@ -6,10 +6,18 @@
 
 运营商配置由独立的 `pixel9pro_baseband_trial` 提供。两个模块可以独立安装；Control 不重新打包或接管 standalone 的 CarrierSettings/APN/MCFG/IMS overlay。
 
-UECap ownership 按 SKU 固定：
+UECap ownership 按 SKU 固定，但挂载后端必须先满足启动安全边界：
 
 - caiman：Control 管理 `PLATFORM_9055801516233416490.binarypb` 的 `balanced`、`special`、`universal` 三档；
 - komodo：Control 默认保持 stock，只在用户显式选择时绑定独立 `PLATFORM_6287228797510365516.binarypb` candidate。
+
+APatch 无 MetaModule 时不提供 managed UECap。活动 MetaModule 下，安装器在确认同 ID content image 为空后，把当前 SKU 的 canonical target 写入 `system/vendor/firmware/uecapconfig` staging，由 MetaModule 在重启前挂载；检测到旧 content image 时拒绝原地覆盖并要求 clean reinstall + reboot。post-mount 只复读有效路径/hash，不再执行动态 bind `/vendor`。
+
+安装前还必须通过 `scripts/metamodule_compat.sh` 的 hook contract；它只接受已知的 MetaModule metainstall 形状，并修正错误的 mode/context 参数。未知或不兼容 hook 直接拒绝安装。
+
+MetaModule content image 在安装阶段提交后，运行期 WebUI 不直接写 metadata 目录来假装改变有效 `/vendor`。UECap 档位和自定义温控请求会返回 `409 Conflict` 并要求重新安装；system 温控请求只有在 content image 不含任何旧 thermal 文件时才提交状态。这样不会出现“接口成功、重启后仍使用旧 image”的假状态。
+
+启动期的 radio snapshot 只做诊断，不参与 content 合同验收；`service.sh` 不同步等待 telephony registry，避免 modem binder 阻塞 late_start 和 WebUI。receipt 的 content/effective hash、SELinux context 与同 boot freshness 仍是权威状态。
 
 发布 ZIP 同时携带两机私有 staging payload，但设备合同只能解析当前 `ro.product.device` 的 source/target/hash。komodo candidate 为用户提供文件，来源 build 未知、SHA-256 为 `f2c0bc1dc1409b1780dbdf57e56ebfef15cf7f889e76315343d2ae139cb19090`；未完成实机验证前不得升级为 verified。
 

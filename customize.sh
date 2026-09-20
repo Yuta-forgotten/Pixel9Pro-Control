@@ -23,8 +23,14 @@ installer_cleanup() {
     _installer_rc="$1"
     rm -f "${EVENT_FILE:-}" 2>/dev/null || true
     if [ "$INSTALL_COMPLETE" -eq 1 ] && [ "$_installer_rc" -eq 0 ]; then
+        if command -v meta_module_finish_hook >/dev/null 2>&1; then
+            meta_module_finish_hook success || ui_print "  ⚠ MetaModule hook backup cleanup failed"
+        fi
         install_trace complete 0
     else
+        if command -v meta_module_finish_hook >/dev/null 2>&1; then
+            meta_module_finish_hook failed || ui_print "  ✗ MetaModule hook rollback failed"
+        fi
         install_trace failed "$_installer_rc"
         [ "$AUDIT_LOG_READY" -eq 1 ] \
             && audit_log_event installer install failure "INSTALL_FAILED_${_installer_rc}" 0 >/dev/null 2>&1 \
@@ -357,6 +363,36 @@ fi
 
 UECAP_DISABLED=0
 UECAP_DISABLED_REASON=""
+export PIXEL9PRO_MODDIR="$MODPATH"
+if [ ! -r "$MODPATH/uecap_profile.sh" ] \
+    || ! . "$MODPATH/uecap_profile.sh"; then
+    ui_print "  ✗ 缺少 UECap 运行合同, 已中止安装"
+    exit 1
+fi
+if [ "$ROOT_IMPL" = "APatch" ] || [ "$ROOT_IMPL" = "KernelSU" ]; then
+    if ! uecap_active_metamodule; then
+        ui_print "  ✗ APatch/KernelSU 安装必须先启用并重启 MetaModule"
+        exit 1
+    fi
+    _meta_target=$(uecap_meta_target 2>/dev/null) || {
+        ui_print "  ✗ 无法解析活动 MetaModule target"
+        exit 1
+    }
+    mountpoint -q "$_meta_target/mnt" 2>/dev/null || {
+        ui_print "  ✗ MetaModule content image 未挂载，拒绝继续安装"
+        exit 1
+    }
+    if [ ! -r "$MODPATH/scripts/metamodule_compat.sh" ] \
+        || ! . "$MODPATH/scripts/metamodule_compat.sh"; then
+        ui_print "  ✗ 当前 MetaModule hook 未通过 context contract，拒绝安装"
+        ui_print "    需要支持 canonical SELinux context 的 MetaModule"
+        exit 1
+    fi
+    if uecap_meta_content_exists; then
+        ui_print "  ✗ 检测到旧 Control content image；必须先卸载旧 Control、重启，再安装本包"
+        exit 1
+    fi
+fi
 case "$device" in
     komodo)
         ui_print "  机型: Pixel 9 Pro XL (komodo)"
@@ -384,11 +420,24 @@ ui_print ""
 if [ "$ROOT_IMPL" = "Magisk" ]; then
     UECAP_DISABLED=1
     UECAP_DISABLED_REASON="magisk_uecap_unavailable"
+elif { [ "$ROOT_IMPL" = "APatch" ] || [ "$ROOT_IMPL" = "KernelSU" ]; } \
+    && [ "$UECAP_RUNTIME_POLICY" != "managed_profiles" ] \
+    && [ "$UECAP_RUNTIME_POLICY" != "single_candidate" ]; then
+    UECAP_DISABLED=1
+    UECAP_DISABLED_REASON="${UECAP_STATUS_REASON:-metamodule_required}"
 fi
 if [ "$UECAP_DISABLED" -eq 1 ]; then
-    ui_print "  ⚠ Magisk 下自动停用 UECap 激活"
+    case "$UECAP_DISABLED_REASON" in
+        magisk_uecap_unavailable)
+            ui_print "  ⚠ Magisk 下自动停用 UECap 激活"
+            ;;
+        metamodule_required)
+            ui_print "  ⚠ APatch/KernelSU 未检测到活动 MetaModule，UECap 保持 stock"
+            ;;
+    esac
     ui_print "    reason: $UECAP_DISABLED_REASON"
-    ui_print "    (规避 Magic Mount × modem cbd 启动 race)"
+    [ "$UECAP_DISABLED_REASON" != magisk_uecap_unavailable ] \
+        || ui_print "    (规避 Magic Mount × modem cbd 启动 race)"
     ui_print ""
 fi
 
@@ -403,6 +452,7 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
                .swap_mode .swap_custom .ntp_server .uecap_manual_mode \
                .uecap_policy .uecap_reason .webui_theme \
                .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .sched_owner_desired .game_handoff_policy .game_handoff_source \
+               .uecap_content_image .uecap_backend \
                .scheduler_mode .scheduler_policy .scheduler_profile \
                .feature_nr .feature_sim2 .feature_vm .feature_power_export .state_schema \
                .thermal_history .power_history .power_session; do
@@ -738,6 +788,21 @@ else
     fi
 fi
 
+if [ "$UECAP_DISABLED" -eq 0 ] \
+    && [ "$UECAP_BACKEND" = "metamodule_content" ]; then
+    _stage_mode=$(cat "$MODPATH/.uecap_mode" 2>/dev/null | tr -d ' \r\n\t')
+    PIXEL9PRO_MODDIR="$MODPATH" sh "$MODPATH/uecap_profile.sh" stage "$_stage_mode"
+    _stage_rc=$?
+    if [ "$_stage_rc" -eq 2 ]; then
+        ui_print "  ✗ 检测到旧 MetaModule content image；必须先卸载旧 Control、重启，再安装本包"
+        exit 1
+    elif [ "$_stage_rc" -ne 0 ]; then
+        ui_print "  ✗ 无法将 UECap 写入 MetaModule content image staging"
+        exit 1
+    fi
+    ui_print "  UECap: $_stage_mode 已写入 MetaModule content image staging，重启后复读有效 /vendor"
+fi
+
 _offset_raw=$(cat "$OFFSET_FILE" 2>/dev/null | tr -d ' \n\r\t')
 offset=$(thermal_normalize_offset "$_offset_raw" "$THERMAL_DEFAULT_OFFSET")
 installer_write "$OFFSET_FILE" "$offset"
@@ -803,6 +868,17 @@ fi
 
 INSTALL_REASON_CODE=INSTALL_COMMITTED
 THERMAL_POLICY=$(thermal_policy_read)
+stage_vendor_context() {
+    _stage_file="$1"
+    _stage_ref="${2:-/vendor/etc/thermal_info_config.json}"
+    [ -f "$_stage_file" ] || return 1
+    [ -e "$_stage_ref" ] || return 1
+    chcon --reference=/vendor "$MODPATH/system/vendor" 2>/dev/null || return 1
+    chcon --reference=/vendor/etc "${_stage_file%/*}" 2>/dev/null || return 1
+    chcon --reference="$_stage_ref" "$_stage_file" 2>/dev/null || return 1
+    [ "$(ls -Zd "$_stage_file" 2>/dev/null | awk '{print $1}')" = \
+        "$(ls -Zd "$_stage_ref" 2>/dev/null | awk '{print $1}')" ]
+}
 case "$THERMAL_POLICY" in
     custom)
         _thermal_config_supported=yes
@@ -824,7 +900,17 @@ case "$THERMAL_POLICY" in
             && thermal_policy_prepare_snapshot "$device" "$OLDDIR" "$_thermal_allow_vendor" \
             && mkdir -p "${OUT_JSON%/*}" 2>/dev/null \
             && thermal_generate_config "$STOCK_ACTIVE" "$OUT_JSON" "$offset"; then
-            ui_print "  温控: custom $(thermal_format_offset "$offset")"
+            if stage_vendor_context "$OUT_JSON"; then
+                ui_print "  温控: custom $(thermal_format_offset "$offset")"
+            else
+                thermal_policy_remove_overlay || exit 1
+                [ ! -e "$OUT_JSON" ] || exit 1
+                installer_write "$MODPATH/.thermal_policy" system
+                offset=0
+                installer_write "$OFFSET_FILE" 0
+                INSTALL_REASON_CODE=THERMAL_CONTEXT_FALLBACK_SYSTEM
+                ui_print "  ⚠ 温控 overlay context 无法验证，已 fail closed 到系统默认"
+            fi
         else
             thermal_policy_remove_overlay || exit 1
             installer_write "$MODPATH/.thermal_policy" system
@@ -844,6 +930,13 @@ case "$THERMAL_POLICY" in
         exit 1
         ;;
 esac
+
+if [ "$ROOT_IMPL" = APatch ] || [ "$ROOT_IMPL" = KernelSU ]; then
+    meta_module_prepare_hook "$_meta_target" || {
+        ui_print "  ✗ MetaModule hook 未通过版本/hash 合同，拒绝安装"
+        exit 1
+    }
+fi
 
 install_receipt_write committed success "$INSTALL_REASON_CODE" yes \
     || { ui_print "  ✗ 无法写入安装 receipt, 已中止安装"; exit 1; }

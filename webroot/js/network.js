@@ -15,6 +15,8 @@ const state = {
   uecapMode: 'unknown',
   uecapPolicy: 'disabled',
   uecapActiveMode: 'unknown',
+  uecapBackend: '',
+  uecapReinstallRequired: false,
   uecapBusy: false,
   uecapPendingMode: '',
   uecapVerifyState: 'idle',
@@ -26,6 +28,8 @@ const state = {
   ntpBusy: false,
   deviceClockTimer: null
 };
+
+const UECAP_REINSTALL_NOTICE = '更改配置需卸载本模块、重启后重新安装并在向导选择';
 
 const core = () => requireFeature('core');
 const apiFetch = (...args) => core().apiFetch(...args);
@@ -167,6 +171,21 @@ function uecapLabel(mode) {
   return '未知';
 }
 
+function updateUecapRuntimeGuard(data) {
+  if (!data || typeof data !== 'object') return;
+  const hasBackend = Object.prototype.hasOwnProperty.call(data, 'backend');
+  const hasReinstall = Object.prototype.hasOwnProperty.call(data, 'reinstall_required');
+  if (!hasBackend && !hasReinstall) return;
+  if (hasBackend) {
+    state.uecapBackend = typeof data.backend === 'string' ? data.backend : '';
+    if (!hasReinstall) state.uecapReinstallRequired = false;
+  }
+  if (hasReinstall) {
+    const requested = data.reinstall_required === true || data.reinstall_required === 'true';
+    state.uecapReinstallRequired = requested && state.uecapBackend === 'metamodule_content';
+  }
+}
+
 function applyUecapContract(data) {
   const raw = data?.uecap_contract;
   const modeOrder = Array.isArray(raw?.mode_order) ? raw.mode_order.filter((mode) => typeof mode === 'string') : [];
@@ -223,7 +242,9 @@ function renderUecapBtnGroup(activeMode) {
   const selectedMode = state.uecapPendingMode || activeMode;
   refs.uecapBtnGroup.replaceChildren();
   const modes = state.uecapContract?.modeOrder || [];
+  const blocked = state.uecapReinstallRequired;
   refs.uecapBtnGroup.hidden = modes.length === 0;
+  refs.uecapBtnGroup.setAttribute('aria-disabled', String(blocked));
   modes.forEach((id) => {
     const presentation = UECAP_MODE_PRESENTATION[id];
     const btn = document.createElement('button');
@@ -235,13 +256,15 @@ function renderUecapBtnGroup(activeMode) {
     btn.textContent = isPending
       ? (state.uecapVerifyState === 'switching' ? '切换中...' : '校验中...')
       : presentation.name;
-    btn.disabled = state.uecapBusy;
+    btn.disabled = state.uecapBusy || blocked;
+    if (blocked) btn.title = UECAP_REINSTALL_NOTICE;
     btn.addEventListener('click', () => setUecapMode(id));
     refs.uecapBtnGroup.appendChild(btn);
   });
 }
 
 function renderUecapRows(data) {
+  updateUecapRuntimeGuard(data);
   applyUecapContract(data);
   refs.uecapRows.replaceChildren();
   const receipt = data.runtime_receipt && typeof data.runtime_receipt === 'object'
@@ -255,11 +278,13 @@ function renderUecapRows(data) {
   state.uecapPolicy = data.policy || data.runtime_policy || 'disabled';
   state.uecapActiveMode = active;
   const modeInfo = UECAP_MODE_PRESENTATION[requested];
-  refs.uecapDesc.textContent = disabled
-    ? (data.disabled_message || '当前安装环境不提供 UECap 配置写入；以下只展示设备、modem 和无线观察结果。')
-    : state.uecapPendingMode
-      ? `${uecapLabel(state.uecapPendingMode)}：已提交切换，正在校验当前配置。`
-      : modeInfo ? `${modeInfo.desc} · 切换后自动校验配置是否生效。` : '选择 UE 能力配置，切换后会自动校验是否生效。';
+  refs.uecapDesc.textContent = state.uecapReinstallRequired
+    ? `当前 MetaModule content image 不支持运行期切换；${UECAP_REINSTALL_NOTICE}。`
+    : disabled
+      ? (data.disabled_message || '当前安装环境不提供 UECap 配置写入；以下只展示设备、modem 和无线观察结果。')
+      : state.uecapPendingMode
+        ? `${uecapLabel(state.uecapPendingMode)}：已提交切换，正在校验当前配置。`
+        : modeInfo ? `${modeInfo.desc} · 切换后自动校验配置是否生效。` : '选择 UE 能力配置，切换后会自动校验是否生效。';
   renderUecapBtnGroup(disabled ? 'disabled' : requested);
   const verifyRow = disabled
     ? { label: '配置校验', value: `${data.contract_result || 'unknown'} · 只读`, cls: 'off' }
@@ -291,9 +316,14 @@ function renderUecapRows(data) {
             : '尚无可确认的 NR 无线状态';
   const hasConfirmedModemLoad = receipt.modem_load_state === 'confirmed_readback';
   const isCurrentReceipt = receipt.receipt_freshness === 'current_boot';
+  const changeMode = state.uecapReinstallRequired
+    ? UECAP_REINSTALL_NOTICE
+    : disabled ? '当前环境只读' : '支持运行期切换';
   const rows = [
     { label: 'Device / SKU', value: `${data.device || 'unknown'} / ${data.device_label || 'unknown'}`, cls: 'off' },
     { label: 'Device policy', value: data.device_policy || 'unknown', cls: 'off' },
+    { label: 'Backend', value: state.uecapBackend || 'unknown', cls: state.uecapReinstallRequired ? 'warn' : 'off' },
+    { label: '配置变更', value: changeMode, cls: state.uecapReinstallRequired ? 'warn' : disabled ? 'off' : 'good' },
     { label: 'Runtime policy', value: data.runtime_policy || data.policy || 'unknown', cls: disabled ? 'off' : 'good' },
     { label: '已选配置', value: uecapLabel(requested), cls: requested === active ? 'good' : 'off' },
     { label: '当前绑定', value: uecapLabel(active), cls: active === requested ? 'good' : 'warn' },
@@ -335,6 +365,7 @@ async function refreshNrSwitch() {
 async function refreshUecap() {
   try {
     const data = await apiFetch(API.uecap, { timeoutMs: 6000 });
+    updateUecapRuntimeGuard(data);
     applyUecapContract(data);
     state.uecapMode = data.requested_mode || state.uecapContract.defaultMode;
     state.uecapPolicy = data.policy || data.runtime_policy || 'disabled';
@@ -422,6 +453,8 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
   renderUecapRows(lastData || {
     policy: state.uecapPolicy,
     disabled: false,
+    backend: state.uecapBackend,
+    reinstall_required: state.uecapReinstallRequired,
     uecap_contract: { mode_order: state.uecapContract?.modeOrder || [], default_mode: state.uecapContract?.defaultMode || mode },
     requested_mode: mode,
     active_mode: state.uecapActiveMode || 'custom',
@@ -501,6 +534,7 @@ async function toggleNrSwitch() {
 
 async function setUecapMode(mode) {
   if (!state.uecapContract?.modeOrder.includes(mode)
+    || state.uecapReinstallRequired
     || state.uecapBusy
     || (mode === state.uecapMode && state.uecapVerifyState !== 'failed')) return;
   const label = UECAP_MODE_PRESENTATION[mode]?.name || mode;
@@ -511,6 +545,8 @@ async function setUecapMode(mode) {
   renderUecapRows({
     policy: state.uecapPolicy,
     disabled: false,
+    backend: state.uecapBackend,
+    reinstall_required: state.uecapReinstallRequired,
     uecap_contract: { mode_order: state.uecapContract.modeOrder, default_mode: state.uecapContract.defaultMode },
     requested_mode: state.uecapMode || mode,
     active_mode: state.uecapActiveMode || 'custom',

@@ -20,8 +20,9 @@ emit_status() {
 emit_apply_failure() {
     _json=$(uecap_print_status_json)
     _json=${_json#\{}
-    printf '{"ok":false,"applied":true,"reloading":false,"error":"%s",%s\n' \
-        "$(json_escape "$1")" "$_json"
+    _applied="${2:-false}"
+    printf '{"ok":false,"applied":%s,"reloading":false,"error":"%s",%s\n' \
+        "$_applied" "$(json_escape "$1")" "$_json"
 }
 
 case "$REQUEST_METHOD" in
@@ -66,10 +67,14 @@ case "$REQUEST_METHOD" in
                     && audit_log_event uecap apply failure MODEM_RELOAD_FAILED 0 >/dev/null 2>&1 \
                     || true
                 json_status_headers '500 Internal Server Error'
-                emit_apply_failure '配置已切换，但 modem 重载失败；重启手机后生效'
+                emit_apply_failure '配置已切换，但 modem 重载失败；重启手机后生效' true
                 ;;
             2)
                 json_error '500 Internal Server Error' "uecap apply failed; rollback incomplete ($UECAP_APPLY_RESULT)"
+                ;;
+            4)
+                json_status_headers '409 Conflict'
+                emit_apply_failure '活动 MetaModule 使用 content image；UECap 档位变更需卸载 Control、重启后重新安装' false
                 ;;
             *)
                 json_error '500 Internal Server Error' "uecap apply failed ($UECAP_APPLY_RESULT)"

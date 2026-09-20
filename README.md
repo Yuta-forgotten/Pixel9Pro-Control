@@ -192,8 +192,8 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 1. 温控模块使用 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中发布；基带模块 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases#release-v1.1.0-rc3)
 2. KernelSU 用户需先安装 metamodule（如 `meta-overlayfs`）并重启
 3. APatch / KernelSU / Magisk → 模块 → 从存储安装
-4. **首次安装**：音量键交互向导依次配置温控、CPU 调度、按 SKU 的 UECap、NR、SIM2、VM/ZRAM 和 NTP；最终摘要后再次倒计时确认。安全默认是温控不添加配置、NR 关闭、VM/ZRAM system no-write，调度能力不完整时强制 off，komodo UECap 保持 stock。
-5. **升级安装**：Control 自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline。独立普通基带模块按上面的“基带模块升级规则”判断直接升级或 clean reinstall，不因 APatch Manager 更新本身强制卸载 Manager
+4. **首次安装**：音量键交互向导依次配置温控、CPU 调度、按 SKU 的 UECap、NR、SIM2、VM/ZRAM 和 NTP；最终摘要后再次倒计时确认。安全默认是温控不添加配置、NR 关闭、VM/ZRAM system no-write，调度能力不完整时强制 off，komodo UECap 保持 stock。活动 MetaModule 时，安装器先通过 `metamodule_compat.sh` 固定 hook 的 mode/context contract，再把选定 UECap 写入 `system/vendor/firmware/uecapconfig` content staging，由 MetaModule 在下次启动前挂载；运行期不再动态 bind `/vendor`。
+5. **升级安装**：Control 自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline。若 MetaModule content image 仍有旧 Control 内容，安装器会拒绝覆盖并要求先卸载旧 Control、重启，再安装新包，避免 stale thermal/UECap 文件残留。独立普通基带模块按上面的“基带模块升级规则”判断直接升级或 clean reinstall，不因 APatch Manager 更新本身强制卸载 Manager
 6. 重启
 7. 打开 `http://127.0.0.1:6210` 验证
 
@@ -210,7 +210,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 | 功能 | APatch / KSU+metamodule | Magisk |
 |---|---|---|
 | 温控阈值偏移、CPU 调度、ZRAM、后台应用限制、SIM2、NR 降级、WebUI | ✅ | ✅ |
-| UECap：caiman 三档 / komodo stock+candidate | ✅（按 SKU） | ❌ 不激活 |
+| UECap：caiman 三档 / komodo stock+candidate | 安装阶段写入 MetaModule content image，重启后复读有效 `/vendor` | ❌ 不激活 |
 | 独立基带模块 CarrierSettings/APN/China MCFG/IMS properties | ✅（caiman/komodo，需按各自挂载契约复读） | ✅（使用 Magic Mount；不承担 UECap） |
 
 ## 已知问题
@@ -220,6 +220,8 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 | 原因 | 解决 |
 |------|------|
 | `thermal_info_config.json` 格式错误 | 安全模式删除 `/data/adb/modules/pixel9pro_control/` |
+| Control 在活动 MetaModule 的 post-mount 后动态 bind `/vendor` | 已改为安装阶段 content staging；post-mount 只做有效路径/hash 复读 |
+| 活动 MetaModule 下通过 WebUI 修改 UECap/自定义温控 | 返回 `409 Conflict`，保留当前有效状态；卸载 Control、重启后重新安装并在安装向导中选择目标档位 |
 | `service.sh` 阻塞启动 | 同上 |
 
 **紧急恢复**：长按电源键 → 第二屏时电源+音量下进安全模式 → 重启。

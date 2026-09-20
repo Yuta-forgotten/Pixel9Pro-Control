@@ -1,9 +1,10 @@
 #!/system/bin/sh
 
-# Manual UECap tier contract. The module bind-mounts one validated payload and
-# records the requested/active tier; no background auto policy exists. Device
-# dispatch is read from config/uecap_devices.tsv so caiman and komodo can never
-# cross the PLATFORM filename boundary.
+# Manual UECap tier contract. APatch/KernelSU stages one validated payload into
+# the active MetaModule content image and records the effective tier; Magisk
+# keeps the legacy bind backend disabled. Device dispatch is read from
+# config/uecap_devices.tsv so caiman and komodo can never cross the PLATFORM
+# filename boundary.
 
 MODDIR="${PIXEL9PRO_MODDIR:-${MODDIR:-${0%/*}}}"
 UECAP_MODE_FILE="${PIXEL9PRO_UECAP_MODE_FILE:-$MODDIR/.uecap_mode}"
@@ -32,6 +33,21 @@ UECAP_APPLY_RESULT="idle"
 UECAP_STATE_ROLLBACK_RESULT="not_needed"
 UECAP_DEVICE_CONTRACT="${PIXEL9PRO_UECAP_CONTRACT:-$MODDIR/config/uecap_devices.tsv}"
 UECAP_PAYLOAD_CONTRACT="${PIXEL9PRO_UECAP_PAYLOAD_CONTRACT:-$MODDIR/config/uecap_payloads.tsv}"
+UECAP_METAMODULE_LINK="${PIXEL9PRO_METAMODULE_LINK:-/data/adb/metamodule}"
+UECAP_STOCK_BASELINE_FILE="${PIXEL9PRO_UECAP_STOCK_BASELINE_FILE:-$MODDIR/.uecap_stock_baseline_hash}"
+UECAP_BACKEND="dynamic_bind"
+UECAP_STAGE_RESULT="not_run"
+UECAP_MOUNT_OBSERVED="unknown"
+UECAP_CONTEXT_VERIFIED="unknown"
+UECAP_STOCK_BASELINE_HASH=""
+UECAP_READBACK_RESULT="not_run"
+UECAP_READBACK_MODE="unknown"
+UECAP_READBACK_SOURCE_HASH=""
+UECAP_READBACK_CONTENT_HASH=""
+UECAP_READBACK_EFFECTIVE_HASH=""
+UECAP_READBACK_CONTENT_PATH="none"
+UECAP_READBACK_CONTENT_CONTEXT="none"
+UECAP_READBACK_EFFECTIVE_CONTEXT="unknown"
 UECAP_DEVICE="unknown"
 UECAP_DEVICE_LABEL="unknown"
 UECAP_DEVICE_POLICY="unknown"
@@ -148,9 +164,48 @@ uecap_detect_root_impl() {
     fi
 }
 
+uecap_active_metamodule() {
+    _uecap_meta_link="$UECAP_METAMODULE_LINK"
+    [ -L "$_uecap_meta_link" ] || return 1
+    _uecap_meta_target=$(readlink -f "$_uecap_meta_link" 2>/dev/null)
+    [ -n "$_uecap_meta_target" ] && [ -d "$_uecap_meta_target" ] || return 1
+    case "$(sed -n 's/^metamodule=//p' "$_uecap_meta_target/module.prop" 2>/dev/null \
+        | head -n 1 | tr -d ' \n\r\t')" in
+        1|true) ;;
+        *) return 1 ;;
+    esac
+    [ ! -e "$_uecap_meta_target/skip_mount" ] || return 1
+    [ ! -e "$_uecap_meta_target/disable" ] && [ ! -e "$_uecap_meta_target/remove" ] \
+        && mountpoint -q "$_uecap_meta_target/mnt" 2>/dev/null
+}
+
+uecap_metamodule_declared() {
+    _uecap_meta_link="$UECAP_METAMODULE_LINK"
+    [ -L "$_uecap_meta_link" ] || return 1
+    _uecap_meta_target=$(readlink -f "$_uecap_meta_link" 2>/dev/null)
+    [ -n "$_uecap_meta_target" ] && [ -d "$_uecap_meta_target" ] || return 1
+    case "$(sed -n 's/^metamodule=//p' "$_uecap_meta_target/module.prop" 2>/dev/null \
+        | head -n 1 | tr -d ' \n\r\t')" in
+        1|true) ;;
+        *) return 1 ;;
+    esac
+    [ ! -e "$_uecap_meta_target/skip_mount" ]
+}
+
 uecap_refresh_runtime_policy() {
     UECAP_ROOT_IMPL=$(uecap_detect_root_impl)
     UECAP_RUNTIME_POLICY="disabled"
+    if [ "$UECAP_ROOT_IMPL" = apatch ] || [ "$UECAP_ROOT_IMPL" = kernelsu ]; then
+        if uecap_active_metamodule; then
+            UECAP_BACKEND="metamodule_content"
+        else
+            UECAP_BACKEND="metamodule_unavailable"
+            UECAP_STATUS_REASON="metamodule_required"
+            return 0
+        fi
+    else
+        UECAP_BACKEND="dynamic_bind"
+    fi
     case "$UECAP_CONTRACT_RESULT:$UECAP_DEVICE_POLICY:$UECAP_ROOT_IMPL" in
         valid:managed_profiles:magisk|valid:single_candidate:magisk)
             UECAP_RUNTIME_POLICY="disabled"
@@ -343,12 +398,218 @@ uecap_disabled_message() {
         magisk_uecap_unavailable)
             printf '%s' 'Magisk 下不启用 managed UECap 覆盖；独立基带模块仍可单独提供 CarrierSettings、MCFG、APN 与 IMS。'
             ;;
+        metamodule_dynamic_bind_unsafe)
+            printf '%s' '活动 MetaModule 下禁止 Control 在 post-mount 后动态 bind /vendor；UECap 保持 stock，等待独立 overlay 模块。'
+            ;;
+        metamodule_required)
+            printf '%s' 'APatch/KernelSU 需要活动 MetaModule 承载 UECap content image；当前仅保留 stock/read-only。'
+            ;;
         *)
             printf '%s' '当前安装环境不提供 managed UECap 配置切换。'
             ;;
     esac
 }
 
+uecap_meta_target() {
+    uecap_active_metamodule || return 1
+    readlink -f "$UECAP_METAMODULE_LINK" 2>/dev/null
+}
+
+uecap_meta_content_root() {
+    _uecap_content_target=$(uecap_meta_target) || return 1
+    _uecap_content_module=${MODDIR##*/}
+    case "$_uecap_content_module" in
+        ''|.|..|*/*) return 1 ;;
+    esac
+    printf '%s/mnt/%s' "$_uecap_content_target" "$_uecap_content_module"
+}
+
+uecap_meta_content_path() {
+    _uecap_content_root=$(uecap_meta_content_root) || return 1
+    _uecap_content_relative="$1"
+    case "$_uecap_content_relative" in
+        /*|*..*|*\\*) return 1 ;;
+    esac
+    _uecap_content_direct="$_uecap_content_root/$_uecap_content_relative"
+    _uecap_content_legacy="$_uecap_content_root/system/$_uecap_content_relative"
+    if [ -e "$_uecap_content_direct" ] || [ -L "$_uecap_content_direct" ]; then
+        printf '%s' "$_uecap_content_direct"
+    elif [ -e "$_uecap_content_legacy" ] || [ -L "$_uecap_content_legacy" ]; then
+        printf '%s' "$_uecap_content_legacy"
+    else
+        printf '%s' "$_uecap_content_direct"
+    fi
+}
+
+uecap_meta_content_exists() {
+    _uecap_meta_target=$(uecap_meta_target) || return 1
+    _uecap_meta_mnt="$_uecap_meta_target/mnt"
+    mountpoint -q "$_uecap_meta_mnt" 2>/dev/null || return 1
+    [ -d "$_uecap_meta_mnt/${MODDIR##*/}" ]
+}
+
+uecap_meta_vendor_overlay_has_module() {
+    _uecap_overlay_root=$(uecap_meta_content_root) || return 1
+    _uecap_overlay_direct="$_uecap_overlay_root/vendor"
+    _uecap_overlay_legacy="$_uecap_overlay_root/system/vendor"
+    _uecap_overlay_link="$_uecap_meta_link/mnt/${MODDIR##*/}/vendor"
+    _uecap_overlay_link_legacy="$_uecap_meta_link/mnt/${MODDIR##*/}/system/vendor"
+    _uecap_overlay_mounts=$(grep -F " /vendor " /proc/self/mountinfo 2>/dev/null \
+        | grep -F " - overlay " 2>/dev/null) || return 1
+    printf '%s\n' "$_uecap_overlay_mounts" \
+        | grep -F "lowerdir=$_uecap_overlay_direct" >/dev/null 2>&1 && return 0
+    printf '%s\n' "$_uecap_overlay_mounts" \
+        | grep -F "lowerdir=$_uecap_overlay_link" >/dev/null 2>&1 && return 0
+    printf '%s\n' "$_uecap_overlay_mounts" \
+        | grep -F "lowerdir=$_uecap_overlay_link_legacy" >/dev/null 2>&1 && return 0
+    printf '%s\n' "$_uecap_overlay_mounts" \
+        | grep -F "lowerdir=$_uecap_overlay_legacy" >/dev/null 2>&1
+}
+
+uecap_meta_readback_mode() {
+    _uecap_readback_mode="$1"
+    UECAP_READBACK_RESULT=failed
+    UECAP_READBACK_MODE="$_uecap_readback_mode"
+    UECAP_READBACK_SOURCE_HASH=""
+    UECAP_READBACK_CONTENT_HASH=""
+    UECAP_READBACK_EFFECTIVE_HASH=""
+    UECAP_READBACK_CONTENT_PATH=none
+    UECAP_READBACK_CONTENT_CONTEXT=none
+    UECAP_READBACK_EFFECTIVE_CONTEXT=unknown
+    UECAP_CONTEXT_VERIFIED=false
+    [ "$UECAP_BACKEND" = metamodule_content ] || return 1
+    uecap_is_valid_mode "$_uecap_readback_mode" || return 1
+
+    _uecap_readback_target_hash=$(uecap_hash "$UECAP_TARGET")
+    _uecap_readback_target_context=$(ls -Zd "$UECAP_TARGET" 2>/dev/null | awk '{print $1}')
+    [ -n "$_uecap_readback_target_hash" ] \
+        && [ "$_uecap_readback_target_context" = u:object_r:vendor_fw_file:s0 ] || return 1
+    UECAP_READBACK_EFFECTIVE_HASH="$_uecap_readback_target_hash"
+    UECAP_READBACK_EFFECTIVE_CONTEXT="$_uecap_readback_target_context"
+
+    _uecap_readback_root=$(uecap_meta_content_root) || return 1
+    _uecap_readback_direct="$_uecap_readback_root/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME"
+    _uecap_readback_legacy="$_uecap_readback_root/system/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME"
+    _uecap_readback_content=$(uecap_meta_content_path \
+        "vendor/firmware/uecapconfig/$UECAP_TARGET_NAME") || return 1
+
+    if [ "$_uecap_readback_mode" = stock ]; then
+        _uecap_readback_baseline=$(cat "$UECAP_STOCK_BASELINE_FILE" 2>/dev/null | tr -d ' \n\r\t')
+        case "$_uecap_readback_baseline" in
+            ''|*[!0-9a-fA-F]*) return 1 ;;
+        esac
+        [ "$_uecap_readback_target_hash" = "$_uecap_readback_baseline" ] || return 1
+        ! uecap_target_is_mounted || return 1
+        [ ! -e "$_uecap_readback_direct" ] && [ ! -L "$_uecap_readback_direct" ] \
+            && [ ! -e "$_uecap_readback_legacy" ] && [ ! -L "$_uecap_readback_legacy" ] || return 1
+        UECAP_READBACK_CONTENT_PATH=none
+        UECAP_READBACK_CONTENT_HASH=none
+        UECAP_READBACK_CONTENT_CONTEXT=none
+        UECAP_MOUNT_OBSERVED=stock_unmounted
+    else
+        _uecap_readback_source=$(uecap_resolve_source "$_uecap_readback_mode") || return 1
+        _uecap_readback_source_hash=$(uecap_hash "$_uecap_readback_source")
+        _uecap_readback_stage="$MODDIR/system/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME"
+        _uecap_readback_stage_context=$(ls -Zd "$_uecap_readback_stage" 2>/dev/null | awk '{print $1}')
+        [ -n "$_uecap_readback_source_hash" ] \
+            && [ "$_uecap_readback_stage_context" = u:object_r:vendor_fw_file:s0 ] \
+            && [ "$(uecap_hash "$_uecap_readback_stage")" = "$_uecap_readback_source_hash" ] || return 1
+        [ -f "$_uecap_readback_content" ] || return 1
+        _uecap_readback_content_hash=$(uecap_hash "$_uecap_readback_content")
+        _uecap_readback_content_context=$(ls -Zd "$_uecap_readback_content" 2>/dev/null | awk '{print $1}')
+        [ "$_uecap_readback_content_hash" = "$_uecap_readback_source_hash" ] \
+            && [ "$_uecap_readback_content_hash" = "$_uecap_readback_target_hash" ] \
+            && [ "$_uecap_readback_content_context" = u:object_r:vendor_fw_file:s0 ] || return 1
+        if [ -f "$_uecap_readback_direct" ] && [ -f "$_uecap_readback_legacy" ]; then
+            [ "$(uecap_hash "$_uecap_readback_direct")" = "$_uecap_readback_content_hash" ] \
+                && [ "$(uecap_hash "$_uecap_readback_legacy")" = "$_uecap_readback_content_hash" ] || return 1
+        fi
+        uecap_meta_vendor_overlay_has_module || return 1
+        UECAP_READBACK_SOURCE_HASH="$_uecap_readback_source_hash"
+        UECAP_READBACK_CONTENT_HASH="$_uecap_readback_content_hash"
+        UECAP_READBACK_CONTENT_PATH="$_uecap_readback_content"
+        UECAP_READBACK_CONTENT_CONTEXT="$_uecap_readback_content_context"
+        UECAP_MOUNT_OBSERVED=content_image
+    fi
+    [ "$_uecap_readback_mode" = stock ] \
+        && UECAP_READBACK_SOURCE_HASH="$_uecap_readback_target_hash"
+    UECAP_READBACK_EFFECTIVE_HASH="$_uecap_readback_target_hash"
+    UECAP_CONTENT_IMAGE="$UECAP_READBACK_CONTENT_PATH"
+    UECAP_CONTEXT_VERIFIED=true
+    UECAP_READBACK_RESULT=verified
+    return 0
+}
+
+uecap_stage_mode() {
+    _uecap_stage_mode="$1"
+    UECAP_STAGE_RESULT="failed"
+    [ "$UECAP_BACKEND" = metamodule_content ] || {
+        UECAP_STAGE_RESULT="not_metamodule"
+        return 0
+    }
+    uecap_meta_target >/dev/null || return 1
+    if uecap_meta_content_exists; then
+        UECAP_STAGE_RESULT="clean_reinstall_required"
+        return 2
+    fi
+    _uecap_stage_root="$MODDIR/system/vendor/firmware/uecapconfig"
+    case "$_uecap_stage_mode" in
+        disabled|stock)
+            _uecap_stage_target="$_uecap_stage_root/$UECAP_TARGET_NAME"
+            rm -f "$_uecap_stage_target" 2>/dev/null || return 1
+            _uecap_stage_baseline_hash=$(uecap_hash "$UECAP_TARGET")
+            _uecap_stage_context=$(ls -Zd "$UECAP_TARGET" 2>/dev/null | awk '{print $1}')
+            [ -n "$_uecap_stage_baseline_hash" ] \
+                && [ "$_uecap_stage_context" = u:object_r:vendor_fw_file:s0 ] \
+                && ! uecap_target_is_mounted || return 1
+            uecap_atomic_write "$UECAP_STOCK_BASELINE_FILE" "$_uecap_stage_baseline_hash" || return 1
+            uecap_atomic_write "$MODDIR/.uecap_content_image" none || return 1
+            uecap_atomic_write "$MODDIR/.uecap_backend" metamodule_content || return 1
+            UECAP_STOCK_BASELINE_HASH="$_uecap_stage_baseline_hash"
+            UECAP_CONTENT_IMAGE=none
+            UECAP_STAGE_RESULT="stock"
+            return 0
+            ;;
+    esac
+    _uecap_stage_source=$(uecap_resolve_source "$_uecap_stage_mode") || return 1
+    [ -f "$_uecap_stage_source" ] || return 1
+    mkdir -p "$_uecap_stage_root" || return 1
+    chcon --reference=/vendor "$MODDIR/system/vendor" 2>/dev/null || return 1
+    chcon --reference=/vendor/firmware "$MODDIR/system/vendor/firmware" 2>/dev/null || return 1
+    chcon --reference=/vendor/firmware/uecapconfig "$_uecap_stage_root" 2>/dev/null || return 1
+    _uecap_stage_target="$_uecap_stage_root/$UECAP_TARGET_NAME"
+    cp -f "$_uecap_stage_source" "$_uecap_stage_target" || return 1
+    chmod 0644 "$_uecap_stage_target" 2>/dev/null || return 1
+    if [ -e "$UECAP_TARGET" ]; then
+        chcon --reference="$UECAP_TARGET" "$_uecap_stage_target" 2>/dev/null \
+            || chcon u:object_r:vendor_fw_file:s0 "$_uecap_stage_target" 2>/dev/null \
+            || return 1
+    fi
+    [ "$(ls -Zd "$_uecap_stage_target" 2>/dev/null | awk '{print $1}')" = \
+        "$(ls -Zd "$UECAP_TARGET" 2>/dev/null | awk '{print $1}')" ] || return 1
+    [ "$(uecap_hash "$_uecap_stage_target")" = "$(uecap_hash "$_uecap_stage_source")" ] || return 1
+    UECAP_CONTENT_IMAGE="$(uecap_meta_content_path "vendor/firmware/uecapconfig/$UECAP_TARGET_NAME")" || return 1
+    uecap_atomic_write "$MODDIR/.uecap_content_image" "$UECAP_CONTENT_IMAGE" || return 1
+    uecap_atomic_write "$MODDIR/.uecap_backend" metamodule_content || return 1
+    UECAP_STAGE_RESULT="staged"
+    return 0
+}
+
+uecap_verify_staged_mode() {
+    _uecap_verify_mode="$1"
+    uecap_meta_readback_mode "$_uecap_verify_mode" || return 1
+    UECAP_CONTENT_IMAGE="$UECAP_READBACK_CONTENT_PATH"
+    UECAP_DESIRED_PROFILE="$_uecap_verify_mode"
+    UECAP_BOUND_PROFILE="$_uecap_verify_mode"
+    UECAP_MODEM_LOAD_STATE=pre_modem_bind
+    UECAP_MODEM_LOADED_PROFILE=unknown
+    UECAP_FUNCTIONAL_STATE=modem_load_unconfirmed
+    UECAP_RECEIPT_FRESHNESS=current_boot
+    UECAP_RELOAD_RESULT=not_required_pre_modem
+    UECAP_CONTEXT_VERIFIED=true
+    uecap_write_runtime_receipt "$_uecap_verify_mode" "$UECAP_READBACK_SOURCE_HASH" \
+        "$UECAP_READBACK_EFFECTIVE_HASH" pre_modem applied pre_modem_observed
+}
 uecap_last_switch() {
     cat "$UECAP_SWITCH_FILE" 2>/dev/null | tr -d ' \n\r'
 }
@@ -482,10 +743,13 @@ uecap_bind_status() {
     _uecap_bind_source="$1"
     _uecap_bind_target_hash="$2"
     _uecap_bind_source_hash=$(uecap_hash "$_uecap_bind_source")
+    _uecap_bind_context=$(ls -Zd "$UECAP_TARGET" 2>/dev/null | awk '{print $1}')
+    _uecap_bind_expected_context=u:object_r:vendor_fw_file:s0
     [ -f "$_uecap_bind_source" ] \
         && [ -n "$_uecap_bind_source_hash" ] \
         && [ "$_uecap_bind_source_hash" = "$_uecap_bind_target_hash" ] \
-        && uecap_target_is_mounted \
+        && [ "$_uecap_bind_context" = "$_uecap_bind_expected_context" ] \
+        && { [ "$UECAP_BACKEND" = metamodule_content ] || uecap_target_is_mounted; } \
         && printf 'verified' \
         || printf 'unverified'
 }
@@ -521,6 +785,27 @@ uecap_write_runtime_receipt() {
     else
         _uecap_receipt_bind_status=$(uecap_bind_status "$(uecap_resolve_source "$_uecap_receipt_mode" 2>/dev/null)" "$_uecap_receipt_target_hash")
     fi
+    _uecap_receipt_effective_context=$(ls -Zd "$UECAP_TARGET" 2>/dev/null | awk '{print $1}')
+    _uecap_receipt_content_context=none
+    if [ -n "${UECAP_CONTENT_IMAGE:-}" ] && [ "${UECAP_CONTENT_IMAGE:-}" != none ] \
+        && [ -e "$UECAP_CONTENT_IMAGE" ]; then
+        _uecap_receipt_content_context=$(ls -Zd "$UECAP_CONTENT_IMAGE" 2>/dev/null | awk '{print $1}')
+    fi
+    _uecap_receipt_effective_hash=$(uecap_hash "$UECAP_TARGET")
+    _uecap_receipt_content_hash=none
+    if [ -n "${UECAP_CONTENT_IMAGE:-}" ] && [ "${UECAP_CONTENT_IMAGE:-}" != none ] \
+        && [ -f "$UECAP_CONTENT_IMAGE" ]; then
+        _uecap_receipt_content_hash=$(uecap_hash "$UECAP_CONTENT_IMAGE")
+    fi
+    if [ "${UECAP_CONTEXT_VERIFIED:-unknown}" = unknown ]; then
+        if [ "$_uecap_receipt_effective_context" = u:object_r:vendor_fw_file:s0 ] \
+            && { [ "$_uecap_receipt_content_context" = u:object_r:vendor_fw_file:s0 ] \
+                || [ "$_uecap_receipt_content_context" = none ]; }; then
+            UECAP_CONTEXT_VERIFIED=true
+        else
+            UECAP_CONTEXT_VERIFIED=false
+        fi
+    fi
     uecap_payload_metadata "$_uecap_receipt_mode" >/dev/null 2>&1 || {
         UECAP_PAYLOAD_STATE=unverified
         UECAP_PAYLOAD_BUILD=unknown
@@ -536,6 +821,16 @@ uecap_write_runtime_receipt() {
         printf 'active_mode=%s\n' "$(uecap_receipt_value "$(uecap_detect_active_mode)")"
         printf 'source_hash=%s\n' "$(uecap_receipt_value "$_uecap_receipt_source_hash")"
         printf 'target_hash=%s\n' "$(uecap_receipt_value "$_uecap_receipt_target_hash")"
+        printf 'backend=%s\n' "$(uecap_receipt_value "${UECAP_BACKEND:-unknown}")"
+        printf 'content_image=%s\n' "$(uecap_receipt_value "${UECAP_CONTENT_IMAGE:-unknown}")"
+        printf 'content_contract_hash=%s\n' "$(uecap_receipt_value "${_uecap_receipt_source_hash}")"
+        printf 'effective_contract_hash=%s\n' "$(uecap_receipt_value "${_uecap_receipt_target_hash}")"
+        printf 'content_hash=%s\n' "$(uecap_receipt_value "${_uecap_receipt_content_hash}")"
+        printf 'effective_hash=%s\n' "$(uecap_receipt_value "${_uecap_receipt_effective_hash}")"
+        printf 'mount_observed=%s\n' "$(uecap_receipt_value "${UECAP_MOUNT_OBSERVED:-unknown}")"
+        printf 'context_verified=%s\n' "$(uecap_receipt_value "${UECAP_CONTEXT_VERIFIED:-unknown}")"
+        printf 'content_context=%s\n' "$(uecap_receipt_value "$_uecap_receipt_content_context")"
+        printf 'effective_context=%s\n' "$(uecap_receipt_value "$_uecap_receipt_effective_context")"
         printf 'bind_status=%s\n' "$(uecap_receipt_value "$_uecap_receipt_bind_status")"
         printf 'apply_result=%s\n' "$(uecap_receipt_value "$_uecap_receipt_apply")"
         printf 'reload_dispatched=%s\n' "$(uecap_receipt_value "${UECAP_RELOAD_DISPATCHED:-false}")"
@@ -613,7 +908,7 @@ uecap_refresh_observed_state() {
 
     if ! uecap_is_available; then
         UECAP_DESIRED_PROFILE="disabled"
-        UECAP_BOUND_PROFILE="stock"
+        UECAP_BOUND_PROFILE="unknown"
         UECAP_MODEM_LOAD_STATE="not_managed"
         UECAP_FUNCTIONAL_STATE="external_or_disabled"
     else
@@ -623,7 +918,10 @@ uecap_refresh_observed_state() {
             _uecap_observed_source=$(uecap_resolve_source "$UECAP_DESIRED_PROFILE" 2>/dev/null || true)
             _uecap_observed_source_hash=$(uecap_hash "$_uecap_observed_source")
         fi
-        if [ "$UECAP_DESIRED_PROFILE" = stock ] && ! uecap_target_is_mounted; then
+        if [ "$UECAP_BACKEND" = metamodule_content ]; then
+            uecap_meta_readback_mode "$UECAP_DESIRED_PROFILE" >/dev/null 2>&1 || true
+            UECAP_BOUND_PROFILE=$(uecap_detect_active_mode)
+        elif [ "$UECAP_DESIRED_PROFILE" = stock ] && ! uecap_target_is_mounted; then
             UECAP_BOUND_PROFILE=stock
         elif [ -n "$_uecap_observed_target_hash" ] && uecap_target_is_mounted; then
             UECAP_BOUND_PROFILE=$(uecap_detect_active_mode)
@@ -673,14 +971,35 @@ uecap_refresh_observed_state() {
                 ;;
         esac
     fi
-    uecap_capture_radio_snapshot >/dev/null 2>&1 || UECAP_RADIO_SNAPSHOT_RESULT="failed"
-    [ "${UECAP_RADIO_SNAPSHOT_RESULT:-not_run}" = "failed" ] || UECAP_RADIO_SNAPSHOT_RESULT="observed"
+    # Do not block a status CGI on a telephony binder dump. A radio snapshot
+    # is diagnostic only; the same-boot receipt remains authoritative for the
+    # content/effective contract and the next explicit refresh may collect it.
+    UECAP_RADIO_SNAPSHOT_RESULT=deferred
     uecap_classify_radio_state
 }
 
 uecap_pre_modem_receipt_is_current() {
     _uecap_pre_modem_mode="$1"
     uecap_is_valid_mode "$_uecap_pre_modem_mode" || return 1
+    if [ "$UECAP_BACKEND" = metamodule_content ]; then
+        uecap_meta_readback_mode "$_uecap_pre_modem_mode" || return 1
+        [ "$(uecap_receipt_get schema)" = "3" ] \
+            && [ "$(uecap_receipt_get boot_id)" = "$(uecap_boot_id)" ] \
+            && [ "$(uecap_receipt_get reason)" = "pre_modem" ] \
+            && [ "$(uecap_receipt_get requested_mode)" = "$_uecap_pre_modem_mode" ] \
+            && [ "$(uecap_receipt_get active_mode)" = "$_uecap_pre_modem_mode" ] \
+            && [ "$(uecap_receipt_get backend)" = metamodule_content ] \
+            && [ "$(uecap_receipt_get reload_result)" = not_required_pre_modem ] \
+            && [ "$(uecap_receipt_get mount_observed)" = "$UECAP_MOUNT_OBSERVED" ] \
+            && [ "$(uecap_receipt_get context_verified)" = true ] \
+            && [ "$(uecap_receipt_get source_hash)" = "$UECAP_READBACK_SOURCE_HASH" ] \
+            && [ "$(uecap_receipt_get target_hash)" = "$UECAP_READBACK_EFFECTIVE_HASH" ] \
+            && [ "$(uecap_receipt_get content_hash)" = "$UECAP_READBACK_CONTENT_HASH" ] \
+            && [ "$(uecap_receipt_get effective_hash)" = "$UECAP_READBACK_EFFECTIVE_HASH" ] \
+            && [ "$(uecap_receipt_get content_context)" = "$UECAP_READBACK_CONTENT_CONTEXT" ] \
+            && [ "$(uecap_receipt_get effective_context)" = "$UECAP_READBACK_EFFECTIVE_CONTEXT" ]
+        return $?
+    fi
     if [ "$_uecap_pre_modem_mode" = stock ]; then
         _uecap_pre_modem_target_hash=$(uecap_hash "$UECAP_TARGET")
         [ -n "$_uecap_pre_modem_target_hash" ] \
@@ -691,6 +1010,13 @@ uecap_pre_modem_receipt_is_current() {
             && [ "$(uecap_receipt_get requested_mode)" = stock ] \
             && [ "$(uecap_receipt_get active_mode)" = stock ] \
             && [ "$(uecap_receipt_get bind_status)" = stock_unmounted ] \
+            && [ "$(uecap_receipt_get backend)" = metamodule_content ] \
+            && [ "$(uecap_receipt_get mount_observed)" = stock_unmounted ] \
+            && [ "$(uecap_receipt_get context_verified)" = true ] \
+            && [ "$(uecap_receipt_get content_hash)" = none ] \
+            && [ "$(uecap_receipt_get effective_hash)" = "$_uecap_pre_modem_target_hash" ] \
+            && [ "$(uecap_receipt_get content_context)" = none ] \
+            && [ "$(uecap_receipt_get effective_context)" = u:object_r:vendor_fw_file:s0 ] \
             && [ "$(uecap_receipt_get source_hash)" = "$_uecap_pre_modem_target_hash" ] \
             && [ "$(uecap_receipt_get target_hash)" = "$_uecap_pre_modem_target_hash" ] \
             && [ "$(uecap_receipt_get reload_result)" = not_required_pre_modem ]
@@ -816,7 +1142,11 @@ uecap_reload_modem() {
     if [ "$_uecap_reload_reason" = "pre_modem" ]; then
         UECAP_RELOAD_RESULT="not_required_pre_modem"
         UECAP_MODEM_LOAD_STATE="pre_modem_bind"
-        uecap_log_line "UECap bind verified after MetaModule mount; modem load remains unconfirmed"
+        if [ "$UECAP_BACKEND" = metamodule_content ]; then
+            uecap_log_line "UECap effective target verified from MetaModule content image; modem load remains unconfirmed"
+        else
+            uecap_log_line "UECap bind verified after mount; modem load remains unconfirmed"
+        fi
         return 0
     fi
     if [ "${PIXEL9PRO_UECAP_TEST_MODE:-0}" = "1" ]; then
@@ -850,10 +1180,23 @@ uecap_reload_modem() {
 }
 
 uecap_detect_active_mode() {
-    uecap_is_available || { echo "stock"; return 0; }
-    uecap_target_is_mounted || { echo "stock"; return 0; }
+    if ! uecap_is_available; then
+        echo unknown
+        return 0
+    fi
+    if [ "$UECAP_BACKEND" = metamodule_content ]; then
+        for _uecap_detect_mode in $UECAP_MODE_ORDER; do
+            if uecap_meta_readback_mode "$_uecap_detect_mode" >/dev/null 2>&1; then
+                echo "$_uecap_detect_mode"
+                return 0
+            fi
+        done
+        echo unknown
+        return 0
+    fi
+    uecap_target_is_mounted || { echo stock; return 0; }
     _uecap_detect_target_hash=$(uecap_hash "$UECAP_TARGET")
-    [ -z "$_uecap_detect_target_hash" ] && { echo "custom"; return; }
+    [ -n "$_uecap_detect_target_hash" ] || { echo unknown; return 0; }
 
     # Prefer the recorded mode if its hash matches; then scan this device's
     # manifest modes only. The other SKU is never a candidate.
@@ -864,10 +1207,9 @@ uecap_detect_active_mode() {
         if [ -n "$_uecap_detect_requested_hash" ] \
             && [ "$_uecap_detect_target_hash" = "$_uecap_detect_requested_hash" ]; then
             echo "$_uecap_detect_requested"
-            return
+            return 0
         fi
     fi
-
     for _uecap_detect_mode in $UECAP_MODE_ORDER; do
         [ "$_uecap_detect_mode" != stock ] || continue
         _uecap_detect_source=$(uecap_resolve_source "$_uecap_detect_mode" 2>/dev/null) || continue
@@ -875,12 +1217,11 @@ uecap_detect_active_mode() {
         if [ -n "$_uecap_detect_source_hash" ] \
             && [ "$_uecap_detect_target_hash" = "$_uecap_detect_source_hash" ]; then
             echo "$_uecap_detect_mode"
-            return
+            return 0
         fi
     done
-    echo "custom"
+    echo unknown
 }
-
 uecap_restore_previous_mount() {
     _uecap_restore_old_mounted="$1"
     _uecap_restore_old_source="$2"
@@ -904,6 +1245,11 @@ uecap_apply_mode() {
         UECAP_APPLY_RESULT="device_not_managed"
         return 1
     }
+    if [ "$UECAP_BACKEND" = metamodule_content ]; then
+        UECAP_APPLY_RESULT="metamodule_requires_reinstall"
+        uecap_log_line "UECap mode change rejected: MetaModule content staging requires module reinstall and reboot"
+        return 4
+    fi
     _uecap_apply_mode_value=$(uecap_mode_label "$1")
     [ "$_uecap_apply_mode_value" != "unknown" ] || return 1
     _uecap_apply_reason="${2:-manual}"
@@ -942,6 +1288,7 @@ uecap_apply_mode() {
         fi
         UECAP_DESIRED_PROFILE=stock
         UECAP_BOUND_PROFILE=stock
+        UECAP_MOUNT_OBSERVED=stock_unmounted
         if uecap_reload_modem "$_uecap_apply_reason"; then
             UECAP_FUNCTIONAL_STATE="modem_load_unconfirmed"
             UECAP_RECEIPT_FRESHNESS="current_boot"
@@ -1027,6 +1374,7 @@ uecap_apply_mode() {
         return 2
     fi
     UECAP_BOUND_PROFILE="$_uecap_apply_mode_value"
+    UECAP_MOUNT_OBSERVED=bind
 
     _uecap_apply_switch_time=$(date +%s 2>/dev/null || echo 0)
     if ! uecap_commit_state "$_uecap_apply_mode_value" "$_uecap_apply_reason" "$_uecap_apply_switch_time"; then
@@ -1123,6 +1471,14 @@ uecap_print_status_json() {
     _uecap_receipt_nr_arfcn=$(uecap_receipt_get nr_arfcn); [ -n "$_uecap_receipt_nr_arfcn" ] || _uecap_receipt_nr_arfcn=unknown
     _uecap_receipt_nr_range=$(uecap_receipt_get nr_frequency_range); [ -n "$_uecap_receipt_nr_range" ] || _uecap_receipt_nr_range=unknown
     _uecap_receipt_bind_status=$(uecap_receipt_get bind_status); [ -n "$_uecap_receipt_bind_status" ] || _uecap_receipt_bind_status=unknown
+    _uecap_receipt_backend=$(uecap_receipt_get backend); [ -n "$_uecap_receipt_backend" ] || _uecap_receipt_backend="${UECAP_BACKEND:-unknown}"
+    _uecap_receipt_content_image=$(uecap_receipt_get content_image); [ -n "$_uecap_receipt_content_image" ] || _uecap_receipt_content_image=unknown
+    _uecap_receipt_mount_observed=$(uecap_receipt_get mount_observed); [ -n "$_uecap_receipt_mount_observed" ] || _uecap_receipt_mount_observed=unknown
+    _uecap_receipt_context_verified=$(uecap_receipt_get context_verified); [ -n "$_uecap_receipt_context_verified" ] || _uecap_receipt_context_verified=unknown
+    _uecap_receipt_content_context=$(uecap_receipt_get content_context); [ -n "$_uecap_receipt_content_context" ] || _uecap_receipt_content_context=unknown
+    _uecap_receipt_effective_context=$(uecap_receipt_get effective_context); [ -n "$_uecap_receipt_effective_context" ] || _uecap_receipt_effective_context=unknown
+    _uecap_receipt_content_hash=$(uecap_receipt_get content_hash); [ -n "$_uecap_receipt_content_hash" ] || _uecap_receipt_content_hash="${UECAP_READBACK_CONTENT_HASH:-unknown}"
+    _uecap_receipt_effective_hash=$(uecap_receipt_get effective_hash); [ -n "$_uecap_receipt_effective_hash" ] || _uecap_receipt_effective_hash="${UECAP_READBACK_EFFECTIVE_HASH:-unknown}"
     _uecap_receipt_device=$(uecap_receipt_get device); [ -n "$_uecap_receipt_device" ] || _uecap_receipt_device="${UECAP_DEVICE:-unknown}"
     _uecap_receipt_device_policy=$(uecap_receipt_get device_policy); [ -n "$_uecap_receipt_device_policy" ] || _uecap_receipt_device_policy="${UECAP_DEVICE_POLICY:-unknown}"
     _uecap_receipt_desired=$(uecap_receipt_get desired_profile); [ -n "$_uecap_receipt_desired" ] || _uecap_receipt_desired="${UECAP_DESIRED_PROFILE:-unknown}"
@@ -1145,18 +1501,23 @@ uecap_print_status_json() {
 
     case "$_uecap_receipt_schema" in ''|*[!0-9]*) _uecap_receipt_schema=0 ;; esac
     case "$_uecap_receipt_updated_at" in ''|*[!0-9]*) _uecap_receipt_updated_at=0 ;; esac
-    printf '{"device":"%s","device_label":"%s","device_policy":"%s","contract_result":"%s","runtime_policy":"%s","policy":"%s","requested_mode":"%s","manual_mode":"%s","active_mode":"%s","reason":"%s","disabled":%s,"disabled_message":"%s","last_switch":"%s","target_name":"%s","target_hash":"%s","special_hash":"%s","balanced_hash":"%s","universal_hash":"%s","candidate_hash":"%s","payload_state":"%s","payload_source_build":"%s","payload_bytes":%s,"payload_sha256":"%s","uecap_contract":' \
+    printf '{"device":"%s","device_label":"%s","device_policy":"%s","contract_result":"%s","runtime_policy":"%s","policy":"%s","requested_mode":"%s","manual_mode":"%s","active_mode":"%s","reason":"%s","disabled":%s,"disabled_message":"%s","last_switch":"%s","target_name":"%s","target_hash":"%s","special_hash":"%s","balanced_hash":"%s","universal_hash":"%s","candidate_hash":"%s","payload_state":"%s","payload_source_build":"%s","payload_bytes":%s,"payload_sha256":"%s","backend":"%s","content_image":"%s","content_hash":"%s","effective_hash":"%s","mount_observed":"%s","context_verified":%s,"content_context":"%s","effective_context":"%s","uecap_contract":' \
         "$(uecap_json_escape "${UECAP_DEVICE:-unknown}")" "$(uecap_json_escape "${UECAP_DEVICE_LABEL:-unknown}")" "$(uecap_json_escape "${UECAP_DEVICE_POLICY:-unknown}")" "$(uecap_json_escape "${UECAP_CONTRACT_RESULT:-unknown}")" "$(uecap_json_escape "${UECAP_RUNTIME_POLICY:-disabled}")" \
         "$(uecap_json_escape "$_uecap_status_policy")" "$(uecap_json_escape "$_uecap_status_requested")" "$(uecap_json_escape "$_uecap_status_manual")" "$(uecap_json_escape "$_uecap_status_active")" "$(uecap_json_escape "${_uecap_status_reason:-unknown}")" \
         "$(uecap_is_available && printf false || printf true)" "$(uecap_json_escape "$(uecap_disabled_message)")" "$_uecap_status_last_switch" "$(uecap_json_escape "${UECAP_TARGET_NAME:-unknown}")" \
         "$(uecap_json_escape "${_uecap_status_target_hash:-unknown}")" "$(uecap_json_escape "${_uecap_status_special_hash:-unknown}")" "$(uecap_json_escape "${_uecap_status_balanced_hash:-unknown}")" "$(uecap_json_escape "${_uecap_status_universal_hash:-unknown}")" \
-        "$(uecap_json_escape "${_uecap_status_candidate_hash:-unknown}")" "$(uecap_json_escape "$UECAP_PAYLOAD_STATE")" "$(uecap_json_escape "$UECAP_PAYLOAD_BUILD")" "${UECAP_PAYLOAD_BYTES:-0}" "$(uecap_json_escape "$UECAP_PAYLOAD_SHA")"
+        "$(uecap_json_escape "${_uecap_status_candidate_hash:-unknown}")" "$(uecap_json_escape "$UECAP_PAYLOAD_STATE")" "$(uecap_json_escape "$UECAP_PAYLOAD_BUILD")" "${UECAP_PAYLOAD_BYTES:-0}" "$(uecap_json_escape "$UECAP_PAYLOAD_SHA")" \
+        "$(uecap_json_escape "$_uecap_receipt_backend")" "$(uecap_json_escape "$_uecap_receipt_content_image")" "$(uecap_json_escape "$_uecap_receipt_content_hash")" "$(uecap_json_escape "$_uecap_receipt_effective_hash")" "$(uecap_json_escape "$_uecap_receipt_mount_observed")" \
+        "$( [ "$_uecap_receipt_context_verified" = true ] && printf true || printf false )" "$(uecap_json_escape "$_uecap_receipt_content_context")" "$(uecap_json_escape "$_uecap_receipt_effective_context")"
     uecap_print_ui_contract_json
-    printf ',"runtime_receipt":{"schema":%s,"boot_id":"%s","updated_at":"%s","reason":"%s","apply_result":"%s","reload_dispatched":%s,"reload_result":"%s","effective_state":"%s","bind_status":"%s","device":"%s","device_policy":"%s","desired_profile":"%s","bound_profile":"%s","modem_load_state":"%s","modem_loaded_profile":"%s","radio_observed_state":"%s","functional_state":"%s","receipt_freshness":"%s","actual_rat":"%s","nr_available":"%s","endc_available":"%s","nr_registered":"%s","nr_band":"%s","nr_arfcn":"%s","nr_frequency_range":"%s","lte_anchor":"%s","nsa_status":"%s","nsa_reason":"%s"}}' \
+    printf ',"reinstall_required":%s' "$( [ "$UECAP_BACKEND" = metamodule_content ] && printf true || printf false )"
+    printf ',"runtime_receipt":{"schema":%s,"boot_id":"%s","updated_at":"%s","reason":"%s","apply_result":"%s","reload_dispatched":%s,"reload_result":"%s","effective_state":"%s","bind_status":"%s","backend":"%s","content_image":"%s","content_hash":"%s","effective_hash":"%s","mount_observed":"%s","context_verified":%s,"content_context":"%s","effective_context":"%s","device":"%s","device_policy":"%s","desired_profile":"%s","bound_profile":"%s","modem_load_state":"%s","modem_loaded_profile":"%s","radio_observed_state":"%s","functional_state":"%s","receipt_freshness":"%s","actual_rat":"%s","nr_available":"%s","endc_available":"%s","nr_registered":"%s","nr_band":"%s","nr_arfcn":"%s","nr_frequency_range":"%s","lte_anchor":"%s","nsa_status":"%s","nsa_reason":"%s"}}' \
         "$_uecap_receipt_schema" "$(uecap_json_escape "$_uecap_receipt_boot_id")" "$_uecap_receipt_updated_at" \
         "$(uecap_json_escape "$_uecap_receipt_reason")" "$(uecap_json_escape "$_uecap_receipt_apply")" \
         "$_uecap_receipt_reload_dispatched" "$(uecap_json_escape "$_uecap_receipt_reload_result")" \
         "$(uecap_json_escape "$_uecap_receipt_effective")" "$(uecap_json_escape "$_uecap_receipt_bind_status")" \
+        "$(uecap_json_escape "$_uecap_receipt_backend")" "$(uecap_json_escape "$_uecap_receipt_content_image")" "$(uecap_json_escape "$_uecap_receipt_content_hash")" "$(uecap_json_escape "$_uecap_receipt_effective_hash")" "$(uecap_json_escape "$_uecap_receipt_mount_observed")" \
+        "$( [ "$_uecap_receipt_context_verified" = true ] && printf true || printf false )" "$(uecap_json_escape "$_uecap_receipt_content_context")" "$(uecap_json_escape "$_uecap_receipt_effective_context")" \
         "$(uecap_json_escape "$_uecap_receipt_device")" "$(uecap_json_escape "$_uecap_receipt_device_policy")" \
         "$(uecap_json_escape "$_uecap_receipt_desired")" "$(uecap_json_escape "$_uecap_receipt_bound")" \
         "$(uecap_json_escape "$_uecap_receipt_modem_state")" "$(uecap_json_escape "$_uecap_receipt_loaded_profile")" \
@@ -1193,6 +1554,9 @@ uecap_main() {
                 [ "$_uecap_cli_validate_mode" != stock ] || continue
                 uecap_resolve_source "$_uecap_cli_validate_mode" >/dev/null || return 1
             done
+            ;;
+        stage)
+            uecap_stage_mode "${2:-disabled}"
             ;;
         *)
             return 1

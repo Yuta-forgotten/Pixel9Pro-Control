@@ -152,6 +152,8 @@ install_receipt_write() {
         printf 'scheduler_capability=%s\n' "$(install_state_safe_value "$(install_state_read "$INSTALL_SCHEDULER_CAPABILITY_FILE" unknown)")"
         printf 'uecap_policy=%s\n' "$(install_state_safe_value "$(install_state_read "$INSTALL_STATE_ROOT/.uecap_policy" disabled)")"
         printf 'uecap_mode=%s\n' "$(install_state_safe_value "$(install_state_read "$INSTALL_STATE_ROOT/.uecap_manual_mode" disabled)")"
+        printf 'uecap_backend=%s\n' "$(install_state_safe_value "${UECAP_BACKEND:-unknown}")"
+        printf 'uecap_content_image=%s\n' "$(install_state_safe_value "$(install_state_read "$INSTALL_STATE_ROOT/.uecap_content_image" "${UECAP_CONTENT_IMAGE:-unknown}")")"
         printf 'payload_state=%s\n' "$(install_state_safe_value "$(install_state_read "$INSTALL_PAYLOAD_STATE_FILE" unverified)")"
         printf 'feature_nr=%s\n' "$(install_state_safe_value "$(install_state_read "$INSTALL_FEATURE_NR_FILE" off)")"
         printf 'feature_sim2=%s\n' "$(install_state_safe_value "$(install_state_read "$INSTALL_FEATURE_SIM2_FILE" on)")"
