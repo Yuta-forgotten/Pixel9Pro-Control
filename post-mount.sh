@@ -7,6 +7,8 @@ export PIXEL9PRO_MODDIR="$MODDIR"
 
 [ -f "$MODDIR/uecap_profile.sh" ] || exit 0
 . "$MODDIR/uecap_profile.sh" 2>/dev/null || exit 0
+[ -r "$MODDIR/scripts/slot_transaction_lib.sh" ] && . "$MODDIR/scripts/slot_transaction_lib.sh" 2>/dev/null || true
+slot_init >/dev/null 2>&1 || true
 
 hybrid_thermal_readback() {
     [ "$UECAP_BACKEND" = hybrid_mount ] || return 0
@@ -42,7 +44,10 @@ hybrid_thermal_readback() {
 }
 
 if ! hybrid_thermal_readback; then
+    [ "$UECAP_BACKEND" = hybrid_mount ] && slot_mark_rollback_pending thermal >/dev/null 2>&1 || true
     log -t pixel9pro_ctrl "WARNING: Hybrid Mount thermal effective readback failed"
+elif [ "$UECAP_BACKEND" = hybrid_mount ]; then
+    slot_mark_verified thermal >/dev/null 2>&1 || true
 fi
 
 if ! uecap_is_available; then
@@ -53,8 +58,10 @@ fi
 _uecap_post_mount_mode=$(uecap_current_manual_mode)
 if [ "$UECAP_BACKEND" = metamodule_content ] || [ "$UECAP_BACKEND" = hybrid_mount ]; then
     if uecap_verify_staged_mode "$_uecap_post_mount_mode" >/dev/null 2>&1; then
+        [ "$UECAP_BACKEND" = hybrid_mount ] && slot_mark_verified uecap >/dev/null 2>&1 || true
         log -t pixel9pro_ctrl "UECap effective target verified from $UECAP_BACKEND: $_uecap_post_mount_mode; modem load remains unconfirmed"
     else
+        [ "$UECAP_BACKEND" = hybrid_mount ] && slot_mark_rollback_pending uecap >/dev/null 2>&1 || true
         UECAP_MOUNT_OBSERVED=content_readback_failed
         uecap_write_runtime_receipt "$_uecap_post_mount_mode" "" "" \
             metamodule_effective_readback_failed failed unverified >/dev/null 2>&1 || true

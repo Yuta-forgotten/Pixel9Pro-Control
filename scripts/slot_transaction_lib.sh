@@ -154,6 +154,16 @@ slot_mark_verified() {
         && rm -f "$_slot_component_dir/promoted" 2>/dev/null
 }
 
+slot_mark_rollback_pending() {
+    _slot_component_dir=$(slot_component_dir "$1") || return 1
+    slot_atomic_write "$_slot_component_dir/rollback_pending" 1
+}
+
+slot_rollback_pending() {
+    _slot_component_dir=$(slot_component_dir "$1") || return 1
+    [ "$(cat "$_slot_component_dir/rollback_pending" 2>/dev/null | tr -d ' \n\r\t')" = 1 ]
+}
+
 slot_rollback_last_good() {
     _slot_component="$1"
     _slot_target="$2"

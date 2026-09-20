@@ -10,12 +10,19 @@ slot_init || exit 0
 
 [ -r "$MODDIR/uecap_profile.sh" ] && . "$MODDIR/uecap_profile.sh" 2>/dev/null || true
 if [ "${UECAP_BACKEND:-}" = hybrid_mount ] || [ -f "$MODDIR/.uecap_backend" ] && [ "$(cat "$MODDIR/.uecap_backend" 2>/dev/null)" = hybrid_mount ]; then
-    slot_promote_pending uecap "$MODDIR/system/vendor/firmware/uecapconfig/${UECAP_TARGET_NAME:-PLATFORM_9055801516233416490.binarypb}" \
-        || slot_rollback_last_good uecap "$MODDIR/system/vendor/firmware/uecapconfig/${UECAP_TARGET_NAME:-PLATFORM_9055801516233416490.binarypb}" \
-        || true
+    _uecap_target_path="$MODDIR/system/vendor/firmware/uecapconfig/${UECAP_TARGET_NAME:-PLATFORM_9055801516233416490.binarypb}"
+    if slot_rollback_pending uecap; then
+        slot_rollback_last_good uecap "$_uecap_target_path" || true
+        rm -f "$SLOT_ROOT/uecap/rollback_pending" 2>/dev/null || true
+    else
+        slot_promote_pending uecap "$_uecap_target_path" || true
+    fi
 fi
 
 _thermal_target="$MODDIR/system/vendor/etc/thermal_info_config.json"
-slot_promote_pending thermal "$_thermal_target" \
-    || slot_rollback_last_good thermal "$_thermal_target" \
-    || true
+if slot_rollback_pending thermal; then
+    slot_rollback_last_good thermal "$_thermal_target" || true
+    rm -f "$SLOT_ROOT/thermal/rollback_pending" 2>/dev/null || true
+else
+    slot_promote_pending thermal "$_thermal_target" || true
+fi
