@@ -84,6 +84,11 @@ if [ ! -r "$MODPATH/scripts/thermal_profile.sh" ]; then
     abort
 fi
 . "$MODPATH/scripts/thermal_profile.sh" || abort
+if [ ! -r "$MODPATH/scripts/thermal_policy_lib.sh" ] \
+    || ! . "$MODPATH/scripts/thermal_policy_lib.sh"; then
+    ui_print "  ✗ 缺少温控策略合同, 已中止安装"
+    abort
+fi
 NTP_CONFIG_FILE="$MODPATH/config/ntp_servers.tsv"
 if [ ! -r "$MODPATH/scripts/ntp_config_lib.sh" ] || [ ! -r "$NTP_CONFIG_FILE" ]; then
     ui_print "  ✗ 缺少 NTP 配置, 已中止安装"
@@ -279,17 +284,7 @@ UECAP_EXTERNAL=0
 case "$device" in
     komodo)
         ui_print "  机型: Pixel 9 Pro XL (komodo)"
-        if [ -f "$STOCK_XL" ]; then
-            if cp "$STOCK_XL" "$STOCK_ACTIVE" 2>/dev/null; then
-                ui_print "  ✓ Pro XL 温控配置"
-            else
-                ui_print "  ✗ XL 配置复制失败, 已中止安装"
-                abort
-            fi
-        else
-            ui_print "  ✗ XL 温控 stock 配置缺失, 已中止安装"
-            abort
-        fi
+        ui_print "  ✓ Pro XL 温控基线将在当前设备上建立"
         # komodo is supported by the device contract, but UECap remains owned
         # by the device's external/stock path. Keep the runtime script for
         # read-only status reporting; only remove the embedded caiman payload.
@@ -309,6 +304,12 @@ case "$device" in
         ;;
 esac
 ui_print ""
+
+thermal_policy_init "$MODPATH" || abort
+if ! thermal_policy_prepare_snapshot "$device" "$OLDDIR" yes; then
+    ui_print "  ✗ 无法从当前设备/旧模块建立温控 stock 基线, 已中止安装"
+    abort
+fi
 
 # Magisk Magic Mount 与 modem cbd 的早期 mmap 存在已验证的启动 race。
 # 只有 caiman 的 managed UECap 覆盖在 Magisk 下需要移除运行脚本；komodo
@@ -654,15 +655,21 @@ else
     ui_print "  ⚠ CPU 调度状态迁移失败, 已使用安全兼容值"
 fi
 
-# 从当前机型 stock 基线生成配置; 失败时同步回退文件与状态。
-if ! thermal_generate_config "$STOCK_ACTIVE" "$OUT_JSON" "$offset"; then
-    if ! cp "$STOCK_ACTIVE" "$OUT_JSON" 2>/dev/null; then
-        ui_print "  ✗ 温控配置生成失败, 已中止安装"
-        abort
+THERMAL_POLICY=$(thermal_policy_read)
+installer_write "$THERMAL_POLICY_FILE" "$THERMAL_POLICY"
+if [ "$THERMAL_POLICY" = custom ]; then
+    # Generate only from the current-device snapshot; never use a packaged
+    # thermal JSON or a snapshot from another SKU/build.
+    if ! thermal_generate_config "$THERMAL_POLICY_ROOT/payloads/thermal/$device/stock.json" "$OUT_JSON" "$offset"; then
+        thermal_policy_remove_overlay || abort
+        installer_write "$THERMAL_POLICY_FILE" system
+        installer_write "$OFFSET_FILE" 0
+        ui_print "  ⚠ 当前 stock 基线无法生成合法 custom thermal, 已 fail closed 到系统默认"
     fi
+else
+    thermal_policy_remove_overlay || abort
     offset=0
     installer_write "$OFFSET_FILE" 0
-    ui_print "  ⚠ 温控配置生成失败, 已回退到出厂阈值"
 fi
 
 ui_print "  温控偏移: $(thermal_format_offset "$offset")"
