@@ -86,3 +86,17 @@ adb shell su -c 'dumpsys thermalservice | grep -E "HAL Ready|AIDL|Thermal Status
 - 未重新生成 Hybrid backend 的 release ZIP 并完成冷启动。
 
 因此当前源码适配完成只代表代码路径具备 Hybrid backend 分支，不能宣称 Hybrid Mount 实机通过。
+
+## v4.4.41 与当前实现的差异边界
+
+`v4.4.41` 的 ZIP 不能作为当前 Hybrid/MetaModule 的安全基线。该版本没有 `metamodule=1` 的外部挂载契约：温控 JSON 和 UECap 候选文件直接随普通模块 source 放在 `system/vendor`，`service.sh` 在 late-start 通过动态 bind 切换 UECap；Magisk 分支则在安装时删除 UECap 覆盖。这样绕过了当前 `meta-overlayfs` ext4 content image，因此不会形成“旧 image 目录残留 → 错误 SELinux label → ThermalHAL 早期读取崩溃”的同一故障链，但并不代表旧方案没有风险。
+
+旧方案仍有两个不可继承的问题：运行期替换 early firmware 可能与 `vendor.cbd` 的早期打开或 `mmap()` 竞争，温控文件热替换和 ThermalHAL 重启也没有 source/effective hash、context 和跨重启 receipt 闭环。当前版本引入 MetaModule 后，UECap/thermal 的最终可见路径由挂载后端决定；`meta-overlayfs`、Hybrid Mount 和 Magisk 不能共用一套写入代码。
+
+因此当前卡二屏应分层归因：
+
+1. `v4.4.41` 的直接 bind/source 路径与当前 `meta-overlayfs` content image 残留不是同一实现；不能用旧版“曾经能启动”证明当前 MetaModule hook 正确。
+2. APatch 和 KernelSU 是 root/执行环境，不是同一个挂载后端。两者使用同一类 MetaModule 或同一份错误 hook 时，都可能遇到 stale image、错误 context 或 clean reinstall 缺失问题；Hybrid Mount 则必须按自己的 source/promote/mount topology 单独验收。
+3. 修改 MetaModule 脚本时不必重新设计 UECap 选择算法，但必须复核 UECap 的挂载时序和 readback。UECap binarypb 在 `/vendor/firmware`，可能早于普通 WebUI/service 被读取；如果后端从 content image 改成 regular source，变化的是 staging/promotion/readback 适配，不是 caiman/komodo 的 payload、档位和 canonical filename 合同。
+
+当前实现采用后端分层：MetaModule content backend 保留 clean reinstall 与现有 hook gate；Hybrid backend 使用 module-private pending/A-B slot，在 Hybrid Mount 扫描前由 `post-fs-data.sh` promotion，挂载后由 `post-mount.sh` 复读；Magisk 继续停用 managed UECap。任何后端都不能仅凭 WebUI 200、文件存在或命令退出码声称 UECap/thermal 已经生效。
