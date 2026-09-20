@@ -24,6 +24,7 @@ ROOT_FILES: Final = frozenset(
     {
         "customize.sh",
         "module.prop",
+        "post-fs-data.sh",
         "post-mount.sh",
         "service.sh",
         "uecap_profile.sh",
@@ -38,6 +39,7 @@ REQUIRED_ENTRIES: Final = frozenset(
         "META-INF/com/google/android/updater-script",
         "customize.sh",
         "module.prop",
+        "post-fs-data.sh",
         "post-mount.sh",
         "service.sh",
         "versions.prop",
