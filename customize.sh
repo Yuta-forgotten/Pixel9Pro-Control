@@ -18,7 +18,21 @@ DEVICE_FILE="$MODPATH/.device_variant"
 OLDDIR="/data/adb/modules/pixel9pro_control"
 INSTALL_TRACE_FILE="$MODPATH/.install_trace"
 install_trace() { printf '%s stage=%s rc=%s\n' "$(date +%s)" "$1" "${2:-0}" >> "$INSTALL_TRACE_FILE" 2>/dev/null || true; }
-trap 'install_trace failed "$?"' EXIT
+INSTALL_COMPLETE=0
+INSTALL_STATE_READY=0
+installer_cleanup() {
+    _installer_rc="$1"
+    rm -f "${EVENT_FILE:-}" 2>/dev/null || true
+    if [ "$INSTALL_COMPLETE" -eq 1 ] && [ "$_installer_rc" -eq 0 ]; then
+        install_trace complete 0
+    else
+        install_trace failed "$_installer_rc"
+        if [ "$INSTALL_STATE_READY" -eq 1 ]; then
+            install_receipt_write failed failed "INSTALL_FAILED_${_installer_rc}" yes >/dev/null 2>&1 || true
+        fi
+    fi
+}
+trap 'installer_cleanup "$?"' EXIT
 install_trace enter 0
 
 # APD extraction can normalize executable ZIP entries to 0644. Restore
@@ -66,6 +80,13 @@ if [ ! -r "$MODPATH/scripts/runtime_defaults_lib.sh" ]; then
     exit 1
 fi
 . "$MODPATH/scripts/runtime_defaults_lib.sh" || exit 1
+if [ ! -r "$MODPATH/scripts/install_state_lib.sh" ] \
+    || ! . "$MODPATH/scripts/install_state_lib.sh" \
+    || ! install_state_init "$MODPATH"; then
+    ui_print "  ✗ 缺少安装状态合同, 已中止安装"
+    exit 1
+fi
+INSTALL_STATE_READY=1
 if [ ! -r "$MODPATH/scripts/display_state_lib.sh" ] \
     || ! . "$MODPATH/scripts/display_state_lib.sh"; then
     ui_print "  ✗ 缺少屏幕状态配置, 已中止安装"
@@ -114,7 +135,6 @@ mkdir -p "$TMPDIR" 2>/dev/null || {
     exit 1
 }
 EVENT_FILE="$TMPDIR/pixel9pro_control_events.$$"
-trap 'rm -f "$EVENT_FILE" 2>/dev/null' EXIT
 trap 'rm -f "$EVENT_FILE" 2>/dev/null; exit 130' INT
 trap 'rm -f "$EVENT_FILE" 2>/dev/null; exit 143' TERM
 
@@ -127,13 +147,20 @@ chooseport() {
     if [ "${PIXEL9PRO_NONINTERACTIVE:-0}" = "1" ] || [ ! -c /dev/input/event0 ]; then
         return 1
     fi
-    # A bounded wait prevents headless/APatch installs from hanging forever.
-    # Timeout is treated as confirmation of the currently displayed default.
-    if timeout 30 /system/bin/getevent -lc 1 2>&1 \
-        | /system/bin/grep VOLUME | /system/bin/grep " DOWN" > "$EVENT_FILE"; then
-        /system/bin/grep -q VOLUMEUP "$EVENT_FILE" 2>/dev/null && return 0
-        return 1
-    fi
+    # A visible bounded countdown prevents headless installs from hanging.
+    # Timeout confirms the currently displayed safe default.
+    _key_remaining=30
+    while [ "$_key_remaining" -gt 0 ]; do
+        case "$_key_remaining" in 30|20|10|5|4|3|2|1) ui_print "      剩余 ${_key_remaining} 秒" ;; esac
+        : > "$EVENT_FILE" 2>/dev/null || return 1
+        timeout 1 /system/bin/getevent -qlc 1 > "$EVENT_FILE" 2>/dev/null || true
+        if /system/bin/grep -q VOLUME "$EVENT_FILE" 2>/dev/null \
+            && /system/bin/grep -q " DOWN" "$EVENT_FILE" 2>/dev/null; then
+            /system/bin/grep -q VOLUMEUP "$EVENT_FILE" 2>/dev/null && return 0
+            return 1
+        fi
+        _key_remaining=$((_key_remaining - 1))
+    done
     ui_print "    （30 秒未检测到音量键，保留当前默认值）"
     return 1
 }
@@ -308,6 +335,8 @@ case "$device" in
         exit 1
         ;;
 esac
+install_state_write root_family "$INSTALL_ROOT_FAMILY_FILE" "$(install_state_root_value "$ROOT_IMPL")" \
+    || { ui_print "  ✗ 无法写入 Root 状态"; exit 1; }
 ui_print ""
 
 # Magisk Magic Mount 与 modem cbd 的早期 mmap 存在已验证的启动 race。
@@ -348,12 +377,13 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     _is_upgrade=1
     ui_print "  检测到已有配置, 正在迁移..."
     _migration_failed=0
-    for _sf in .thermal_offset .current_profile .profile_policy .profile_manual .profile_auto_reason .profile_history .nr_screen_switch \
+    for _sf in .thermal_offset .thermal_policy .current_profile .profile_policy .profile_manual .profile_auto_reason .profile_history .nr_screen_switch \
                .sim2_auto_manage .idle_isolate_mode \
-               .swap_mode .swap_custom .ntp_server .uecap_mode .uecap_manual_mode \
-               .uecap_policy .uecap_reason .sim2_radio_off \
-               .nr_saved_mode .webui_theme \
-               .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .cpu_sched_owner .sched_owner_desired .game_handoff_policy .game_handoff_source \
+               .swap_mode .swap_custom .ntp_server .uecap_manual_mode \
+               .uecap_policy .uecap_reason .webui_theme \
+               .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .sched_owner_desired .game_handoff_policy .game_handoff_source \
+               .scheduler_mode .scheduler_policy .scheduler_profile \
+               .feature_nr .feature_sim2 .feature_vm .feature_power_export .state_schema \
                .thermal_history .power_history .power_session; do
         if [ -f "$OLDDIR/$_sf" ]; then
             cp "$OLDDIR/$_sf" "$MODPATH/$_sf" 2>/dev/null \
@@ -364,6 +394,7 @@ if [ "$_migration_failed" -ne 0 ]; then
         ui_print "  ✗ 用户配置迁移不完整, 已中止安装"
         exit 1
 fi
+
 install_trace migration 0
 ui_print "  ✓ 已迁移用户配置"
     # Retired light/responsive/performance selections migrate to the current
@@ -654,6 +685,21 @@ else
     ui_print "  ⚠ CPU 调度状态迁移失败, 已使用安全兼容值"
 fi
 
+if ! install_state_sync_legacy "$ROOT_IMPL"; then
+    ui_print "  ✗ 无法提交功能状态合同, 已中止安装"
+    exit 1
+fi
+install_state_print_summary
+if [ "$_is_upgrade" -eq 0 ]; then
+    ui_print "  最终提交: [音量+] = 取消  [音量-] = 确认"
+    if chooseport; then
+        ui_print "  已取消安装"
+        exit 130
+    fi
+    ui_print "  ✓ 已确认最终配置"
+    ui_print ""
+fi
+
 # 从当前机型 stock 基线生成配置; 失败时同步回退文件与状态。
 if ! thermal_generate_config "$STOCK_ACTIVE" "$OUT_JSON" "$offset"; then
     if ! cp "$STOCK_ACTIVE" "$OUT_JSON" 2>/dev/null; then
@@ -665,8 +711,12 @@ if ! thermal_generate_config "$STOCK_ACTIVE" "$OUT_JSON" "$offset"; then
     ui_print "  ⚠ 温控配置生成失败, 已回退到出厂阈值"
 fi
 
+install_receipt_write committed success INSTALL_COMMITTED yes \
+    || { ui_print "  ✗ 无法写入安装 receipt, 已中止安装"; exit 1; }
+
 ui_print "  温控偏移: $(thermal_format_offset "$offset")"
 ui_print ""
 ui_print "  安装完成, 重启生效"
 ui_print "  WebUI: http://127.0.0.1:6210"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+INSTALL_COMPLETE=1
