@@ -484,11 +484,22 @@ uecap_meta_vendor_overlay_has_module() {
 uecap_hybrid_mount_observed() {
     _uecap_hybrid_source="/data/adb/modules/${MODDIR##*/}/system/vendor"
     _uecap_hybrid_source_alias="/data/adb/modules/${MODDIR##*/}/vendor"
+    _uecap_hybrid_suffix="/${MODDIR##*/}/system/vendor"
+    _uecap_hybrid_suffix_alias="/${MODDIR##*/}/vendor"
     _uecap_hybrid_target="/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME"
     _uecap_hybrid_mounts=$(grep -F " /vendor " /proc/self/mountinfo 2>/dev/null || true)
     printf '%s\n' "$_uecap_hybrid_mounts" | grep -F "lowerdir=$_uecap_hybrid_source" >/dev/null 2>&1 && return 0
     printf '%s\n' "$_uecap_hybrid_mounts" | grep -F "lowerdir=$_uecap_hybrid_source_alias" >/dev/null 2>&1 && return 0
-    grep -F " $_uecap_hybrid_target " /proc/self/mountinfo >/dev/null 2>&1
+    printf '%s\n' "$_uecap_hybrid_mounts" | grep -F "$_uecap_hybrid_suffix" >/dev/null 2>&1 && return 0
+    printf '%s\n' "$_uecap_hybrid_mounts" | grep -F "$_uecap_hybrid_suffix_alias" >/dev/null 2>&1 && return 0
+    grep -F " $_uecap_hybrid_target " /proc/self/mountinfo >/dev/null 2>&1 && return 0
+    # Hybrid Mount may hide its randomized staging path in a private mount
+    # namespace. Its committed state is the authoritative module mapping.
+    _uecap_hybrid_state="/data/adb/hybrid-mount/run/state.json"
+    [ -r "$_uecap_hybrid_state" ] \
+        && grep -F '"pixel9pro_control"' "$_uecap_hybrid_state" >/dev/null 2>&1 \
+        && grep -F '"failed_mounts": 0' "$_uecap_hybrid_state" >/dev/null 2>&1 \
+        && grep -F '"/vendor"' "$_uecap_hybrid_state" >/dev/null 2>&1
 }
 
 uecap_hybrid_readback_mode() {
@@ -518,6 +529,7 @@ uecap_hybrid_readback_mode() {
         UECAP_READBACK_CONTENT_HASH=none
         UECAP_READBACK_CONTENT_PATH=none
         UECAP_READBACK_CONTENT_CONTEXT=none
+        UECAP_CONTENT_IMAGE=none
     else
         _uecap_hybrid_source="$MODDIR/system/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME"
         _uecap_hybrid_source_hash=$(uecap_hash "$(uecap_resolve_source "$_uecap_readback_mode")")
@@ -531,10 +543,12 @@ uecap_hybrid_readback_mode() {
         UECAP_READBACK_CONTENT_HASH="$_uecap_hybrid_source_hash"
         UECAP_READBACK_CONTENT_PATH="$_uecap_hybrid_source"
         UECAP_READBACK_CONTENT_CONTEXT="$_uecap_hybrid_source_context"
+        UECAP_CONTENT_IMAGE="$_uecap_hybrid_source"
         UECAP_MOUNT_OBSERVED=hybrid_mount
     fi
     UECAP_CONTEXT_VERIFIED=true
     UECAP_READBACK_RESULT=verified
+    rm -f "$MODDIR/.uecap_reboot_required" 2>/dev/null || true
     return 0
 }
 

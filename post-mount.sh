@@ -7,6 +7,44 @@ export PIXEL9PRO_MODDIR="$MODDIR"
 
 [ -f "$MODDIR/uecap_profile.sh" ] || exit 0
 . "$MODDIR/uecap_profile.sh" 2>/dev/null || exit 0
+
+hybrid_thermal_readback() {
+    [ "$UECAP_BACKEND" = hybrid_mount ] || return 0
+    _thermal_policy="$(cat "$MODDIR/.thermal_policy" 2>/dev/null | tr -d ' \n\r\t')"
+    _thermal_source="$MODDIR/system/vendor/etc/thermal_info_config.json"
+    _thermal_effective=/vendor/etc/thermal_info_config.json
+    _thermal_effective_context=$(ls -Zd "$_thermal_effective" 2>/dev/null | awk '{print $1}')
+    _thermal_status=failed
+    _thermal_source_hash=none
+    _thermal_effective_hash=$(sha256sum "$_thermal_effective" 2>/dev/null | awk '{print $1}')
+    if [ "$_thermal_policy" = system ]; then
+        [ ! -e "$_thermal_source" ] && [ "$_thermal_effective_context" = u:object_r:vendor_configs_file:s0 ] \
+            && _thermal_status=verified
+    elif [ "$_thermal_policy" = custom ] && [ -f "$_thermal_source" ]; then
+        _thermal_source_hash=$(sha256sum "$_thermal_source" 2>/dev/null | awk '{print $1}')
+        _thermal_source_context=$(ls -Zd "$_thermal_source" 2>/dev/null | awk '{print $1}')
+        [ -n "$_thermal_source_hash" ] \
+            && [ "$_thermal_source_hash" = "$_thermal_effective_hash" ] \
+            && [ "$_thermal_source_context" = u:object_r:vendor_configs_file:s0 ] \
+            && [ "$_thermal_effective_context" = u:object_r:vendor_configs_file:s0 ] \
+            && _thermal_status=verified
+    fi
+    _thermal_tmp="${MODDIR}/.thermal_runtime_receipt.tmp.$$"
+    {
+        printf 'backend=hybrid_mount\n'
+        printf 'policy=%s\n' "$_thermal_policy"
+        printf 'status=%s\n' "$_thermal_status"
+        printf 'source_hash=%s\n' "$_thermal_source_hash"
+        printf 'effective_hash=%s\n' "$_thermal_effective_hash"
+        printf 'effective_context=%s\n' "$_thermal_effective_context"
+    } > "$_thermal_tmp" 2>/dev/null && mv "$_thermal_tmp" "$MODDIR/.thermal_runtime_receipt" 2>/dev/null || rm -f "$_thermal_tmp" 2>/dev/null
+    [ "$_thermal_status" = verified ]
+}
+
+if ! hybrid_thermal_readback; then
+    log -t pixel9pro_ctrl "WARNING: Hybrid Mount thermal effective readback failed"
+fi
+
 if ! uecap_is_available; then
     log -t pixel9pro_ctrl "UECap post-mount skipped: $(uecap_current_reason)"
     exit 0
