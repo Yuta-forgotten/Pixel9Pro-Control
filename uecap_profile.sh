@@ -500,10 +500,13 @@ uecap_hybrid_mount_observed() {
     # Hybrid Mount may hide its randomized staging path in a private mount
     # namespace. Its committed state is the authoritative module mapping.
     _uecap_hybrid_state="/data/adb/hybrid-mount/run/state.json"
+    _uecap_hybrid_scan="/data/adb/hybrid-mount/scan.ret"
     [ -r "$_uecap_hybrid_state" ] \
-        && grep -F '"pixel9pro_control"' "$_uecap_hybrid_state" >/dev/null 2>&1 \
+        && [ -r "$_uecap_hybrid_scan" ] \
         && grep -F '"failed_mounts": 0' "$_uecap_hybrid_state" >/dev/null 2>&1 \
-        && grep -F '"/vendor"' "$_uecap_hybrid_state" >/dev/null 2>&1
+        && grep -F '"/vendor"' "$_uecap_hybrid_state" >/dev/null 2>&1 \
+        && awk '/"id": "pixel9pro_control"/{hit=1} hit{print} hit && /\}/{exit}' "$_uecap_hybrid_scan" \
+            | grep -F '"is_mounted": true' >/dev/null 2>&1
 }
 
 uecap_hybrid_readback_mode() {
