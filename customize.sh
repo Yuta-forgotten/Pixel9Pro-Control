@@ -281,6 +281,11 @@ fi
 UECAP_DISABLED=0
 UECAP_DISABLED_REASON=""
 UECAP_EXTERNAL=0
+export PIXEL9PRO_MODDIR="$MODPATH"
+if [ ! -r "$MODPATH/uecap_profile.sh" ] || ! . "$MODPATH/uecap_profile.sh"; then
+    ui_print "  ✗ 缺少 UECap 运行合同, 已中止安装"
+    abort
+fi
 case "$device" in
     komodo)
         ui_print "  机型: Pixel 9 Pro XL (komodo)"
@@ -309,6 +314,17 @@ thermal_policy_init "$MODPATH" || abort
 if ! thermal_policy_prepare_snapshot "$device" "$OLDDIR" yes; then
     ui_print "  ✗ 无法从当前设备/旧模块建立温控 stock 基线, 已中止安装"
     abort
+fi
+
+if [ "$ROOT_IMPL" = APatch ] || [ "$ROOT_IMPL" = KernelSU ]; then
+    if ! uecap_active_metamodule; then
+        ui_print "  ✗ APatch/KernelSU 安装必须先启用并重启 MetaModule"
+        abort
+    fi
+    if [ "$UECAP_BACKEND" = metamodule_content ] && [ ! -r "$MODPATH/scripts/metamodule_compat.sh" ]; then
+        ui_print "  ✗ MetaModule content backend 缺少兼容门禁"
+        abort
+    fi
 fi
 
 # Magisk Magic Mount 与 modem cbd 的早期 mmap 存在已验证的启动 race。
@@ -611,6 +627,14 @@ else
         _ntp_default=$(ntp_server_default) || abort
         installer_write "$MODPATH/.ntp_server" "$_ntp_default"
     fi
+fi
+
+if [ "$UECAP_EXTERNAL" -eq 0 ] && [ "$UECAP_DISABLED" -eq 0 ] \
+    && { [ "$UECAP_BACKEND" = metamodule_content ] || [ "$UECAP_BACKEND" = hybrid_mount ]; }; then
+    _stage_mode=$(cat "$MODPATH/.uecap_mode" 2>/dev/null | tr -d ' \r\n\t')
+    sh "$MODPATH/uecap_profile.sh" stage "$_stage_mode" \
+        || { ui_print "  ✗ 无法提交 UECap pending/source staging"; abort; }
+    ui_print "  UECap: $_stage_mode 已提交到 $UECAP_BACKEND，重启后复读有效 /vendor"
 fi
 
 _offset_raw=$(cat "$OFFSET_FILE" 2>/dev/null | tr -d ' \n\r\t')
