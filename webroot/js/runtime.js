@@ -116,6 +116,15 @@ const PROFILES = {
     modeClass: 'mode-stock',
     detail: '恢复内核当前提供的 response_time_ms_nom、出厂 cpuset 与完整 boost 上限；具体数值由运行态 contract 提供。'
   },
+  off: {
+    name: '不启用本模块调度',
+    summary: '停止本模块全部 profile、auto、reconcile、repair 和 owner 调度写入。',
+    desc: '本模块只保留 CPU 状态读取，不再修改调度节点。',
+    icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 7h10v10H7zM12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16z"/></svg>',
+    hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M7 7h10v10H7zM12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16z"/></svg>',
+    modeClass: 'mode-stock',
+    detail: '关闭后，本模块不运行性能 profile、温度自动切档、调度 reconcile/repair 或 owner worker，也不再写 cpuset、sched_pixel、uclamp 和 vendor_sched。'
+  },
   unknown: {
     name: '未选择',
     summary: '尚未读取到有效调度模式，请稍后刷新。',

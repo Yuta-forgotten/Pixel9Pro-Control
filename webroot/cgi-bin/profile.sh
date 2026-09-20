@@ -24,6 +24,9 @@ SCHEDULER_INVENTORY_PATH="${SCHEDULER_INVENTORY_PATH:-$MODDIR/.scheduler_invento
     || json_error '500 Internal Server Error' 'scheduler boot-mode contract not found'
 [ -r "$MODDIR/scripts/scheduler_transition_guard_lib.sh" ] && . "$MODDIR/scripts/scheduler_transition_guard_lib.sh" \
     || json_error '500 Internal Server Error' 'scheduler transition guard not found'
+[ -r "$MODDIR/scripts/scheduler_capability_lib.sh" ] && . "$MODDIR/scripts/scheduler_capability_lib.sh" \
+    && scheduler_capability_init "$MODDIR" \
+    || json_error '500 Internal Server Error' 'scheduler capability contract not found'
 scheduler_owner_init "$MODDIR" "$FAS_ROOT"
 sbm_init "$MODDIR" "$FAS_ROOT"
 
@@ -54,6 +57,17 @@ acquire_profile_scheduler_lock() {
     trap 'profile_request_cleanup; exit 143' TERM
     so_migrate_state >/dev/null 2>&1 \
         || json_error '500 Internal Server Error' 'scheduler owner state migration failed'
+}
+
+acquire_scheduler_mode_lock() {
+    SO_TRANSITION_LOCK_MAX_ATTEMPTS="$PROFILE_REQUEST_LOCK_MAX_ATTEMPTS"
+    SO_TRANSITION_LOCK_RETRY_SLEEP_S="$PROFILE_REQUEST_LOCK_RETRY_SLEEP_S"
+    so_acquire_transition_lock \
+        || json_error '409 Conflict' 'scheduler transition busy'
+    PROFILE_SCHEDULER_LOCKED=1
+    trap 'profile_request_cleanup' EXIT
+    trap 'profile_request_cleanup; exit 130' INT
+    trap 'profile_request_cleanup; exit 143' TERM
 }
 
 require_locked_pixel_scheduler() {
@@ -159,7 +173,8 @@ emit_profile_mutation_state() {
     _mutation_handoff=$(read_valid_handoff_policy)
     _mutation_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null | tr -d '\r')
 
-    printf '"state_scope":"profile_mutation","profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","sched_effective_owner":"%s","game_handoff_policy":"%s","auto_reason":"%s"' \
+    printf '"state_scope":"profile_mutation","scheduler_mode":"%s","scheduler_capability":"%s","profile":"%s","manual_profile":"%s","policy":"%s","sched_owner":"%s","sched_effective_owner":"%s","game_handoff_policy":"%s","auto_reason":"%s"' \
+        "$(scheduler_mode_read)" "$(scheduler_capability_read)" \
         "$_mutation_active" "$_mutation_manual" "$_mutation_policy" \
         "$_mutation_sched_owner" "$_mutation_effective_owner" "$_mutation_handoff" \
         "$(json_escape "$_mutation_reason")"
@@ -302,6 +317,9 @@ emit_profile_state() {
         "$(json_escape "$_effective_scheduler_kind")" "$(json_escape "$_effective_scheduler_mode")" \
         "$(json_escape "$_profile_surface")" "$_profile_surface_stale" "$(json_escape "$_profile_surface_note")"
     printf ',"cpu_contract":%s' "$_cpu_contract"
+    _scheduler_capability_reason=$(sed -n 's/^reason=//p' "$SCHED_CAP_RECEIPT_FILE" 2>/dev/null | head -n 1 | tr -d '\r')
+    printf ',"scheduler_mode":"%s","scheduler_capability":"%s","scheduler_capability_reason":"%s"' \
+        "$(scheduler_mode_read)" "$(scheduler_capability_read)" "$(json_escape "$_scheduler_capability_reason")"
     printf ',"scheduler_boot":{"target_mode":"%s","effective_mode":"%s","phase":"%s","final":"%s","ok":"%s","result":"%s","reason":"%s","attempts":%s,"reboot_required":"%s","auto_repair_used":"%s","staged_boot_id":"%s","observed_boot_id":"%s"}' \
         "$(json_escape "$SBM_TARGET_MODE")" "$(json_escape "$SBM_EFFECTIVE_MODE")" \
         "$(json_escape "$SBM_PHASE")" "$(json_escape "$SBM_FINAL")" "$(json_escape "$SBM_OK")" \
@@ -323,6 +341,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     newowner=$(printf '%s' "$body" | sed -n 's/.*"sched_owner"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
     newhandoff=$(printf '%s' "$body" | sed -n 's/.*"game_handoff"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
     scheduler_action=$(printf '%s' "$body" | sed -n 's/.*"scheduler_action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
+    requested_scheduler_mode=$(printf '%s' "$body" | sed -n 's/.*"scheduler_mode"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
 
     case "$newprof" in
         ''|balanced|battery|default) ;;
@@ -345,6 +364,49 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         ''|cancel_pending|retry) ;;
         *) json_error '400 Bad Request' 'invalid scheduler action' ;;
     esac
+    case "$requested_scheduler_mode" in
+        ''|off) ;;
+        active) json_error '409 Conflict' 're-enable scheduler through the module installer and reboot' ;;
+        *) json_error '400 Bad Request' 'invalid scheduler mode' ;;
+    esac
+
+    if [ -n "$requested_scheduler_mode" ]; then
+        acquire_scheduler_mode_lock
+        _scheduler_cleanup_result=not_needed
+        _scheduler_reboot_required=false
+        case "$requested_scheduler_mode" in
+            off)
+                if scheduler_mode_is_active \
+                    && [ "$(read_valid_sched_owner)" = pixel ]; then
+                    CPU_PROFILE_ALLOW_OFF_CLEANUP=1 \
+                        sh "$MODDIR/scripts/cpu_profile.sh" default "$MODDIR" force >/dev/null 2>&1 \
+                        && _scheduler_cleanup_result=system_default_restored \
+                        || _scheduler_cleanup_result=cleanup_unverified
+                elif scheduler_mode_is_active; then
+                    _scheduler_cleanup_result=external_owner_untouched
+                fi
+                scheduler_mode_write off \
+                    || json_error '500 Internal Server Error' 'failed to commit scheduler off mode'
+                scheduler_capability_probe readonly >/dev/null 2>&1 \
+                    && scheduler_capability_commit >/dev/null 2>&1 \
+                    || _scheduler_cleanup_result="${_scheduler_cleanup_result}_receipt_unverified"
+                profile_state_commit default default manual scheduler_mode_off >/dev/null 2>&1 \
+                    || _scheduler_cleanup_result="${_scheduler_cleanup_result}_state_unverified"
+                [ "$_scheduler_cleanup_result" = system_default_restored ] \
+                    || _scheduler_reboot_required=true
+                ;;
+        esac
+        release_profile_scheduler_lock
+        json_headers
+        printf '{"ok":true,"accepted":true,"final":true,"cleanup_result":"%s","reboot_required":%s,' \
+            "$(json_escape "$_scheduler_cleanup_result")" "$_scheduler_reboot_required"
+        emit_profile_mutation_state
+        printf '}\n'
+        exit 0
+    fi
+
+    scheduler_mode_is_active \
+        || json_error '409 Conflict' '本模块性能调度已关闭'
 
     if [ "$scheduler_action" = "cancel_pending" ]; then
         acquire_profile_scheduler_lock

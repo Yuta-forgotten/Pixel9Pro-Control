@@ -3,6 +3,9 @@
 (() => {
 const state = {
   currentProfile: 'unknown',
+  schedulerMode: 'active',
+  schedulerCapability: 'unknown',
+  schedulerCapabilityReason: '',
   manualProfile: 'balanced',
   profilePolicy: 'manual',
   schedOwner: 'pixel',
@@ -201,6 +204,7 @@ function getExternalSchedulerStateText() {
 }
 
 function getSchedulerStatusText() {
+  if (state.schedulerMode !== 'active') return '本模块性能调度已关闭 · 仅保留只读状态';
   const boot = state.schedulerBoot;
   if (boot.phase === 'pending_reboot') return `等待重启到${boot.targetMode === 'ugt' ? ' UGT 日常调度' : ' Pixel'}模式`;
   if (boot.phase === 'blocked' || boot.phase === 'failed') return `调度切换失败 · ${boot.reason || boot.result || '状态未通过验证'}`;
@@ -225,11 +229,12 @@ function getSchedulerToggleText() {
 }
 
 function isVerifiedPixelBoot() {
-  return state.schedulerBoot.phase === 'success' && state.schedulerBoot.effectiveMode === 'pixel';
+  return state.schedulerMode === 'active'
+    && state.schedulerBoot.phase === 'success' && state.schedulerBoot.effectiveMode === 'pixel';
 }
 
 function isVerifiedSchedulerBoot() {
-  return state.schedulerBoot.phase === 'success'
+  return state.schedulerMode === 'active' && state.schedulerBoot.phase === 'success'
     && (state.schedulerBoot.effectiveMode === 'pixel' || state.schedulerBoot.effectiveMode === 'ugt');
 }
 
@@ -300,7 +305,7 @@ function syncOwnerArbiterUi() {
       refs.gameHandoffLabel.textContent = enabled
         ? 'fas-rs 常驻待机；命中游戏时建立 lease，退出后恢复日常选择'
         : 'fas-rs 游戏临时接管已关闭';
-      refs.gameHandoffToggleBtn.disabled = strategyBusy || !isVerifiedSchedulerBoot();
+      refs.gameHandoffToggleBtn.disabled = state.schedulerMode !== 'active' || strategyBusy || !isVerifiedSchedulerBoot();
       refs.gameHandoffToggleBtn.className = `tiny-btn${enabled ? ' tonal' : ''}`;
       refs.gameHandoffToggleLabel.textContent = state.gameHandoffBusy ? '切换中…' : (enabled ? '关闭' : '启用');
     }
@@ -317,7 +322,7 @@ function syncOwnerArbiterUi() {
               ? '检查延后 · 外部调度接管中'
               : '检查延后 · 调度切换中')
             : '等待健康检查';
-    refs.schedulerRetryBtn.disabled = strategyBusy || state.schedulerRetryBusy || !['failed', 'blocked'].includes(state.schedulerBoot.phase);
+    refs.schedulerRetryBtn.disabled = state.schedulerMode !== 'active' || strategyBusy || state.schedulerRetryBusy || !['failed', 'blocked'].includes(state.schedulerBoot.phase);
     refs.schedulerRetryLabel.textContent = state.schedulerRetryBusy ? '验证中…' : '重新验证';
   }
   if (!refs.ownerArbiterRow) return;
@@ -328,7 +333,7 @@ function syncOwnerArbiterUi() {
   refs.ownerArbiterLabel.textContent = state.ownerArbiterBusy
     ? '正在检查调度接管状态…'
     : `fas-rs ${active || '已检测到'}；常驻进程不等于调度接管`;
-  refs.ownerArbiterTickBtn.disabled = strategyBusy;
+  refs.ownerArbiterTickBtn.disabled = state.schedulerMode !== 'active' || strategyBusy;
   refs.ownerArbiterTickLabel.textContent = state.ownerArbiterBusy ? '检查中…' : '立即检查';
 }
 
@@ -364,6 +369,33 @@ function syncProfileUi() {
   const effectiveName = getEffectiveSchedulerName();
   const schedulerPending = ['pending_reboot', 'verifying', 'applying'].includes(state.schedulerBoot.phase);
   const strategyBusy = isCurrentStrategyBusy() || schedulerPending;
+  if (state.schedulerMode !== 'active') {
+    const off = PROFILES.off;
+    refs.topbarProfileChip.textContent = '调度关闭';
+    refs.perfCurrentName.textContent = off.name;
+    refs.perfCurrentDesc.textContent = off.desc;
+    refs.perfPolicyDesc.textContent = state.schedulerCapability === 'supported'
+      ? '重新启用需要通过模块安装向导重新选择，并在重启后启动调度 worker。'
+      : `当前 capability=${state.schedulerCapability}，为安全起见禁止本模块调度写入。`;
+    refs.profilePolicyManualBtn.className = 'seg-btn';
+    refs.profilePolicyAutoBtn.className = 'seg-btn';
+    refs.profilePolicyManualBtn.disabled = true;
+    refs.profilePolicyAutoBtn.disabled = true;
+    refs.schedOwnerLabel.textContent = getSchedulerStatusText();
+    refs.schedOwnerToggleBtn.disabled = true;
+    refs.schedOwnerToggleLabel.textContent = '调度已关闭';
+    refs.hero.className = `hero-card ${off.modeClass}`;
+    setStaticHtml(refs.heroIcon, off.hero);
+    refs.heroMode.textContent = off.name;
+    document.querySelectorAll('.profile-option').forEach((card) => {
+      const isOff = card.dataset.profile === 'off';
+      card.classList.toggle('selected', isOff);
+      card.classList.toggle('disabled', !isOff);
+      card.setAttribute('aria-disabled', isOff ? 'false' : 'true');
+    });
+    syncOwnerArbiterUi();
+    return;
+  }
   if (isExternal) {
     refs.topbarProfileChip.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? `${effectiveName} 接管` : '外部调度未启用') : '调度让权';
     refs.perfCurrentName.textContent = hasExternalScheduler()
@@ -386,7 +418,8 @@ function syncProfileUi() {
     refs.heroMode.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? `${effectiveName} 接管` : '外部调度未启用') : '调度停用';
     document.querySelectorAll('.profile-option').forEach((card) => {
       card.classList.remove('selected');
-      card.classList.add('disabled');
+      card.classList.toggle('disabled', card.dataset.profile !== 'off');
+      card.setAttribute('aria-disabled', card.dataset.profile === 'off' ? 'false' : 'true');
     });
     syncCurrentStrategyTransitionCopy();
     syncOwnerArbiterUi();
@@ -416,7 +449,10 @@ function syncProfileUi() {
   setStaticHtml(refs.heroIcon, profile.hero);
   refs.heroMode.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
   document.querySelectorAll('.profile-option').forEach((card) => {
-    card.classList.toggle('disabled', strategyBusy || !isVerifiedPixelBoot());
+    const isOff = card.dataset.profile === 'off';
+    const disabled = !isOff && (strategyBusy || !isVerifiedPixelBoot());
+    card.classList.toggle('disabled', disabled);
+    card.setAttribute('aria-disabled', disabled ? 'true' : 'false');
     card.classList.toggle('selected', card.dataset.profile === state.currentProfile);
   });
   syncCurrentStrategyTransitionCopy();
@@ -444,6 +480,10 @@ function describeAutoReason(reason) {
 }
 
 function applyProfileState(data) {
+  state.schedulerMode = ['active', 'off', 'observe'].includes(data.scheduler_mode) ? data.scheduler_mode : 'active';
+  state.schedulerCapability = ['supported', 'partial', 'unsupported', 'unknown'].includes(data.scheduler_capability)
+    ? data.scheduler_capability : 'unknown';
+  state.schedulerCapabilityReason = typeof data.scheduler_capability_reason === 'string' ? data.scheduler_capability_reason : '';
   state.currentProfile = PROFILES[data.profile] ? data.profile : 'unknown';
   state.manualProfile = PROFILES[data.manual_profile] ? data.manual_profile : state.currentProfile;
   state.profilePolicy = data.policy === 'auto' ? 'auto' : 'manual';
@@ -532,6 +572,10 @@ function applyProfileState(data) {
 function applyProfileMutationState(data) {
   latestProfileMutationState = data;
   profileMutationStateRevision += 1;
+  if (['active', 'off', 'observe'].includes(data.scheduler_mode)) state.schedulerMode = data.scheduler_mode;
+  if (['supported', 'partial', 'unsupported', 'unknown'].includes(data.scheduler_capability)) {
+    state.schedulerCapability = data.scheduler_capability;
+  }
   if (PROFILES[data.profile]) state.currentProfile = data.profile;
   if (PROFILES[data.manual_profile]) state.manualProfile = data.manual_profile;
   if (data.policy === 'auto' || data.policy === 'manual') state.profilePolicy = data.policy;
@@ -585,12 +629,16 @@ function applyProfileMutationState(data) {
 
 function renderProfileCards() {
   refs.profileList.replaceChildren();
-  ['battery', 'balanced', 'default'].forEach((key) => {
+  ['battery', 'balanced', 'default', 'off'].forEach((key) => {
     const p = PROFILES[key];
     const card = document.createElement('article');
     card.className = 'profile-card profile-option';
     card.dataset.profile = key;
     card.tabIndex = 0;
+    const detailAction = key === 'off' ? '' : `
+        <button class="card-info" type="button" data-action="profile-detail" data-profile="${key}" aria-label="查看${p.name}详情">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M11 17h2v-6h-2v6zm0-8h2V7h-2v2zm1-7C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
+        </button>`;
     setStaticHtml(card, `
       <div class="profile-icon" aria-hidden="true">${p.icon}</div>
       <div class="profile-copy">
@@ -598,19 +646,21 @@ function renderProfileCards() {
         <div class="profile-desc">${p.summary}</div>
       </div>
       <div class="profile-actions">
-        <button class="card-info" type="button" data-action="profile-detail" data-profile="${key}" aria-label="查看${p.name}详情">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M11 17h2v-6h-2v6zm0-8h2V7h-2v2zm1-7C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
-        </button>
+        ${detailAction}
         <div class="p-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></div>
       </div>`);
     card.addEventListener('click', (evt) => {
       if (evt.target.closest('[data-action="profile-detail"]')) return;
-      applyProfile(key);
+      if (card.classList.contains('disabled')) return;
+      if (key === 'off') setSchedulerMode('off');
+      else applyProfile(key);
     });
     card.addEventListener('keydown', (evt) => {
       if (evt.key === 'Enter' || evt.key === ' ') {
         evt.preventDefault();
-        applyProfile(key);
+        if (card.classList.contains('disabled')) return;
+        if (key === 'off') setSchedulerMode('off');
+        else applyProfile(key);
       }
     });
     refs.profileList.appendChild(card);
@@ -700,6 +750,9 @@ async function loadSavedProfile() {
     void refreshFullProfileState();
   } catch (_) {
     state.currentProfile = 'unknown';
+    state.schedulerMode = 'off';
+    state.schedulerCapability = 'unknown';
+    state.schedulerCapabilityReason = 'state_unavailable';
     state.manualProfile = 'balanced';
     state.profilePolicy = 'manual';
     state.schedOwner = 'pixel';
@@ -795,6 +848,10 @@ async function refreshCpu() {
 }
 
 async function applyProfile(profile) {
+  if (state.schedulerMode !== 'active') {
+    showToast('本模块性能调度已关闭；重新启用请通过模块安装向导');
+    return;
+  }
   if (state.schedOwner === 'external') {
     showToast(hasExternalScheduler() ? getSchedulerStatusText() : '本模块调度未启用');
     appendLog(hasExternalScheduler()
@@ -835,7 +892,40 @@ async function applyProfile(profile) {
   }
 }
 
+async function setSchedulerMode(mode) {
+  if (isCurrentStrategyBusy() || mode === state.schedulerMode) return;
+  state.profileApplyBusy = true;
+  invalidateFullProfileStateRefresh();
+  syncProfileUi();
+  const body = { scheduler_mode: mode };
+  try {
+    const data = await apiFetch(API.profile, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), timeoutMs: 25000
+    });
+    if (data.ok) {
+      applyProfileMutationState(data);
+      const label = '本模块性能调度已关闭';
+      showToast(data.reboot_required ? `${label}，重启后完成切换` : label);
+      appendLog(`${label} · ${data.cleanup_result || 'state_committed'}`, data.reboot_required ? 'warn' : 'ok');
+    } else {
+      showToast(`调度模式切换失败：${data.error || '未知'}`);
+    }
+  } catch (err) {
+    showToast(`调度模式切换失败：${err.message || err}`);
+    appendLog(String(err), 'err');
+  } finally {
+    state.profileApplyBusy = false;
+    syncProfileUi();
+    void refreshFullProfileState();
+  }
+}
+
 async function setProfilePolicy(policy) {
+  if (state.schedulerMode !== 'active') {
+    showToast('本模块性能调度已关闭');
+    return;
+  }
   if (state.schedOwner === 'external') {
     showToast(hasExternalScheduler() ? getSchedulerStatusText() : '本模块调度未启用');
     appendLog(hasExternalScheduler()
@@ -1057,6 +1147,7 @@ registerFeature('profile', {
   syncOptionalModuleUi,
   getSchedulerBootTargetMode: () => state.schedulerBoot.targetMode,
   getThermalContext: () => ({
+    schedulerMode: state.schedulerMode,
     schedEffectiveOwner: state.schedEffectiveOwner,
     hasExternalScheduler: hasExternalScheduler(),
     externalSchedulerActive: isExternalSchedulerActive()
@@ -1078,4 +1169,3 @@ registerFeature('profile', {
   cancelSchedulerChange
 });
 })();
-

@@ -8,17 +8,29 @@ ACTION="${1:-boot}"
 MODDIR="${2:-${0%/scripts/scheduler_reconcile.sh}}"
 FAS_ROOT="${SCHEDULER_RECONCILE_FAS_ROOT:-/data/adb/fas_rs}"
 
-for _sr_lib in runtime_defaults_lib.sh scheduler_owner_lib.sh scheduler_boot_mode_lib.sh scheduler_detect_lib.sh cpu_profile_lib.sh; do
+for _sr_lib in runtime_defaults_lib.sh scheduler_capability_lib.sh scheduler_owner_lib.sh scheduler_boot_mode_lib.sh scheduler_detect_lib.sh cpu_profile_lib.sh; do
     [ -r "$MODDIR/scripts/$_sr_lib" ] || { echo "scheduler_reconcile: missing $_sr_lib" >&2; exit 65; }
     . "$MODDIR/scripts/$_sr_lib" 2>/dev/null || exit 65
 done
 
 scheduler_owner_init "$MODDIR" "$FAS_ROOT"
 sbm_init "$MODDIR" "$FAS_ROOT"
+scheduler_capability_init "$MODDIR" || exit 65
 case "$ACTION" in
     health|status|boot|repair|retry) ;;
     *) echo "Usage: $0 [boot|health|repair|retry|status] [MODDIR]" >&2; exit 64 ;;
 esac
+if ! scheduler_mode_is_active; then
+    case "$ACTION" in
+        status)
+            printf 'scheduler_mode=%s\n' "$(scheduler_mode_read)"
+            printf 'scheduler_capability=%s\n' "$(scheduler_capability_read)"
+            ;;
+        health) ;;
+        *) exit 69 ;;
+    esac
+    exit 0
+fi
 
 sr_record_health() {
     SBM_HEALTH_BOOT_ID=$(sbm_boot_id)

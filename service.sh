@@ -29,6 +29,11 @@ log -t pixel9pro_ctrl "service entry moddir=$MODDIR pid=$$"
 [ -r "$MODDIR/scripts/runtime_defaults_lib.sh" ] \
     && . "$MODDIR/scripts/runtime_defaults_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: runtime defaults contract missing"; exit 1; }
+[ -r "$MODDIR/scripts/scheduler_capability_lib.sh" ] \
+    && . "$MODDIR/scripts/scheduler_capability_lib.sh" 2>/dev/null \
+    && scheduler_capability_init "$MODDIR" \
+    || { log -t pixel9pro_ctrl "ERROR: scheduler capability contract missing"; exit 1; }
+SCHEDULER_MODE=$(scheduler_mode_read)
 [ -r "$MODDIR/scripts/display_state_lib.sh" ] \
     && . "$MODDIR/scripts/display_state_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: display state contract missing"; exit 1; }
@@ -82,13 +87,6 @@ if [ -r "$MODDIR/scripts/vm_profile_lib.sh" ]; then
 fi
 scheduler_owner_init "$MODDIR" "/data/adb/fas_rs"
 sbm_init "$MODDIR" "/data/adb/fas_rs"
-so_migrate_state >/dev/null 2>&1 \
-    || log -t pixel9pro_ctrl "WARNING: scheduler-owner state migration failed"
-detect_external_scheduler_fresh >/dev/null 2>&1
-_scheduler_inventory_rc=$?
-if [ "$_scheduler_inventory_rc" -gt 1 ] 2>/dev/null; then
-    log -t pixel9pro_ctrl "WARNING: scheduler inventory refresh failed"
-fi
 
 detect_root_impl() {
     if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
@@ -430,6 +428,7 @@ apply_profile_state() {
     _expected_policy="${3:-}"
     PROFILE_APPLY_OUTCOME=failed
 
+    scheduler_mode_is_active || { PROFILE_APPLY_OUTCOME=scheduler_off; return 69; }
     [ "$CPU_PROFILE_AVAILABLE" -eq 1 ] || return 1
     valid_profile "$_target" || return 1
     case "$_expected_policy" in ''|manual|auto) ;; *) return 1 ;; esac
@@ -565,6 +564,19 @@ until [ "$(getprop sys.boot_completed)" = "1" ]; do
     sleep 5
 done
 sleep 20
+scheduler_capability_enforce_mode readonly >/dev/null 2>&1 \
+    || scheduler_mode_write off >/dev/null 2>&1 \
+    || { log -t pixel9pro_ctrl "ERROR: cannot fail closed scheduler mode"; exit 1; }
+SCHEDULER_MODE=$(scheduler_mode_read)
+if [ "$SCHEDULER_MODE" = active ]; then
+    so_migrate_state >/dev/null 2>&1 \
+        || log -t pixel9pro_ctrl "WARNING: scheduler-owner state migration failed"
+    detect_external_scheduler_fresh >/dev/null 2>&1
+    _scheduler_inventory_rc=$?
+    if [ "$_scheduler_inventory_rc" -gt 1 ] 2>/dev/null; then
+        log -t pixel9pro_ctrl "WARNING: scheduler inventory refresh failed"
+    fi
+fi
 
 # ──────────────────────────────────────────────────────────
 # 1.1 WebUI 安全: token 生成 + 环境变量导出
@@ -744,12 +756,14 @@ log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: boot policy restore completed; warn
 # ──────────────────────────────────────────────────────────
 # 2.5 持久后台策略。CPU/L2 由同一 profile transaction 应用。
 # ──────────────────────────────────────────────────────────
-[ -f "$SCHED_OWNER_FILE" ] || runtime_write_value "$SCHED_OWNER_FILE" pixel \
-    || log -t pixel9pro_ctrl "WARNING: failed to initialize scheduler owner state"
-[ -f "$SCHED_OWNER_DESIRED_FILE" ] || runtime_write_value "$SCHED_OWNER_DESIRED_FILE" "$(read_valid_sched_owner)" \
-    || log -t pixel9pro_ctrl "WARNING: failed to initialize desired scheduler owner"
-[ -f "$GAME_HANDOFF_POLICY_FILE" ] || runtime_write_value "$GAME_HANDOFF_POLICY_FILE" off \
-    || log -t pixel9pro_ctrl "WARNING: failed to initialize game handoff policy"
+if [ "$SCHEDULER_MODE" = active ]; then
+    [ -f "$SCHED_OWNER_FILE" ] || runtime_write_value "$SCHED_OWNER_FILE" pixel \
+        || log -t pixel9pro_ctrl "WARNING: failed to initialize scheduler owner state"
+    [ -f "$SCHED_OWNER_DESIRED_FILE" ] || runtime_write_value "$SCHED_OWNER_DESIRED_FILE" "$(read_valid_sched_owner)" \
+        || log -t pixel9pro_ctrl "WARNING: failed to initialize desired scheduler owner"
+    [ -f "$GAME_HANDOFF_POLICY_FILE" ] || runtime_write_value "$GAME_HANDOFF_POLICY_FILE" off \
+        || log -t pixel9pro_ctrl "WARNING: failed to initialize game handoff policy"
+fi
 apply_l1_persistent_limits
 
 # 延迟复写：NTP 服务器和扫描类设置可能在用户解锁后被系统回写。
@@ -769,15 +783,17 @@ apply_l1_persistent_limits
 # 3. 有界恢复 CPU 调度方案 (CPU + cpuset + cap + vendor_sched L2)
 # ──────────────────────────────────────────────────────────
 PROFILE=$(profile_state_read_profile "$PROFILE_FILE" 'balanced')
-[ -f "$PROFILE_MANUAL_FILE" ] || runtime_write_value "$PROFILE_MANUAL_FILE" "$PROFILE" \
-    || log -t pixel9pro_ctrl "WARNING: failed to initialize manual profile state"
-[ -f "$PROFILE_POLICY_FILE" ] || runtime_write_value "$PROFILE_POLICY_FILE" manual \
-    || log -t pixel9pro_ctrl "WARNING: failed to initialize profile policy"
-[ -f "$PROFILE_AUTO_REASON_FILE" ] || runtime_write_value "$PROFILE_AUTO_REASON_FILE" manual_policy \
-    || log -t pixel9pro_ctrl "WARNING: failed to initialize profile reason"
-if [ "$CPU_PROFILE_AVAILABLE" -ne 1 ]; then
+if [ "$SCHEDULER_MODE" != active ]; then
+    log -t pixel9pro_ctrl "Scheduler mode=$SCHEDULER_MODE: skipped profile restore and scheduler mutations"
+elif [ "$CPU_PROFILE_AVAILABLE" -ne 1 ]; then
     log -t pixel9pro_ctrl "WARNING: CPU profile contract missing, skipped profile restore"
 else
+    [ -f "$PROFILE_MANUAL_FILE" ] || runtime_write_value "$PROFILE_MANUAL_FILE" "$PROFILE" \
+        || log -t pixel9pro_ctrl "WARNING: failed to initialize manual profile state"
+    [ -f "$PROFILE_POLICY_FILE" ] || runtime_write_value "$PROFILE_POLICY_FILE" manual \
+        || log -t pixel9pro_ctrl "WARNING: failed to initialize profile policy"
+    [ -f "$PROFILE_AUTO_REASON_FILE" ] || runtime_write_value "$PROFILE_AUTO_REASON_FILE" manual_policy \
+        || log -t pixel9pro_ctrl "WARNING: failed to initialize profile reason"
     if sh "$MODDIR/scripts/scheduler_reconcile.sh" boot "$MODDIR" >/dev/null 2>&1; then
         log -t pixel9pro_ctrl "Scheduler boot reconcile completed"
     else
@@ -789,13 +805,14 @@ else
         fi
     fi
 fi
-ensure_profile_history_baseline
+[ "$SCHEDULER_MODE" = active ] && ensure_profile_history_baseline
 
 # Owner arbiter needs a faster wake->game reaction than the main standby
 # worker can provide after it enters the 600s deep-standby sleep.  Keep this
 # loop cheap while screen-off and only run top-app/window IPC when display is on.
 sbm_load_state
-if [ "$SBM_PHASE" = "success" ] \
+if [ "$SCHEDULER_MODE" = active ] \
+    && [ "$SBM_PHASE" = "success" ] \
     && { [ "$SBM_EFFECTIVE_MODE" = "pixel" ] || [ "$SBM_EFFECTIVE_MODE" = "ugt" ]; }; then
 (
     # Periodic observation never waits behind a user or boot transaction. A
@@ -822,6 +839,7 @@ if [ "$SBM_PHASE" = "success" ] \
     _owner_arbiter_long_paused=0
 
     while true; do
+        scheduler_mode_is_active || exit 0
         _owner_arbiter_now=$(date +%s 2>/dev/null || echo 0)
         display_state_read >/dev/null 2>&1 || true
         _oa_screen=$(display_state_legacy_screen)
@@ -863,9 +881,11 @@ fi
 # Fixed-interval scheduler health worker. The health action is scheduler-node
 # read-only. A first Pixel drift may enqueue one bounded repair generation;
 # after that generation reaches a terminal state, later probes never write.
+if [ "$SCHEDULER_MODE" = active ]; then
 (
     while true; do
         sleep "$SBM_HEALTH_INTERVAL_S"
+        scheduler_mode_is_active || exit 0
         sh "$MODDIR/scripts/scheduler_reconcile.sh" health "$MODDIR" >/dev/null 2>&1
         _scheduler_health_rc=$?
         if [ "$_scheduler_health_rc" -eq 5 ]; then
@@ -879,6 +899,9 @@ fi
     done
 ) &
 log -t pixel9pro_ctrl "Scheduler read-only health worker started (${SBM_HEALTH_INTERVAL_S}s)"
+else
+    log -t pixel9pro_ctrl "Scheduler workers disabled by scheduler_mode=$SCHEDULER_MODE"
+fi
 
 # ──────────────────────────────────────────────────────────
 # 4. 统一后台工作循环 (Doze 友好)
@@ -1284,10 +1307,12 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
         _now=$(date +%s 2>/dev/null || echo 0)
         _cycle_count=$((_cycle_count + 1))
         _active_profile=$(profile_state_read_profile "$PROFILE_FILE" "$_active_profile")
+        SCHEDULER_MODE=$(scheduler_mode_read)
         _sched_owner=$(read_valid_sched_owner)
         sbm_load_state
         _scheduler_profile_writable=0
-        if [ "$SBM_PHASE" = "success" ] && [ "$SBM_EFFECTIVE_MODE" = "pixel" ] \
+        if [ "$SCHEDULER_MODE" = active ] \
+            && [ "$SBM_PHASE" = "success" ] && [ "$SBM_EFFECTIVE_MODE" = "pixel" ] \
             && [ "$_sched_owner" = "pixel" ]; then
             _scheduler_profile_writable=1
         else

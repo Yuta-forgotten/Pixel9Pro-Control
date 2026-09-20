@@ -68,6 +68,12 @@ if [ ! -r "$MODPATH/scripts/install_state_lib.sh" ] \
     exit 1
 fi
 INSTALL_STATE_READY=1
+if [ ! -r "$MODPATH/scripts/scheduler_capability_lib.sh" ] \
+    || ! . "$MODPATH/scripts/scheduler_capability_lib.sh" \
+    || ! scheduler_capability_init "$MODPATH"; then
+    ui_print "  ✗ 缺少调度能力合同, 已中止安装"
+    exit 1
+fi
 if [ ! -r "$MODPATH/scripts/display_state_lib.sh" ] \
     || ! . "$MODPATH/scripts/display_state_lib.sh"; then
     ui_print "  ✗ 缺少屏幕状态配置, 已中止安装"
@@ -154,6 +160,56 @@ chooseport() {
 
 choose_cpu_scheduling() {
     _sch_step="$1"
+    ui_print "  $_sch_step CPU 调度控制:"
+    _scheduler_mode_vals="active off"
+    _scheduler_mode_idx=0
+    while true; do
+        _i=0; _scheduler_mode=""
+        for _v in $_scheduler_mode_vals; do
+            if [ "$_i" -eq "$_scheduler_mode_idx" ]; then _scheduler_mode=$_v; break; fi
+            _i=$((_i + 1))
+        done
+        case "$_scheduler_mode" in
+            active) _scheduler_mode_label="启用本模块性能调度" ;;
+            off) _scheduler_mode_label="不启用本模块调度 (停止全部调度写入)" ;;
+        esac
+        ui_print "    > $_scheduler_mode_label"
+        if chooseport; then
+            _scheduler_mode_idx=$(( (_scheduler_mode_idx + 1) % 2 ))
+        else
+            break
+        fi
+    done
+    scheduler_mode_write "$_scheduler_mode" \
+        || { ui_print "  ✗ 无法提交调度模式"; exit 1; }
+    if [ "$_scheduler_mode" = off ]; then
+        scheduler_capability_probe readonly \
+            && scheduler_capability_commit \
+            || { ui_print "  ✗ 无法记录调度关闭 receipt"; exit 1; }
+        installer_write "$PROFILE_FILE" default
+        installer_write "$PROFILE_MANUAL_FILE" default
+        installer_write "$PROFILE_POLICY_FILE" manual
+        installer_write "$MODPATH/.profile_auto_reason" scheduler_mode_off
+        ui_print "    ✓ $_scheduler_mode_label"
+        ui_print ""
+        return
+    fi
+
+    if ! scheduler_capability_probe verify \
+        || ! scheduler_capability_commit \
+        || [ "$SCHED_CAPABILITY" != supported ]; then
+        scheduler_mode_write off \
+            || { ui_print "  ✗ 无法关闭不兼容调度控制面"; exit 1; }
+        installer_write "$PROFILE_FILE" default
+        installer_write "$PROFILE_MANUAL_FILE" default
+        installer_write "$PROFILE_POLICY_FILE" manual
+        installer_write "$MODPATH/.profile_auto_reason" scheduler_capability_off
+        ui_print "  $_sch_step CPU 调度: 能力不完整，本模块调度已关闭"
+        ui_print "    capability=${SCHED_CAPABILITY:-unknown}"
+        ui_print ""
+        return
+    fi
+
     detect_uperf_module 2>/dev/null || true
     detect_fas_rs_scheduler 2>/dev/null || true
     if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
@@ -655,8 +711,15 @@ installer_write "$OFFSET_FILE" "$offset"
 # Split persistent user intent from the effective runtime owner.  For upgrades
 # from v4.4.38 and older, prefer the last explicit WebUI owner action because
 # the legacy arbiter could overwrite .cpu_sched_owner after that action.
+if [ "$_is_upgrade" -eq 1 ]; then
+    scheduler_capability_enforce_mode readonly >/dev/null 2>&1 \
+        || scheduler_mode_write off >/dev/null 2>&1 \
+        || { ui_print "  ✗ 无法 fail closed 调度模式"; exit 1; }
+fi
 scheduler_owner_init "$MODPATH" "/data/adb/fas_rs"
-if so_migrate_state; then
+if ! scheduler_mode_is_active; then
+    ui_print "  CPU 调度: 本模块已关闭，不迁移或创建 owner/worker 状态"
+elif so_migrate_state; then
     detect_uperf_module 2>/dev/null || true
     detect_fas_rs_scheduler 2>/dev/null || true
     _handoff_source=$(so_read_handoff_source)
@@ -689,7 +752,6 @@ else
     [ -f "$GAME_HANDOFF_SOURCE_FILE" ] || installer_write "$GAME_HANDOFF_SOURCE_FILE" legacy
     ui_print "  ⚠ CPU 调度状态迁移失败, 已使用安全兼容值"
 fi
-
 if ! install_state_sync_legacy "$ROOT_IMPL"; then
     ui_print "  ✗ 无法提交功能状态合同, 已中止安装"
     exit 1

@@ -36,6 +36,13 @@ if [ ! -r "$CPU_PROFILE_LIB" ] || ! . "$CPU_PROFILE_LIB"; then
     echo "cpu_profile: missing CPU profile contract" >&2
     exit 2
 fi
+SCHEDULER_CAPABILITY_LIB="$MODDIR/scripts/scheduler_capability_lib.sh"
+if [ ! -r "$SCHEDULER_CAPABILITY_LIB" ] \
+    || ! . "$SCHEDULER_CAPABILITY_LIB" \
+    || ! scheduler_capability_init "$MODDIR"; then
+    echo "cpu_profile: missing scheduler mode contract" >&2
+    exit 2
+fi
 # Host/fixture runs may not provide Android's log binary; logging must never
 # turn an otherwise verified parameter transaction into a false failure.
 if ! command -v log >/dev/null 2>&1; then
@@ -234,6 +241,16 @@ profile_apply_failed() {
 }
 
 SCHED_OWNER=$(read_sched_owner)
+case "$PROFILE" in
+    status|verify|enforce) ;;
+    *)
+        if ! scheduler_mode_is_active && [ "${CPU_PROFILE_ALLOW_OFF_CLEANUP:-0}" != 1 ]; then
+            log -t pixel9pro_ctrl "CPU: reject $PROFILE, scheduler_mode=$(scheduler_mode_read)"
+            echo "SCHEDULER_OFF:$PROFILE"
+            exit 69
+        fi
+        ;;
+esac
 if [ "$SCHED_OWNER" = "external" ]; then
     case "$PROFILE" in
         status|verify|enforce) ;;

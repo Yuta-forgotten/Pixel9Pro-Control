@@ -127,6 +127,7 @@
 - `supported + active + pixel`：允许 boot reconcile、手动 profile 和 auto worker。
 - `partial + observe`：只显示已探测能力，不启动 auto/repair，不写任何节点。
 - `unsupported|unknown + off`：不运行 reconcile、health repair、owner mutation 或 profile mutation。
+- 用户显式选择 off 时同样执行上述硬门禁；“系统默认”只是 active 下的一个 profile，不能代替 off。
 - `external` owner：保留外部调度状态读取，不把 external 映射成通用 off。
 - capability 变化必须先写 receipt，再原子提交 effective mode；失败保持或回退到 off。
 
@@ -287,6 +288,8 @@ system 是唯一不创建 overlay 的模式；不得再增加“本模块不管�
 - supported：保留官方 auto、manual、default 行为。
 - partial：默认关闭 auto，只允许已验证的有限操作。
 - unsupported 或 unknown：scheduler_mode=off，停止 scheduler mutation 和 worker 写入，保留温控、WebUI 和状态读取。
+
+off 必须在 `cpu_profile.sh`、scheduler reconcile、owner arbiter、service auto/health worker 和 CGI mutation 五层同时复读，任一层不得把 off 当作 default profile。
 
 不能单纯根据 Sultan 字符串、uname -r、模块目录或退出码判断能力。
 

@@ -28,6 +28,14 @@ else
     [ -n "$MODDIR" ] || MODDIR="/data/adb/modules/pixel9pro_control"
 fi
 
+[ -r "$MODDIR/scripts/scheduler_capability_lib.sh" ] \
+    && . "$MODDIR/scripts/scheduler_capability_lib.sh" 2>/dev/null \
+    && scheduler_capability_init "$MODDIR" \
+    || { echo "owner_arbiter: scheduler mode contract missing" >&2; exit 65; }
+if [ "$ACTION" != status ] && ! scheduler_mode_is_active; then
+    exit 0
+fi
+
 FAS_ROOT="${OWNER_ARBITER_FAS_ROOT:-/data/adb/fas_rs}"
 STATE_DIR="$FAS_ROOT"
 OWNER_ARBITER_TEST_MODE="${OWNER_ARBITER_TEST_MODE:-0}"

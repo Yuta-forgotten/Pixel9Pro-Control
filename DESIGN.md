@@ -30,6 +30,8 @@ UECap 状态不能只用“文件存在”表示。Control 分开记录：
 
 CPU response、cpuset、uclamp cap 与 vendor scheduler L2 属于同一 profile transaction。Pixel 与 UGT 是重启后选择的日常 baseline；fas-rs 只在有效游戏 lease 内成为临时 external owner，退出后恢复进入 lease 前的同一 baseline。
 
+`scheduler_mode=off` 高于 profile、policy 和 owner：off 时所有 CPU profile、auto、reconcile、repair、health mutation 和 owner arbiter 写入都必须在入口处 no-op/拒绝，不能只在 WebUI 隐藏。重新启用前必须重新完成 capability verify，并通过重启启动 worker。
+
 所有有副作用的路径遵循：
 
 `前置验证 → 主写入 → 权威复读 → desired/effective marker 提交 → 失败回滚 → 回滚复读`

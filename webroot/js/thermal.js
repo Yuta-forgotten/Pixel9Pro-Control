@@ -125,7 +125,8 @@ function syncHeroDesc() {
   const scheduler = requireFeature('profile').getThermalContext();
   const swapMode = requireFeature('memory').getSwapMode();
   if (preset) parts.push(preset.name);
-  if (scheduler.schedEffectiveOwner === 'external') parts.push(scheduler.hasExternalScheduler ? (scheduler.externalSchedulerActive ? '外部调度接管' : '外部调度未启用') : '调度停用');
+  if (scheduler.schedulerMode !== 'active') parts.push('本模块调度关闭');
+  else if (scheduler.schedEffectiveOwner === 'external') parts.push(scheduler.hasExternalScheduler ? (scheduler.externalSchedulerActive ? '外部调度接管' : '外部调度未启用') : '调度停用');
   else if (scheduler.hasExternalScheduler) parts.push('覆盖外部调度');
   if (swapMode === 'optimized') parts.push('内存已优化');
   else if (swapMode === 'stock') parts.push('内存默认');

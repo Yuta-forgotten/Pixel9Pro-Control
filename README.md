@@ -42,6 +42,8 @@ SHA-256：`AE743049B87D3FA217465057EDCB7730B09898C135D0D4074B71D8A8C76DB761`
 
 WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电→均衡→系统默认）；性能优先降为内部基线。UGT 提供另一套重启后生效的日常调度，fas-rs 只在有效游戏 lease 内成为唯一临时写入者。
 
+性能策略区另提供 **不启用本模块调度**。该状态不是“系统默认”profile：`scheduler_mode=off` 会停止本模块全部 profile、auto、boot reconcile、health repair 和 owner worker 写入，只保留 CPU/调度节点只读状态。关闭时会尽力执行一次系统默认清理；若清理无法验证，仍优先提交 off 并要求重启，避免后台继续写入。为了防止旧 boot worker 被错误热启，重新启用必须通过模块安装向导重新选择并重启。
+
 | 模式 (WebUI 顺序) | top-app | response_time_ms (小/中/大) | uclamp.min cap | 说明 |
 |------|---------|------|------|------|
 | ① 省电 | cpu0-6 | 32 / 96 / 200 | 0 | 放慢升频；top-app 排除大核 X4 |
@@ -180,7 +182,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 1. 温控模块使用 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中发布；基带模块 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases#release-v1.1.0-rc3)
 2. KernelSU 用户需先安装 metamodule（如 `meta-overlayfs`）并重启
 3. APatch / KernelSU / Magisk → 模块 → 从存储安装
-4. **首次安装**：音量键交互向导，温控默认选择“不修改温控（不添加配置）”；只有选择 custom 后才继续选择真实偏移。随后配置 CPU 调度、UECap 档位（仅 APatch/KSU）、NR 降级和 NTP。
+4. **首次安装**：音量键交互向导，温控默认选择“不修改温控（不添加配置）”；只有选择 custom 后才继续选择真实偏移。CPU 调度可选“启用本模块性能调度”或“不启用本模块调度”；能力不完整时强制 fail closed 到 off。随后配置 UECap 档位（仅 APatch/KSU）、NR 降级和 NTP。
 5. **升级安装**：Control 自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline。独立普通基带模块按上面的“基带模块升级规则”判断直接升级或 clean reinstall，不因 APatch Manager 更新本身强制卸载 Manager
 6. 重启
 7. 打开 `http://127.0.0.1:6210` 验证
