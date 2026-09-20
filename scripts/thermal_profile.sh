@@ -8,9 +8,10 @@
 #   - always regenerate from the selected device stock JSON
 #   - adjust the eight VIRTUAL-SKIN control sensors only
 #   - keep a numeric SHUTDOWN slot (the seventh HotThreshold entry) at stock
-#   - clamp earlier entries against the next severity's stock HotHysteresis
+#   - clamp earlier entries strictly below the next severity's stock
+#     HotHysteresis boundary, with a one-decimal safety margin
 #
-# Pixel Thermal HAL rejects an earlier threshold above
+# Pixel Thermal HAL rejects an earlier threshold at or above
 # (next threshold - next HotHysteresis). See ParseSensorInfo in AOSP
 # hardware/google/pixel/thermal/utils/thermal_info.cpp. A plain translation can
 # overlap a fixed 55/59 shutdown severity, so higher offsets taper near it.
@@ -25,6 +26,7 @@ THERMAL_TARGET_SENSOR_COUNT=8
 THERMAL_SEVERITY_SLOT_COUNT=7
 THERMAL_SHUTDOWN_SLOT=7
 THERMAL_MIN_SEVERITY_GAP_C=0.5
+THERMAL_STRICT_MARGIN_C=0.1
 
 thermal_is_valid_offset() {
     _tp_candidate="$1"
@@ -94,7 +96,8 @@ thermal_generate_config() (
         -v expected_targets="$THERMAL_TARGET_SENSOR_COUNT" \
         -v severity_slots="$THERMAL_SEVERITY_SLOT_COUNT" \
         -v shutdown_slot="$THERMAL_SHUTDOWN_SLOT" \
-        -v min_gap="$THERMAL_MIN_SEVERITY_GAP_C" '
+        -v min_gap="$THERMAL_MIN_SEVERITY_GAP_C" \
+        -v strict_margin="$THERMAL_STRICT_MARGIN_C" '
     function is_target(name) {
         return index(targets, "|" name "|") > 0
     }
@@ -174,7 +177,7 @@ thermal_generate_config() (
             if (next_set) {
                 required_gap = hot_hysteresis[next_index]
                 if (required_gap < min_gap) required_gap = min_gap
-                limit = next_value - required_gap
+                limit = next_value - required_gap - strict_margin
                 if (value > limit) value = limit
             }
             hot_output[i] = value
@@ -188,7 +191,7 @@ thermal_generate_config() (
             if (!hot_numeric[i]) continue
             value = hot_output[i]
             if (previous_set && value <= previous_value) invalid_count++
-            if (previous_set && previous_value > value - hot_hysteresis[i]) invalid_count++
+            if (previous_set && previous_value >= value - hot_hysteresis[i]) invalid_count++
             previous_value = value
             previous_set = 1
         }

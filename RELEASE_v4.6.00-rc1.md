@@ -18,13 +18,18 @@
 7. 私有审计日志使用 0700/0600、256 KiB 轮转和边界脱敏；CGI 失败使用真实 HTTP 4xx/5xx。
 8. 功耗导出包含 report、schema 1 JSON、功耗/温度 CSV、Top 归因 CSV 和逐文件 SHA-256。
 
+## 本次候选修复
+
+- Thermal custom 生成器对 `HotThreshold` 与下一档 `HotHysteresis` 使用严格 `<` 约束，并保留 `0.1°C` 安全间隔；修复等号边界触发 `ThermalHAL could not be initialized properly` 的启动失败。
+- 实机取证曾在 caiman 升级迁移的 custom `+4°C` 配置上复现 ThermalHAL invalid-components；修复后的生产生成器对 pro/xl、`-2/0/+2/+4/+6` 全组合完成 JSON 与严格约束复核。
+
 ## 构建证据
 
 - 候选 ZIP：`pixel9pro_control_v4.6.00-rc1.zip`
-- SHA-256：`73c4c3734cb8efd5bfaa85965e4aa92772ade500b5b75391651546b2663957d0`
-- source fingerprint：`e4361221848a92e82fe8eb00e021e588b965c8974f12229f7cfbabaaa7683fa5`
+- SHA-256：`20d37ad755f0a982aa491bbdd761d670d9c4779641e970b3225212508f1680f2`
+- source fingerprint：`bc485c8eea7798146a5814a5e09e9df053dcde31b1a862fde81070a8c50cfabd`
 - entries：77
-- uncompressed bytes：3507059
+- uncompressed bytes：3507220
 - 双次构建：一致
 - payload devices：`caiman, komodo`
 - 预激活 UECap target：0

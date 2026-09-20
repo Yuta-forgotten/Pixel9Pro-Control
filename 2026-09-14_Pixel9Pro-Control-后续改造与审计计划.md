@@ -264,7 +264,7 @@ system 是唯一不创建 overlay 的模式；不得再增加“本模块不管�
 5. 校验 JSON、目标 sensor 和槽位数量。
 6. 保留 NAN 和最终 SHUTDOWN 槽位。
 7. 校验阈值严格递增。
-8. 校验 HotThreshold/HotHysteresis overlap。
+8. 校验 HotThreshold/HotHysteresis overlap，且保留 0.1°C 严格间隔，拒绝等号边界。
 9. 写入 overlay。
 10. 复读有效路径。
 11. 失败时删除 overlay 并恢复系统配置。
