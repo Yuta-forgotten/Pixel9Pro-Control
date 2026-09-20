@@ -108,6 +108,7 @@ slot_stage_file() {
     rmdir "$_slot_dir" 2>/dev/null || true
     mv "$_slot_dir.tmp.$$" "$_slot_dir" || { rm -f "$_slot_dir.tmp.$$"/*; rmdir "$_slot_dir.tmp.$$"; slot_unlock; return 1; }
     slot_atomic_write "$_slot_component_dir/pending" "$_slot_slot" || { slot_unlock; return 1; }
+    rm -f "$_slot_component_dir/rollback_pending" 2>/dev/null || true
     sync
     slot_unlock
     return 0
