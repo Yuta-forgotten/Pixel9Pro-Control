@@ -3,7 +3,8 @@
 # Shared thermal-offset contract for the installer and WebUI CGI.
 #
 # Current policy:
-#   - accepted offsets: -2 / 0 / +2 / +4 / +6 degrees C; default: +4
+#   - accepted legacy/runtime offsets: -2 / 0 / +2 / +4 / +6 degrees C
+#   - selectable custom offsets: -2 / +2 / +4 / +6; custom default: +2
 #   - always regenerate from the selected device stock JSON
 #   - adjust the eight VIRTUAL-SKIN control sensors only
 #   - keep a numeric SHUTDOWN slot (the seventh HotThreshold entry) at stock
@@ -15,7 +16,10 @@
 # overlap a fixed 55/59 shutdown severity, so higher offsets taper near it.
 
 THERMAL_ALLOWED_OFFSETS="-2 0 2 4 6"
-THERMAL_DEFAULT_OFFSET=4
+THERMAL_UI_OFFSETS="-2 2 4 6"
+THERMAL_DEFAULT_OFFSET=2
+THERMAL_ALLOWED_POLICIES="system custom"
+THERMAL_DEFAULT_POLICY=system
 THERMAL_TARGET_SENSORS="VIRTUAL-SKIN VIRTUAL-SKIN-HINT VIRTUAL-SKIN-SOC VIRTUAL-SKIN-CPU-LIGHT-ODPM VIRTUAL-SKIN-CPU-MID VIRTUAL-SKIN-CPU-ODPM VIRTUAL-SKIN-CPU-HIGH VIRTUAL-SKIN-GPU"
 THERMAL_TARGET_SENSOR_COUNT=8
 THERMAL_SEVERITY_SLOT_COUNT=7
@@ -42,9 +46,9 @@ thermal_normalize_offset() {
 }
 
 thermal_print_ui_contract_json() {
-    printf '{"offsets":['
+    printf '{"policies":["system","custom"],"default_policy":"%s","offsets":[' "$THERMAL_DEFAULT_POLICY"
     _tp_contract_first=1
-    for _tp_contract_offset in $THERMAL_ALLOWED_OFFSETS; do
+    for _tp_contract_offset in $THERMAL_UI_OFFSETS; do
         [ "$_tp_contract_first" -eq 1 ] && _tp_contract_first=0 || printf ','
         printf '%s' "$_tp_contract_offset"
     done

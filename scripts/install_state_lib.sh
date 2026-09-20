@@ -28,7 +28,7 @@ install_state_value_is_valid() {
     case "$1:$2" in
         state_schema:1) return 0 ;;
         root_family:apatch|root_family:kernelsu|root_family:magisk|root_family:unknown) return 0 ;;
-        thermal_policy:system|thermal_policy:custom|thermal_policy:disabled) return 0 ;;
+        thermal_policy:system|thermal_policy:custom) return 0 ;;
         scheduler_mode:active|scheduler_mode:off|scheduler_mode:observe) return 0 ;;
         scheduler_policy:auto|scheduler_policy:manual) return 0 ;;
         scheduler_profile:balanced|scheduler_profile:battery|scheduler_profile:default|scheduler_profile:performance) return 0 ;;
@@ -84,7 +84,7 @@ install_state_sync_legacy() {
     install_state_write root_family "$INSTALL_ROOT_FAMILY_FILE" "$_is_root" || return 1
 
     _is_thermal=$(install_state_read "$INSTALL_THERMAL_POLICY_FILE" custom)
-    install_state_value_is_valid thermal_policy "$_is_thermal" || _is_thermal=custom
+    case "$_is_thermal" in system|custom) ;; disabled) _is_thermal=system ;; *) _is_thermal=custom ;; esac
     install_state_write thermal_policy "$INSTALL_THERMAL_POLICY_FILE" "$_is_thermal" || return 1
 
     _is_scheduler_mode=$(install_state_read "$INSTALL_SCHEDULER_MODE_FILE" active)

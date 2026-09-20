@@ -62,14 +62,15 @@ WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电�
 
 当实际 `.cpu_sched_owner=external` 时，本模块跳过 Pixel profile/auto 写入；该状态可能是 UGT 日常 baseline，也可能是 fas-rs 游戏 lease，必须结合 `.owner_state` 判断。永久从 UGT 回到 Pixel 仍需先 staging/禁用 UGT 并重启；游戏临时 lease 只在本次 boot 内恢复原 baseline。温控、ZRAM、NR/SIM2、UECap 与 WebUI 始终由本模块负责。
 
-### 温控阈值 (5 档)
+### 温控策略与自定义阈值
+
+默认只有一个零修改选项：**不修改温控（不添加配置）**。该选项不创建 `/vendor/etc/thermal_info_config.json` overlay，也不修改或停止系统 Thermal HAL。只有用户明确选择 custom 时，才从当前设备真实 vendor 配置或已验证的模块私有 stock snapshot 生成下列偏移；0°C 不再作为独立 custom 入口，避免与零修改选项重复：
 
 | 档位 | Offset 偏移值 | 最早介入温度 (HINT) | 说明 |
 |------|--------|---------------------------|------|
 | 提前介入 | -2°C | 35°C | 比出厂提前 2°C 介入 |
-| 原厂阈值 | 0°C | 37°C | 不平移前置阈值 |
 | 轻度放宽 | +2°C | 39°C | HINT 最早 39°C；VIRTUAL-SKIN 主阈值约 41°C，并非 39°C 硬限温 |
-| 日常放宽 | +4°C | 41°C | 模块默认；靠近 SHUTDOWN 时安全收敛 |
+| 日常放宽 | +4°C | 41°C | 显式 custom；靠近 SHUTDOWN 时安全收敛 |
 | 最大放宽 | +6°C | 43°C | 前置阈值目标 +6°C，最后安全阈值不平移 |
 
 偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前置 severity 先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。靠近 SHUTDOWN 时，生成器按 stock `HotHysteresis` 从后向前收窄，保证“前一档阈值 `<=` 下一档阈值减下一档 hysteresis”；只检查阈值递增并不足以保证 Pixel Thermal HAL 接受配置。
@@ -179,7 +180,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 才有 Control
 1. 温控模块使用 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中发布；基带模块 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases#release-v1.1.0-rc3)
 2. KernelSU 用户需先安装 metamodule（如 `meta-overlayfs`）并重启
 3. APatch / KernelSU / Magisk → 模块 → 从存储安装
-4. **首次安装**：音量键交互向导，依次配置温控偏移、CPU 调度（检测到启用中的 UGT 时默认交其接管；否则四选一：均衡／省电／系统默认／自动）、UECap 档位（仅 APatch/KSU）、NR 降级、NTP
+4. **首次安装**：音量键交互向导，温控默认选择“不修改温控（不添加配置）”；只有选择 custom 后才继续选择真实偏移。随后配置 CPU 调度、UECap 档位（仅 APatch/KSU）、NR 降级和 NTP。
 5. **升级安装**：Control 自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline。独立普通基带模块按上面的“基带模块升级规则”判断直接升级或 clean reinstall，不因 APatch Manager 更新本身强制卸载 Manager
 6. 重启
 7. 打开 `http://127.0.0.1:6210` 验证

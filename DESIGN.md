@@ -38,7 +38,9 @@ CPU response、cpuset、uclamp cap 与 vendor scheduler L2 属于同一 profile 
 
 ## 4. 温控与系统策略
 
-温控配置从当前机型 stock JSON 生成。目标 sensor 允许有限 offset，数值型 SHUTDOWN 保留 stock `55/59°C`；同时检查严格递增和下一档 `HotHysteresis` overlap，不能只检查固定间隔。
+温控只保留 `system` 与 `custom` 两种策略。默认 `system` 在 UI 中显示为“不修改温控（不添加配置）”：发布包和默认安装都不携带或生成 `thermal_info_config.json` overlay，也不停止系统 Thermal HAL。只有用户显式选择 `custom` 时，才从当前设备真实 vendor 文件或已验证的模块私有 stock snapshot 生成配置。
+
+custom 目标 sensor 只展示真正改变阈值的 `-2/+2/+4/+6°C`，0°C 仅保留为旧状态兼容值而不作为入口。数值型 SHUTDOWN 保留 stock `55/59°C`；同时检查严格递增和下一档 `HotHysteresis` overlap，不能只检查固定间隔。WebUI 继续使用既有 Material 3 profile card，不引入新的颜色、间距或交互组件。
 
 NR 息屏降级、SIM2、后台限制和功耗采样是使用层策略，不裁剪设备能力表。当前 caiman 已有 `NR_SA`/n41 实机证据，NSA 仅保留兼容解析；LTE 快照不能单独证明 Control 失效。
 

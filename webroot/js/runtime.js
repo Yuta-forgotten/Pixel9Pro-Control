@@ -134,12 +134,6 @@ const THERMAL_PRESETS = {
     detail: '<b>提前介入</b><br><br>比出厂提前 2°C，最早 35°C 介入。<br><br>HINT 35°C / VIRTUAL-SKIN 37°C / CPU-HIGH 39°C；数值型 SHUTDOWN 仍保持出厂 55/59°C。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M9.37 5.51A7 7 0 0018.49 14.63 9 9 0 119.37 5.51z"/></svg>'
   },
-  0: {
-    name: '原厂阈值',
-    summary: '出厂 0°C；HINT 37°C，VIRTUAL-SKIN 39°C。',
-    detail: '<b>原厂阈值</b><br><br>不平移前置阈值，最早 37°C 介入。<br><br>HINT 37°C / VIRTUAL-SKIN 39°C / CPU-HIGH 41°C；数值型 SHUTDOWN 保持出厂 55/59°C。',
-    icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/></svg>'
-  },
   2: {
     name: '轻度放宽',
     summary: '出厂 +2°C；HINT 39°C，VIRTUAL-SKIN 41°C。',
@@ -149,7 +143,7 @@ const THERMAL_PRESETS = {
   4: {
     name: '日常放宽',
     summary: '出厂 +4°C；HINT 41°C，VIRTUAL-SKIN 43°C。',
-    detail: '<b>日常放宽（模块默认）</b><br><br>前置阈值目标 +4°C，最早 41°C 介入。<br><br>HINT 41°C / VIRTUAL-SKIN 43°C / CPU-HIGH 45°C；靠近 55/59°C SHUTDOWN 时会向前限幅，保持至少 0.5°C 间隔。',
+    detail: '<b>日常放宽</b><br><br>显式 custom 档：前置阈值目标 +4°C，最早 41°C 介入。<br><br>HINT 41°C / VIRTUAL-SKIN 43°C / CPU-HIGH 45°C；靠近 55/59°C SHUTDOWN 时会向前限幅，保持至少 0.5°C 间隔。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67z"/></svg>'
   },
   6: {
@@ -243,4 +237,3 @@ Object.defineProperty(window, 'Pixel9ProControl', {
     features: Object.freeze({ get: requireFeature, names: listFeatures })
   })
 });
-

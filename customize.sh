@@ -2,8 +2,6 @@
 # APatch/KernelSU/Magisk installer: detect the device/root implementation,
 # migrate user state, collect first-install choices, and generate thermal JSON.
 
-STOCK_XL="$MODPATH/system/vendor/etc/thermal_stock_xl.json"
-STOCK_ACTIVE="$MODPATH/system/vendor/etc/thermal_stock.json"
 OUT_JSON="$MODPATH/system/vendor/etc/thermal_info_config.json"
 OFFSET_FILE="$MODPATH/.thermal_offset"
 PROFILE_FILE="$MODPATH/.current_profile"
@@ -39,27 +37,10 @@ install_trace enter 0
 # runtime permissions explicitly before the module is activated.
 chmod 755 "$MODPATH/service.sh" "$MODPATH/post-mount.sh" "$MODPATH/scripts/"*.sh "$MODPATH/webroot/cgi-bin/"*.sh 2>/dev/null || true
 
-# Thermal HAL may select an LPM-specific top-level config at runtime.  The
-# selected filename is authoritative; never generate a sibling file that HAL
-# will ignore.  LPM stock is read-only from the current device vendor tree.
+# Record the Thermal HAL selection without blocking system/disabled policy.
+# Custom validates the selected filename immediately before generating overlay.
 THERMAL_CONFIG_NAME=$(getprop vendor.thermal.config 2>/dev/null)
 [ -n "$THERMAL_CONFIG_NAME" ] || THERMAL_CONFIG_NAME=thermal_info_config.json
-case "$THERMAL_CONFIG_NAME" in
-    thermal_info_config.json)
-        ;;
-    thermal_info_config_lpm.json)
-        # LPM is a top-level overlay that includes thermal_info_config.json;
-        # target sensors live in the included base file, not in this delta.
-        [ -r "/vendor/etc/$THERMAL_CONFIG_NAME" ] || {
-            ui_print "  ✗ 当前 Thermal HAL 配置缺失: $THERMAL_CONFIG_NAME"
-            exit 1
-        }
-        ;;
-    *)
-        ui_print "  ✗ 不支持的 Thermal HAL 配置: $THERMAL_CONFIG_NAME"
-        exit 1
-        ;;
-esac
 
 if [ ! -r "$MODPATH/scripts/scheduler_detect_lib.sh" ] \
     || ! . "$MODPATH/scripts/scheduler_detect_lib.sh"; then
@@ -105,6 +86,12 @@ if [ ! -r "$MODPATH/scripts/thermal_profile.sh" ]; then
     exit 1
 fi
 . "$MODPATH/scripts/thermal_profile.sh" || exit 1
+if [ ! -r "$MODPATH/scripts/thermal_policy_lib.sh" ] \
+    || ! . "$MODPATH/scripts/thermal_policy_lib.sh" \
+    || ! thermal_policy_init "$MODPATH"; then
+    ui_print "  ✗ 缺少温控策略合同, 已中止安装"
+    exit 1
+fi
 NTP_CONFIG_FILE="$MODPATH/config/ntp_servers.tsv"
 if [ ! -r "$MODPATH/scripts/ntp_config_lib.sh" ] || [ ! -r "$NTP_CONFIG_FILE" ]; then
     ui_print "  ✗ 缺少 NTP 配置, 已中止安装"
@@ -306,17 +293,7 @@ UECAP_EXTERNAL=0
 case "$device" in
     komodo)
         ui_print "  机型: Pixel 9 Pro XL (komodo)"
-        if [ -f "$STOCK_XL" ]; then
-            if cp "$STOCK_XL" "$STOCK_ACTIVE" 2>/dev/null; then
-                ui_print "  ✓ Pro XL 温控配置"
-            else
-                ui_print "  ✗ XL 配置复制失败, 已中止安装"
-                exit 1
-            fi
-        else
-            ui_print "  ✗ XL 温控 stock 配置缺失, 已中止安装"
-            exit 1
-        fi
+        ui_print "  ✓ Pro XL 温控使用运行时 vendor 基线"
         # komodo is supported by the device contract, but UECap remains owned
         # by the device's external/stock path. Keep the runtime script for
         # read-only status reporting; only remove the embedded caiman payload.
@@ -420,11 +397,36 @@ if [ "$_is_upgrade" -eq 0 ]; then
     ui_print "  [音量+] = 下一项  [音量-] = 确认"
     ui_print ""
 
-    # --- 温控阈值: 现行五档 -2 / 0 / +2 / +4 / +6°C ---
-    ui_print "  ① 温控偏移:"
+    # --- 温控策略: system 是零覆盖安全默认；custom 才生成 overlay。 ---
+    ui_print "  ① 温控策略:"
+    _thermal_policy_vals="$THERMAL_ALLOWED_POLICIES"
+    _thermal_policy_idx=0
+    _thermal_policy_total=2
+    while true; do
+        _i=0; _thermal_policy=""
+        for _v in $_thermal_policy_vals; do
+            if [ "$_i" -eq "$_thermal_policy_idx" ]; then _thermal_policy=$_v; break; fi
+            _i=$((_i + 1))
+        done
+        case "$_thermal_policy" in
+            system) _thermal_policy_label="不修改温控 (推荐，不添加配置)" ;;
+            custom) _thermal_policy_label="自定义温控偏移" ;;
+        esac
+        ui_print "    > $_thermal_policy_label"
+        if chooseport; then
+            _thermal_policy_idx=$(( (_thermal_policy_idx + 1) % _thermal_policy_total ))
+        else
+            break
+        fi
+    done
+    installer_write "$MODPATH/.thermal_policy" "$_thermal_policy"
+    ui_print "    ✓ $_thermal_policy_label"
+    ui_print ""
+
+    # --- custom 只选择真正改变阈值的 -2 / +2 / +4 / +6°C。 ---
     _ofs_idx=0
+    _ofs_vals="$THERMAL_UI_OFFSETS"
     _ofs_scan_idx=0
-    _ofs_vals="$THERMAL_ALLOWED_OFFSETS"
     for _ofs_scan_value in $_ofs_vals; do
         if [ "$_ofs_scan_value" = "$THERMAL_DEFAULT_OFFSET" ]; then
             _ofs_idx=$_ofs_scan_idx
@@ -434,29 +436,32 @@ if [ "$_is_upgrade" -eq 0 ]; then
     done
     set -- $_ofs_vals
     _ofs_total=$#
-    while true; do
-        _i=0; _ofs_cur=""
-        for _v in $_ofs_vals; do
-            if [ "$_i" -eq "$_ofs_idx" ]; then _ofs_cur=$_v; break; fi
-            _i=$((_i + 1))
+    _ofs_cur="$THERMAL_DEFAULT_OFFSET"
+    if [ "$_thermal_policy" = custom ]; then
+        ui_print "  ①a 自定义温控偏移:"
+        while true; do
+            _i=0; _ofs_cur=""
+            for _v in $_ofs_vals; do
+                if [ "$_i" -eq "$_ofs_idx" ]; then _ofs_cur=$_v; break; fi
+                _i=$((_i + 1))
+            done
+            case "$_ofs_cur" in
+                -2) _ofs_label="-2°C (提前介入)" ;;
+                2)  _ofs_label="+2°C (轻度放宽)" ;;
+                4)  _ofs_label="+4°C (日常放宽)" ;;
+                6)  _ofs_label="+6°C (最大放宽)" ;;
+            esac
+            ui_print "    > $_ofs_label"
+            if chooseport; then
+                _ofs_idx=$(( (_ofs_idx + 1) % _ofs_total ))
+            else
+                break
+            fi
         done
-        case "$_ofs_cur" in
-            -2) _ofs_label="-2°C (提前介入)" ;;
-            0)  _ofs_label="0°C (原厂阈值)" ;;
-            2)  _ofs_label="+2°C (轻度放宽)" ;;
-            4)  _ofs_label="+4°C (日常放宽, 模块默认)" ;;
-            6)  _ofs_label="+6°C (最大放宽)" ;;
-        esac
-        ui_print "    > $_ofs_label"
-        if chooseport; then
-            _ofs_idx=$(( (_ofs_idx + 1) % _ofs_total ))
-        else
-            break
-        fi
-    done
+        ui_print "    ✓ $_ofs_label"
+        ui_print ""
+    fi
     installer_write "$OFFSET_FILE" "$_ofs_cur"
-    ui_print "    ✓ $_ofs_label"
-    ui_print ""
 
     # --- CPU 调度 (外部调度接管 / 本模块均衡·省电 / 自动) ---
     choose_cpu_scheduling "②"
@@ -700,21 +705,53 @@ if [ "$_is_upgrade" -eq 0 ]; then
     ui_print ""
 fi
 
-# 从当前机型 stock 基线生成配置; 失败时同步回退文件与状态。
-if ! thermal_generate_config "$STOCK_ACTIVE" "$OUT_JSON" "$offset"; then
-    if ! cp "$STOCK_ACTIVE" "$OUT_JSON" 2>/dev/null; then
-        ui_print "  ✗ 温控配置生成失败, 已中止安装"
+INSTALL_REASON_CODE=INSTALL_COMMITTED
+THERMAL_POLICY=$(thermal_policy_read)
+case "$THERMAL_POLICY" in
+    custom)
+        _thermal_config_supported=yes
+        case "$THERMAL_CONFIG_NAME" in
+            thermal_info_config.json) ;;
+            thermal_info_config_lpm.json)
+                [ -r "/vendor/etc/$THERMAL_CONFIG_NAME" ] || _thermal_config_supported=no
+                ;;
+            *) _thermal_config_supported=no ;;
+        esac
+        _thermal_allow_vendor=yes
+        if [ "$_is_upgrade" -eq 1 ]; then
+            _old_thermal_policy=$(cat "$OLDDIR/.thermal_policy" 2>/dev/null | tr -d ' \r\n\t')
+            case "$_old_thermal_policy" in system|disabled) ;; *) _thermal_allow_vendor=no ;; esac
+        fi
+        STOCK_ACTIVE=$(thermal_policy_snapshot_path "$device") \
+            || { ui_print "  ✗ 无法确定温控 stock 路径"; exit 1; }
+        if [ "$_thermal_config_supported" = yes ] \
+            && thermal_policy_prepare_snapshot "$device" "$OLDDIR" "$_thermal_allow_vendor" \
+            && mkdir -p "${OUT_JSON%/*}" 2>/dev/null \
+            && thermal_generate_config "$STOCK_ACTIVE" "$OUT_JSON" "$offset"; then
+            ui_print "  温控: custom $(thermal_format_offset "$offset")"
+        else
+            thermal_policy_remove_overlay || exit 1
+            installer_write "$MODPATH/.thermal_policy" system
+            offset=0
+            installer_write "$OFFSET_FILE" 0
+            INSTALL_REASON_CODE=THERMAL_CUSTOM_FALLBACK_SYSTEM
+            ui_print "  ⚠ 自定义温控基线不可验证，已 fail closed 到系统默认"
+        fi
+        ;;
+    system)
+        thermal_policy_remove_overlay \
+            || { ui_print "  ✗ 无法移除温控 overlay"; exit 1; }
+        ui_print "  温控: $THERMAL_POLICY (不创建 vendor overlay)"
+        ;;
+    *)
+        ui_print "  ✗ 非法温控策略"
         exit 1
-    fi
-    offset=0
-    installer_write "$OFFSET_FILE" 0
-    ui_print "  ⚠ 温控配置生成失败, 已回退到出厂阈值"
-fi
+        ;;
+esac
 
-install_receipt_write committed success INSTALL_COMMITTED yes \
+install_receipt_write committed success "$INSTALL_REASON_CODE" yes \
     || { ui_print "  ✗ 无法写入安装 receipt, 已中止安装"; exit 1; }
 
-ui_print "  温控偏移: $(thermal_format_offset "$offset")"
 ui_print ""
 ui_print "  安装完成, 重启生效"
 ui_print "  WebUI: http://127.0.0.1:6210"

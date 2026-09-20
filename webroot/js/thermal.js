@@ -3,6 +3,7 @@
 (() => {
 const state = {
   contract: null,
+  currentPolicy: 'unknown',
   currentOffset: null,
   thermalBusy: false,
   thermalBadReads: 0,
@@ -12,6 +13,14 @@ const state = {
   homeSensorRefs: null,
   thermalModal: { pending: null, prev: null },
   tempChart: { timer: null, draw: null, activeRange: 10, requestId: 0 }
+};
+
+const THERMAL_POLICY_PRESETS = {
+  system: {
+    name: '不修改温控',
+    summary: '不添加 vendor overlay，完全保留当前系统 Thermal HAL 配置。',
+    icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/></svg>',
+  },
 };
 
 const core = () => requireFeature('core');
@@ -42,7 +51,7 @@ function tempHex(t) {
 }
 
 function tempStatus(t) {
-  const offset = Number(state.currentOffset);
+  const offset = state.currentPolicy === 'custom' ? Number(state.currentOffset) : 0;
   const modThresh = THRESH_STOCK + (Number.isFinite(offset) ? offset : 0);
   if (t < 36) return '凉爽';
   if (t < THRESH_STOCK) return '正常';
@@ -61,7 +70,7 @@ function positionMarkers() {
   refs.mkStock.style.left = `${stockPct}%`;
   refs.mkStockLbl.style.left = `${stockPct}%`;
   refs.mkStockLbl.textContent = `${THRESH_STOCK}°C 原厂`;
-  if (!Number.isFinite(Number(state.currentOffset))) {
+  if (state.currentPolicy !== 'custom' || !Number.isFinite(Number(state.currentOffset))) {
     refs.mkMod.style.display = 'none';
     refs.mkModLbl.style.display = 'none';
     return;
@@ -75,7 +84,8 @@ function positionMarkers() {
   refs.mkModLbl.style.display = state.currentOffset === 0 ? 'none' : '';
 }
 
-function formatThermalOffset(offset) {
+function formatThermalOffset(policy, offset) {
+  if (policy === 'system') return '系统配置';
   const value = Number(offset);
   if (!Number.isFinite(value) || value === 0) return '出厂口径';
   return `${value > 0 ? '+' : ''}${value}°C 已启用`;
@@ -109,7 +119,9 @@ async function readThermalZones({ fresh = false, clear = false } = {}) {
 
 function syncHeroDesc() {
   const parts = [];
-  const preset = THERMAL_PRESETS[state.currentOffset];
+  const preset = state.currentPolicy === 'custom'
+    ? THERMAL_PRESETS[state.currentOffset]
+    : THERMAL_POLICY_PRESETS[state.currentPolicy];
   const scheduler = requireFeature('profile').getThermalContext();
   const swapMode = requireFeature('memory').getSwapMode();
   if (preset) parts.push(preset.name);
@@ -121,18 +133,22 @@ function syncHeroDesc() {
 }
 
 function syncThermalUi() {
-  const preset = THERMAL_PRESETS[state.currentOffset];
+  const preset = state.currentPolicy === 'custom'
+    ? THERMAL_PRESETS[state.currentOffset]
+    : THERMAL_POLICY_PRESETS[state.currentPolicy];
   if (!preset) return;
   refs.topbarThermalChip.textContent = `温控 ${preset.name}`;
   refs.thermalCurrentName.textContent = preset.name;
   refs.thermalCurrentDesc.textContent = preset.summary;
-  const label = formatThermalOffset(state.currentOffset);
+  const label = formatThermalOffset(state.currentPolicy, state.currentOffset);
   [refs.homeModBadge, refs.thModBadge].forEach((el) => {
     el.textContent = label;
-    el.className = `badge ${state.currentOffset === 0 ? 'off' : 'default'}`;
+    el.className = `badge ${state.currentPolicy !== 'custom' || state.currentOffset === 0 ? 'off' : 'default'}`;
   });
   document.querySelectorAll('.thermal-option').forEach((card) => {
-    card.classList.toggle('selected', Number(card.dataset.offset) === state.currentOffset);
+    const selected = card.dataset.policy === state.currentPolicy
+      && (state.currentPolicy !== 'custom' || Number(card.dataset.offset) === state.currentOffset);
+    card.classList.toggle('selected', selected);
   });
   positionMarkers();
 }
@@ -140,12 +156,17 @@ function syncThermalUi() {
 function renderThermalCards() {
   refs.thermalList.replaceChildren();
   if (!state.contract) return;
-  state.contract.offsets.forEach((offset) => {
-    const preset = THERMAL_PRESETS[offset];
+  const appendCard = (policy, preset, offset = null) => {
     const card = document.createElement('article');
     card.className = 'profile-card thermal-option';
-    card.dataset.offset = String(offset);
+    card.dataset.policy = policy;
+    if (offset !== null) card.dataset.offset = String(offset);
     card.tabIndex = 0;
+    const detailAction = policy === 'custom'
+      ? `<button class="card-info" type="button" data-action="thermal-detail" data-offset="${offset}" aria-label="查看${preset.name}详情">
+           <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M11 17h2v-6h-2v6zm0-8h2V7h-2v2zm1-7C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
+         </button>`
+      : '';
     setStaticHtml(card, `
       <div class="profile-icon" aria-hidden="true">${preset.icon}</div>
       <div class="profile-copy">
@@ -153,36 +174,44 @@ function renderThermalCards() {
         <div class="profile-desc">${preset.summary}</div>
       </div>
       <div class="profile-actions">
-        <button class="card-info" type="button" data-action="thermal-detail" data-offset="${offset}" aria-label="查看${preset.name}详情">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M11 17h2v-6h-2v6zm0-8h2V7h-2v2zm1-7C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
-        </button>
+        ${detailAction}
         <div class="p-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></div>
       </div>`);
     card.addEventListener('click', (evt) => {
       if (evt.target.closest('[data-action="thermal-detail"]')) return;
-      applyThermal(offset);
+      applyThermalSelection(policy, offset);
     });
     card.addEventListener('keydown', (evt) => {
       if (evt.key === 'Enter' || evt.key === ' ') {
         evt.preventDefault();
-        applyThermal(offset);
+        applyThermalSelection(policy, offset);
       }
     });
     refs.thermalList.appendChild(card);
+  };
+  appendCard('system', THERMAL_POLICY_PRESETS.system);
+  state.contract.offsets.forEach((offset) => {
+    const preset = THERMAL_PRESETS[offset];
+    appendCard('custom', { ...preset, summary: `自定义 · ${preset.summary}` }, offset);
   });
 }
 
 function applyThermalContract(data) {
   const raw = data?.thermal_contract;
+  const policies = Array.isArray(raw?.policies) ? raw.policies : [];
+  const defaultPolicy = String(raw?.default_policy || '');
   const offsets = Array.isArray(raw?.offsets) ? raw.offsets.map(Number) : [];
   const defaultOffset = Number(raw?.default_offset);
   const uniqueOffsets = new Set(offsets);
-  const valid = offsets.length > 0
+  const valid = policies.length === 2
+    && policies.join(',') === 'system,custom'
+    && policies.includes(defaultPolicy)
+    && offsets.length > 0
     && uniqueOffsets.size === offsets.length
     && offsets.every((offset) => Number.isFinite(offset) && THERMAL_PRESETS[offset])
     && uniqueOffsets.has(defaultOffset);
   if (!valid) throw new Error('温控档位 contract 无效');
-  state.contract = { offsets, defaultOffset };
+  state.contract = { policies, defaultPolicy, offsets, defaultOffset };
 }
 
 function ensureSensorRefs(container, key, zones, className) {
@@ -215,12 +244,16 @@ async function loadThermalPreset() {
   try {
     const data = await apiFetch(API.thermalSet);
     applyThermalContract(data);
+    state.currentPolicy = state.contract.policies.includes(data.policy)
+      ? data.policy
+      : state.contract.defaultPolicy;
     state.currentOffset = state.contract.offsets.includes(Number(data.offset))
       ? Number(data.offset)
       : state.contract.defaultOffset;
     renderThermalCards();
   } catch (_) {
     state.contract = null;
+    state.currentPolicy = 'unknown';
     state.currentOffset = null;
     refs.thermalList.replaceChildren();
   }
@@ -695,27 +728,39 @@ function stopThermalBurst() {
   }).catch(() => {});
 }
 
-async function applyThermal(offset) {
-  if (!state.contract?.offsets.includes(offset) || offset === state.currentOffset || state.thermalApplyBusy) return;
-  const prev = state.currentOffset;
-  const card = refs.thermalList.querySelector(`[data-offset="${offset}"]`);
+async function applyThermalSelection(policy, offset) {
+  if (!state.contract?.policies.includes(policy) || state.thermalApplyBusy) return;
+  if (policy === 'custom' && !state.contract.offsets.includes(offset)) return;
+  if (policy === state.currentPolicy && (policy !== 'custom' || offset === state.currentOffset)) return;
+  const prev = { policy: state.currentPolicy, offset: state.currentOffset };
+  const next = { policy };
+  if (policy === 'custom') next.offset = offset;
+  const selector = policy === 'custom'
+    ? `[data-policy="custom"][data-offset="${offset}"]`
+    : `[data-policy="${policy}"]`;
+  const card = refs.thermalList.querySelector(selector);
   if (!card) return;
   state.thermalApplyBusy = true;
   card.classList.add('loading');
-  appendLog(`切换温控阈值 ${THERMAL_PRESETS[offset].name}…`, 'dim');
+  const target = policy === 'custom' ? THERMAL_PRESETS[offset] : THERMAL_POLICY_PRESETS[policy];
+  appendLog(`切换温控策略 ${target.name}…`, 'dim');
   refs.logCard.classList.add('open');
   try {
-    const data = await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ offset }), timeoutMs: 8000 });
+    const data = await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next), timeoutMs: 8000 });
     if (data.ok) {
-      state.currentOffset = offset;
+      state.currentPolicy = data.policy;
+      state.currentOffset = Number(data.offset);
       syncThermalUi();
       syncHeroDesc();
       if (data.restarted) {
-        showToast(`${THERMAL_PRESETS[offset].name} · thermal 服务已重启`);
-        appendLog(`${THERMAL_PRESETS[offset].name} 已重启 thermal 服务`, 'ok');
+        showToast(`${target.name} · thermal 服务已重启`);
+        appendLog(`${target.name} 已重启 thermal 服务`, 'ok');
+      } else if (data.reboot_required) {
+        appendLog(`${target.name} 已保存（重启后生效）`, 'warn');
+        openRebootModal(next, prev);
       } else {
-        appendLog(`${THERMAL_PRESETS[offset].name} 已保存（重启后生效）`, 'warn');
-        openRebootModal(offset, prev);
+        showToast(`${target.name} 已生效`);
+        appendLog(`${target.name} 已生效`, 'ok');
       }
     } else {
       showToast(`切换失败：${data.error || '未知'}`);
@@ -733,8 +778,10 @@ async function applyThermal(offset) {
 async function cancelThermalChange() {
   refs.rebootModal.classList.remove('open');
   try {
-    await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ offset: state.thermalModal.prev }), timeoutMs: 8000 });
-    state.currentOffset = state.thermalModal.prev;
+    const previous = state.thermalModal.prev;
+    const data = await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(previous), timeoutMs: 8000 });
+    state.currentPolicy = data.policy;
+    state.currentOffset = Number(data.offset);
     syncThermalUi();
     syncHeroDesc();
     showToast('已撤销，恢复原档位');
@@ -821,4 +868,3 @@ registerFeature('thermal', {
   scheduleChart: scheduleTempChartRefresh
 });
 })();
-

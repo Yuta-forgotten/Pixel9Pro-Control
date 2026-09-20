@@ -182,8 +182,8 @@ function openRebootModal(pending, prev, context = 'thermal') {
     refs.rebootModalTitle.textContent = `切换到${target}`;
     refs.rebootModalDesc.textContent = `启动状态已提交。重启后才会进入${target}并完成最终验证。`;
   } else {
-    refs.rebootModalTitle.textContent = '温控服务未能自动重启';
-    refs.rebootModalDesc.textContent = '温控阈值已保存，但当前无法在线重启 thermal 服务。重启手机后新配置才会生效。';
+    refs.rebootModalTitle.textContent = '温控策略等待重启';
+    refs.rebootModalDesc.textContent = '温控策略已保存；当前 overlay 需要在重启后完成最终切换和复读。';
   }
   refs.rebootModal.classList.add('open');
   pushModalState('reboot');
@@ -264,4 +264,3 @@ registerFeature('ui', {
   getRebootContext: () => state.rebootContext
 });
 })();
-

@@ -1,230 +1,226 @@
 #!/system/bin/sh
 
-# GET returns the active thermal offset. POST accepts -2/0/+2/+4/+6, rebuilds
-# config from the device stock baseline, persists the offset, and attempts one
-# verified Thermal HAL restart. The shared library owns threshold selection,
-# offset translation, SHUTDOWN preservation, and monotonicity validation.
-
+# Thermal policy CGI. System removes the module overlay and requires a
+# reboot when an active mount may still exist. Custom always rebuilds from the
+# private, verified device stock snapshot.
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
-
 require_loopback
 
-OFFSET_FILE="$MODDIR/.thermal_offset"
-STOCK_JSON="$MODDIR/system/vendor/etc/thermal_stock.json"
-OUT_JSON="$MODDIR/system/vendor/etc/thermal_info_config.json"
-THERMAL_LIB="$MODDIR/scripts/thermal_profile.sh"
-
-[ -r "$THERMAL_LIB" ] \
+THERMAL_PROFILE_LIB="$MODDIR/scripts/thermal_profile.sh"
+THERMAL_POLICY_LIB="$MODDIR/scripts/thermal_policy_lib.sh"
+[ -r "$THERMAL_PROFILE_LIB" ] && . "$THERMAL_PROFILE_LIB" \
     || json_error '500 Internal Server Error' 'thermal profile library not found'
-. "$THERMAL_LIB" \
-    || json_error '500 Internal Server Error' 'thermal profile library failed to load'
+[ -r "$THERMAL_POLICY_LIB" ] && . "$THERMAL_POLICY_LIB" && thermal_policy_init "$MODDIR" \
+    || json_error '500 Internal Server Error' 'thermal policy library not found'
+
+DEVICE=$(cat "$MODDIR/.device_variant" 2>/dev/null | tr -d ' \r\n\t')
+case "$DEVICE" in caiman|komodo) ;; *) json_error '500 Internal Server Error' 'invalid device variant' ;; esac
+STOCK_JSON=$(thermal_policy_snapshot_path "$DEVICE") \
+    || json_error '500 Internal Server Error' 'cannot resolve thermal stock snapshot'
+OUT_JSON="$THERMAL_OVERLAY_FILE"
 
 thermal_service_getprop() {
-    _thermal_bin="/system/bin/getprop"
-    [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = "1" ] \
-        && _thermal_bin="${PIXEL9PRO_ANDROID_GETPROP:-getprop}"
-    "$_thermal_bin" "$@"
+    _ts_bin=/system/bin/getprop
+    [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = 1 ] && _ts_bin="${PIXEL9PRO_ANDROID_GETPROP:-getprop}"
+    "$_ts_bin" "$@"
 }
 
 thermal_service_stop() {
-    _thermal_bin="/system/bin/stop"
-    [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = "1" ] \
-        && _thermal_bin="${PIXEL9PRO_ANDROID_STOP:-stop}"
-    "$_thermal_bin" "$@"
+    _ts_bin=/system/bin/stop
+    [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = 1 ] && _ts_bin="${PIXEL9PRO_ANDROID_STOP:-stop}"
+    "$_ts_bin" "$@"
 }
 
 thermal_service_start() {
-    _thermal_bin="/system/bin/start"
-    [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = "1" ] \
-        && _thermal_bin="${PIXEL9PRO_ANDROID_START:-start}"
-    "$_thermal_bin" "$@"
+    _ts_bin=/system/bin/start
+    [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = 1 ] && _ts_bin="${PIXEL9PRO_ANDROID_START:-start}"
+    "$_ts_bin" "$@"
 }
 
 thermal_service_log() {
-    _thermal_bin="/system/bin/log"
-    [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = "1" ] \
-        && _thermal_bin="${PIXEL9PRO_ANDROID_LOG:-log}"
-    "$_thermal_bin" "$@"
+    _ts_bin=/system/bin/log
+    [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = 1 ] && _ts_bin="${PIXEL9PRO_ANDROID_LOG:-log}"
+    "$_ts_bin" "$@"
 }
 
-# Follow the same top-level config selection as the Thermal HAL.  On LPM
-# devices the stock baseline is the read-only vendor file, while the overlay
-# output must use the exact same filename.
-THERMAL_CONFIG_NAME=$(thermal_service_getprop vendor.thermal.config 2>/dev/null)
-[ -n "$THERMAL_CONFIG_NAME" ] || THERMAL_CONFIG_NAME=thermal_info_config.json
-case "$THERMAL_CONFIG_NAME" in
-    thermal_info_config.json)
-        ;;
-    thermal_info_config_lpm.json)
-        # LPM includes the base config; mutate the included base file that
-        # contains the target sensors, while preserving the LPM delta.
-        [ -r "/vendor/etc/$THERMAL_CONFIG_NAME" ] || \
-            json_error '500 Internal Server Error' "selected Thermal HAL config not found: $THERMAL_CONFIG_NAME"
-        ;;
-    *)
-        json_error '500 Internal Server Error' "unsupported Thermal HAL config: $THERMAL_CONFIG_NAME"
-        ;;
-esac
-
 ensure_thermal_service_running() {
-    _thermal_service="$1"
-    for _thermal_attempt in 1 2; do
-        thermal_service_start "$_thermal_service" 2>/dev/null || true
+    _ts_service="$1"
+    for _ts_attempt in 1 2; do
+        thermal_service_start "$_ts_service" 2>/dev/null || true
         sleep 1
-        [ "$(thermal_service_getprop "init.svc.$_thermal_service" 2>/dev/null)" = "running" ] \
-            && return 0
+        [ "$(thermal_service_getprop "init.svc.$_ts_service" 2>/dev/null)" = running ] && return 0
     done
     return 1
 }
 
 thermal_hal_effective_matches() {
-    _thermal_expected=$(awk -v target="VIRTUAL-SKIN" '
+    _ts_expected=$(awk -v target=VIRTUAL-SKIN '
         /"Name"/ { n=$0; sub(/.*"Name": *"/, "", n); sub(/".*/, "", n) }
         n==target && /"HotThreshold"/ { line=$0; sub(/^[^[]*\[/, "", line); sub(/\].*$/, "", line); gsub(/[ "]/, "", line); print line; exit }
     ' "$OUT_JSON" 2>/dev/null)
-    [ -n "$_thermal_expected" ] || return 1
-    _thermal_actual=$(dumpsys thermalservice 2>/dev/null | awk '
-        /TemperatureThreshold.*mName=VIRTUAL-SKIN,/ { print; exit }
-    ' | sed 's/.*mHotThrottlingThresholds=\[//; s/\].*//; s/ //g')
-    [ -n "$_thermal_actual" ] || return 1
-    # Compare the complete seven-slot list after normalizing NaN spelling.
-    _thermal_expected=$(printf '%s' "$_thermal_expected" | sed 's/NAN/NaN/g')
-    [ "$_thermal_actual" = "$_thermal_expected" ]
+    [ -n "$_ts_expected" ] || return 1
+    _ts_actual=$(dumpsys thermalservice 2>/dev/null | awk \
+        '/TemperatureThreshold.*mName=VIRTUAL-SKIN,/ { print; exit }' \
+        | sed 's/.*mHotThrottlingThresholds=\[//; s/\].*//; s/ //g')
+    [ -n "$_ts_actual" ] || return 1
+    _ts_expected=$(printf '%s' "$_ts_expected" | sed 's/NAN/NaN/g')
+    [ "$_ts_actual" = "$_ts_expected" ]
+}
+
+parse_thermal_policy() {
+    printf '%s\n' "$1" | sed -n 's/.*"policy"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p'
 }
 
 parse_thermal_offset() {
-    # Accept one unambiguous JSON object only.  The CGI contract intentionally
-    # does not depend on jq/python being present on the device.
-    printf '%s\n' "$1" | awk '
-        BEGIN { value = "" }
-        /^[[:space:]]*\{[[:space:]]*"offset"[[:space:]]*:[[:space:]]*-?[0-9]+[[:space:]]*\}[[:space:]]*$/ {
-            line = $0
-            sub(/^[[:space:]]*\{[[:space:]]*"offset"[[:space:]]*:[[:space:]]*/, "", line)
-            sub(/[[:space:]]*\}[[:space:]]*$/, "", line)
-            value = line
-        }
-        END {
-            if (value != "") print value
-            else exit 1
-        }
-    '
+    printf '%s\n' "$1" | sed -n 's/.*"offset"[[:space:]]*:[[:space:]]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p'
 }
 
-rollback_thermal_change() {
-    THERMAL_ROLLBACK_RESULT="incomplete"
-    _rollback_config_ok=0
-    _rollback_state_ok=0
-    if mv "$_rollback" "$OUT_JSON" 2>/dev/null \
-        && [ "$(sha256sum "$OUT_JSON" 2>/dev/null | awk '{print $1}')" = "$_rollback_hash" ]; then
-        _rollback_config_ok=1
+thermal_snapshot_transaction() {
+    TS_OVERLAY_EXISTED=0
+    TS_POLICY_EXISTED=0
+    TS_OFFSET_EXISTED=0
+    [ -e "$OUT_JSON" ] && TS_OVERLAY_EXISTED=1
+    [ -e "$THERMAL_POLICY_FILE" ] && TS_POLICY_EXISTED=1
+    [ -e "$THERMAL_OFFSET_FILE" ] && TS_OFFSET_EXISTED=1
+    TS_OLD_POLICY=$(cat "$THERMAL_POLICY_FILE" 2>/dev/null)
+    TS_OLD_OFFSET=$(cat "$THERMAL_OFFSET_FILE" 2>/dev/null)
+    if [ "$TS_OVERLAY_EXISTED" -eq 1 ]; then
+        cp "$OUT_JSON" "$TS_OVERLAY_BACKUP" 2>/dev/null || return 1
     fi
-    if cgi_restore_file "$OFFSET_FILE" "$_offset_existed" "$_offset_old"; then
-        _rollback_state_ok=1
-    fi
-    case "$_rollback_config_ok:$_rollback_state_ok" in
-        1:1) THERMAL_ROLLBACK_RESULT="complete"; return 0 ;;
-        1:0) THERMAL_ROLLBACK_RESULT="state_incomplete" ;;
-        0:1) THERMAL_ROLLBACK_RESULT="config_incomplete" ;;
-        *) THERMAL_ROLLBACK_RESULT="config_and_state_incomplete" ;;
-    esac
-    return 1
 }
 
-if [ "$REQUEST_METHOD" = "POST" ]; then
-    require_json_post
-    require_token
-    acquire_lock "thermal"
-
-    read_json_body 512
-    body="$JSON_BODY"
-    offset=$(parse_thermal_offset "$body") || \
-        json_error '400 Bad Request' 'invalid JSON body; expected {"offset":-2|0|2|4|6}'
-
-    thermal_is_valid_offset "$offset" \
-        || json_error '400 Bad Request' "invalid offset: $offset"
-    [ -f "$STOCK_JSON" ] \
-        || json_error '500 Internal Server Error' 'stock json not found'
-
-    _candidate="${OUT_JSON}.candidate.$$"
-    _rollback="${OUT_JSON}.rollback.$$"
-    _offset_existed=0
-    [ -e "$OFFSET_FILE" ] && _offset_existed=1
-    _offset_old=$(cat "$OFFSET_FILE" 2>/dev/null)
-    thermal_generate_config "$STOCK_JSON" "$_candidate" "$offset" \
-        || json_error '500 Internal Server Error' 'thermal config generation failed'
-    cp "$OUT_JSON" "$_rollback" 2>/dev/null || {
-        rm -f "$_candidate" 2>/dev/null
-        json_error '500 Internal Server Error' 'thermal rollback snapshot failed'
-    }
-    _rollback_hash=$(sha256sum "$_rollback" 2>/dev/null | awk '{print $1}')
-    [ -n "$_rollback_hash" ] || {
-        rm -f "$_candidate" "$_rollback" 2>/dev/null
-        json_error '500 Internal Server Error' 'thermal rollback snapshot verification failed'
-    }
-    if ! mv "$_candidate" "$OUT_JSON" 2>/dev/null; then
-        rm -f "$_candidate" "$_rollback" 2>/dev/null
-        json_error '500 Internal Server Error' 'thermal config commit failed'
+thermal_restore_transaction() {
+    _ts_restore_failed=0
+    if [ "$TS_OVERLAY_EXISTED" -eq 1 ]; then
+        mkdir -p "${OUT_JSON%/*}" 2>/dev/null \
+            && cp "$TS_OVERLAY_BACKUP" "$OUT_JSON" 2>/dev/null || _ts_restore_failed=1
+    else
+        rm -f "$OUT_JSON" 2>/dev/null || _ts_restore_failed=1
     fi
-    if ! cgi_atomic_write "$OFFSET_FILE" "$offset"; then
-        if rollback_thermal_change; then
-            json_error '500 Internal Server Error' 'thermal offset persistence failed; previous config restored'
-        fi
-        json_error '500 Internal Server Error' "thermal offset persistence failed; rollback incomplete ($THERMAL_ROLLBACK_RESULT)"
-    fi
+    cgi_restore_file "$THERMAL_POLICY_FILE" "$TS_POLICY_EXISTED" "$TS_OLD_POLICY" || _ts_restore_failed=1
+    cgi_restore_file "$THERMAL_OFFSET_FILE" "$TS_OFFSET_EXISTED" "$TS_OLD_OFFSET" || _ts_restore_failed=1
+    [ "$_ts_restore_failed" -eq 0 ]
+}
 
-    restarted=false
-    for svc in vendor.thermal-hal vendor.thermal-hal-2-0 thermal-hal-2-0 thermalserviced; do
-        [ "$(thermal_service_getprop "init.svc.$svc" 2>/dev/null)" = "running" ] || continue
-        if thermal_service_stop "$svc" 2>/dev/null; then
-            sleep 1
-            if ensure_thermal_service_running "$svc"; then
-                if thermal_hal_effective_matches; then
-                    restarted=true
-                    thermal_service_log -t pixel9pro_ctrl "Thermal service restarted and config verified: $svc (offset=${offset}C)"
-                else
-                    thermal_service_log -t pixel9pro_ctrl "Thermal service restarted but config is pending reboot: $svc (offset=${offset}C)"
-                    json_headers
-                    printf '{"ok":true,"offset":%s,"restarted":false,"reboot_required":true,"effective_state":"pending_reboot","thermal_contract":' "$offset"
-                    thermal_print_ui_contract_json
-                    printf '}\n'
-                    exit 0
-                fi
-            else
-                thermal_service_log -t pixel9pro_ctrl "ERROR: thermal service did not return to running: $svc"
-                _thermal_rollback_ok=0
-                rollback_thermal_change && _thermal_rollback_ok=1
-                _thermal_service_recovered=0
-                ensure_thermal_service_running "$svc" && _thermal_service_recovered=1
-                if [ "$_thermal_rollback_ok" -eq 1 ] && [ "$_thermal_service_recovered" -eq 1 ]; then
-                    json_error '500 Internal Server Error' 'thermal restart failed; previous config restored'
-                fi
-                if [ "$_thermal_rollback_ok" -eq 1 ]; then
-                    json_error '500 Internal Server Error' 'thermal restart failed; previous config restored but service recovery failed'
-                fi
-                json_error '500 Internal Server Error' "thermal restart failed; rollback incomplete ($THERMAL_ROLLBACK_RESULT)"
-            fi
-        else
-            if rollback_thermal_change; then
-                json_error '500 Internal Server Error' 'thermal service stop failed; previous config restored'
-            fi
-            json_error '500 Internal Server Error' "thermal service stop failed; rollback incomplete ($THERMAL_ROLLBACK_RESULT)"
-        fi
-        break
-    done
+thermal_commit_state() {
+    cgi_atomic_write "$THERMAL_POLICY_FILE" "$1" \
+        && cgi_atomic_write "$THERMAL_OFFSET_FILE" "$2"
+}
 
-    rm -f "$_rollback" 2>/dev/null
-
-    json_headers
-    printf '{"ok":true,"offset":%s,"restarted":%s,"thermal_contract":' "$offset" "$restarted"
+emit_thermal_state() {
+    _ts_policy=$(thermal_policy_read)
+    _ts_offset=$(cat "$THERMAL_OFFSET_FILE" 2>/dev/null | tr -d ' \r\n\t')
+    _ts_offset=$(thermal_normalize_offset "$_ts_offset" "$THERMAL_DEFAULT_OFFSET")
+    [ -f "$OUT_JSON" ] && _ts_overlay=true || _ts_overlay=false
+    if thermal_policy_validate_stock "$STOCK_JSON"; then _ts_custom=true; else _ts_custom=false; fi
+    printf '"policy":"%s","offset":%s,"overlay_present":%s,"custom_available":%s,"thermal_contract":' \
+        "$_ts_policy" "$_ts_offset" "$_ts_overlay" "$_ts_custom"
     thermal_print_ui_contract_json
-    printf '}\n'
-elif [ "$REQUEST_METHOD" = "GET" ]; then
-    offset=$(cat "$OFFSET_FILE" 2>/dev/null | tr -d ' \n\r\t')
-    offset=$(thermal_normalize_offset "$offset" "$THERMAL_DEFAULT_OFFSET")
+}
+
+if [ "$REQUEST_METHOD" = GET ]; then
     json_headers
-    printf '{"offset":%s,"thermal_contract":' "$offset"
-    thermal_print_ui_contract_json
+    printf '{'
+    emit_thermal_state
     printf '}\n'
-else
-    json_error '405 Method Not Allowed' 'GET or POST only'
+    exit 0
 fi
+
+require_json_post
+require_token
+acquire_lock thermal
+read_json_body 512
+policy=$(parse_thermal_policy "$JSON_BODY")
+offset=$(parse_thermal_offset "$JSON_BODY")
+[ -n "$policy" ] || { [ -n "$offset" ] && policy=custom; }
+thermal_policy_is_valid "$policy" || json_error '400 Bad Request' 'invalid thermal policy'
+if [ "$policy" = custom ]; then
+    thermal_is_valid_offset "$offset" || json_error '400 Bad Request' 'invalid thermal offset'
+else
+    _ts_saved_offset=$(cat "$THERMAL_OFFSET_FILE" 2>/dev/null | tr -d ' \r\n\t')
+    offset=$(thermal_normalize_offset "$_ts_saved_offset" "$THERMAL_DEFAULT_OFFSET")
+fi
+
+mkdir -p "$LOCKDIR_BASE/tmp" 2>/dev/null \
+    && chmod 700 "$LOCKDIR_BASE/tmp" 2>/dev/null \
+    || json_error '500 Internal Server Error' 'cannot create thermal transaction directory'
+TS_OVERLAY_BACKUP="$LOCKDIR_BASE/tmp/thermal_overlay_$$"
+TS_CANDIDATE="$LOCKDIR_BASE/tmp/thermal_candidate_$$"
+thermal_transaction_cleanup() {
+    rm -f "$TS_OVERLAY_BACKUP" "$TS_CANDIDATE" 2>/dev/null
+    release_lock
+}
+trap 'thermal_transaction_cleanup' EXIT
+trap 'thermal_transaction_cleanup; exit 130' INT
+trap 'thermal_transaction_cleanup; exit 143' TERM
+thermal_snapshot_transaction \
+    || json_error '500 Internal Server Error' 'cannot snapshot thermal transaction'
+
+if [ "$policy" != custom ]; then
+    thermal_policy_remove_overlay \
+        || json_error '500 Internal Server Error' 'cannot remove thermal overlay'
+    if ! thermal_commit_state "$policy" "$offset"; then
+        thermal_restore_transaction >/dev/null 2>&1 || true
+        json_error '500 Internal Server Error' 'cannot commit thermal policy; previous state restored'
+    fi
+    json_headers
+    printf '{"ok":true,"reboot_required":%s,"effective_state":"%s",' \
+        "$( [ "$TS_OVERLAY_EXISTED" -eq 1 ] && printf true || printf false )" \
+        "$( [ "$TS_OVERLAY_EXISTED" -eq 1 ] && printf pending_reboot || printf "$policy" )"
+    emit_thermal_state
+    printf '}\n'
+    exit 0
+fi
+
+old_policy=$(thermal_policy_read)
+selected_config=$(thermal_service_getprop vendor.thermal.config 2>/dev/null)
+[ -n "$selected_config" ] || selected_config=thermal_info_config.json
+case "$selected_config" in
+    thermal_info_config.json) ;;
+    thermal_info_config_lpm.json)
+        [ -r "/vendor/etc/$selected_config" ] \
+            || json_error '500 Internal Server Error' 'selected Thermal HAL config is missing'
+        ;;
+    *) json_error '409 Conflict' 'custom thermal is unsupported by the selected Thermal HAL config' ;;
+esac
+if ! thermal_policy_validate_stock "$STOCK_JSON"; then
+    case "$old_policy:$TS_OVERLAY_EXISTED" in
+        system:0)
+            thermal_policy_capture_stock /vendor/etc/thermal_info_config.json "$STOCK_JSON" \
+                || json_error '500 Internal Server Error' 'THERMAL_STOCK_MISSING'
+            ;;
+        *) json_error '500 Internal Server Error' 'THERMAL_STOCK_MISSING' ;;
+    esac
+fi
+thermal_generate_config "$STOCK_JSON" "$TS_CANDIDATE" "$offset" \
+    || json_error '500 Internal Server Error' 'THERMAL_CONFIG_INVALID'
+mkdir -p "${OUT_JSON%/*}" 2>/dev/null \
+    && mv "$TS_CANDIDATE" "$OUT_JSON" 2>/dev/null \
+    || json_error '500 Internal Server Error' 'thermal overlay commit failed'
+if ! thermal_commit_state custom "$offset"; then
+    thermal_restore_transaction >/dev/null 2>&1 || true
+    json_error '500 Internal Server Error' 'thermal state commit failed; previous state restored'
+fi
+
+restarted=false
+for service in vendor.thermal-hal vendor.thermal-hal-2-0 thermal-hal-2-0 thermalserviced; do
+    [ "$(thermal_service_getprop "init.svc.$service" 2>/dev/null)" = running ] || continue
+    if ! thermal_service_stop "$service" 2>/dev/null \
+        || ! ensure_thermal_service_running "$service"; then
+        thermal_restore_transaction >/dev/null 2>&1 || true
+        ensure_thermal_service_running "$service" >/dev/null 2>&1 || true
+        json_error '500 Internal Server Error' 'thermal restart failed; previous state restored'
+    fi
+    if thermal_hal_effective_matches; then
+        restarted=true
+        thermal_service_log -t pixel9pro_ctrl "Thermal custom policy verified: offset=${offset}C"
+    fi
+    break
+done
+
+json_headers
+printf '{"ok":true,"restarted":%s,"reboot_required":%s,"effective_state":"%s",' \
+    "$restarted" "$( [ "$restarted" = true ] && printf false || printf true )" \
+    "$( [ "$restarted" = true ] && printf verified || printf pending_reboot )"
+emit_thermal_state
+printf '}\n'

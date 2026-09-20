@@ -113,7 +113,7 @@
 
 建议状态值：
 
-- thermal_policy：system、custom、disabled；其中 disabled 仅表示本模块不管理温控，不停止系统 Thermal HAL。
+- thermal_policy：system、custom。system 是唯一零修改选项，UI 文案为“不修改温控（不添加配置）”；custom 只展示真正改变阈值的档位。
 - scheduler_mode：active、off、observe。只有 active 允许 mutation；off 和 observe 均禁止写调度节点，observe 仅保留只读状态采集。
 - scheduler_policy：auto、manual，只在 scheduler_mode=active 且 owner=pixel 时生效。
 - scheduler_profile：balanced、battery、default；performance 仍只允许内部诊断，不作为安装器/WebUI 常规选项。
@@ -158,7 +158,7 @@
 
 | 功能 | 首次安装选项 | 官方内核默认 | 非官方或未知内核默认 |
 |---|---|---|---|
-| 温控 | 系统默认 / 自定义偏移 / 本模块不管理 | 系统默认 | 系统默认 |
+| 温控 | 不修改温控（不添加配置） / 自定义偏移 | 不修改 | 不修改 |
 | CPU 调度 | 现有策略 / 禁用本模块调度 | 保持现有方案 | 自动关闭 |
 | UECap | 按设备模式 / 系统默认 / 禁用 | caiman 三档 | komodo stock，显式选择后才使用单文件 candidate |
 | NR 息屏降级 | 启用 / 禁用 | 保持当前默认 | 保持当前默认 |
@@ -252,7 +252,7 @@ system 模式：
 - 不把 stock JSON 复制到模块 overlay。
 - 不因为安装模块就改变系统温控。
 
-disabled 模式与 system 一样不创建 overlay；区别仅是 WebUI 不提供 custom mutation 入口。任何模式都不得停止、屏蔽或删除系统 Thermal HAL。
+system 是唯一不创建 overlay 的模式；不得再增加“本模块不管理”或 custom 0°C 等同义入口。任何模式都不得停止、屏蔽或删除系统 Thermal HAL。
 
 只有用户显式选择 custom 时才允许：
 
