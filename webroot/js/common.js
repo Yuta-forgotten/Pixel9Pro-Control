@@ -450,16 +450,11 @@ async function loadInfo() {
     const vc = data.version_code || '';
     if (vc && localStorage.getItem('_modVC') !== vc) {
       localStorage.setItem('_modVC', vc);
-      // A version refresh must never destroy a pending reboot confirmation.
-      // The thermal/scheduler POST has already committed state; keep the
-      // modal visible until the user chooses reboot/later/cancel.
-      if (!isAnyModalOpen() && !sessionStorage.getItem('_reloaded')) {
-        sessionStorage.setItem('_reloaded', '1');
-        location.reload();
-        return;
-      }
+      // Version discovery is informational. Never force location.reload() from
+      // a background poll: it destroys pending reboot/rollback confirmation
+      // and is unnecessary because a new page load gets the current assets.
+      sessionStorage.removeItem('_reloaded');
     }
-    sessionStorage.removeItem('_reloaded');
   } catch (_) {}
 }
 
