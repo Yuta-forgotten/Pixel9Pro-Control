@@ -9,6 +9,8 @@ const state = {
   thermalBadReads: 0,
   lastSkinTempC: null,
   thermalApplyBusy: false,
+  thermalContractRetryTimer: null,
+  thermalContractRetryAttempts: 0,
   metamoduleActive: false,
   reinstallRequired: false,
   sensorRefs: null,
@@ -265,6 +267,11 @@ async function loadThermalPreset() {
     const data = await apiFetch(API.thermalSet);
     updateThermalRuntimeGuard(data);
     applyThermalContract(data);
+    state.thermalContractRetryAttempts = 0;
+    if (state.thermalContractRetryTimer) {
+      clearTimeout(state.thermalContractRetryTimer);
+      state.thermalContractRetryTimer = null;
+    }
     state.currentPolicy = state.contract.policies.includes(data.policy)
       ? data.policy
       : state.contract.defaultPolicy;
@@ -273,16 +280,25 @@ async function loadThermalPreset() {
       : state.contract.defaultOffset;
     renderThermalCards();
   } catch (_) {
-    state.contract = null;
-    state.currentPolicy = 'unknown';
-    state.currentOffset = null;
-    refs.thermalList.replaceChildren();
+    // A transient WebUI/CGI failure must not erase an already valid contract.
+    // Retry a bounded number of times so a slow post-boot service does not
+    // leave the thermal cards permanently blank until a full page reload.
+    if (!state.contract && state.thermalContractRetryAttempts < 5) {
+      state.thermalContractRetryAttempts += 1;
+      if (!state.thermalContractRetryTimer) {
+        state.thermalContractRetryTimer = window.setTimeout(() => {
+          state.thermalContractRetryTimer = null;
+          void loadThermalPreset();
+        }, 1500 * state.thermalContractRetryAttempts);
+      }
+    }
   }
   syncThermalUi();
   syncHeroDesc();
 }
 
 async function refreshThermal() {
+  if (!state.contract && !state.thermalContractRetryTimer) void loadThermalPreset();
   if (state.thermalBusy) return;
   state.thermalBusy = true;
   try {
