@@ -114,6 +114,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             if persist_value "$VM_FEATURE_FILE" optimized \
                 && persist_value "$SWAP_MODE_FILE" optimized \
                 && vm_write_params "$1" "$2" "$3" "$4"; then
+                [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event vm policy success VM_OPTIMIZED 0 >/dev/null 2>&1 || true
                 emit_state
             else
                 vm_write_error
@@ -122,6 +123,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         stock)
             if persist_value "$VM_FEATURE_FILE" system \
                 && persist_value "$SWAP_MODE_FILE" stock; then
+                [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event vm policy success VM_SYSTEM_NO_WRITE 0 >/dev/null 2>&1 || true
                 emit_state
             else
                 restore_vm_policy_state >/dev/null 2>&1 || true
@@ -156,6 +158,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                     && persist_value "$VM_FEATURE_FILE" optimized \
                     && persist_value "$SWAP_MODE_FILE" custom \
                     && vm_write_params "$sw" "$mfk" "$wsf" "$vcp"; then
+                    [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event vm policy success VM_CUSTOM 0 >/dev/null 2>&1 || true
                     emit_state
                 else
                     rm -f "$_custom_tmp" 2>/dev/null
@@ -166,6 +169,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         disabled)
             if persist_value "$VM_FEATURE_FILE" disabled \
                 && persist_value "$SWAP_MODE_FILE" disabled; then
+                [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event vm policy success VM_DISABLED_NO_WRITE 0 >/dev/null 2>&1 || true
                 emit_state
             else
                 restore_vm_policy_state >/dev/null 2>&1 || true
@@ -186,6 +190,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             [ "$(getprop "$VM_ZRAM_SIZE_PROPERTY" 2>/dev/null | tr -d ' \n\r\t')" = "$_zram_requested" ] \
                 || json_error '500 Internal Server Error' 'zram size property readback mismatch'
             json_headers
+            [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event vm zram success ZRAM_REBOOT_REQUEST 0 >/dev/null 2>&1 || true
             printf '{"ok":true,"mode":"pending_reboot","zram_size_property":"%s","zram_size_requested":"%s","message":"重启后由 mmd 应用，当前运行态不变"}\n' "$VM_ZRAM_SIZE_PROPERTY" "$_zram_requested"
             ;;
         *)

@@ -163,6 +163,9 @@ if [ "$policy" != custom ]; then
         thermal_restore_transaction >/dev/null 2>&1 || true
         json_error '500 Internal Server Error' 'cannot commit thermal policy; previous state restored'
     fi
+    [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] \
+        && audit_log_event thermal policy success THERMAL_SYSTEM_COMMITTED 0 >/dev/null 2>&1 \
+        || true
     json_headers
     printf '{"ok":true,"reboot_required":%s,"effective_state":"%s",' \
         "$( [ "$TS_OVERLAY_EXISTED" -eq 1 ] && printf true || printf false )" \
@@ -218,6 +221,9 @@ for service in vendor.thermal-hal vendor.thermal-hal-2-0 thermal-hal-2-0 thermal
     break
 done
 
+[ "$AUDIT_LOG_AVAILABLE" -eq 1 ] \
+    && audit_log_event thermal policy success "$( [ "$restarted" = true ] && printf THERMAL_READBACK_VERIFIED || printf REBOOT_REQUIRED )" 0 >/dev/null 2>&1 \
+    || true
 json_headers
 printf '{"ok":true,"restarted":%s,"reboot_required":%s,"effective_state":"%s",' \
     "$restarted" "$( [ "$restarted" = true ] && printf false || printf true )" \

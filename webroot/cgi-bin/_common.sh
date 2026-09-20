@@ -10,6 +10,12 @@ LOCKDIR_BASE="${PIXEL9PRO_LOCKDIR_BASE:-$MODDIR/.locks}"
 LOCK_PATH=""
 LOCK_START_TICKS=""
 JSON_BODY=""
+AUDIT_LOG_AVAILABLE=0
+if [ -r "$MODDIR/scripts/audit_log_lib.sh" ] \
+    && . "$MODDIR/scripts/audit_log_lib.sh" 2>/dev/null \
+    && audit_log_init "$MODDIR"; then
+    AUDIT_LOG_AVAILABLE=1
+fi
 
 json_headers() {
     printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
@@ -27,6 +33,11 @@ json_error() {
     code="$1"
     shift
     msg="$*"
+    if [ "$AUDIT_LOG_AVAILABLE" -eq 1 ]; then
+        _json_error_status=${code%% *}
+        case "$_json_error_status" in ''|*[!0-9]*) _json_error_status=500 ;; esac
+        audit_log_event cgi "${0##*/}" failure "HTTP_$_json_error_status" 0 >/dev/null 2>&1 || true
+    fi
     json_status_headers "$code"
     printf '{"ok":false,"error":"%s"}\n' "$(json_escape "$msg")"
     exit 0

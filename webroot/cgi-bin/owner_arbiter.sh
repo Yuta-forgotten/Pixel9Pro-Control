@@ -21,7 +21,7 @@ FAS_ROOT="${PIXEL9PRO_FAS_ROOT:-/data/adb/fas_rs}"
 detect_external_scheduler 2>/dev/null
 
 if [ "${FAS_RS_DETECTED:-no}" != "yes" ]; then
-    json_headers
+    json_status_headers '409 Conflict'
     printf '{"ok":false,"error":"未检测到 fas-rs，owner 手动唤醒不可用"}\n'
     exit 0
 fi
@@ -40,12 +40,15 @@ _out=$(OWNER_ARBITER_FAS_ROOT="$FAS_ROOT" \
 _rc=$?
 _state=$(cat "$FAS_ROOT/.arbiter_state" 2>/dev/null)
 
-json_headers
 if [ "$_rc" -eq 0 ]; then
+    [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event scheduler owner success OWNER_TICK 0 >/dev/null 2>&1 || true
+    json_headers
     printf '{"ok":true,"screen":"%s","screen_source":"%s","output":"%s","state":"%s"}\n' \
         "$(json_escape "$_display_state")" "$(json_escape "$_display_source")" \
         "$(json_escape "$_out")" "$(json_escape "$_state")"
 else
+    [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event scheduler owner failure OWNER_TICK_FAILED 0 >/dev/null 2>&1 || true
+    json_status_headers '500 Internal Server Error'
     printf '{"ok":false,"error":"owner arbiter tick failed","screen":"%s","screen_source":"%s","output":"%s","state":"%s"}\n' \
         "$(json_escape "$_display_state")" "$(json_escape "$_display_source")" \
         "$(json_escape "$_out")" "$(json_escape "$_state")"

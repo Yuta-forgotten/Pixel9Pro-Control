@@ -18,6 +18,7 @@ INSTALL_TRACE_FILE="$MODPATH/.install_trace"
 install_trace() { printf '%s stage=%s rc=%s\n' "$(date +%s)" "$1" "${2:-0}" >> "$INSTALL_TRACE_FILE" 2>/dev/null || true; }
 INSTALL_COMPLETE=0
 INSTALL_STATE_READY=0
+AUDIT_LOG_READY=0
 installer_cleanup() {
     _installer_rc="$1"
     rm -f "${EVENT_FILE:-}" 2>/dev/null || true
@@ -25,6 +26,9 @@ installer_cleanup() {
         install_trace complete 0
     else
         install_trace failed "$_installer_rc"
+        [ "$AUDIT_LOG_READY" -eq 1 ] \
+            && audit_log_event installer install failure "INSTALL_FAILED_${_installer_rc}" 0 >/dev/null 2>&1 \
+            || true
         if [ "$INSTALL_STATE_READY" -eq 1 ]; then
             install_receipt_write failed failed "INSTALL_FAILED_${_installer_rc}" yes >/dev/null 2>&1 || true
         fi
@@ -68,6 +72,14 @@ if [ ! -r "$MODPATH/scripts/install_state_lib.sh" ] \
     exit 1
 fi
 INSTALL_STATE_READY=1
+if [ -r "$MODPATH/scripts/audit_log_lib.sh" ] \
+    && . "$MODPATH/scripts/audit_log_lib.sh" \
+    && audit_log_init "$MODPATH"; then
+    AUDIT_LOG_READY=1
+else
+    ui_print "  ✗ 无法初始化隐私安全审计日志"
+    exit 1
+fi
 if [ ! -r "$MODPATH/scripts/scheduler_capability_lib.sh" ] \
     || ! . "$MODPATH/scripts/scheduler_capability_lib.sh" \
     || ! scheduler_capability_init "$MODPATH"; then
@@ -835,6 +847,8 @@ esac
 
 install_receipt_write committed success "$INSTALL_REASON_CODE" yes \
     || { ui_print "  ✗ 无法写入安装 receipt, 已中止安装"; exit 1; }
+audit_log_event installer install success "$INSTALL_REASON_CODE" 0 \
+    || { ui_print "  ✗ 无法写入安装审计日志, 已中止安装"; exit 1; }
 
 ui_print ""
 ui_print "  安装完成, 重启生效"

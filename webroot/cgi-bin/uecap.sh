@@ -55,11 +55,17 @@ case "$REQUEST_METHOD" in
         uecap_apply_mode "$mode" "manual_locked" || _uecap_rc=$?
         case "$_uecap_rc" in
             0)
+                [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] \
+                    && audit_log_event uecap apply success "UECAP_${mode}" 0 >/dev/null 2>&1 \
+                    || true
                 json_headers
                 emit_status "$UECAP_RELOAD_DISPATCHED"
                 ;;
             3)
-                json_headers
+                [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] \
+                    && audit_log_event uecap apply failure MODEM_RELOAD_FAILED 0 >/dev/null 2>&1 \
+                    || true
+                json_status_headers '500 Internal Server Error'
                 emit_apply_failure '配置已切换，但 modem 重载失败；重启手机后生效'
                 ;;
             2)

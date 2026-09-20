@@ -162,6 +162,14 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 
 端口 6210，`http://127.0.0.1:6210`（仅绑定 127.0.0.1 回环）。采用 Material 3 。
 
+### 隐私安全审计日志
+
+- 路径：`/data/adb/pixel9pro_control/logs/events.log`，目录 `0700`、文件 `0600`。
+- 单文件达到 256 KiB 后轮转，保留 3 份历史。
+- 只记录 schema、时间、模块版本、Root 类型、设备代号、phase、operation、result、reason code 和 duration。
+- 不记录请求体、ADB endpoint、用户路径、完整包列表、原始 dumpsys/logcat、账号、号码、IMEI/IMSI/ICCID、MAC 或完整 fingerprint；边界层会把疑似值写成 `redacted`。
+- CGI 失败同时返回真实 HTTP 4xx/5xx 和 `ok=false`，不再用 HTTP 200 包装失败。
+
 
 **应用与 UID 识别目录**
 

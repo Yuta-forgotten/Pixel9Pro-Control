@@ -30,6 +30,11 @@ log -t pixel9pro_ctrl "service entry moddir=$MODDIR pid=$$"
 [ -r "$MODDIR/scripts/runtime_defaults_lib.sh" ] \
     && . "$MODDIR/scripts/runtime_defaults_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: runtime defaults contract missing"; exit 1; }
+[ -r "$MODDIR/scripts/audit_log_lib.sh" ] \
+    && . "$MODDIR/scripts/audit_log_lib.sh" 2>/dev/null \
+    && audit_log_init "$MODDIR" \
+    || { log -t pixel9pro_ctrl "ERROR: audit log contract missing"; exit 1; }
+audit_log_event service boot started SERVICE_ENTER 0 >/dev/null 2>&1 || true
 [ -r "$MODDIR/scripts/scheduler_capability_lib.sh" ] \
     && . "$MODDIR/scripts/scheduler_capability_lib.sh" 2>/dev/null \
     && scheduler_capability_init "$MODDIR" \
@@ -779,6 +784,7 @@ else
 fi
 
 log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: boot policy restore completed; warnings above remain authoritative"
+audit_log_event service restore success BOOT_POLICY_RESTORED 0 >/dev/null 2>&1 || true
 
 # ──────────────────────────────────────────────────────────
 # 2.5 持久后台策略。CPU/L2 由同一 profile transaction 应用。

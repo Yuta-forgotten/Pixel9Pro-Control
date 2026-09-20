@@ -54,6 +54,8 @@ WebUI 是 presentation layer。参数、默认值、能力边界和状态字段�
 
 写请求要求 loopback、随机 token、JSON body、CORS preflight 和 `X-PIXEL9PRO-TOKEN`。mutation 返回 compact verified response，前端随后读取 full state；请求超时不能被渲染成成功。
 
+所有关键 mutation 同时写入隐私安全结构化审计日志；日志值经过受控 token 边界，不允许原始请求、用户路径、账号/号码、设备标识或完整系统 dump。失败响应必须同时满足非 200 HTTP status 与 `ok=false`。
+
 ## 6. 验证与已知限制
 
 源码 gate、PowerShell/Android shell parser、contract/failure injection、WebUI 资源与 Chromium 回归、设备 TestLab、shadow、确定性 ZIP 和 entry/权限审计按变更影响范围执行。当前 Control source gate 与逻辑 gate 已通过，UECap/NR contract 为 `59/59`，当前源码 fingerprint 和 ZIP 状态以根级审查文档为准。

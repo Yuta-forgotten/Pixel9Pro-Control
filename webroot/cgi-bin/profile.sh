@@ -397,6 +397,9 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                 ;;
         esac
         release_profile_scheduler_lock
+        [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] \
+            && audit_log_event scheduler mode success SCHEDULER_OFF 0 >/dev/null 2>&1 \
+            || true
         json_headers
         printf '{"ok":true,"accepted":true,"final":true,"cleanup_result":"%s","reboot_required":%s,' \
             "$(json_escape "$_scheduler_cleanup_result")" "$_scheduler_reboot_required"
@@ -421,7 +424,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         fi
         _cancel_rc=$?
         release_profile_scheduler_lock
-        json_headers
+        json_status_headers '500 Internal Server Error'
         printf '{"ok":false,"accepted":false,"final":true,"error":"cancel failed (rc=%s)",' "$_cancel_rc"
         emit_profile_mutation_state
         emit_scheduler_boot_state
@@ -435,12 +438,14 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         _retry_rc=0
         sh "$MODDIR/scripts/scheduler_reconcile.sh" retry "$MODDIR" >/dev/null 2>&1 || _retry_rc=$?
         sbm_load_state
-        json_headers
         if [ "$_retry_rc" -eq 0 ] && [ "$SBM_PHASE" = "success" ]; then
+            json_headers
             printf '{"ok":true,"accepted":true,"final":true,'
         elif [ "$_retry_rc" -eq 75 ]; then
+            json_status_headers '409 Conflict'
             printf '{"ok":false,"accepted":false,"final":true,"error":"scheduler transition busy",'
         else
+            json_status_headers '500 Internal Server Error'
             printf '{"ok":false,"accepted":true,"final":true,"error":"scheduler retry reached terminal failure",'
         fi
         emit_profile_mutation_state
@@ -461,14 +466,17 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         _stage_rc=0
         sbm_stage_mode "$_target_mode" || _stage_rc=$?
         release_profile_scheduler_lock
-        json_headers
         if [ "$_stage_rc" -eq 0 ]; then
+            json_headers
             printf '{"ok":true,"accepted":true,"final":false,'
         elif [ "$_stage_rc" -eq 79 ]; then
+            json_headers
             printf '{"ok":true,"accepted":true,"final":true,'
         elif [ "$_stage_rc" -eq 81 ]; then
+            json_status_headers '409 Conflict'
             printf '{"ok":false,"accepted":false,"final":false,"error":"cancel the existing pending scheduler change first",'
         else
+            json_status_headers '500 Internal Server Error'
             printf '{"ok":false,"accepted":false,"final":true,"error":"scheduler mode staging failed (rc=%s)",' "$_stage_rc"
         fi
         emit_profile_mutation_state
@@ -502,17 +510,19 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         _reconcile_rc=0
         reconcile_owner_now || _reconcile_rc=$?
         _apply_result=$(read_arbiter_value apply_result)
-        json_headers
         if [ "$_reconcile_rc" -eq 75 ] || [ "$_apply_result" = "transition_busy" ]; then
+            json_headers
             printf '{"ok":true,"accepted":true,"final":false,"pending_reason":"scheduler transition busy",'
         elif [ "$_reconcile_rc" -eq 0 ]; then
             case "$_apply_result" in
                 failed_*|transition_latched:*)
+                    json_status_headers '500 Internal Server Error'
                     printf '{"ok":false,"accepted":true,"final":true,"error":"scheduler handoff reached terminal failure",'
                     ;;
-                *) printf '{"ok":true,"accepted":true,"final":true,' ;;
+                *) json_headers; printf '{"ok":true,"accepted":true,"final":true,' ;;
             esac
         else
+            json_status_headers '500 Internal Server Error'
             printf '{"ok":false,"accepted":true,"final":true,"error":"scheduler handoff reached terminal failure (rc=%s)",' "$_reconcile_rc"
         fi
         emit_profile_mutation_state
@@ -523,7 +533,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     sbm_load_state
     if [ "$SBM_PHASE" != "success" ] || [ "$SBM_EFFECTIVE_MODE" != "pixel" ]; then
-        json_headers
+        json_status_headers '409 Conflict'
         printf '{"ok":false,"error":"Pixel scheduler is not in a verified writable state",'
         emit_profile_mutation_state
         emit_scheduler_boot_state
@@ -533,7 +543,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     if [ "$(read_valid_sched_owner)" = "external" ]; then
         detect_external_scheduler 2>/dev/null
-        json_headers
+        json_status_headers '409 Conflict'
         if [ "$EXTERNAL_SCHEDULER_DETECTED" = "yes" ]; then
             printf '{"ok":false,"error":"CPU 调度由 %s 接管"}\n' "$(json_escape "${EXTERNAL_SCHEDULER_NAME:-外部模块}")"
         else
@@ -555,7 +565,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                 BLOCKED:*)
                     _temp_raw=${_result#BLOCKED:}
                     _temp_c=$(awk "BEGIN{printf \"%.1f\", ${_temp_raw:-0}/1000}")
-                    json_headers
+                    json_status_headers '409 Conflict'
                     printf '{"ok":false,"error":"温度过高 (%s°C)，请先降温后再切换性能档"}\n' "$_temp_c"
                     ;;
                 *)

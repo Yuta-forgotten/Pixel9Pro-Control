@@ -51,6 +51,13 @@ UECAP_RADIO_SNAPSHOT_RESULT="not_run"
 UECAP_NSA_STATUS="not_applicable"
 UECAP_NSA_REASON="no_confirmed_nsa_cell"
 
+if ! command -v audit_log_event >/dev/null 2>&1 \
+    && [ -r "$MODDIR/scripts/audit_log_lib.sh" ]; then
+    . "$MODDIR/scripts/audit_log_lib.sh" 2>/dev/null \
+        && audit_log_init "$MODDIR" >/dev/null 2>&1 \
+        || true
+fi
+
 uecap_detect_device() {
     if [ -n "${PIXEL9PRO_UECAP_DEVICE:-}" ]; then
         printf '%s' "$PIXEL9PRO_UECAP_DEVICE"
@@ -173,13 +180,14 @@ uecap_refresh_runtime_policy() {
 }
 
 uecap_log_line() {
-    case "$UECAP_LOGFILE" in
-        "$MODDIR"/*)
-            mkdir -p "${UECAP_LOGFILE%/*}" 2>/dev/null || true
-            chmod 700 "${UECAP_LOGFILE%/*}" 2>/dev/null || true
-            ;;
-    esac
-    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" "$1" >> "$UECAP_LOGFILE"
+    if command -v audit_log_event >/dev/null 2>&1; then
+        audit_log_event uecap mutation info "$(audit_log_token "$1")" 0 >/dev/null 2>&1 || true
+        return 0
+    fi
+    mkdir -p "${UECAP_LOGFILE%/*}" 2>/dev/null || return 1
+    chmod 700 "${UECAP_LOGFILE%/*}" 2>/dev/null || return 1
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" "$(printf '%s' "$1" | tr '\r\n' '__')" >> "$UECAP_LOGFILE" \
+        && chmod 600 "$UECAP_LOGFILE" 2>/dev/null
 }
 
 uecap_hash() {
@@ -955,11 +963,11 @@ uecap_apply_mode() {
 
     _uecap_apply_source=$(uecap_resolve_source "$_uecap_apply_mode_value")
     [ -f "$_uecap_apply_source" ] || {
-        uecap_log_line "source missing: $_uecap_apply_source"
+        uecap_log_line "SOURCE_MISSING_mode_$_uecap_apply_mode_value"
         return 1
     }
     [ -e "$UECAP_TARGET" ] || {
-        uecap_log_line "target missing: $UECAP_TARGET"
+        uecap_log_line "TARGET_MISSING"
         return 1
     }
 
