@@ -72,6 +72,8 @@ WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电�
 
 ### 温控策略与自定义阈值
 
+维护者接口、函数、CGI 字段、A/B slot、receipt 和 WebUI 状态契约见：[温控/阈值链路 API 与 WebUI 维护规范](docs/温控阈值链路API与WebUI维护规范.md)。修改前先阅读该规范，避免在前端、CGI、installer 和 slot 库复制第二份 contract。
+
 默认只有一个零修改选项：**不修改温控（不添加配置）**。该选项不创建 `/vendor/etc/thermal_info_config.json` overlay，也不修改或停止系统 Thermal HAL。只有用户明确选择 custom 时，才从当前设备真实 vendor 配置或已验证的模块私有 stock snapshot 生成下列偏移；0°C 不再作为独立 custom 入口，避免与零修改选项重复：
 
 | 档位 | Offset 偏移值 | 最早介入温度 (HINT) | 说明 |
