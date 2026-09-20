@@ -20,6 +20,30 @@ SIM2_AUTO_FILE="$MODDIR/.sim2_auto_manage"
 IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
 SCHEDULER_INVENTORY_PATH="$MODDIR/.scheduler_inventory"
+SERVICE_LOCK_DIR="$MODDIR/.service_lock"
+
+service_singleton_or_exit() {
+    if mkdir "$SERVICE_LOCK_DIR" 2>/dev/null; then
+        printf '%s\n' "$$" > "$SERVICE_LOCK_DIR/pid" 2>/dev/null || true
+        trap 'rm -f "$SERVICE_LOCK_DIR/pid" 2>/dev/null; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null' EXIT
+        return 0
+    fi
+    _service_old_pid=$(cat "$SERVICE_LOCK_DIR/pid" 2>/dev/null | tr -d ' \r\n\t')
+    case "$_service_old_pid" in ''|*[!0-9]*) _service_old_pid="" ;; esac
+    if [ -n "$_service_old_pid" ] && [ -r "/proc/$_service_old_pid/cmdline" ]; then
+        _service_old_cmd=$(tr '\0' ' ' < "/proc/$_service_old_pid/cmdline" 2>/dev/null)
+        case "$_service_old_cmd" in
+            *pixel9pro_control/service.sh*) exit 0 ;;
+        esac
+    fi
+    rm -f "$SERVICE_LOCK_DIR/pid" 2>/dev/null || true
+    rmdir "$SERVICE_LOCK_DIR" 2>/dev/null || exit 0
+    mkdir "$SERVICE_LOCK_DIR" 2>/dev/null || exit 0
+    printf '%s\n' "$$" > "$SERVICE_LOCK_DIR/pid" 2>/dev/null || true
+    trap 'rm -f "$SERVICE_LOCK_DIR/pid" 2>/dev/null; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null' EXIT
+}
+
+service_singleton_or_exit
 
 # Persist an early entry marker before loading optional contracts.  A missing
 # marker distinguishes "service never launched" from a later ZRAM failure.
