@@ -160,7 +160,7 @@ slot_mark_verified() {
     _slot_active=$(slot_current_value "$1")
     [ "$_slot_active" = slot-a ] || [ "$_slot_active" = slot-b ] || return 1
     slot_atomic_write "$_slot_component_dir/last-good" "$_slot_active" \
-        && rm -f "$_slot_component_dir/promoted" 2>/dev/null
+        && rm -f "$_slot_component_dir/promoted" "$_slot_component_dir/rollback_pending" 2>/dev/null
 }
 
 slot_mark_rollback_pending() {

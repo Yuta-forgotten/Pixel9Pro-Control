@@ -171,9 +171,8 @@ fi
 require_json_post
 require_token
 acquire_lock thermal
-if [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ] && {
-    [ -n "$(slot_pending_value thermal 2>/dev/null)" ] || slot_rollback_pending thermal 2>/dev/null;
-}; then
+if [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ] \
+    && [ -n "$(slot_pending_value thermal 2>/dev/null)" ]; then
     release_lock
     json_error '409 Conflict' '已有温控变更等待重启或回滚复读；请先完成当前 pending 状态'
 fi
