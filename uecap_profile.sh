@@ -68,6 +68,10 @@ UECAP_RADIO_SNAPSHOT_RESULT="not_run"
 UECAP_NSA_STATUS="not_applicable"
 UECAP_NSA_REASON="no_confirmed_nsa_cell"
 
+if [ -r "$MODDIR/scripts/slot_transaction_lib.sh" ]; then
+    . "$MODDIR/scripts/slot_transaction_lib.sh" 2>/dev/null || true
+fi
+
 if ! command -v audit_log_event >/dev/null 2>&1 \
     && [ -r "$MODDIR/scripts/audit_log_lib.sh" ]; then
     . "$MODDIR/scripts/audit_log_lib.sh" 2>/dev/null \
@@ -636,11 +640,14 @@ uecap_hybrid_stage_mode() {
     _uecap_hybrid_stage_target="$_uecap_hybrid_stage_root/$UECAP_TARGET_NAME"
     case "$_uecap_hybrid_stage_mode" in
         disabled|stock)
-            rm -f "$_uecap_hybrid_stage_target" 2>/dev/null || return 1
             _uecap_hybrid_baseline=$(uecap_hash "$UECAP_TARGET")
             _uecap_hybrid_context=$(ls -Zd "$UECAP_TARGET" 2>/dev/null | awk '{print $1}')
             [ -n "$_uecap_hybrid_baseline" ] \
                 && [ "$_uecap_hybrid_context" = u:object_r:vendor_fw_file:s0 ] || return 1
+            slot_stage_file uecap "$_uecap_hybrid_stage_target" \
+                "system/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME" remove \
+                "$UECAP_DEVICE" "$(getprop ro.build.fingerprint 2>/dev/null)" vendor_fw_file \
+                || return 1
             uecap_atomic_write "$UECAP_STOCK_BASELINE_FILE" "$_uecap_hybrid_baseline" || return 1
             uecap_atomic_write "$MODDIR/.uecap_content_image" metadata_staging || return 1
             uecap_atomic_write "$MODDIR/.uecap_backend" hybrid_mount || return 1
@@ -651,17 +658,10 @@ uecap_hybrid_stage_mode() {
     esac
     _uecap_hybrid_stage_source=$(uecap_resolve_source "$_uecap_hybrid_stage_mode") || return 1
     [ -f "$_uecap_hybrid_stage_source" ] || return 1
-    mkdir -p "$_uecap_hybrid_stage_root" || return 1
-    chcon --reference=/vendor "$MODDIR/system/vendor" 2>/dev/null || return 1
-    chcon --reference=/vendor/firmware "$MODDIR/system/vendor/firmware" 2>/dev/null || return 1
-    chcon --reference=/vendor/firmware/uecapconfig "$_uecap_hybrid_stage_root" 2>/dev/null || return 1
-    cp -f "$_uecap_hybrid_stage_source" "$_uecap_hybrid_stage_target" || return 1
-    chmod 0644 "$_uecap_hybrid_stage_target" || return 1
-    chcon --reference=/vendor/firmware/uecapconfig "$_uecap_hybrid_stage_target" 2>/dev/null \
-        || chcon u:object_r:vendor_fw_file:s0 "$_uecap_hybrid_stage_target" 2>/dev/null \
-        || return 1
-    [ "$(ls -Zd "$_uecap_hybrid_stage_target" 2>/dev/null | awk '{print $1}')" = u:object_r:vendor_fw_file:s0 ] || return 1
-    [ "$(uecap_hash "$_uecap_hybrid_stage_target")" = "$(uecap_hash "$_uecap_hybrid_stage_source")" ] || return 1
+    slot_stage_file uecap "$_uecap_hybrid_stage_source" \
+        "system/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME" staged \
+        "$UECAP_DEVICE" "$(getprop ro.build.fingerprint 2>/dev/null)" \
+        u:object_r:vendor_fw_file:s0 || return 1
     uecap_atomic_write "$MODDIR/.uecap_content_image" metadata_staging || return 1
     uecap_atomic_write "$MODDIR/.uecap_backend" hybrid_mount || return 1
     UECAP_CONTENT_IMAGE="$_uecap_hybrid_stage_target"

@@ -12,6 +12,7 @@ THERMAL_POLICY_LIB="$MODDIR/scripts/thermal_policy_lib.sh"
     || json_error '500 Internal Server Error' 'thermal profile library not found'
 [ -r "$THERMAL_POLICY_LIB" ] && . "$THERMAL_POLICY_LIB" && thermal_policy_init "$MODDIR" \
     || json_error '500 Internal Server Error' 'thermal policy library not found'
+[ -r "$MODDIR/scripts/slot_transaction_lib.sh" ] && . "$MODDIR/scripts/slot_transaction_lib.sh" 2>/dev/null || true
 
 THERMAL_METAMODULE_ACTIVE=0
 THERMAL_METAMODULE_CONTENT_ROOT=""
@@ -25,7 +26,8 @@ fi
 
 thermal_metamodule_guard() {
     [ "$THERMAL_METAMODULE_ACTIVE" -eq 1 ] \
-        && [ "$THERMAL_MOUNT_BACKEND" = metamodule_content ] || return 0
+        && { [ "$THERMAL_MOUNT_BACKEND" = metamodule_content ] || [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ]; } || return 0
+    [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ] && return 0
     [ -n "$THERMAL_METAMODULE_CONTENT_ROOT" ] \
         || json_error '500 Internal Server Error' '无法解析 MetaModule content image 路径'
     case "$1" in
@@ -198,8 +200,23 @@ trap 'thermal_transaction_cleanup; exit 143' TERM
 thermal_snapshot_transaction \
     || json_error '500 Internal Server Error' 'cannot snapshot thermal transaction'
 
-if [ "$policy" != custom ]; then
-    thermal_policy_remove_overlay \
+    if [ "$policy" != custom ]; then
+    if [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ]; then
+        slot_stage_file thermal "$OUT_JSON" \
+            "system/vendor/etc/thermal_info_config.json" remove \
+            "$DEVICE" "$(thermal_service_getprop ro.build.fingerprint 2>/dev/null)" \
+            vendor_configs_file \
+            || json_error '500 Internal Server Error' 'thermal pending slot commit failed'
+        if ! thermal_commit_state "$policy" "$offset"; then
+            json_error '500 Internal Server Error' 'thermal state commit failed'
+        fi
+        json_headers
+        printf '{"ok":true,"restarted":false,"reboot_required":true,"effective_state":"pending_reboot",'
+        emit_thermal_state
+        printf '}\n'
+        exit 0
+    fi
+        thermal_policy_remove_overlay \
         || json_error '500 Internal Server Error' 'cannot remove thermal overlay'
     if ! thermal_commit_state "$policy" "$offset"; then
         thermal_restore_transaction >/dev/null 2>&1 || true
@@ -239,9 +256,17 @@ if ! thermal_policy_validate_stock "$STOCK_JSON"; then
 fi
 thermal_generate_config "$STOCK_JSON" "$TS_CANDIDATE" "$offset" \
     || json_error '500 Internal Server Error' 'THERMAL_CONFIG_INVALID'
-mkdir -p "${OUT_JSON%/*}" 2>/dev/null \
-    && mv "$TS_CANDIDATE" "$OUT_JSON" 2>/dev/null \
-    || json_error '500 Internal Server Error' 'thermal overlay commit failed'
+if [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ]; then
+    slot_stage_file thermal "$TS_CANDIDATE" \
+        "system/vendor/etc/thermal_info_config.json" staged \
+        "$DEVICE" "$(thermal_service_getprop ro.build.fingerprint 2>/dev/null)" \
+        vendor_configs_file \
+        || json_error '500 Internal Server Error' 'thermal pending slot commit failed'
+else
+    mkdir -p "${OUT_JSON%/*}" 2>/dev/null \
+        && mv "$TS_CANDIDATE" "$OUT_JSON" 2>/dev/null \
+        || json_error '500 Internal Server Error' 'thermal overlay commit failed'
+fi
 if ! thermal_commit_state custom "$offset"; then
     thermal_restore_transaction >/dev/null 2>&1 || true
     json_error '500 Internal Server Error' 'thermal state commit failed; previous state restored'

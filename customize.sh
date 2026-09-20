@@ -23,7 +23,7 @@ install_trace enter 0
 
 # APD extraction can normalize executable ZIP entries to 0644. Restore
 # runtime permissions explicitly before the module is activated.
-chmod 755 "$MODPATH/service.sh" "$MODPATH/post-mount.sh" "$MODPATH/scripts/"*.sh "$MODPATH/webroot/cgi-bin/"*.sh 2>/dev/null || true
+chmod 755 "$MODPATH/service.sh" "$MODPATH/post-fs-data.sh" "$MODPATH/post-mount.sh" "$MODPATH/scripts/"*.sh "$MODPATH/webroot/cgi-bin/"*.sh 2>/dev/null || true
 
 # Thermal HAL may select an LPM-specific top-level config at runtime.  The
 # selected filename is authoritative; never generate a sibling file that HAL
