@@ -110,6 +110,8 @@ def _validate_archive_path(path: str) -> None:
         raise _error(f"path is outside the runtime allowlist: {path}")
     if any(part in EXCLUDED_PARTS for part in pure.parts):
         raise _error(f"excluded path entered the runtime package: {path}")
+    if pure.suffix.lower() == ".ps1":
+        raise _error(f"PowerShell files are forbidden in the Android runtime package: {path}")
     if CANONICAL_TARGET.fullmatch(path):
         raise _error(f"canonical UECap target must not be pre-activated in ZIP: {path}")
 
@@ -169,7 +171,12 @@ def collect_runtime_files(root: Path) -> tuple[RuntimeFile, ...]:
     for directory in sorted(ROOT_DIRS):
         base = root / directory
         if base.exists():
-            candidates.extend(path for path in base.rglob("*") if path.is_file() or path.is_symlink())
+            for path in base.rglob("*"):
+                if not (path.is_file() or path.is_symlink()):
+                    continue
+                if directory == "scripts" and path.suffix.lower() != ".sh":
+                    continue
+                candidates.append(path)
     files: list[RuntimeFile] = []
     seen: set[str] = set()
     for source in sorted(candidates, key=lambda item: item.as_posix()):
