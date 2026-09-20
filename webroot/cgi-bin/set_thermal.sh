@@ -247,6 +247,17 @@ if ! thermal_commit_state custom "$offset"; then
     json_error '500 Internal Server Error' 'thermal state commit failed; previous state restored'
 fi
 
+if [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ]; then
+    [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] \
+        && audit_log_event thermal policy success THERMAL_REBOOT_REQUIRED 0 >/dev/null 2>&1 \
+        || true
+    json_headers
+    printf '{"ok":true,"restarted":false,"reboot_required":true,"effective_state":"pending_reboot",'
+    emit_thermal_state
+    printf '}\n'
+    exit 0
+fi
+
 restarted=false
 for service in vendor.thermal-hal vendor.thermal-hal-2-0 thermal-hal-2-0 thermalserviced; do
     [ "$(thermal_service_getprop "init.svc.$service" 2>/dev/null)" = running ] || continue
