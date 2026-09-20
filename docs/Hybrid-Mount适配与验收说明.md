@@ -100,3 +100,11 @@ adb shell su -c 'dumpsys thermalservice | grep -E "HAL Ready|AIDL|Thermal Status
 3. 修改 MetaModule 脚本时不必重新设计 UECap 选择算法，但必须复核 UECap 的挂载时序和 readback。UECap binarypb 在 `/vendor/firmware`，可能早于普通 WebUI/service 被读取；如果后端从 content image 改成 regular source，变化的是 staging/promotion/readback 适配，不是 caiman/komodo 的 payload、档位和 canonical filename 合同。
 
 当前实现采用后端分层：MetaModule content backend 保留 clean reinstall 与现有 hook gate；Hybrid backend 使用 module-private pending/A-B slot，在 Hybrid Mount 扫描前由 `post-fs-data.sh` promotion，挂载后由 `post-mount.sh` 复读；Magisk 继续停用 managed UECap。任何后端都不能仅凭 WebUI 200、文件存在或命令退出码声称 UECap/thermal 已经生效。
+
+## 2026-09-21 首次 caiman/APatch/Hybrid 实机证据
+
+候选 ZIP `pixel9pro_control_v4.6.00-rc1-hybrid-ab-20260921e.zip` 已通过干净 LF 源树的 `build_module.py --validate-only`、确定性构建和 ZIP 审计；本地与设备传输 SHA-256 为 `4869af6e6b7e9f7310e94a4c7a863a786ec256f3d72dc9527808a12945ffef76`。APatch `apd module install` 成功，安装器生成了当前 Build 的 UECap pending manifest，记录 `caiman`、`CP41.260814.003.B1`、`vendor_fw_file` 和 source hash `2870ba9c94145930ad75f1666c6ec2755ac207a7efc0aa4277bdde13cabaae0c`。
+
+重启后 `post-fs-data.sh` 已真实执行并把 pending payload promotion 到 `/data/adb/modules/pixel9pro_control/system/vendor/firmware/uecapconfig/`；但 Hybrid Mount 6.2.0 的 `scan.ret` 将 `pixel9pro_control` 判为 `mode=ignore`，实际 `/vendor` OverlayFS 的 `overlay_modules` 只有 `pixel9pro_baseband_trial`。因此 effective UECap 仍是 stock hash `c4a3a51002c542b89e6a4b65f4351ce2f889b1157ceede41af0f81f5059dfb44`，UECap receipt 正确标为 `metamodule_effective_readback_failed`；没有把 source hash 当成 effective 成功。
+
+同一 boot 的温控仍为 stock：`thermal_runtime_receipt=status=verified`、effective context 为 `u:object_r:vendor_configs_file:s0`、ThermalHAL `HAL Ready=true` 且 AIDL 3 connected。该结果证明 A/B promotion 和失败闭环已到达设备，但不能证明 Hybrid Mount 的 Control 模块规则已经启用。下一条最小外部验证是通过 Hybrid Mount Manager 为 `pixel9pro_control` 选择 `overlay`（或已验证的 `magicmount`）并重启；在规则仍为 `ignore` 时禁止继续声称 UECap/thermal Hybrid 生效。
