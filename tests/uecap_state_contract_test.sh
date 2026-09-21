@@ -36,6 +36,8 @@ export PIXEL9PRO_UECAP_LOGDIR="$TEST_ROOT/logs"
 export PIXEL9PRO_UECAP_TEST_MODE=1
 export PIXEL9PRO_UECAP_BOOT_ID=test-boot
 export PIXEL9PRO_METAMODULE_LINK="$TEST_ROOT/no-metamodule"
+export PIXEL9PRO_UECAP_HYBRID_STATE_FILE="$TEST_ROOT/hybrid-state.json"
+export PIXEL9PRO_UECAP_HYBRID_SCAN_FILE="$TEST_ROOT/hybrid-scan.ret"
 export APATCH=true
 . "$SOURCE_ROOT/uecap_profile.sh"
 
@@ -53,6 +55,48 @@ fi
 check_eq 'UECap UI fails closed without a compatible mount manager' \
     '{"mode_order":[],"default_mode":"disabled"}' \
     "$(uecap_print_ui_contract_json)"
+
+# Hybrid Mount 6.2.x reports the effective vendor overlay as submounts such as
+# /vendor/etc and /vendor/firmware. The fixture accepts those paths while
+# rejecting non-vendor paths, failed scans, and an unmounted module.
+cat > "$PIXEL9PRO_UECAP_HYBRID_STATE_FILE" <<'EOF'
+{"failed_mounts": 0, "active_mounts": ["/vendor/etc", "/vendor/firmware"]}
+EOF
+cat > "$PIXEL9PRO_UECAP_HYBRID_SCAN_FILE" <<'EOF'
+{"id": "pixel9pro_control", "is_mounted": true}
+EOF
+if uecap_hybrid_mount_observed; then
+    PASS=$((PASS + 1))
+    printf 'ok %s - Hybrid Mount vendor submounts verify the Control overlay\n' "$((PASS + FAIL))"
+else
+    FAIL=$((FAIL + 1))
+    printf 'not ok %s - Hybrid Mount vendor submounts verify the Control overlay\n' "$((PASS + FAIL))"
+fi
+printf '%s\n' '{"failed_mounts": 0, "active_mounts": ["/product/etc"]}' > "$PIXEL9PRO_UECAP_HYBRID_STATE_FILE"
+if uecap_hybrid_mount_observed; then
+    FAIL=$((FAIL + 1))
+    printf 'not ok %s - non-vendor mount paths do not verify the Control overlay\n' "$((PASS + FAIL))"
+else
+    PASS=$((PASS + 1))
+    printf 'ok %s - non-vendor mount paths do not verify the Control overlay\n' "$((PASS + FAIL))"
+fi
+printf '%s\n' '{"failed_mounts": 1, "active_mounts": ["/vendor/etc"]}' > "$PIXEL9PRO_UECAP_HYBRID_STATE_FILE"
+if uecap_hybrid_mount_observed; then
+    FAIL=$((FAIL + 1))
+    printf 'not ok %s - failed Hybrid Mount scans remain unverified\n' "$((PASS + FAIL))"
+else
+    PASS=$((PASS + 1))
+    printf 'ok %s - failed Hybrid Mount scans remain unverified\n' "$((PASS + FAIL))"
+fi
+printf '%s\n' '{"failed_mounts": 0, "active_mounts": ["/vendor/etc"]}' > "$PIXEL9PRO_UECAP_HYBRID_STATE_FILE"
+printf '%s\n' '{"id": "pixel9pro_control", "is_mounted": false}' > "$PIXEL9PRO_UECAP_HYBRID_SCAN_FILE"
+if uecap_hybrid_mount_observed; then
+    FAIL=$((FAIL + 1))
+    printf 'not ok %s - an unmounted Control scan remains unverified\n' "$((PASS + FAIL))"
+else
+    PASS=$((PASS + 1))
+    printf 'ok %s - an unmounted Control scan remains unverified\n' "$((PASS + FAIL))"
+fi
 if uecap_is_valid_mode special && ! uecap_is_valid_mode invalid; then
     PASS=$((PASS + 1))
     printf 'ok %s - UECap mode validator consumes contract order\n' "$((PASS + FAIL))"
