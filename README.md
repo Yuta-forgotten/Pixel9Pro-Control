@@ -1,116 +1,73 @@
 # Pixel 9 Pro Control Module
 
-> APatch / KernelSU / Magisk 模块。为 Pixel 9 Pro / Pro XL (Tensor G4) 设计的温控阈值、可选 CPU 调度、ZRAM、UE 网络控制模块；Material 3 WebUI 控制台，可与 Uperf Game Turbo、fas-rs 等外部调度模块协同。（Magisk 下基带 UE 切换不可用。）
+> APatch / KernelSU / Magisk 模块。为 Pixel 9 Pro / Pro XL (Tensor G4) 设计的温控阈值、可选 CPU 调度、ZRAM、UE 网络控制模块；Material 3 WebUI 控制台，可与 Uperf Game Turbo、fas-rs 等外部调度模块协同。（Magisk 下 UE 切换不可用）
 
-## 模块身份
 
-- Module id: `pixel9pro_control`
-- WebUI: `http://127.0.0.1:6210`
-- 版本号以模块包内的 `module.prop` 和对应 Git tag/release 为准；本 README 不固定某个“最新版”，避免源码长期漂移时产生过时版本声明。
-
-## 本次发行说明
-
-`v4.6.00-rc1` 是候选测试版，主要变化：
-
-- 温控默认不添加任何 vendor 配置，只在显式 custom 时生成 overlay；
-- 性能页增加“不启用本模块调度”，off 会停止全部调度 mutation 和 worker；
-- 首次安装完整询问温控、调度、UECap、NR、SIM2、VM/ZRAM 与 NTP；
-- ZIP 同时携带 caiman 三档和 komodo 单文件 candidate，但运行时只解析当前 SKU；
-- 增加隐私安全审计日志、真实 HTTP 错误、确定性构建和 ZIP 门禁；
-- 功耗导出升级为 report/JSON/CSV/attribution 原子目录。
-- 统一分析页保留软件耗电排行；自定义统计限制最近 1–7 天并支持小时/分钟粒度；运行记录支持脱敏后台日志导出。
-
-安装包：`pixel9pro_control_v4.6.00-rc1.zip`
-
-SHA-256：`73C4C3734CB8EFD5BFAA85965E4AA92772ADE500B5B75391651546B2663957D0`
-
-回滚包：`pixel9pro_control_v4.5.09_rollback.zip`，SHA-256 `6A0342204990356DC97B23567AEB5B2FFECA5580C2E81D91EBF4DE2AB2EA7ADB`。该回滚包由 Git 基线 `1966613` 使用当前确定性构建器重建，不是旧 GitHub Release 原资产。
-
-当前仅完成主机/parser/包级验证。komodo candidate 来源 build 未知，XL 安装、modem load、重启持久化与网络功能仍为 `[unverified]`；不得作为稳定版发布。
-
-## 支持设备
+## 支持状态
 
 | 设备 | 代号 | 状态 |
 |------|------|------|
-| Pixel 9 Pro | caiman | APatch 安装、重启、UECap bind/receipt 与 NR_SA n41 电话注册已复核 |
-| Pixel 9 Pro XL | komodo | 默认保持 stock；可显式选择单文件 candidate，来源 build 未知且尚未完成 XL 实机闭环 |
+| Pixel 9 Pro | caiman | APatch 实际测试 |
+| Pixel 9 Pro XL | komodo | 无 XL 实机验证 |
 
-安装时自动检测机型；温控默认不添加配置，UECap 只解析当前 SKU 的 staging 合同。CarrierSettings、APN、China MCFG 和 IMS properties 由独立的 `pixel9pro_baseband_trial` 模块按 `caiman/komodo` manifest 管理；Control 不把独立基带模块重新打包进自身。
+安装时自动检测机型；温控默认不添加配置。CarrierSettings、APN、China MCFG 和 IMS properties 由独立的 `pixel9pro_baseband_trial` 模块按 `caiman/komodo` manifest 管理；Control 不打包独立基带模块。
 
 ## 功能
 
 ### CPU 调度 / 外部调度接管
 
-本模块内置 Pixel 原厂调度参数微调。Pixel 与 UGT 是重启后选择的日常 baseline：切到 UGT 或完全退出 UGT 都先提交下次 boot 状态，再重启验证，当前 boot 不直接改变日常 baseline。若已安装 fas-rs，命中游戏时可在任一 verified baseline 上建立临时 `fas-rs:game:<pkg>` lease；Pixel baseline 退出游戏后恢复 Pixel profile 并保留 resident process，UGT baseline 则先暂停 UGT、退出后恢复同一 UGT 单实例。
+模块内置 Pixel 9 Pro 的微调参数，支持切换 UGT 调度，并与 fas-rs 协同。
 
-WebUI 提供「省电 / 均衡 / 系统默认」三档（卡片顺序即省电→均衡→系统默认）；性能优先降为内部基线。UGT 提供另一套重启后生效的日常调度，fas-rs 只在有效游戏 lease 内成为唯一临时写入者。
 
-性能策略区另提供 **不启用本模块调度**。该状态不是“系统默认”profile：`scheduler_mode=off` 会停止本模块全部 profile、auto、boot reconcile、health repair 和 owner worker 写入，只保留 CPU/调度节点只读状态。关闭时会尽力执行一次系统默认清理；若清理无法验证，仍优先提交 off 并要求重启，避免后台继续写入。为了防止旧 boot worker 被错误热启，重新启用必须通过模块安装向导重新选择并重启。
-
-| 模式 (WebUI 顺序) | top-app | response_time_ms (小/中/大) | uclamp.min cap | 说明 |
+| 内置方案 | top-app | response_time_ms (小/中/大) | uclamp.min cap | 说明 |
 |------|---------|------|------|------|
-| ① 省电 | cpu0-6 | 16 / 96 / 320 | 0 | 保持小核效率；延后中核/X4，适合久热与长时间使用 |
-| ② 均衡 | cpu0-6 | 16 / 64 / 240 | 0 | 日常前台优先小中核；保留突发响应并压低长亮屏功耗 |
-| ③ 系统默认 | cpu0-7 | 内核 nom（本机 9 / 52 / 165） | 1024 | 恢复内核出厂调度：response 回写只读 `response_time_ms_nom`、cpuset 与 cap 还原出厂值，不压制 boost |
-| 性能优先 | cpu0-7 | 12 / 20 / 80 | 1024 | 内部基线 (force/CLI)，不在 WebUI；不参与自动策略 |
+| ① 省电 | cpu0-6 | 16 / 96 / 320 | 0 | 保持小核效率；延后中核/X4 |
+| ② 均衡 | cpu0-6 | 16 / 64 / 240 | 0 | 前台优先小中核；保留突发响应并压低长亮屏功耗 |
+| ③ 系统默认 | cpu0-7 | 内核 nom（本机 9 / 52 / 165） | 1024 | 内核出厂调度：response 回写只读 `response_time_ms_nom`、cpuset 与 cap 还原出厂值 |
 
-- 调度通过 `cpuset` 和 `sched_pixel response_time_ms` 控制；不直接写 `scaling_max_freq`
-- `foreground/cpus` 是 framework-owned：只读观察，模块不写、不快照、不回滚，也不把它作为 profile 成功条件；模块主要托管 `top-app/background/system-background`
-- `top-app`、`response_time_ms`、uclamp cap 与 vendor_sched L2 都是 volatile best-effort：每次明确事务只写入并立即复读一次，后续被 Scene/PowerHAL/framework 回写时只记录漂移
-- 自动模式以均衡为日常底座；放电 `VIRTUAL-SKIN ≥38.8°C/60s`、充电 `≥39.8°C/60s` 或 Thermal Status ≥2 时收口至省电，回落到 `≤37.5°C/120s` 后恢复；死区设有粘滞，避免边界来回抖动
-- `.scheduler_boot_state` 区分 pending / verifying / success / failed；`.sched_owner_desired` 与 `.cpu_sched_owner` 只在重启后验证通过时提交，fas-rs 游戏 lease 不覆盖启动模式
-- Pixel 日常调度下，fas-rs 常驻 PID 只表示服务可用；有效游戏 lease 才令 `effective=external`，退出后恢复原 Pixel auto/manual 状态并保留 resident process
-- UGT 日常调度下，owner worker 只在游戏 lease 边界暂停/恢复 UGT；进入 lease 前必须确认单一 UGT baseline，退出后只调用 UGT lifecycle helper 恢复单实例，不重放完整 boot 初始化
-- CPU、cpuset、uclamp cap 与 vendor_sched L2 同属一个 profile 事务；省电 L2 为 `150/80`，均衡/性能为 `200/100`，系统默认恢复 `1024/308`
-- Auto、owner、WebUI profile/handoff 共用同一 transition lock；拿锁后复读 boot mode、desired/effective owner、policy 与当前 profile，旧决策只返回 no-op
-- 周期性 owner/auto 决策遇到锁占用立即跳过并在下一周期重新计算；WebUI 写请求只做短时有界等待，避免旧前台/温度决策排队后补写
-- 独立 300 秒 health 只读调度节点；先检查 transition lock，再对控制面和 profile 做前后快照。切换中或状态变化时不改持久 health 文件，由 compact GET 动态返回 deferred；fas-rs 临时接管可记录稳定 deferred；发现系统回写只记录 drift，不由后台 worker 自动 repair
+- 自动模式以均衡模式为主；放电 `VIRTUAL-SKIN ≥38.8°C/60s`、充电 `≥39.8°C/60s` 或 Thermal Status ≥2 时转为省电，回落到 `≤37.5°C/120s` 后恢复；临界区设有粘滞，避免边界来回抖动
+- 采用 Pixel 模块的调度时，fas-rs 常驻 PID 表示服务可用；运行白名单内进程时 `effective=external`，退出后恢复原调度状态并保留 resident process
+- 采用 UGT 调度时，owner worker 在触发游戏 lease 时选择暂停/恢复 UGT；退出相关进程后调用 UGT lifecycle helper 恢复UGT调度，不重放完整 boot 初始化
 
-调度参数的所有权由 `scripts/cpu_profile_lib.sh` 的 JSON contract 统一声明：`foreground/cpus=framework`（observe-only）；`top-app/response_time_ms/sched_util_clamp_min/vendor_sched L2=pixel_best_effort`；`background/system-background=pixel_transaction`；`scaling_min/max_freq=thermal_powerhal_scene`。因此一次写成功只代表本次事务的 readback，不代表跨场景永久占有；需要恢复时由下一次明确的 profile/owner 事务触发。
+调度参数的所有权由 `scripts/cpu_profile_lib.sh` 的 JSON contract 统一声明：`foreground/cpus=framework`（observe-only）；`top-app/response_time_ms/sched_util_clamp_min/vendor_sched L2=pixel_best_effort`；`background/system-background=pixel_transaction`；`scaling_min/max_freq=thermal_powerhal_scene`。
 
-当实际 `.cpu_sched_owner=external` 时，本模块跳过 Pixel profile/auto 写入；该状态可能是 UGT 日常 baseline，也可能是 fas-rs 游戏 lease，必须结合 `.owner_state` 判断。永久从 UGT 回到 Pixel 仍需先 staging/禁用 UGT 并重启；游戏临时 lease 只在本次 boot 内恢复原 baseline。温控、ZRAM、NR/SIM2、UECap 与 WebUI 始终由本模块负责。
 
 ### 温控策略与自定义阈值
 
-维护者接口、函数、CGI 字段、A/B slot、receipt 和 WebUI 状态契约见：[温控/阈值链路 API 与 WebUI 维护规范](docs/温控阈值链路API与WebUI维护规范.md)。修改前先阅读该规范，避免在前端、CGI、installer 和 slot 库复制第二份 contract。
-
-默认只有一个零修改选项：**不修改温控（不添加配置）**。该选项不创建 `/vendor/etc/thermal_info_config.json` overlay，也不修改或停止系统 Thermal HAL。只有用户明确选择 custom 时，才从当前设备真实 vendor 配置或已验证的模块私有 stock snapshot 生成下列偏移；0°C 不再作为独立 custom 入口，避免与零修改选项重复：
+默认只有一个零修改选项：**不修改温控（不添加配置）**。该选项不创建 `/vendor/etc/thermal_info_config.json` overlay，也不修改或停止系统 Thermal HAL。只有用户明确选择 custom 时，才从当前设备真实 vendor 配置或已验证的模块私有 stock snapshot 生成下列偏移。
 
 | 档位 | Offset 偏移值 | 最早介入温度 (HINT) | 说明 |
 |------|--------|---------------------------|------|
 | 提前介入 | -2°C | 35°C | 比出厂提前 2°C 介入 |
-| 轻度放宽 | +2°C | 39°C | HINT 最早 39°C；VIRTUAL-SKIN 主阈值约 41°C，并非 39°C 硬限温 |
-| 日常放宽 | +4°C | 41°C | 显式 custom；靠近 SHUTDOWN 时安全收敛 |
-| 最大放宽 | +6°C | 43°C | 前置阈值目标 +6°C，最后安全阈值不平移 |
+| 轻度放宽 | +2°C | 39°C | HINT 最早 39°C；VIRTUAL-SKIN 主阈值约 41°C |
+| 日常放宽 | +4°C | 41°C | 显式 custom；靠近 SHUTDOWN 时收敛 |
+| 最大放宽 | +6°C | 43°C | 前置 severity 温控 +6°C，最后安全阈值不平移 |
 
 偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前置 severity 先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。靠近 SHUTDOWN 时，生成器按 stock `HotHysteresis` 从后向前收窄，并额外保留 `0.1°C` 的严格间隔，保证“前一档阈值 `<` 下一档阈值减下一档 hysteresis”；只检查阈值递增并不足以保证 Pixel Thermal HAL 接受配置。
 
-WebUI 实时温度优先读取后台 worker 维护的 `.thermal_cache.json`，避免普通刷新被 `dumpsys thermalservice` 慢路径阻塞；当缓存缺失、无 `VIRTUAL-SKIN`、温度越界或连续异常时，会自动走 `fresh=1` 重建，连续异常后清除缓存再重建，避免坏缓存长期误导显示。
+WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，避免普通刷新被 `dumpsys thermalservice` 慢路径阻塞；当缓存缺失、无 `VIRTUAL-SKIN`、温度越界或连续异常时，自动走 `fresh=1` 重建。
 
 ### ZRAM / 内存优化
 
 - 算法：由当前系统 owner 初始化；caiman / `CP41.260814.003.B1` 实机为 `lz77eh`（Emerald Hill 硬件加速）
-- 容量：WebUI 显示设备实际 `disksize` 与 swap 状态；当前 build 实测约 `7.6GiB`，历史 `11392MB` 仅作为目标/兼容性实验值，不覆盖 mmd-owned 配置
+- 容量：WebUI 显示设备实际 `disksize` 与 swap 状态；
 - VM 参数：`swappiness=100`、`min_free_kbytes=131072`、`watermark_scale_factor=200`、`vfs_cache_pressure=60`
-- 首次安装默认 `feature_vm=system`，模块不写 VM、ZRAM 或 dirty 参数。用户可显式选择模块优化或禁用本模块写入；WebUI 的模块优化/手动值均属于显式 mutation。ZRAM 算法/容量在 mmd-owned build 上只读显示 owner、实际容量、`/proc/swaps` 活跃状态和 `SwapTotal`，不提供伪在线调节。
+- 首次安装默认 `feature_vm=system`，模块不写 VM、ZRAM 或 dirty 参数。可显式选择模块优化或禁用本模块写入；WebUI 的模块优化/手动值均属于显式 mutation。ZRAM 算法/容量在 mmd-owned build 上只读显示 owner、实际容量、`/proc/swaps` 活跃状态和 `SwapTotal`。
 
 ### 待机与 modem 策略（以 Google 默认机制为主）
 
-本模块不强行削弱 modem 能力，保留 `5G / 5GA / CA / IMS` 能力，主要通过系统设置和使用层策略降低待机功耗：
+模块保留 `5G / 5GA / CA / IMS` 能力，主要通过系统设置和使用层策略降低待机功耗：
 
 | 设置项 | 值 | 说明 |
 |--------|-----|------|
-| `adaptive_connectivity_enabled` | `1` | Google 官方 5G 节电建议：app 不需要高速时自动 NR→LTE |
+| `adaptive_connectivity_enabled` | `1` |  NR→LTE |
 | `network_recommendations_enabled` | `1` | 系统网络建议 |
 | `mobile_data_always_on` | `0` | Wi-Fi 下不保持蜂窝常驻 |
 | `wifi_scan_always_enabled` | `0` | 关闭 Wi-Fi 后台常扫 |
 | `ble_scan_always_enabled` | `0` | 关闭 BLE 后台常扫 |
 | `nearby_sharing_enabled` | `0` | 关闭 Nearby Sharing |
 
-- Wi-Fi multicast：亮屏开启，息屏关闭
-- SIM2 空槽：默认开启。通过 `cmd phone set-sim-count 1` 将 modem 实例从 2 降到 1；检测到 SIM2 插入或用户关闭自动管理时通过 `set-sim-count 2` 恢复双 modem
-- 待机隔离模式：仅用于过夜 A/B 排障。开启后息屏阶段暂停 NR 降级、SIM2 管理、功耗采样、thermal burst 和自动调度，尽量把 control 模块的待机干扰降到最低
-- 后台应用限制：按包选择 `降低后台优先级 / 禁止后台服务 / 禁止后台活动 / 休眠` 策略；添加区会从统一应用识别目录列出本机已安装的常用应用，也保留手输包名。默认仅预置抖音（休眠：锁屏或离开前台延时后 `force-stop`），移除或关闭时按接管前 bucket/AppOps 恢复
+
 
 ### NR 息屏降级
 
@@ -126,19 +83,20 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 |------|----------|------|----------|
 | **国内频段** | `balanced` | 原厂 +25 组中国 NR 组合 (n28/n41/n79) | +25 / -0 / ~0 |
 | 全面增强 | `special` | 原厂 +52 组全球 NR 组合 | +52 / -0 / ~0 |
-| Google 默认 | `universal` | 原厂能力表，不做任何修改 | +0 / -0 / ~0 |
+| Google 默认 | `universal` | 不做任何修改 | +0 / -0 / ~0 |
 
 - 切换只重启蜂窝 modem，不影响 Wi-Fi / 蓝牙
 - WebUI 切换后自动校验配置摘要，确认一致后才提示成功
 
 UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 `balanced/special/universal` 三档；`komodo` 只有 `stock/candidate` 两态，默认 stock，只有用户明确选择后才 bind
-`PLATFORM_6287228797510365516.binarypb`。XL 文件由用户提供，大小 `623788`、SHA-256
-`f2c0bc1dc1409b1780dbdf57e56ebfef15cf7f889e76315343d2ae139cb19090`，来源 build 未知，因此只能标记 candidate。两个 `PLATFORM_*` 文件属于不同 SKU，不能改名或交叉替换。
+`PLATFORM_6287228797510365516.binarypb`。XL 文件由用户提供
+
+两个 `PLATFORM_*` 文件属于不同 SKU，不能改名或交叉替换。
 
 ### 独立模块与外部调度协同
 
-本项目按“控制模块 + 基带模块 + 第三方外部调度模块”协同使用。三者都可独立安装和工作；其中 `pixel9pro_control` 与 `pixel9pro_baseband_trial` 由本项目维护，Uperf Game Turbo / fas-rs 等外部调度项目由各自上游维护。本项目不打包、不替代第三方模块，但会在用户启用游戏 handoff 后受控协调 UGT 的单实例 stop/start、fas-rs lease owner marker 与 owner-aware `powercfg` router；每次 mutation 都必须复读并在失败时恢复原 baseline。
+本项目按“控制模块 + 基带模块 + 第三方外部调度模块”协同使用。三者都可独立安装和工作；其中 `pixel9pro_control` 与 `pixel9pro_baseband_trial` 由本项目维护，Uperf Game Turbo / fas-rs 等外部调度项目由各自上游维护。本项目不打包、不替代第三方模块。
 
 | 模块 | 归属 | 详情 |
 |------|------|------|
@@ -150,16 +108,12 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 - 只安装基带模块：单独安装当前明确发布的基带 ZIP，CarrierSettings/APN/IMS 配置按 manifest 生效，UECap 保持由 Control 或系统原生路径负责
 - 控制模块 + 基带模块：WebUI 检测并展示基带模块状态；UECap 由控制模块管理，CarrierSettings / MCFG 由基带模块提供
 - 控制模块 + UGT：Pixel/UGT 双向切换均在重启后生效；APatch 可由 WebUI staging，KernelSU/Magisk 需在各自 Root 管理器启停 UGT 后重启
-- 控制模块 + fas-rs：fas-rs 在 Pixel boot 常驻待机；仅有效游戏 lease 进入接管，退出后恢复 Pixel 日常 profile，不通过 PID 存在单独判断 active owner
+- 控制模块 + fas-rs：fas-rs 在 Pixel boot 常驻待机；进入白名单进程后由 lease 进入接管，退出后恢复 Pixel 日常 profile，不通过 PID 存在单独判断 active owner
 - 三者都安装：Pixel 或 UGT 作为日常 baseline；fas-rs 命中游戏时临时成为唯一调度写入者，退出后恢复进入 lease 前的同一 baseline；基带模块独立负责运营商配置增强
 
 **基带模块兼容性**：`pixel9pro_baseband_trial` 当前源码 manifest 只允许 `caiman` / `komodo`，两机共用 CarrierSettings、APN、China MCFG 和 IMS properties，但不携带 UECap payload。Control 的 UECap binarypb 按 SKU 独立 staging：`caiman` 使用 `PLATFORM_9055801516233416490.binarypb` 三档，`komodo` 使用独立的 `PLATFORM_6287228797510365516.binarypb` candidate；不能交叉解析或改名替代。
 
 **基带模块升级规则**：升级的是普通基带模块时，不要求卸载 APatch Manager，也不应由普通模块删除 `/data/adb/modules`、修改 `modules.img` 或自行写入 MetaModule content image。若旧模块的 active source、MetaModule content image、effective overlay、source/content/effective hash 及同一 boot 的 runtime receipt 都能复读确认，可以直接安装新版并在重启后复读；只有这些证据缺失、为空、冲突、跨 boot 或失败时，才进入 clean reinstall：Root Manager 卸载旧的普通基带模块 → 重启 → 安装新版 → 再重启 → 复读 active module、MetaModule content image、effective path、mount 和 runtime receipt。
-
-**外部调度协同说明**：Uperf Game Turbo、fas-rs 等为外部调度项目，本项目只识别设备上已经存在的模块，不提供下载、推荐或安装引导。
-
-**可选模块按需显示**：WebUI 仅在检测到 UGT 时显示启动模式切换，仅在检测到 fas-rs 时显示游戏 handoff / arbiter 控制；独立调度健康状态始终可见，不依赖任一可选模块。`pixel9pro_baseband_trial` 未安装、已禁用或待移除时，基带配置卡完全隐藏。首次安装只报告 UGT、fas-rs 与本项目基带模块是否已检测到，不提供下载、推荐或第三方安装引导。单独残留的 `/data/adb/fas_rs` 状态目录不再被当成 fas-rs 已安装。
 
 
 ### NTP 服务器选择
@@ -168,7 +122,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 
 ### WebUI 控制台
 
-端口 6210，`http://127.0.0.1:6210`（仅绑定 127.0.0.1 回环）。采用 Material 3 。
+端口 6210，`http://127.0.0.1:6210`（仅绑定本机回环地址）。采用 Material 3 设计，提供状态、性能温控、网络和系统四个页面；温度与功耗历史可查看采样覆盖、缺测区间并导出记录。
 
 ### 隐私安全审计日志
 
@@ -176,7 +130,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 - 单文件达到 256 KiB 后轮转，保留 3 份历史。
 - 只记录 schema、时间、模块版本、Root 类型、设备代号、phase、operation、result、reason code 和 duration。
 - 不记录请求体、ADB endpoint、用户路径、完整包列表、原始 dumpsys/logcat、账号、号码、IMEI/IMSI/ICCID、MAC 或完整 fingerprint；边界层会把疑似值写成 `redacted`。
-- CGI 失败同时返回真实 HTTP 4xx/5xx 和 `ok=false`，不再用 HTTP 200 包装失败。
+- CGI 失败同时返回真实 HTTP 4xx/5xx 和 `ok=false`。
 
 
 **应用与 UID 识别目录**
@@ -187,36 +141,33 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 
 
 
-**其它**
-
-- 温度历史窗口：10 分钟 / 30 分钟 / 2.5h / 12h；前端对长窗口做抽稀绘制，保留峰值/低值趋势，降低 canvas 绘制压力
-- 功耗详情区分「当前放电会话 / 今日累计 / 15-30-60 分钟短窗口 / batterystats 窗口」；蜂窝功耗同时显示 ODPM rail delta 与系统估算（`mobile_radio` 仅作失真参考）。手动导出会在 `/sdcard/Download` 原子生成独立目录，包含 `report.md`、`summary.json`、`power.csv`、`thermal.csv`、`attribution.csv` 及每个文件的 SHA-256；归因只包含系统分项和 Top 10，不导出完整安装包列表。
-
-
 ## 安装
 
 1. 温控模块使用 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中发布；基带模块 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases#release-v1.1.0-rc3)
-2. KernelSU 用户需先安装 metamodule（如 `meta-overlayfs`）并重启
+2. KernelSU /Apatch用户需先安装 metamodule（如 `Hybrid Mount`）并重启
 3. APatch / KernelSU / Magisk → 模块 → 从存储安装
 4. **首次安装**：音量键交互向导依次配置温控、CPU 调度、按 SKU 的 UECap、NR、SIM2、VM/ZRAM 和 NTP；最终摘要后再次倒计时确认。安全默认是温控不添加配置、NR 关闭、VM/ZRAM system no-write，调度能力不完整时强制 off，komodo UECap 保持 stock。`meta-overlayfs` backend 使用 content staging；Hybrid Mount backend 使用 regular module source staging；两者都在重启后复读有效 `/vendor`，不执行运行期动态 bind。
-5. **升级安装**：Control 自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline。若 MetaModule content image 仍有旧 Control 内容，安装器会拒绝覆盖并要求先卸载旧 Control、重启，再安装新包，避免 stale thermal/UECap 文件残留。独立普通基带模块按上面的“基带模块升级规则”判断直接升级或 clean reinstall，不因 APatch Manager 更新本身强制卸载 Manager
+5. **升级安装**：Control 自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；
+若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline。
+若 MetaModule content image 仍有旧 Control 内容，安装器会拒绝覆盖并要求先卸载旧 Control、重启，再安装新包，避免 stale thermal/UECap 文件残留。
+独立普通基带模块按“基带模块升级规则”判断是否升级或 clean reinstall，不因 APatch Manager 更新本身强制卸载 Manager
 6. 重启
 7. 打开 `http://127.0.0.1:6210` 验证
 
 ## 兼容性
 
 - `Pixel 9 Pro (caiman)` / `Pixel 9 Pro XL (komodo)`
-- `Android 17 QPR2 Beta  (SDK 37)` 当前验证基线
-- `APatch 0.10+` 实机验证
-- `KernelSU 0.9+` 代码兼容（需已审核的 MetaModule；KernelSU 真机闭环待补）
-- `Magisk v27+` 普通功能代码兼容；UECap managed profiles 明确停用，Magisk 真机闭环待补
+- `Android 17 QPR2 Beta4  (SDK 37)` 当前验证基线
+- APatch 与 `Hybrid Mount` OverlayFS 挂载已在本机测试
+- `KernelSU 0.9+` 代码兼容
+- `Magisk v27+` 普通功能代码兼容；UECap managed profiles 明确停用
 
 ### Root 实现差异
 
 | 功能 | APatch / KSU+metamodule | Magisk |
 |---|---|---|
 | 温控阈值偏移、CPU 调度、ZRAM、后台应用限制、SIM2、NR 降级、WebUI | ✅ | ✅ |
-| UECap：caiman 三档 / komodo stock+candidate | `meta-overlayfs` 写 content image；Hybrid Mount 写 regular source，重启后复读有效 `/vendor` | ❌ 不激活 |
+| UECap：caiman 三档 / komodo stock+candidate | `meta-overlayfs` 写 content image；`Hybrid Mount` 写 regular source，重启后复读有效 `/vendor` | ❌ 不激活 |
 | 独立基带模块 CarrierSettings/APN/China MCFG/IMS properties | ✅（caiman/komodo，需按各自挂载契约复读） | ✅（使用 Magic Mount；不承担 UECap） |
 
 ## 已知问题
@@ -226,11 +177,11 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 | 原因 | 解决 |
 |------|------|
 | `thermal_info_config.json` 格式错误 | 安全模式删除 `/data/adb/modules/pixel9pro_control/` |
-| Control 在活动 MetaModule 的 post-mount 后动态 bind `/vendor` | 已改为安装阶段 content staging；post-mount 只做有效路径/hash 复读 |
+| Control 在活动 `MetaModule` 的 post-mount 后动态 bind `/vendor` | 已改为安装阶段 content staging；post-mount 只做有效路径/hash 复读 |
 | 活动 MetaModule 下通过 WebUI 修改 UECap/自定义温控 | 返回 `409 Conflict`，保留当前有效状态；卸载 Control、重启后重新安装并在安装向导中选择目标档位 |
 | `service.sh` 阻塞启动 | 同上 |
 
-**紧急恢复**：长按电源键 → 第二屏时电源+音量下进安全模式 → 重启。
+**紧急恢复**：长按电源键 → 第二屏时`电源`+`音量下`进安全模式 → 重启。
 
 ### WebUI 缓存
 
@@ -241,7 +192,6 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 - **[Sun_Dream（酷安）](https://www.coolapk.com/u/1281808)** — cpuset + sched_pixel 调度思路、基带模块 PLMN/CarrierSettings 设计
 - **[DYSBRT（酷安）](https://www.coolapk.com/u/22128139)** — 5G CA 设计
 - **[Uperf Game Turbo](https://github.com/yinwanxi/Uperf-Game-Turbo)** / fas-rs — 外部调度器；本模块仅做探测与让权协同
-
 ## 免责声明
 
 ### 验证边界

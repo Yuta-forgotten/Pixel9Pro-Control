@@ -1,16 +1,0 @@
-
-s24012ü‰£§"· 
-allow_merging_rtt_calls_bool( 
-carrier_volte_available_bool(&
-"enhanced_4g_lte_on_by_default_bool( 
-ignore_rtt_mode_setting_bool(
-maxImageHeight˜
-maxImageWidth 3
-/cn5g_show_volte_calling_icon_in_status_bar_bool(
-cn5g_smart_5g_enabled_bool( 
-cn5g_smart_5g_supported_bool(
-recipientLimit 
-rtt_downgrade_supported_bool(
-rtt_supported_bool(
-rtt_upgrade_supported_bool(
-smsToMmsTextThreshold

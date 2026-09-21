@@ -1,20 +1,0 @@
-
-s405884ü‰£§
-STELgprs.stel.inp"Ø,
-(allow_emergency_numbers_in_call_log_bool(
-maxImageHeight˜
-maxImageWidth /
-)cn5g_back_to_auto_network_selection_timerà§ñ
-cn5g_custom_config_stringÓ
-            <cn5g_config wave_at_least="2024.1">
-                <boolean name="cn5g_smart_5g_supported_bool" value="true" />
-                <boolean name="cn5g_smart_5g_enabled_bool" value="true" />
-                <string name="cn5g_smart_5g_args_str">"disable_endc_screen_off_support=true"</string>
-            </cn5g_config>
-        
-recipientLimit+
-roaming_operator_string_array2
-
-404
-405
-smsToMmsTextThreshold

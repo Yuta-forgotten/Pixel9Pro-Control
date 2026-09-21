@@ -1,6 +1,12 @@
 # Build output
 *.zip
 dist/
+/docs/
+/modules/
+/DESIGN.md
+/20??-??-??*.md
+*.tar
+*.bundle
 
 # Local project metadata / release drafts
 .code-abyss/

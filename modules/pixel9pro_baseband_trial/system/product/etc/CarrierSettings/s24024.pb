@@ -1,15 +1,0 @@
-
-s24024ü‰£§"ò 
-allow_merging_rtt_calls_bool( 
-ignore_rtt_mode_setting_bool(
-maxImageHeight˜
-maxImageWidth 
-maxMessageSize€À%
-cn5g_smart_5g_enabled_bool( 
-cn5g_smart_5g_supported_bool(
-recipientLimit 
-rtt_downgrade_supported_bool(
-rtt_supported_bool(
-rtt_upgrade_supported_bool("
-show_4g_for_lte_data_icon_bool(
-smsToMmsTextThreshold

@@ -1,90 +1,0 @@
-
-DYSBRTàŠ£§,
-CBNETcbnetpx
-imsimspx"ˆe
-5g_icon_configuration_stringEconnected_mmwave:5G_Plus,connected:5G_Plus,not_restricted_rrc_idle:5G×
-#5g_icon_display_grace_period_string¯connected_mmwave,legacy,30;connected,legacy,30;connected_mmwave,not_restricted_rrc_con,30;connected,not_restricted_rrc_con,30;not_restricted_rrc_idle,not_restricted_rrc_con,30O
-!5g_nr_ssrsrp_thresholds_int_array:*
-(€ÿÿÿÿÿÿÿÿ‡ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ•ÿÿÿÿÿÿÿÿ/
--additional_settings_caller_id_visibility_bool"
- allow_add_call_during_video_call)
-'allow_concurrent_call_during_video_call,
-(allow_emergency_numbers_in_call_log_bool(
-allow_hold_video_call_bool
-allow_holding_video_call-
-)ascii_7_bit_support_for_long_message_bool(5
-1carrier_data_call_apn_retry_after_disconnect_long d9
-!carrier_metered_apn_types_strings2
-default
-dun
-supl+
-#carrier_nr_availabilities_int_array:
-$
- carrier_supports_ss_over_ut_bool($
- carrier_video_crs_supported_bool( 
-carrier_volte_available_bool(
-carrier_vt_available_bool($
-"config_carrier_volte_tty_supported
-config_enable_video_crbt((
-#data_switch_validation_timeout_long N
-default_mtu_intø
-
-
-enabledMMS&
-"enhanced_4g_lte_on_by_default_bool(K
-gsm_rssi_thresholds_int_array:*
-(‘ÿÿÿÿÿÿÿÿ—ÿÿÿÿÿÿÿÿšÿÿÿÿÿÿÿÿ¡ÿÿÿÿÿÿÿÿ
-hide_enable_2g_bool(
-hide_enhanced_4g_lte_bool(/
-+ignore_data_enabled_changed_for_video_calls(
-imsServiceAllowTurnOff(K
-lte_rsrp_thresholds_int_array:*
-(€ÿÿÿÿÿÿÿÿ‡ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ•ÿÿÿÿÿÿÿÿ
-maxImageHeight˜
-maxImageWidth 
-cn5g_auto_resume_holding_call'
-#cn5g_config_video_crbt_sequence_gap2%
-cn5g_config_video_crbt_time_gapğ“	Ê
-cn5g_custom_config_string¬
-            <cn5g_config channel_id="cmcc|ctcn|cbncn">
-                <boolean name="hide_preferred_network_type_bool" value="true" />
-            </cn5g_config>
-        2
-.cn5g_handoff_failure_optimization_support_bool()
-%cn5g_modem_ims_register_recovery_bool(1
--cn5g_cn5g_datastall_optimization_support_bool(Y
-cn5g_net_improvement_args_str8tputSupport=true,powerSupport=true,multipleSwitchlevel=2A
-8cn5g_nr_advanced_physical_channel_item_rule_string_array2
-3,1+
-'cn5g_pingpong_optimization_support_bool(Q
--cn5g_setup_data_failure_optimization_args_str "deprioritize_nr5g_support=true"5
-1cn5g_setup_data_failure_optimization_support_bool(0
-,cn5g_should_restore_unknown_participant_bool(3
-/cn5g_show_volte_calling_icon_in_status_bar_bool(\
-cn5g_smart_5g_args_strB"disable_endc_screen_off_support=true,nrca_mitigation_enable=true"
-cn5g_smart_5g_enabled_bool( 
-cn5g_smart_5g_supported_bool('
-#cn5g_support_data_stall_detect_bool(T
-&cn5g_tdscdma_rscp_thresholds_int_array:*
-(‘ÿÿÿÿÿÿÿÿ—ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¥ÿÿÿÿÿÿÿÿ*
-&cn5g_use_restore_number_for_conference(*
-&cn5g_wifi_cellular_switch_enabled_bool(3
-!non_roaming_operator_string_array2
-46051
-46032
-prefer_2g_bool
-recipientLimit-
-)show_wifi_calling_icon_in_status_bar_bool(
-smsToMmsTextThreshold$
-"support_pause_ims_video_calls_bool
-support_tdscdma_bool($
-"support_video_conference_call_bool
-vilte_data_is_metered_bool
-vonr_enabled_bool(
-vonr_on_by_default_bool(
-vonr_setting_visibility_bool-
-'nr_advanced_threshold_bandwidth_khz_int°Û8
-4include_lte_for_nr_advanced_threshold_bandwidth_bool(
-allow_video_call(0
-&additional_nr_advanced_bands_int_array:
-)NO

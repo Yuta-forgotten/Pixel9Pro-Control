@@ -1,8 +1,0 @@
-
-s334009ü‰£§"„
-maxImageHeight˜
-maxImageWidth 
-maxMessageSize€À%
-maxSubjectLengthP
-recipientLimit
-smsToMmsTextThreshold
