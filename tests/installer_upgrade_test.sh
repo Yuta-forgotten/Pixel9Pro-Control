@@ -33,3 +33,25 @@ rm -f "$MODPATH/.thermal_policy"
 mkdir "$MODPATH/.thermal_policy" || exit 2
 if sh "$BLOCK"; then printf 'not ok - failed copy was accepted\n'; exit 1; fi
 printf 'ok - failed migration rejects installation\n'
+
+# Replay the production custom generation branch against a clean staging tree.
+# It has no system/vendor directory until that branch creates one.
+GEN="$TEST_ROOT/generate.sh"
+awk '/^if \[ "\$THERMAL_POLICY" = custom \]; then$/ { capture=1 } capture { print } capture && /^fi$/ { exit }' "$SOURCE_ROOT/customize.sh" > "$GEN"
+[ -s "$GEN" ] || exit 2
+. "$SOURCE_ROOT/scripts/thermal_profile.sh" || exit 2
+. "$SOURCE_ROOT/scripts/thermal_policy_lib.sh" || exit 2
+thermal_policy_init "$TEST_ROOT/fresh"
+device=caiman
+mkdir -p "$THERMAL_POLICY_ROOT/payloads/thermal/$device" || exit 2
+cp "$SOURCE_ROOT/tests/fixtures/thermal/caiman.json" "$THERMAL_POLICY_ROOT/payloads/thermal/$device/stock.json" || exit 2
+OUT_JSON="$THERMAL_OVERLAY_FILE"
+OFFSET_FILE="$THERMAL_OFFSET_FILE"
+THERMAL_POLICY=custom
+offset=2
+installer_write() { printf '%s' "$2" > "$1"; }
+ui_print() { :; }
+abort() { exit 1; }
+. "$GEN" || exit 1
+[ -s "$OUT_JSON" ] && [ "$THERMAL_POLICY" = custom ] && [ "$offset" = 2 ] || exit 1
+printf 'ok - clean staging creates the custom thermal directory and config\n'

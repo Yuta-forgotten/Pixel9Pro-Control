@@ -687,10 +687,13 @@ installer_write "$THERMAL_POLICY_FILE" "$THERMAL_POLICY"
 if [ "$THERMAL_POLICY" = custom ]; then
     # Generate only from the current-device snapshot; never use a packaged
     # thermal JSON or a snapshot from another SKU/build.
+    mkdir -p "${OUT_JSON%/*}" || { ui_print "  ✗ 无法创建温控配置输出目录"; abort; }
     if ! thermal_generate_config "$THERMAL_POLICY_ROOT/payloads/thermal/$device/stock.json" "$OUT_JSON" "$offset"; then
         thermal_policy_remove_overlay || abort
         installer_write "$THERMAL_POLICY_FILE" system
         installer_write "$OFFSET_FILE" 0
+        THERMAL_POLICY=system
+        offset=0
         ui_print "  ⚠ 当前 stock 基线无法生成合法 custom thermal, 已 fail closed 到系统默认"
     fi
 else
