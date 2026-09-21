@@ -1,176 +1,176 @@
-/* Pixel9Pro-Control WebUI — shared modal and detail sheet shell. */
-
+/* Shared MD3 sheet shell. Modal state/focus and measured dock offsets live in ui.js. */
 .modal-wrap{
-
   position:fixed;
-  inset:0;
-  z-index:150;
+  inset:0 0 var(--keyboard-inset,0px);
+  z-index:var(--z-modal,150);
   display:flex;
   align-items:flex-end;
   justify-content:center;
-  padding:0 max(12px,env(safe-area-inset-right,0px)) max(18px,env(safe-area-inset-bottom,0px)) max(12px,env(safe-area-inset-left,0px));
+  padding:max(12px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) 0 max(16px,env(safe-area-inset-left,0px));
+  visibility:hidden;
   opacity:0;
   pointer-events:none;
-  transition:opacity var(--mid) var(--ease);
+  transition:opacity 250ms cubic-bezier(.3,0,1,1),visibility 0s 250ms;
 }
-
-.modal-wrap.open{opacity:1;pointer-events:auto}
-.modal-bg{
-  position:absolute;
-  inset:0;
-  background:rgba(9,13,12,.42);
+.modal-wrap.open{
+  visibility:visible;
+  opacity:1;
+  pointer-events:auto;
+  transition:opacity 350ms cubic-bezier(0,0,0,1),visibility 0s;
 }
-
+.modal-bg{position:absolute;inset:0;background:rgba(0,0,0,.4)}
 .modal-sheet{
   position:relative;
   z-index:1;
   display:flex;
   flex-direction:column;
-  width:min(100%,460px);
-  max-height:86vh;
-  max-height:86dvh;
+  width:min(100%,560px);
+  min-width:0;
+  max-height:calc(100vh - max(12px,env(safe-area-inset-top,0px)) - var(--keyboard-inset,0px));
+  max-height:calc(100dvh - max(12px,env(safe-area-inset-top,0px)) - var(--keyboard-inset,0px));
   overflow:hidden;
-  background:var(--surface);
+  color:var(--text);
+  background:var(--sc-high,var(--surface));
   border:1px solid var(--line);
-  border-radius:var(--radius-xl);
-  box-shadow:0 28px 56px rgba(0,0,0,.24);
-  transform:translateY(24px) scale(.98);
-  transition:transform var(--slow) var(--ease);
+  border-bottom:0;
+  border-radius:28px 28px 0 0;
+  box-shadow:0 4px 16px rgba(0,0,0,.12);
+  transform:translateY(24px);
+  transition:transform 250ms cubic-bezier(.3,0,1,1);
 }
-
-.modal-wrap.open .modal-sheet{transform:translateY(0) scale(1)}
-
-.modal-wrap.energy-mode,
-.modal-wrap.history-mode,
-.modal-wrap.analytics-mode{
+.modal-wrap.open .modal-sheet{transform:translateY(0);transition-duration:350ms;transition-timing-function:cubic-bezier(0,0,0,1)}
+.modal-wrap.energy-mode,.modal-wrap.history-mode,.modal-wrap.analytics-mode{
   align-items:stretch;
   padding-top:max(8px,env(safe-area-inset-top,0px));
-  padding-bottom:0;
 }
-
-.modal-wrap.energy-mode .modal-sheet,
-.modal-wrap.history-mode .modal-sheet,
-.modal-wrap.analytics-mode .modal-sheet{
-  width:min(100%,560px);
+.modal-wrap.energy-mode .modal-sheet,.modal-wrap.history-mode .modal-sheet,.modal-wrap.analytics-mode .modal-sheet{
+  width:min(100%,640px);
   height:100%;
   max-height:none;
-  border-bottom:0;
-  border-radius:var(--radius-xl) var(--radius-xl) 0 0;
   box-shadow:none;
-  transform:none;
-  transition:none;
-  contain:layout paint;
 }
-
-.modal-wrap.energy-mode .modal-sheet-body,
-.modal-wrap.history-mode .modal-sheet-body,
-.modal-wrap.analytics-mode .modal-sheet-body{
-  padding:12px 16px calc(24px + env(safe-area-inset-bottom,0px));
-}
-
-.modal-wrap.energy-mode .modal-actions,
-.modal-wrap.history-mode .modal-actions,
-.modal-wrap.analytics-mode .modal-actions{display:none}
-
-.sheet-handle{
-  width:40px;
-  height:5px;
-  border-radius:999px;
-  background:var(--line-2);
-  margin:10px auto 0;
-}
-
-.modal-sheet-body{
-  flex:1 1 auto;
-  min-height:0;
-  padding:14px 18px 18px;
-  overflow-y:auto;
-}
-
-/* 详情 sheet 固定头: 标题常驻 + 右上关闭, 长内容(功耗/历史)滚动时关闭始终可达 */
+.sheet-handle{flex:none;width:32px;height:4px;border-radius:999px;background:var(--outline);margin:8px auto}
 .sheet-head{
   display:flex;
+  flex:none;
   align-items:center;
   justify-content:space-between;
-  gap:12px;
-  padding:2px 16px 10px;
+  gap:8px;
+  padding:0 16px 8px;
   border-bottom:1px solid var(--line);
 }
-
-.sheet-head .modal-s-title{
-  flex:1;
-  min-width:0;
-  text-align:left;
-}
-
+.sheet-head .modal-s-title{flex:1;min-width:0;text-align:start;overflow-wrap:anywhere}
 .sheet-close-btn{
-  flex-shrink:0;
-  width:36px;
-  height:36px;
-  border-radius:var(--radius-md);
+  flex:none;
+  width:48px;
+  height:48px;
   display:flex;
   align-items:center;
   justify-content:center;
-  background:var(--surface-2);
-  border:1px solid var(--line);
+  padding:0;
+  border:0;
+  border-radius:24px;
+  background:transparent;
   color:var(--text-2);
+  font-size:1.5rem;
+  line-height:1;
   cursor:pointer;
   -webkit-tap-highlight-color:transparent;
-  transition:transform var(--fast) var(--ease),background var(--mid) var(--ease);
+  transition:background-color 100ms var(--ease);
 }
-
-.sheet-close-btn:active{transform:scale(.95)}
-
+.sheet-close-btn svg{display:block;flex:none;width:24px;height:24px;pointer-events:none}
+.sheet-close-btn:active{background:color-mix(in srgb,var(--text) 10%,transparent)}
+.sheet-close-btn:focus-visible,.mbtn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.modal-sheet-body{
+  flex:1 1 auto;
+  min-height:0;
+  min-width:0;
+  padding:16px 16px max(16px,env(safe-area-inset-bottom,0px));
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  overflow-wrap:anywhere;
+}
+.modal-sheet > .modal-actions{
+  flex:none;
+  display:flex;
+  gap:8px;
+  padding:8px 16px max(8px,env(safe-area-inset-bottom,0px));
+  margin:0;
+  border-top:1px solid var(--line);
+  background:var(--sc-high,var(--surface));
+}
+.modal-sheet-body > .modal-actions{display:grid;gap:8px;margin-top:16px}
 .modal-s-icon{
   display:flex;
   align-items:center;
   justify-content:center;
   width:48px;
   height:48px;
-  border-radius:var(--radius-md);
+  border-radius:16px;
   background:var(--primary-container);
   color:var(--on-primary-container);
-  margin:6px auto 12px;
+  margin:4px auto 12px;
 }
-
-.modal-s-title{
-  font-size:20px;
-  line-height:26px;
-  font-weight:700;
-  text-align:center;
-}
-
-.modal-s-desc{
-  margin-top:8px;
-  font-size:14px;
-  line-height:20px;
-  color:var(--text-2);
-  text-align:center;
-  overflow-wrap:anywhere;
-}
-
+.modal-s-title{font-size:1.375rem;line-height:1.273;font-weight:500;text-align:center}
+.modal-s-desc{margin-top:8px;font-size:.875rem;line-height:1.429;color:var(--text-2);text-align:start;overflow-wrap:anywhere}
 .mbtn{
   width:100%;
   min-height:48px;
   padding:12px 16px;
-  border-radius:var(--radius-md);
+  border-radius:24px;
   display:flex;
   align-items:center;
   justify-content:center;
-  font-size:14px;
-  line-height:20px;
-  font-weight:700;
+  font-size:.875rem;
+  line-height:1.429;
+  font-weight:500;
   cursor:pointer;
   -webkit-tap-highlight-color:transparent;
-  transition:transform var(--fast) var(--ease),background var(--mid) var(--ease),color var(--mid) var(--ease),border-color var(--mid) var(--ease);
+  transition:background-color 150ms var(--ease),color 150ms var(--ease),border-color 150ms var(--ease);
 }
+.mbtn-primary{background:var(--primary);color:var(--on-primary)}
+.mbtn-secondary{background:var(--primary-container);color:var(--on-primary-container)}
+.mbtn-ghost{min-height:48px;color:var(--primary)}
+.sheet-minimize-btn{display:none}
+.modal-wrap.energy-mode .sheet-minimize-btn,.modal-wrap.history-mode .sheet-minimize-btn,.modal-wrap.analytics-mode .sheet-minimize-btn{display:flex}
 
-.mbtn-primary{
-  background:var(--primary);
-  color:var(--on-primary);
+/* A paused history dock is a nonmodal region above the measured navigation bar. */
+.modal-wrap.detail-minimized{
+  inset:auto 0;
+  bottom:max(calc(var(--bottom-nav-occupied,var(--bottombar-h)) + 12px),calc(var(--keyboard-inset,0px) + 12px));
+  align-items:flex-end;
+  padding:0 max(16px,env(safe-area-inset-right,0px)) 0 max(16px,env(safe-area-inset-left,0px));
+  pointer-events:none;
 }
+.modal-wrap.detail-minimized .modal-bg,.modal-wrap.detail-minimized .sheet-handle,
+.modal-wrap.detail-minimized .modal-sheet-body,.modal-wrap.detail-minimized .modal-actions{display:none}
+.modal-wrap.detail-minimized .modal-sheet{
+  width:min(100%,640px);
+  height:auto;
+  max-height:none;
+  border:1px solid var(--outline-variant,var(--line));
+  border-radius:20px;
+  box-shadow:var(--shadow);
+  pointer-events:auto;
+  transform:none;
+  transition:none;
+}
+.modal-wrap.detail-minimized .sheet-head{padding:8px 12px;border:0}
+.modal-wrap.detail-minimized .modal-s-title{font-size:1rem;line-height:1.5}
+.modal-wrap.detail-minimized .sheet-minimize-btn svg{transform:rotate(180deg)}
+.toast-wrap{
+  z-index:var(--z-feedback,200);
+  bottom:calc(max(var(--bottom-nav-occupied,var(--bottombar-h)),var(--keyboard-inset,0px)) + var(--detail-dock-occupied,0px) + 12px);
+}
+.toast-wrap .toast{pointer-events:none;overflow-wrap:anywhere}
+.has-modal .toast-wrap{bottom:calc(var(--modal-footer-occupied,64px) + var(--keyboard-inset,0px) + 12px)}
+.has-modal{overflow:hidden}
 
-.mbtn-secondary{
-  background:var(--primary-container);
-  color:var(--on-primary-container);
+@media (max-width:599px){
+  .modal-wrap:not(.detail-minimized){padding-inline:0}
+}
+@media (prefers-reduced-motion:reduce){
+  .modal-wrap,.modal-wrap.open{transition:opacity 80ms linear,visibility 0s}
+  .modal-sheet,.modal-wrap.open .modal-sheet{transform:none;transition:none}
+  .sheet-close-btn,.mbtn{transition:none}
 }

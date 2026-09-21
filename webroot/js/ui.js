@@ -1,7 +1,11 @@
 // DOM 引用、弹窗与前台刷新生命周期功能。
 'use strict';
 (() => {
-const state = { rebootContext: 'thermal' };
+const state = {
+  rebootContext: 'thermal', modalRecords: new Map(), modalStack: [],
+  modalObserver: null, resizeObserver: null, detailSession: 0,
+  historyBacks: 0, deferredHistoryModal: '', handlingPopState: false, layoutFrame: 0
+};
 
 function $(id){ return document.getElementById(id); }
 
@@ -150,6 +154,7 @@ function initRefs() {
   refs.pullText = $('pull-text');
   refs.tabPages = $('tab-pages');
   refs.topbar = document.querySelector('.topbar');
+  initializeModalLifecycle();
 }
 
 function setStaticHtml(target, html) {
@@ -159,12 +164,189 @@ function setStaticHtml(target, html) {
   target.replaceChildren(...Array.from(doc.body.childNodes).map((node) => document.importNode(node, true)));
 }
 
+function invalidateDetailSession() {
+  state.detailSession += 1;
+  document.dispatchEvent(new CustomEvent('pixel:detail-session', { detail: { session: state.detailSession } }));
+}
+
+function activeModalRecord() {
+  return [...state.modalStack].reverse().map((name) => state.modalRecords.get(name))
+    .find((record) => record.el.classList.contains('open') && !record.el.classList.contains('detail-minimized'));
+}
+
+function focusElement(element) {
+  if (!element?.isConnected || element.closest('[inert]')) return false;
+  if (!element.getClientRects().length) return false;
+  element.focus({ preventScroll: true });
+  return document.activeElement === element;
+}
+
+function focusModal(record) {
+  const title = record.el.querySelector('.modal-s-title');
+  if (title) title.tabIndex = -1;
+  if (!focusElement(title)) focusElement(record.el);
+}
+
+function restoreModalFocus(record) {
+  if (focusElement(record.returnFocus)) return;
+  const active = activeModalRecord();
+  if (active) focusModal(active);
+  else focusElement(document.querySelector('.nav-item.active, .nav-btn.active, #theme-open-btn'));
+}
+
+function updateOverlayLayout() {
+  state.layoutFrame = 0;
+  const root = document.documentElement;
+  const nav = document.querySelector('.bottom-nav');
+  const navHeight = nav ? Math.ceil(nav.getBoundingClientRect().height) : 0;
+  const dock = refs.detailModal?.classList.contains('open') && refs.detailModal.classList.contains('detail-minimized');
+  const dockSheet = dock ? refs.detailModal.querySelector('.modal-sheet') : null;
+  const dockHeight = dockSheet ? Math.ceil(dockSheet.getBoundingClientRect().height) : 0;
+  root.style.setProperty('--bottom-nav-occupied', `${navHeight}px`);
+  root.style.setProperty('--bottom-nav-height', `${navHeight}px`);
+  root.style.setProperty('--detail-dock-height', `${dockHeight}px`);
+  root.style.setProperty('--detail-dock-occupied', dockHeight ? `${dockHeight + 12}px` : '0px');
+  const footer = activeModalRecord()?.el.querySelector('.modal-sheet > .modal-actions');
+  root.style.setProperty('--modal-footer-occupied', `${footer ? Math.ceil(footer.getBoundingClientRect().height) : 0}px`);
+  const viewport = window.visualViewport;
+  const keyboardInset = viewport ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop) : 0;
+  root.style.setProperty('--keyboard-inset', `${Math.round(keyboardInset)}px`);
+}
+
+function requestOverlayLayout() {
+  if (!state.layoutFrame) state.layoutFrame = window.requestAnimationFrame(updateOverlayLayout);
+}
+
+// One coordinator also covers feature entry points that add .open directly.
+// Inert takes effect immediately; CSS exit animation is never a lifecycle gate.
+function syncModalState() {
+  let restore = null;
+  let focus = null;
+  state.modalRecords.forEach((record, name) => {
+    const opened = record.el.classList.contains('open');
+    const minimized = opened && record.el.classList.contains('detail-minimized');
+    if (opened && !record.opened) {
+      record.returnFocus = document.activeElement;
+      state.modalStack = state.modalStack.filter((item) => item !== name);
+      state.modalStack.push(name);
+      focus = record;
+    } else if (!opened && record.opened) {
+      state.modalStack = state.modalStack.filter((item) => item !== name);
+      restore = record;
+      if (name === 'detail') invalidateDetailSession();
+    } else if (opened && minimized !== record.minimized) {
+      if (minimized) restore = record;
+      else focus = record;
+    }
+    record.opened = opened;
+    record.minimized = minimized;
+  });
+  const active = activeModalRecord();
+  const shell = document.querySelector('.app-shell');
+  if (shell) shell.inert = Boolean(active);
+  document.body.classList.toggle('has-modal', Boolean(active));
+  state.modalRecords.forEach((record) => {
+    const exposed = record.opened && (!active || record === active);
+    record.el.inert = !exposed;
+    record.el.setAttribute('role', record.minimized ? 'region' : 'dialog');
+    if (record === active) record.el.setAttribute('aria-modal', 'true');
+    else record.el.removeAttribute('aria-modal');
+    record.el.style.zIndex = record === active ? 'var(--z-modal, 150)' : record.minimized ? 'var(--z-dock, 110)' : '';
+    if (record.name === 'detail') {
+      record.el.querySelectorAll('.modal-sheet-body, .modal-actions').forEach((body) => { body.inert = record.minimized; });
+    }
+  });
+  if (focus && focus === active) focusModal(focus);
+  else if (restore) restoreModalFocus(restore);
+  state.modalRecords.forEach((record) => record.el.setAttribute('aria-hidden', String(record.el.inert)));
+  updateOverlayLayout();
+}
+
+function closeTopModal() {
+  const record = activeModalRecord() || state.modalRecords.get(state.modalStack.at(-1));
+  if (!record) return false;
+  if (record.name === 'detail') closeDetailModal();
+  else if (record.name === 'theme') closeThemeSheet();
+  else if (record.name === 'reboot') closeRebootModal();
+  else if (record.name === 'swapTune') requireFeature('memory').closeSwapTuneModal();
+  syncModalState();
+  return true;
+}
+
+function handlePopState() {
+  if (state.historyBacks > 0) {
+    state.historyBacks -= 1;
+    if (!state.historyBacks && state.deferredHistoryModal) {
+      const name = state.deferredHistoryModal;
+      state.deferredHistoryModal = '';
+      if (state.modalRecords.get(name)?.opened) history.pushState({ modal: name }, '');
+    }
+    return;
+  }
+  state.handlingPopState = true;
+  try { closeTopModal(); } finally { state.handlingPopState = false; }
+}
+
+function handleModalKeydown(event) {
+  if (event.key === 'Escape') {
+    if (closeTopModal()) { event.preventDefault(); event.stopPropagation(); }
+    return;
+  }
+  const active = activeModalRecord();
+  if (event.key !== 'Tab' || !active) return;
+  const focusable = [...active.el.querySelectorAll('button, a[href], input, select, textarea, summary, [tabindex]')]
+    .filter((el) => !el.disabled && el.tabIndex >= 0 && !el.closest('[inert]')
+      && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+  if (!focusable.length) { event.preventDefault(); focusModal(active); return; }
+  const index = focusable.indexOf(document.activeElement);
+  if (index < 0 || (!event.shiftKey && index === focusable.length - 1) || (event.shiftKey && index === 0)) {
+    event.preventDefault();
+    focusElement(event.shiftKey ? focusable.at(-1) : focusable[0]);
+  }
+}
+
+function initializeModalLifecycle() {
+  if (state.modalObserver) return;
+  [['theme', refs.themeModal], ['reboot', refs.rebootModal], ['detail', refs.detailModal], ['swapTune', refs.swapTuneModal]]
+    .forEach(([name, el]) => {
+      if (!el) return;
+      el.tabIndex = -1;
+      state.modalRecords.set(name, { name, el, opened: false, minimized: false, returnFocus: null });
+    });
+  state.modalObserver = new MutationObserver(syncModalState);
+  state.modalRecords.forEach(({ el }) => state.modalObserver.observe(el, { attributes: true, attributeFilter: ['class'] }));
+  if (typeof ResizeObserver === 'function') {
+    state.resizeObserver = new ResizeObserver(requestOverlayLayout);
+    [document.querySelector('.bottom-nav'), ...document.querySelectorAll('.modal-sheet, .modal-sheet > .modal-actions')]
+      .filter(Boolean).forEach((el) => state.resizeObserver.observe(el));
+  }
+  document.addEventListener('keydown', handleModalKeydown);
+  document.addEventListener('focusin', (event) => {
+    const active = activeModalRecord();
+    if (active && !active.el.contains(event.target)) focusModal(active);
+  });
+  window.addEventListener('resize', requestOverlayLayout, { passive: true });
+  window.visualViewport?.addEventListener('resize', requestOverlayLayout, { passive: true });
+  window.visualViewport?.addEventListener('scroll', requestOverlayLayout, { passive: true });
+  syncModalState();
+}
+
 function pushModalState(name) {
-  history.pushState({ modal: name }, '');
+  if (name === 'detail') invalidateDetailSession();
+  if (state.historyBacks) state.deferredHistoryModal = name;
+  else if (history.state?.modal !== name) history.pushState({ modal: name }, '');
+  syncModalState();
+  const record = state.modalRecords.get(name);
+  if (record && record === activeModalRecord()) focusModal(record);
 }
 
 function popModalIfTop(name) {
-  if (history.state && history.state.modal === name) history.back();
+  syncModalState();
+  if (state.deferredHistoryModal === name) state.deferredHistoryModal = '';
+  if (!state.handlingPopState && history.state?.modal === name && !state.historyBacks) {
+    state.historyBacks += 1;
+    history.back();
+  }
 }
 
 function openThemeSheet(){
@@ -201,18 +383,17 @@ function closeRebootModal() {
   popModalIfTop('reboot');
   const core = requireFeature('core');
   core.queueNextPoll(POLL_MIN_DELAY_MS);
-  core.showToast(state.rebootContext === 'scheduler' ? '切换已提交，重启后验证' : '已保存，重启手机后生效');
+  core.showToast(state.rebootContext === 'scheduler' ? '切换已提交，重启后验证' : '策略已保存，重启后验证');
 }
 
 function openDetail(title, html) {
-  stopTempChartRefresh();
-  stopEnergyDetailRefresh();
   requireFeature('analytics').stop();
   refs.detailModal.classList.remove('energy-mode');
   refs.detailModal.classList.remove('history-mode');
   refs.detailModal.classList.remove('analytics-mode');
   refs.detailModal.classList.remove('detail-minimized');
   refs.detailMinimizeBtn?.setAttribute('aria-expanded', 'true');
+  refs.detailMinimizeBtn?.setAttribute('aria-label', '缩小详情');
   refs.detailTitle.textContent = title;
   setStaticHtml(refs.detailBody, html);
   refs.detailModal.classList.add('open');
@@ -226,12 +407,13 @@ function toggleDetailMinimized() {
   const minimized = refs.detailModal.classList.toggle('detail-minimized');
   refs.detailMinimizeBtn?.setAttribute('aria-expanded', String(!minimized));
   refs.detailMinimizeBtn?.setAttribute('aria-label', minimized ? '展开详情' : '缩小详情');
-  requireFeature('core').showToast(minimized ? '详情已缩小，后台继续加载' : '详情已展开', 1800);
+  if (minimized) requireFeature('analytics').minimize();
+  syncModalState();
+  if (!minimized) requireFeature('analytics').resume();
+  requireFeature('core').showToast(minimized ? '详情已缩小，刷新已暂停' : '详情已展开', 1800);
 }
 
 function closeDetailModal(){
-  stopTempChartRefresh();
-  stopEnergyDetailRefresh();
   requireFeature('analytics').stop();
   refs.detailModal.classList.remove('open');
   refs.detailModal.classList.remove('energy-mode');
@@ -239,6 +421,7 @@ function closeDetailModal(){
   refs.detailModal.classList.remove('analytics-mode');
   refs.detailModal.classList.remove('detail-minimized');
   refs.detailMinimizeBtn?.setAttribute('aria-expanded', 'true');
+  refs.detailMinimizeBtn?.setAttribute('aria-label', '缩小详情');
   popModalIfTop('detail');
   requireFeature('core').queueNextPoll(POLL_MIN_DELAY_MS);
 }
@@ -273,6 +456,11 @@ registerFeature('ui', {
   setStaticHtml,
   pushModalState,
   popModalIfTop,
+  handlePopState,
+  syncModalState,
+  updateOverlayLayout,
+  getDetailSession: () => state.detailSession,
+  isDetailSessionActive: (session) => session === state.detailSession && refs.detailModal?.classList.contains('open'),
   openThemeSheet,
   closeThemeSheet,
   openRebootModal,

@@ -48,12 +48,37 @@ check_eq 'VM profiles and limits are exported' yes "$_vm_contract_complete"
 # not actually enabled as swap (for example after an interrupted swapoff or
 # an init/OTA race). The service skip path must use the complete matcher,
 # including /proc/swaps, so it repairs the missing swapon state.
-if grep -Fq 'awk '\''$1 ~ /(^|\\/)zram0$/'\'' { found=1 } END { exit found ? 0 : 1 }' "$LIB" \
-    && grep -Fq 'vm_zram_matches "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES"' "$SERVICE" \
+if grep -Fq 'vm_zram_matches "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES"' "$SERVICE" \
     && grep -Fq 'mmd.setup_complete' "$SERVICE"; then
     check_eq 'ZRAM matcher requires active swap and service repairs inactive zram' yes yes
 else
     check_eq 'ZRAM matcher requires active swap and service repairs inactive zram' yes no
+fi
+
+# Run the production matcher with read-only node fixtures, rather than matching
+# an escaped awk source string. These overrides never write sysfs/procfs.
+if (
+    cat() {
+        case "$1" in
+            /sys/block/zram0/comp_algorithm) printf 'lz4 [lz77eh]\n' ;;
+            /sys/block/zram0/disksize) printf '%s\n' "$VM_ZRAM_SIZE_BYTES" ;;
+            *) command cat "$@" ;;
+        esac
+    }
+    awk() {
+        if [ "$2" = /proc/swaps ]; then
+            { printf 'Filename Type Size Used Priority\n'; [ "$VM_FIXTURE_ACTIVE" = yes ] && printf '/dev/block/zram0 partition 1000 0 -2\n'; } | command awk "$1"
+        else command awk "$@"; fi
+    }
+    VM_FIXTURE_ACTIVE=no
+    ! vm_zram_matches "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES" || exit 1
+    VM_FIXTURE_ACTIVE=yes
+    vm_zram_matches "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES" || exit 1
+    ! vm_zram_matches wrong "$VM_ZRAM_SIZE_BYTES"
+); then
+    check_eq 'production matcher rejects inactive swap and wrong algorithm' yes yes
+else
+    check_eq 'production matcher rejects inactive swap and wrong algorithm' yes no
 fi
 
 printf '1..%s\n' "$TOTAL"

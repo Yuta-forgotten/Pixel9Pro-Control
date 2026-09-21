@@ -20,8 +20,8 @@ mkdir -p "$TEST_ROOT" || exit 2
 mkdir -p "$TEST_ROOT/config" "$TEST_ROOT/system/vendor/firmware/uecapconfig" || exit 2
 cat > "$TEST_ROOT/config/uecap_devices.tsv" <<'EOF'
 # device|label|uecap_policy|target_name|source_dir|mode_order|default_mode
-caiman|Pixel 9 Pro|managed|PLATFORM_9055801516233416490.binarypb|system/vendor/firmware/uecapconfig|balanced,special,universal|balanced
-komodo|Pixel 9 Pro XL|external|PLATFORM_6287228797510365516.binarypb|||disabled
+caiman|Pixel 9 Pro|managed_profiles|PLATFORM_9055801516233416490.binarypb|payloads/uecap/caiman|balanced,special,universal|balanced
+komodo|Pixel 9 Pro XL|single_candidate|PLATFORM_6287228797510365516.binarypb|payloads/uecap/komodo|stock,candidate|stock
 EOF
 export PIXEL9PRO_MODDIR="$TEST_ROOT"
 export PIXEL9PRO_UECAP_DEVICE=caiman
@@ -35,6 +35,7 @@ export PIXEL9PRO_UECAP_RECEIPT_FILE="$TEST_ROOT/runtime_receipt"
 export PIXEL9PRO_UECAP_LOGDIR="$TEST_ROOT/logs"
 export PIXEL9PRO_UECAP_TEST_MODE=1
 export PIXEL9PRO_UECAP_BOOT_ID=test-boot
+export PIXEL9PRO_METAMODULE_LINK="$TEST_ROOT/no-metamodule"
 export APATCH=true
 . "$SOURCE_ROOT/uecap_profile.sh"
 
@@ -49,8 +50,8 @@ else
     PASS=$((PASS + 1))
     printf 'ok %s - UECap CLI rejects unknown commands\n' "$((PASS + FAIL))"
 fi
-check_eq 'UECap UI contract serializes modes and default' \
-    '{"mode_order":["balanced","special","universal"],"default_mode":"balanced"}' \
+check_eq 'UECap UI fails closed without a compatible mount manager' \
+    '{"mode_order":[],"default_mode":"disabled"}' \
     "$(uecap_print_ui_contract_json)"
 if uecap_is_valid_mode special && ! uecap_is_valid_mode invalid; then
     PASS=$((PASS + 1))
@@ -97,7 +98,7 @@ printf '100' > "$UECAP_SWITCH_FILE"
 uecap_commit_state special manual_locked 200
 check_eq 'transaction commits active mode' special "$(cat "$UECAP_MODE_FILE")"
 check_eq 'transaction commits manual mode' special "$(cat "$UECAP_MANUAL_MODE_FILE")"
-check_eq 'transaction keeps manual policy' manual "$(cat "$UECAP_POLICY_FILE")"
+check_eq 'transaction records the manifest policy' managed_profiles "$(cat "$UECAP_POLICY_FILE")"
 check_eq 'transaction commits reason' manual_locked "$(cat "$UECAP_REASON_FILE")"
 check_eq 'transaction commits switch time' 200 "$(cat "$UECAP_SWITCH_FILE")"
 
@@ -135,6 +136,14 @@ UECAP_SPECIAL_OVERRIDE="$PIXEL9PRO_UECAP_SPECIAL"
 UECAP_BALANCED_OVERRIDE="$PIXEL9PRO_UECAP_BALANCED"
 UECAP_UNIVERSAL_OVERRIDE="$PIXEL9PRO_UECAP_UNIVERSAL"
 uecap_refresh_device_contract >/dev/null 2>&1 || exit 2
+# The following fault-injection cases exercise the retained bind transaction
+# helpers in isolation. This test-only backend is not a supported live APatch
+# route; the unavailable-manager fail-closed policy was checked above.
+uecap_refresh_runtime_policy() {
+    UECAP_ROOT_IMPL=apatch
+    UECAP_BACKEND=dynamic_bind
+    UECAP_RUNTIME_POLICY=managed_profiles
+}
 uecap_refresh_runtime_policy
 printf 'special-payload' > "$UECAP_SPECIAL"
 printf 'balanced-payload' > "$UECAP_BALANCED"
@@ -146,8 +155,24 @@ MOUNTED=1
 FAIL_SPECIAL_BIND=1
 FAIL_ALL_BINDS=0
 RELOAD_FAIL=0
+MOCK_TARGET_CONTEXT=u:object_r:vendor_fw_file:s0
+# Shared-storage fixtures cannot carry the vendor SELinux label. Model the
+# read-only label query, and test the wrong-label rejection independently.
+ls() {
+    if [ "$1" = -Zd ]; then
+        case "$2" in
+            "$UECAP_TARGET") printf '%s %s\n' "$MOCK_TARGET_CONTEXT" "$2"; return ;;
+            "$UECAP_BALANCED"|"$UECAP_SPECIAL"|"$UECAP_UNIVERSAL") printf 'u:object_r:vendor_fw_file:s0 %s\n' "$2"; return ;;
+        esac
+    fi
+    command ls "$@"
+}
 
 uecap_target_is_mounted() { [ "$MOUNTED" -eq 1 ]; }
+MOCK_TARGET_CONTEXT=u:object_r:sdcardfs:s0
+check_eq 'matching bytes with wrong SELinux label remain unverified' unverified "$(uecap_bind_status "$UECAP_BALANCED" "$(uecap_hash "$UECAP_TARGET")")"
+MOCK_TARGET_CONTEXT=u:object_r:vendor_fw_file:s0
+check_eq 'matching fixture bytes and vendor context can verify bind' verified "$(uecap_bind_status "$UECAP_BALANCED" "$(uecap_hash "$UECAP_TARGET")")"
 uecap_unmount() { MOUNTED=0; printf 'stock-payload' > "$UECAP_TARGET"; }
 uecap_mount_bind() {
     [ "$FAIL_ALL_BINDS" -eq 0 ] || return 1

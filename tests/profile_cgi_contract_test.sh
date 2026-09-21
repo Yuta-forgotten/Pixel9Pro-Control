@@ -16,14 +16,16 @@ assert_contains() { case "$2" in *"$3"*) ok "$1" ;; *) not_ok "$1 missing=$3" ;;
 mkdir -p "$FIXTURE/webroot/cgi-bin" "$FIXTURE/scripts" "$FAS" || exit 2
 cp "$SOURCE_ROOT/webroot/cgi-bin/_common.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$SOURCE_ROOT/webroot/cgi-bin/profile.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
-for _test_script in scheduler_detect_lib.sh scheduler_owner_lib.sh cpu_profile_lib.sh \
+for _test_script in scheduler_capability_lib.sh scheduler_detect_lib.sh scheduler_owner_lib.sh cpu_profile_lib.sh \
     scheduler_boot_mode_lib.sh scheduler_transition_guard_lib.sh profile_state_lib.sh \
     foreground_app_lib.sh owner_arbiter_state_lib.sh owner_arbiter_observation_lib.sh \
-    owner_arbiter_external_lib.sh owner_arbiter_cpufreq_lib.sh owner_arbiter.sh; do
+    owner_arbiter_external_lib.sh owner_arbiter_cpufreq_lib.sh owner_arbiter.sh audit_log_lib.sh; do
     cp "$SOURCE_ROOT/scripts/$_test_script" "$FIXTURE/scripts/" || exit 2
 done
 
 printf 'fixture-token' > "$FIXTURE/.webui_token"
+printf 'active\n' > "$FIXTURE/.scheduler_mode"
+printf 'supported\n' > "$FIXTURE/.scheduler_capability"
 printf 'balanced\n' > "$FIXTURE/.current_profile"
 printf 'balanced\n' > "$FIXTURE/.profile_manual"
 printf 'manual\n' > "$FIXTURE/.profile_policy"
@@ -64,6 +66,7 @@ run_profile_cgi() {
         PIXEL9PRO_MODDIR="$FIXTURE" \
         PIXEL9PRO_FAS_ROOT="$FAS" \
         PIXEL9PRO_LOCKDIR_BASE="$FIXTURE/.locks" \
+        PIXEL9PRO_AUDIT_LOG_DIR="$TEST_ROOT/audit" \
         SO_BOOT_ID_PATH="$FIXTURE/.boot_id" \
         REQUEST_METHOD=POST \
         REMOTE_ADDR=127.0.0.1 \

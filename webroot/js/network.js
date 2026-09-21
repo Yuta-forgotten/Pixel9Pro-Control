@@ -241,24 +241,36 @@ function getUecapVerifyRow(data, requested, active) {
 
   const expectedHash = getUecapModeHash(data, requested);
   const targetHash = data.target_hash || '';
-  const confirmed = requested === active && (!expectedHash || expectedHash === targetHash);
+  const bindingConfirmed = requested === active && Boolean(expectedHash) && expectedHash === targetHash;
+  const receipt = data.runtime_receipt || {};
+  const confirmed = bindingConfirmed && receipt.modem_load_state === 'confirmed_readback'
+    && receipt.functional_state === 'verified' && ['current_boot', 'current_check'].includes(receipt.receipt_freshness);
   return {
     label: '配置校验',
-    value: confirmed ? '已确认' : '待确认',
+    value: confirmed ? '已确认' : bindingConfirmed ? '绑定一致，运行态待确认' : '待确认',
     cls: confirmed ? 'good' : 'warn'
   };
 }
 
 function renderUecapBtnGroup(activeMode) {
   const selectedMode = state.uecapPendingMode || activeMode;
-  refs.uecapBtnGroup.replaceChildren();
   const modes = state.uecapContract?.modeOrder || [];
+  const previous = Array.from(refs.uecapBtnGroup.querySelectorAll('.uecap-btn'));
+  if (previous.map((button) => button.dataset.mode).join('|') !== modes.join('|')) refs.uecapBtnGroup.replaceChildren();
   const blocked = state.uecapReinstallRequired;
   refs.uecapBtnGroup.hidden = modes.length === 0;
   refs.uecapBtnGroup.setAttribute('aria-disabled', String(blocked));
+  refs.uecapBtnGroup.setAttribute('role', 'group');
+  refs.uecapBtnGroup.setAttribute('aria-label', 'UE 网络能力配置');
   modes.forEach((id) => {
     const presentation = UECAP_MODE_PRESENTATION[id];
-    const btn = document.createElement('button');
+    let btn = Array.from(refs.uecapBtnGroup.children).find((button) => button.dataset.mode === id);
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.dataset.mode = id;
+      btn.addEventListener('click', () => setUecapMode(id));
+      refs.uecapBtnGroup.appendChild(btn);
+    }
     btn.type = 'button';
     const isSelected = id === selectedMode;
     const isPending = state.uecapBusy && id === state.uecapPendingMode;
@@ -267,17 +279,17 @@ function renderUecapBtnGroup(activeMode) {
     btn.textContent = isPending
       ? (state.uecapVerifyState === 'switching' ? '切换中...' : '校验中...')
       : presentation.name;
+    btn.setAttribute('aria-pressed', String(isSelected));
+    btn.setAttribute('aria-busy', String(isPending));
     btn.disabled = state.uecapBusy || blocked;
-    if (blocked) btn.title = UECAP_REINSTALL_NOTICE;
-    btn.addEventListener('click', () => setUecapMode(id));
-    refs.uecapBtnGroup.appendChild(btn);
+    btn.title = blocked ? UECAP_REINSTALL_NOTICE : '';
   });
 }
 
 function renderUecapRows(data) {
   updateUecapRuntimeGuard(data);
   applyUecapContract(data);
-  refs.uecapRows.replaceChildren();
+  const expandedGroups = new Set(Array.from(refs.uecapRows.querySelectorAll('details[open]')).map((group) => group.dataset.evidenceGroup));
   const receipt = data.runtime_receipt && typeof data.runtime_receipt === 'object'
     ? data.runtime_receipt : {};
   const disabled = Boolean(state.uecapContract.disabled);
@@ -295,7 +307,7 @@ function renderUecapRows(data) {
       ? (data.disabled_message || '当前安装环境不提供 UECap 配置写入；以下只展示设备、modem 和无线观察结果。')
       : state.uecapPendingMode
         ? `${uecapLabel(state.uecapPendingMode)}：已提交切换，正在校验当前配置。`
-        : modeInfo ? `${modeInfo.desc} · 切换后自动校验配置是否生效。` : '选择 UE 能力配置，切换后会自动校验是否生效。';
+        : modeInfo ? `当前选择：${modeInfo.name}。切换后核对实际生效状态。` : '选择 UE 能力配置，切换后核对实际生效状态。';
   renderUecapBtnGroup(disabled ? 'disabled' : requested);
   const verifyRow = disabled
     ? { label: '配置校验', value: `${data.contract_result || 'unknown'} · 只读`, cls: 'off' }
@@ -354,7 +366,44 @@ function renderUecapRows(data) {
     { label: 'LTE anchor', value: receipt.lte_anchor || 'unknown', cls: 'off' },
     { label: '原因', value: data.reason || 'unknown', cls: disabled ? 'off' : 'warn' },
   ];
-  rows.forEach((row) => refs.uecapRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
+  const summary = document.getElementById('uecap-summary');
+  if (summary) summary.replaceChildren(...[
+    { label: '已选配置', value: uecapLabel(requested), cls: 'off' },
+    { label: '当前绑定', value: uecapLabel(active), cls: active === requested ? 'good' : 'warn' },
+    verifyRow
+  ].map((row) => buildInfoRow(row.label, row.value, row.cls)));
+  const notice = document.getElementById('uecap-status-message');
+  if (notice) {
+    const unsafe = state.uecapReinstallRequired || disabled || state.uecapVerifyState === 'failed'
+      || verifyRow.cls === 'warn' || receipt.functional_state === 'failed';
+    notice.hidden = !unsafe;
+    notice.textContent = state.uecapReinstallRequired ? UECAP_REINSTALL_NOTICE
+      : disabled ? (data.disabled_message || '当前环境仅支持读取，不能切换配置。')
+        : state.uecapVerifyState === 'failed' ? verifyRow.value
+          : unsafe ? '实际生效状态尚未确认。请在“配置与无线诊断”中查看依据，再决定是否重试。' : '';
+  }
+  const groups = [
+    { id: 'effective', title: '生效依据', help: '已选、绑定、加载与本次启动回读', labels: ['配置变更', '已选配置', '当前绑定', '配置校验', 'Modem load state', 'Modem loaded profile', 'Modem 时序', 'Functional state', 'Receipt freshness'] },
+    { id: 'radio', title: '无线观察', help: '当前驻网，不等同于配置加载结果', labels: ['实际无线', 'SA', 'NSA', 'LTE / 4G', 'LTE anchor'] },
+    { id: 'source', title: '设备与配置来源', help: 'SKU、后端、Payload 与校验标识', labels: ['Device / SKU', 'Device policy', 'Backend', 'Runtime policy', 'Target', 'Payload 状态', 'Payload 合同', '原因'] }
+  ];
+  const containers = groups.map((group) => {
+    let details = refs.uecapRows.querySelector(`[data-evidence-group="${group.id}"]`);
+    if (!details) {
+      details = document.createElement('details'); details.className = 'disclosure compact'; details.dataset.evidenceGroup = group.id; details.open = expandedGroups.has(group.id);
+      const head = document.createElement('summary'); head.className = 'disclosure-summary';
+      const copy = document.createElement('span'); copy.className = 'disclosure-copy';
+      const title = document.createElement('strong'); title.textContent = group.title;
+      const help = document.createElement('small'); help.textContent = group.help;
+      const chevron = document.createElement('span'); chevron.className = 'disclosure-chevron'; chevron.textContent = '›'; chevron.setAttribute('aria-hidden', 'true');
+      copy.append(title, help); head.append(copy, chevron);
+      const body = document.createElement('div'); body.className = 'disclosure-body data-list';
+      details.append(head, body);
+    }
+    details.querySelector('.disclosure-body').replaceChildren(...rows.filter((row) => group.labels.includes(row.label)).map((row) => buildInfoRow(row.label, row.value, row.cls)));
+    return details;
+  });
+  if (containers.some((container) => !container.isConnected)) refs.uecapRows.replaceChildren(...containers);
 }
 
 async function refreshNrSwitch() {
@@ -392,6 +441,14 @@ async function refreshUecap() {
     refs.uecapBtnGroup.replaceChildren();
     refs.uecapBtnGroup.hidden = true;
     refs.uecapRows.replaceChildren(); refs.uecapRows.appendChild(errorBlock('获取失败：' + err.message));
+    const summary = document.getElementById('uecap-summary');
+    if (summary) {
+      summary.querySelectorAll('.badge').forEach((badge) => { badge.className = 'badge off'; });
+      const result = summary.lastElementChild;
+      if (result) result.replaceWith(buildInfoRow('配置校验', '读取失败，以上为上次值', 'warn'));
+    }
+    const notice = document.getElementById('uecap-status-message');
+    if (notice) { notice.hidden = false; notice.textContent = '本次读取失败，状态已过期。请刷新后再确认实际生效情况。'; }
   }
 }
 
@@ -635,8 +692,8 @@ function renderBasebandRows(data) {
   const runtimeVerified = data.runtime_verified === true;
   const moduleState = data.module_state || (data.enabled ? 'enabled' : 'disabled');
   refs.basebandDesc.textContent = runtimeVerified
-    ? `已安装 ${data.version || ''}，本次启动已验证 effective overlay。`
-    : `已安装 ${data.version || ''}，但本次启动尚未确认 effective overlay；请先完成重启或按提示重新安装。`;
+    ? `已安装 ${data.version || ''}，本次启动已验证生效。`
+    : `已安装 ${data.version || ''}，尚未确认本次启动已生效。请查看模块状态中的原因与处理要求。`;
   const props = data.props || {};
   const cs = data.carrier_settings || {};
   const mcfg = data.mcfg || {};

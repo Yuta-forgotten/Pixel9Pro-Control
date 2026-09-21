@@ -7,8 +7,9 @@ const host = '127.0.0.1';
 const port = 6210;
 const token = 'pixel-test-token';
 
-const CURRENT_MODULE_VERSION = 'v4.5.07';
-const CURRENT_VERSION_CODE = '112';
+const moduleProps = Object.fromEntries(fs.readFileSync(path.resolve(root, '..', 'module.prop'), 'utf8').split(/\r?\n/).filter((line) => /^[a-zA-Z].*=/.test(line)).map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+const CURRENT_MODULE_VERSION = moduleProps.version;
+const CURRENT_VERSION_CODE = moduleProps.versionCode;
 
 const runtime = {
   profile: 'balanced',
@@ -377,13 +378,9 @@ async function handleApi(req, res, url) {
       if (req.method === 'GET' && url.searchParams.get('action') === 'history') {
         return json(res, {
           ok: true, schema: 1, session_id: telemetrySession?.id || 'mock-session',
-          window: { start_ts: now - 900, end_ts: now, coverage_ratio: 1, quality: 'good' },
-          power: [
-            { ts: now - 900, screen: 'on', status: 'Discharging', level_pct: 82, charge_uah: 4200000, current_ua: -420000, voltage_uv: 3910000 },
-            { ts: now - 450, screen: 'on', status: 'Discharging', level_pct: 80, charge_uah: 4192000, current_ua: -430000, voltage_uv: 3910000 },
-            { ts: now, screen: 'on', status: 'Discharging', level_pct: 78, charge_uah: 4184000, current_ua: -440000, voltage_uv: 3910000 },
-          ],
-          thermal: [[now - 900, 35100], [now - 450, 36200], [now, 36500]],
+          window: { start_ts: now - 900, end_ts: now, coverage_ratio: .66, quality: 'partial' },
+          power: [900,840,780,720,660,300,240,180,120,60,0].map((ago, index) => ({ ts: now - ago, screen: 'on', status: 'Discharging', level_pct: 82 - index * .1, charge_uah: 4200000 - index * 1000, current_ua: -420000, voltage_uv: 3910000 })),
+          thermal: [900,840,780,720,660,300,240,180,120,60,0].map((ago, index) => [now - ago, 35100 + index * 140]),
           attribution: { source: 'mock', quality: 'independent_snapshots' },
         });
       }

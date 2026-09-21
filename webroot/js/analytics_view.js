@@ -27,6 +27,16 @@
       button.addEventListener('click', () => callbacks.onSource(kind));
       source.appendChild(button);
     });
+    const bindTabKeys = (group) => group.addEventListener('keydown', (event) => {
+      const tabs = Array.from(group.querySelectorAll('[role="tab"]'));
+      const index = tabs.indexOf(event.target);
+      if (index < 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const rtl = getComputedStyle(group).direction === 'rtl';
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + ((event.key === 'ArrowRight') !== rtl ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[next].focus(); tabs[next].click();
+    });
+    bindTabKeys(source);
     const range = el('div', 'analytics-range');
     range.setAttribute('role', 'tablist'); range.setAttribute('aria-label', '统计区间');
     model().ranges().forEach((item) => {
@@ -35,9 +45,12 @@
       button.addEventListener('click', () => callbacks.onRange(item.id));
       range.appendChild(button);
     });
+    bindTabKeys(range);
     const custom = el('div', 'analytics-custom-range');
     const days = document.createElement('select'); days.setAttribute('aria-label', '最近天数');
-    for (let value = 1; value <= 7; value += 1) days.appendChild(el('option', '', String(value) + ' 天'));
+    for (let value = 1; value <= 7; value += 1) {
+      const option = el('option', '', String(value) + ' 天'); option.value = String(value); days.appendChild(option);
+    }
     const granularity = document.createElement('select'); granularity.setAttribute('aria-label', '采样粒度');
     granularity.append(el('option', '', '按小时'), el('option', '', '按分钟'));
     granularity.options[0].value = 'hour'; granularity.options[1].value = 'minute';
@@ -57,7 +70,7 @@
     hero.append(heroHead, summary);
     const chartSection = el('section', 'analytics-section');
     const chartHead = el('div', 'analytics-section-head');
-    chartHead.append(el('div', 'analytics-section-title', '趋势图'), el('div', 'analytics-section-desc', '连续采样用实线，缺测区间用虚线表示。'));
+    chartHead.append(el('div', 'analytics-section-title', '趋势图'), el('div', 'analytics-section-desc', '实线表示有效采样；时间轴下方的虚线标记缺测或非放电时段，不补画趋势。'));
     const chartCard = el('div', 'analytics-chart-card');
     const chartWrap = el('div', 'analytics-chart-wrap');
     const canvas = document.createElement('canvas');
@@ -174,34 +187,64 @@
   function draw(view, source, stats) {
     const canvas = view.canvas;
     if (!canvas || !stats) return;
-    const width = Math.max(240, Math.round(canvas.getBoundingClientRect().width || 320));
-    const height = 210;
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(120, Math.round(rect.width || 320));
+    const height = Math.max(180, Math.round(rect.height || 210));
     const dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
     if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) { canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr); }
-    const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, width, height);
-    const points = source === 'thermal' ? stats.points.map((p) => ({ ts: p.ts, value: p.tempC })) : stats.series;
-    if (points.length < 2) return;
-    const pad = { left: 42, right: 10, top: 12, bottom: 28 }; const plotW = width - pad.left - pad.right; const plotH = height - pad.top - pad.bottom;
-    const values = points.map((p) => Number(p.value)).filter(Number.isFinite);
-    if (values.length < 2) return;
-    const min = Math.min(...values); const max = Math.max(...values);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, width, height); ctx.setLineDash([]);
+    const segments = (stats.chartSegments || []).map((segment) => segment.filter((point) => Number.isFinite(point.ts) && Number.isFinite(point.value))).filter((segment) => segment.length);
+    const values = segments.flat().map((point) => point.value);
+    const unit = source === 'thermal' ? '°C' : stats.seriesUnit || 'mAh/h';
+    const gapRanges = (stats.gapRanges || []).filter((gap) => Number.isFinite(gap.startTs) && Number.isFinite(gap.endTs) && gap.endTs > gap.startTs);
+    canvas.setAttribute('aria-label', `${source === 'thermal' ? '温度' : '放电'}趋势图，单位 ${unit}；${stats.count || 0} 个有效采样点，有效覆盖 ${model().formatDuration(stats.coverageSec)}，未知 ${model().formatDuration(stats.unknownSec)}${gapRanges.length ? `，${gapRanges.length} 段间断以时间轴虚线标记` : ''}。`);
+    if (!Number.isFinite(stats.startTs) || !Number.isFinite(stats.endTs)) return;
+    const dayCrossing = new Date(stats.startTs * 1000).toDateString() !== new Date(stats.endTs * 1000).toDateString();
+    const pad = { left: 46, right: 12, top: 26, bottom: dayCrossing ? 58 : 42 }; const plotW = width - pad.left - pad.right; const plotH = height - pad.top - pad.bottom;
+    const min = values.length ? Math.min(...values) : 0; const max = values.length ? Math.max(...values) : 1;
     const padding = source === 'thermal' ? 1 : Math.max(1, Math.abs(max || min) * 0.2);
-    const lo = min === max ? min - padding : min; const hi = min === max ? max + padding : max; const span = Math.max(1, points[points.length - 1].ts - points[0].ts);
-    const xy = (p) => ({ x: pad.left + ((p.ts - points[0].ts) / span) * plotW, y: pad.top + ((hi - p.value) / (hi - lo)) * plotH });
+    const lo = min === max ? min - padding : min; const hi = min === max ? max + padding : max; const span = Math.max(1, stats.endTs - stats.startTs);
+    const x = (ts) => pad.left + Math.max(0, Math.min(1, (ts - stats.startTs) / span)) * plotW;
+    const xy = (p) => ({ x: x(p.ts), y: pad.top + ((hi - p.value) / (hi - lo)) * plotH });
     const grid = cssVar('--line', 'rgba(20,34,28,.1)'); const muted = cssVar('--text-3', '#6b756f'); const primary = cssVar('--primary', '#006b57');
-    ctx.strokeStyle = grid; ctx.lineWidth = 1; ctx.fillStyle = muted; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
-    for (let i = 0; i <= 3; i += 1) {
-      const y = pad.top + (plotH * i) / 3; const rawValue = hi - ((hi - lo) * i) / 3;
-      const displayValue = Math.abs(rawValue) < 0.05 ? 0 : rawValue;
-      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(width - pad.right, y); ctx.stroke();
-      ctx.fillText(displayValue.toFixed(source === 'thermal' ? 1 : 0) + (source === 'thermal' ? '°' : ''), pad.left - 5, y + 3);
+    ctx.strokeStyle = grid; ctx.lineWidth = 1; ctx.fillStyle = muted; ctx.font = '12px system-ui, sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText(unit, pad.left, 14);
+    if (values.length) {
+      ctx.textAlign = 'right';
+      for (let i = 0; i <= 3; i += 1) {
+        const y = pad.top + (plotH * i) / 3; const rawValue = hi - ((hi - lo) * i) / 3;
+        const displayValue = Math.abs(rawValue) < 0.05 ? 0 : rawValue;
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(width - pad.right, y); ctx.stroke();
+        ctx.fillText(displayValue.toFixed(source === 'thermal' ? 1 : 0), pad.left - 6, y + 4);
+      }
+    } else {
+      ctx.textAlign = 'center';
+      ctx.fillText(source === 'thermal' ? '当前区间没有有效温度' : '当前区间没有可计算的放电数据', width / 2, height / 2);
     }
-    ctx.textAlign = 'left'; ctx.fillText(new Date(points[0].ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), pad.left, height - 8); ctx.textAlign = 'right'; ctx.fillText(new Date(points[points.length - 1].ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), width - pad.right, height - 8);
-    const gapSet = new Set((stats.gaps || []).map((gap) => `${gap[0].ts}:${gap[1].ts}`)); ctx.strokeStyle = primary; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    let segment = [points[0]];
-    const flush = (items, dashed = false) => { if (items.length < 2) return; ctx.save(); ctx.setLineDash(dashed ? [6, 5] : []); ctx.beginPath(); items.forEach((point, index) => { const pos = xy(point); if (index === 0) ctx.moveTo(pos.x, pos.y); else ctx.lineTo(pos.x, pos.y); }); ctx.stroke(); ctx.restore(); };
-    for (let i = 1; i < points.length; i += 1) { const key = `${points[i - 1].ts}:${points[i].ts}`; if (gapSet.has(key)) { flush(segment); flush([points[i - 1], points[i]], true); segment = []; } segment.push(points[i]); }
-    flush(segment);
+    const timeLabel = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const dateLabel = (ts) => new Date(ts * 1000).toLocaleDateString([], { month: '2-digit', day: '2-digit' });
+    // Anchor the first and final labels inside the canvas, including empty
+    // windows. The last sample must not silently become the requested endpoint.
+    ctx.textAlign = 'left'; ctx.fillText(timeLabel(stats.startTs), pad.left, height - 8);
+    if (dayCrossing) ctx.fillText(dateLabel(stats.startTs), pad.left, height - 23);
+    ctx.textAlign = 'right'; ctx.fillText(timeLabel(stats.endTs), width - pad.right, height - 8);
+    if (dayCrossing) ctx.fillText(dateLabel(stats.endTs), width - pad.right, height - 23);
+    ctx.strokeStyle = primary; ctx.fillStyle = primary; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    segments.forEach((segment) => {
+      ctx.setLineDash([]); ctx.beginPath();
+      segment.forEach((point, index) => { const pos = xy(point); if (index === 0) ctx.moveTo(pos.x, pos.y); else ctx.lineTo(pos.x, pos.y); });
+      if (segment.length === 1) { const pos = xy(segment[0]); ctx.arc(pos.x, pos.y, 2.5, 0, Math.PI * 2); ctx.fill(); }
+      else ctx.stroke();
+    });
+    // Missing intervals are a separate timeline mark, never an interpolated
+    // value. Keeping this below the grid prevents a solid gridline hiding dashes.
+    if (gapRanges.length) {
+      ctx.save(); ctx.strokeStyle = muted; ctx.lineWidth = 2; ctx.setLineDash([6, 5]);
+      gapRanges.forEach((gap) => { ctx.beginPath(); ctx.moveTo(x(gap.startTs), pad.top + plotH + 10); ctx.lineTo(x(gap.endTs), pad.top + plotH + 10); ctx.stroke(); });
+      ctx.restore(); ctx.setLineDash([]);
+    }
   }
 
   function update(view, payload) {
@@ -211,29 +254,35 @@
     view.stateLine.textContent = status || '';
     view.stateLine.hidden = !status;
     const isThermal = source === 'thermal';
-    view.heroKicker.textContent = isThermal ? '当前温度' : '平均放电功耗';
+    view.heroKicker.textContent = isThermal ? '最近采样温度' : '有效区间平均放电';
     view.heroValue.textContent = isThermal ? (Number.isFinite(stats?.current) ? `${stats.current.toFixed(1)}°C` : '—') : (Number.isFinite(stats?.avgMahPerHour) ? `${stats.avgMahPerHour.toFixed(1)} mAh/h` : Number.isFinite(stats?.avgMw) ? `${stats.avgMw.toFixed(0)} mW` : '—');
-    view.heroStatus.textContent = isThermal ? (Number.isFinite(stats?.thresholdSec) ? `达到阈值 ${model().formatDuration(stats.thresholdSec)}` : '阈值持续时间不可用') : (stats?.quality === 'good' ? '由电荷计差分或硬件电流电压计算' : stats?.quality === 'reset_or_mismatch' ? '检测到电荷计重置或窗口不一致，暂不作平均功耗结论' : '有效功耗证据不足，未将电量百分比当成功耗');
+    view.heroStatus.textContent = isThermal ? (stats?.lastSampleTs ? `采样于 ${relativeTime(stats.lastSampleTs)} · 达到阈值 ${model().formatDuration(stats.thresholdSec)}` : '当前区间没有有效温度') : (stats?.quality === 'good' ? '由电荷计差分或硬件电流电压计算' : stats?.quality === 'reset_or_mismatch' ? '电荷计重置或不一致；电荷差分停用，独立电流测量保留' : stats?.quality === 'partial' ? '仅统计有效放电区间；间断和非放电时段不计入平均值' : '有效功耗证据不足，未将电量百分比当成功耗');
     view.heroBadge.textContent = model().rangeFor(rangeId).label;
     const values = isThermal ? [stats?.min, stats?.avg, stats?.max] : [stats?.consumedMah, stats?.avgMahPerHour, stats?.avgMw];
     const labels = isThermal ? ['最低', '平均', '最高'] : ['实际耗电', '平均放电', '平均功率'];
     const suffixes = isThermal ? ['°C', '°C', '°C'] : [' mAh', ' mAh/h', ' mW'];
     view.summary.forEach((item, index) => { item.querySelector('span').textContent = labels[index]; item.querySelector('strong').textContent = Number.isFinite(values[index]) ? `${values[index].toFixed(1)}${suffixes[index]}` : '—'; });
-    view.legend.textContent = !isThermal && (!stats?.series || stats.series.length < 2)
-      ? '暂无有效功耗差分，等待下一次采样'
-      : stats?.count ? `${stats.count} 个采样点 · 覆盖 ${model().formatDuration(stats.coverageSec)}${stats.gaps?.length ? ` · ${stats.gaps.length} 段缺测` : ''}` : '暂无足够采样点';
+    view.legend.textContent = `${stats?.count || 0} 个有效采样点 · 有效覆盖 ${model().formatDuration(stats?.coverageSec)} · 未知 ${model().formatDuration(stats?.unknownSec)}${stats?.nonDischargeSec ? ` · 非放电 ${model().formatDuration(stats.nonDischargeSec)}` : ''}${stats?.gaps?.length ? ` · ${stats.gaps.length} 段间断` : ''}`;
+    if (!isThermal) view.legend.textContent += ` · 曲线单位 ${stats?.seriesUnit || 'mAh/h'}（区间平均）`;
     view.moreBody.replaceChildren();
-    if (isThermal) view.moreBody.append(row('数据范围', stats?.startTs && stats?.endTs ? relativeTime(stats.startTs) + ' — ' + relativeTime(stats.endTs) : '—'), row('采样点', stats?.count), row('温控阈值累计', model().formatDuration(stats?.thresholdSec)));
+    const qualityLabel = { good: '有效区间连续', partial: '存在间断或缺测', reset_or_mismatch: '电荷计重置或不一致', insufficient: '证据不足', no_data: '没有有效数据' };
+    view.moreBody.append(row('数据范围', stats?.startTs && stats?.endTs ? relativeTime(stats.startTs) + ' — ' + relativeTime(stats.endTs) : '—'), row('有效采样点', stats?.count), row('曲线有效覆盖', model().formatDuration(stats?.coverageSec)), row('曲线未知时长', model().formatDuration(stats?.unknownSec)));
+    if (isThermal) view.moreBody.append(row('温控阈值累计', model().formatDuration(stats?.thresholdSec)));
     else {
-      view.moreBody.append(row('有效采样点', stats?.count), row('可证明放电', Number.isFinite(stats?.consumedMah) ? stats.consumedMah.toFixed(2) + ' mAh' : '—'), row('有效差分时长', model().formatDuration(stats?.activeSec)), row('数据质量', stats?.quality));
+      view.moreBody.append(row('可证明放电', Number.isFinite(stats?.consumedMah) ? stats.consumedMah.toFixed(2) + ' mAh' : '—'), row('有效电荷差分时长', model().formatDuration(stats?.activeSec)), row('有效电流测量时长', model().formatDuration(stats?.measuredSec)), row('非放电时长', model().formatDuration(stats?.nonDischargeSec)), row('数据质量', qualityLabel[stats?.quality] || '未知'));
       appendPowerAttribution(view.moreBody, summary);
     }
     draw(view, source, stats);
     if (capture) { view.captureState.textContent = capture.session ? `${capture.session.status || '运行中'} · ${capture.session.sample_count || 0} 个采样点` : '未开始记录'; view.captureBtn.textContent = capture.session?.status === 'running' ? '结束记录' : '开始记录'; view.captureExport.disabled = !capture.session || capture.session.status === 'running'; }
   }
 
-  function loading(view, source, rangeId) { setActive(view, source, rangeId); view.stateLine.hidden = false; view.stateLine.textContent = '正在读取采样…'; view.heroValue.textContent = '—'; view.legend.textContent = '趋势图将在后台原位加载'; }
-  function empty(view, source, rangeId, message) { setActive(view, source, rangeId); view.stateLine.hidden = false; view.stateLine.textContent = message || '当前时段没有足够采样'; view.legend.textContent = '暂无可绘制数据'; }
+  function loading(view, source, rangeId) {
+    // A source/range switch must not leave an old curve under the new heading.
+    const stats = source === 'thermal' ? model().temperatureStats([]) : model().powerStats([]);
+    update(view, { source, rangeId, stats, status: '正在读取采样…', summary: null, capture: null });
+    view.legend.textContent = '等待当前区间的真实采样';
+  }
+  function empty(view, source, rangeId, message) { setActive(view, source, rangeId); view.stateLine.hidden = false; view.stateLine.textContent = message || '当前时段没有足够采样'; }
   function error(view, source, rangeId, message) { setActive(view, source, rangeId); view.stateLine.hidden = false; view.stateLine.className = 'analytics-error'; view.stateLine.textContent = message || '读取失败'; }
 
   registerFeature('analyticsView', { create, update, loading, empty, error, setCustomValues, promptCustom });

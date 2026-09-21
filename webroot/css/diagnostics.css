@@ -1,64 +1,33 @@
-/* Runtime log and error presentation. */
-
-.log-card{overflow:hidden}
-.log-toggle{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:10px;
-  padding:16px 18px;
-  cursor:pointer;
-  -webkit-tap-highlight-color:transparent;
-}
-
-.log-arrow{
-  color:var(--text-3);
-  transition:transform var(--mid) var(--ease);
-}
-
+/* Session log and backend audit use distinct, named actions. */
+.log-head{display:flex;align-items:center;gap:8px;padding-inline:16px}
+.log-toggle{flex:1;min-width:0;min-height:72px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding-block:12px;text-align:start}
+.log-copy{display:grid;min-width:0;gap:4px}
+.log-copy small{color:var(--text-2);font-size:var(--font-support);line-height:1.4286;overflow-wrap:anywhere}
+.log-arrow{flex-shrink:0;color:var(--text-2);transition:transform var(--mid) var(--ease)}
 .log-card.open .log-arrow{transform:rotate(180deg)}
-.log-body{max-height:0;overflow:hidden;transition:max-height var(--slow) var(--ease)}
-.log-card.open .log-body{max-height:260px}
-
-.log-inner{
-  border-top:1px solid var(--line);
-  padding:0 18px 16px;
-  font-family:"Roboto Mono","SFMono-Regular",Consolas,monospace;
-  font-size:11px;
-  line-height:18px;
-  color:var(--text-2);
-  max-height:220px;
-  overflow-y:auto;
-  white-space:pre-wrap;
-  word-break:break-all;
-}
-
+.log-body{display:none}
+.log-card.open .log-body{display:block}
+.log-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:12px 16px;border-top:1px solid var(--line);color:var(--text-2);font-size:var(--font-caption);line-height:1.3334}
+.log-toolbar-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0;max-width:100%}
+.log-toolbar-actions .tiny-btn{flex:1 1 auto}
+.log-inner{padding:0 16px 16px;font-family:var(--font-mono);font-size:var(--font-caption);line-height:1.5;color:var(--text-2);max-height:24rem;overflow-y:auto;white-space:pre-wrap;overflow-wrap:anywhere}
 .log-ok{color:var(--success)}
 .log-err{color:var(--danger)}
 .log-warn{color:var(--warn)}
 .log-dim{color:var(--text-3)}
-
-
-.log-head{display:flex;align-items:center;gap:8px;padding:0 10px 0 18px}
-.log-toggle{flex:1;min-width:0;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 0;cursor:pointer;text-align:left;-webkit-tap-highlight-color:transparent}
-.log-copy{display:grid;min-width:0;gap:3px}
-.log-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-3);font-size:11px;line-height:16px;font-weight:500}
-.log-toggle:focus-visible,.log-clear-btn:focus-visible,.sheet-close-btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
-.log-card.open .log-toggle{padding-bottom:10px}
-.log-toolbar{display:flex;justify-content:space-between;gap:12px;padding:10px 18px 8px;border-top:1px solid var(--line);color:var(--text-3);font-size:10px;line-height:15px}
-.log-toolbar-actions{display:inline-flex;align-items:center;gap:8px;min-width:0}
-.log-entry{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 8px;padding:7px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.log-entry{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 8px;padding-block:12px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
 .log-entry time{color:var(--text-3);font-variant-numeric:tabular-nums}
 .log-entry details{grid-column:2;min-width:0}
-.log-entry summary{color:currentColor;cursor:pointer;font-size:10px;line-height:16px}
-.log-entry pre{max-height:140px;margin:6px 0 0;padding:8px;border-radius:8px;background:var(--surface-2);color:var(--danger);font:10px/15px "Roboto Mono",Consolas,monospace;white-space:pre-wrap;overflow:auto}
-.log-toolbar-actions .tiny-btn{flex:0 0 auto;white-space:nowrap}
-.danger-btn{background:var(--danger-container);border-color:color-mix(in srgb,var(--danger) 35%,var(--line));color:var(--danger)}
-.danger-btn:hover{background:color-mix(in srgb,var(--danger) 16%,var(--danger-container))}
-.text-btn{background:transparent;border-color:transparent;color:var(--text-3)}
-.audit-log-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
-.audit-log-actions .tiny-btn{min-width:96px}
-.error-panel{display:grid;gap:8px;padding:14px;border:1px solid color-mix(in srgb,var(--danger) 28%,transparent);border-radius:var(--radius-md);background:var(--danger-container);color:var(--danger);font-size:13px;line-height:19px}
-.error-panel pre{margin:0;max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:11px/16px "Roboto Mono",Consolas,monospace}
-.audit-log-pre{max-height:55vh;margin:12px 0 0;padding:12px;border-radius:var(--radius-md);background:var(--surface-2);color:var(--text-2);font:11px/17px "Roboto Mono",Consolas,monospace;white-space:pre-wrap;overflow:auto}
-.task-status-help{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.log-entry summary{display:flex;align-items:center;min-height:48px;color:inherit;font-size:var(--font-support);line-height:1.4286}
+.log-entry pre{max-height:16rem;margin:8px 0 0;padding:12px;border-radius:var(--radius-sm);background:var(--surface-2);color:var(--danger);font:400 var(--font-caption)/1.5 var(--font-mono);white-space:pre-wrap;overflow:auto;overflow-wrap:anywhere}
+.danger-btn{background:var(--danger-container);border-color:var(--danger);color:var(--danger)}
+.text-btn{background:transparent;border-color:transparent;color:var(--primary)}
+.audit-log-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;flex-wrap:wrap}
+.error-panel{display:grid;gap:8px;padding:16px;border:1px solid var(--danger);border-radius:var(--radius-md);background:var(--danger-container);color:var(--danger);font-size:var(--font-support);line-height:1.4286;overflow-wrap:anywhere}
+.error-panel pre{margin:0;max-height:20rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:400 var(--font-caption)/1.5 var(--font-mono)}
+.audit-log-pre{max-height:55vh;margin:16px 0 0;padding:16px;border-radius:var(--radius-md);background:var(--surface-2);color:var(--text-2);font:400 var(--font-caption)/1.5 var(--font-mono);white-space:pre-wrap;overflow:auto;overflow-wrap:anywhere}
+.task-status-help{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
+@media (max-width:359px){
+  .log-entry{grid-template-columns:1fr}
+  .log-entry details{grid-column:1}
+}

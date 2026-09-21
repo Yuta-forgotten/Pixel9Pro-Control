@@ -84,6 +84,7 @@ const syncHeroDesc = () => requireFeature('thermal').syncHeroDesc();
 
 function buildProfileDetail(key) {
   const profile = PROFILES[key] || PROFILES.unknown;
+  if (key === 'off') return `<p>${profile.desc}</p><p>关闭后停止本模块的调度写入。重新启用需按安装向导选择，并完成重启后的状态核对。</p>`;
   const contract = state.cpuContract;
   const values = contract?.profiles?.[key];
   let html = `<b>${profile.name}</b><br><br>${profile.detail}`;
@@ -309,7 +310,7 @@ function syncOwnerArbiterUi() {
     if (available) {
       const enabled = state.gameHandoffPolicy === 'fas_rs';
       refs.gameHandoffLabel.textContent = enabled
-        ? 'fas-rs 常驻待机；命中游戏时建立 lease，退出后恢复日常选择'
+        ? '游戏时临时接管，退出后恢复日常调度'
         : 'fas-rs 游戏临时接管已关闭';
       refs.gameHandoffToggleBtn.disabled = state.schedulerMode !== 'active' || strategyBusy || !isVerifiedSchedulerBoot();
       refs.gameHandoffToggleBtn.className = `tiny-btn${enabled ? ' tonal' : ''}`;
@@ -368,6 +369,33 @@ function syncCurrentStrategyTransitionCopy() {
   refs.perfPolicyDesc.textContent = '完成前请勿重复操作；温控与系统安全保护保持生效。';
 }
 
+function syncProfileChoiceSemantics() {
+  const policyDetail = document.getElementById('perf-policy-detail');
+  if (policyDetail) policyDetail.textContent = refs.perfPolicyDesc.textContent;
+  if (state.schedulerMode === 'active' && state.schedEffectiveOwner !== 'external'
+      && !isCurrentStrategyBusy() && !['pending_reboot', 'verifying', 'applying'].includes(state.schedulerBoot.phase)
+      && !(state.profileTransition.terminal === 'yes' && state.profileTransition.ok === 'no')) {
+    refs.perfPolicyDesc.textContent = state.profilePolicy === 'auto'
+      ? '自动在均衡与省电之间调整，详细策略可展开查看。'
+      : '手动保持当前档位，切换与恢复规则可展开查看。';
+  }
+  const cards = Array.from(refs.profileList.querySelectorAll('.profile-option'));
+  const focusCard = cards.find((card) => card.classList.contains('selected') && !card.classList.contains('disabled'))
+    || cards.find((card) => !card.classList.contains('disabled'));
+  cards.forEach((card) => {
+    const select = card.querySelector('.profile-select');
+    if (!select) return;
+    select.disabled = card.classList.contains('disabled');
+    select.setAttribute('aria-checked', String(card.classList.contains('selected')));
+    select.tabIndex = card === focusCard ? 0 : -1;
+    card.removeAttribute('aria-checked');
+    card.removeAttribute('aria-disabled');
+  });
+  [refs.profilePolicyManualBtn, refs.profilePolicyAutoBtn].forEach((button) => {
+    button.setAttribute('aria-pressed', String(button.classList.contains('active')));
+  });
+}
+
 function syncProfileUi() {
   const profile = PROFILES[state.currentProfile] || PROFILES.unknown;
   const isAuto = state.profilePolicy === 'auto';
@@ -399,6 +427,7 @@ function syncProfileUi() {
       card.classList.toggle('disabled', !isOff);
       card.setAttribute('aria-disabled', isOff ? 'false' : 'true');
     });
+    syncProfileChoiceSemantics();
     syncOwnerArbiterUi();
     return;
   }
@@ -428,6 +457,7 @@ function syncProfileUi() {
       card.setAttribute('aria-disabled', card.dataset.profile === 'off' ? 'false' : 'true');
     });
     syncCurrentStrategyTransitionCopy();
+    syncProfileChoiceSemantics();
     syncOwnerArbiterUi();
     return;
   }
@@ -464,6 +494,7 @@ function syncProfileUi() {
     card.setAttribute('aria-checked', String(selected));
   });
   syncCurrentStrategyTransitionCopy();
+  syncProfileChoiceSemantics();
   syncOwnerArbiterUi();
 }
 
@@ -643,40 +674,39 @@ function renderProfileCards() {
     const p = PROFILES[key];
     const card = document.createElement('article');
     card.className = 'profile-card profile-option';
-    card.setAttribute('role', 'radio');
-    card.setAttribute('aria-checked', String(key === state.currentProfile));
     card.dataset.profile = key;
-    card.tabIndex = 0;
-    const detailAction = key === 'off' ? '' : `
+    const detailAction = `
         <button class="card-info" type="button" data-action="profile-detail" data-profile="${key}" aria-label="查看${p.name}详情">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M11 17h2v-6h-2v6zm0-8h2V7h-2v2zm1-7C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
+          说明
         </button>`;
     setStaticHtml(card, `
-      <div class="profile-icon" aria-hidden="true">${p.icon}</div>
-      <div class="profile-copy">
-        <div class="profile-name">${p.name}</div>
-        <div class="profile-desc">${p.summary}</div>
-      </div>
-      <div class="profile-actions">
-        ${detailAction}
-        <div class="p-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></div>
-      </div>`);
-    card.addEventListener('click', (evt) => {
-      if (evt.target.closest('[data-action="profile-detail"]')) return;
+      <button class="profile-select" type="button" role="radio" aria-checked="${key === state.currentProfile}" aria-labelledby="profile-name-${key}" aria-describedby="profile-desc-${key}">
+        <span class="profile-icon" aria-hidden="true">${p.icon}</span>
+        <span class="profile-copy">
+          <span class="profile-name" id="profile-name-${key}">${p.name}</span>
+          <span class="profile-desc" id="profile-desc-${key}">${p.summary}</span>
+        </span>
+        <span class="p-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+      </button>${detailAction}`);
+    const select = card.querySelector('.profile-select');
+    select.addEventListener('click', () => {
       if (card.classList.contains('disabled')) return;
       if (key === 'off') setSchedulerMode('off');
       else applyProfile(key);
     });
-    card.addEventListener('keydown', (evt) => {
-      if (evt.key === 'Enter' || evt.key === ' ') {
-        evt.preventDefault();
-        if (card.classList.contains('disabled')) return;
-        if (key === 'off') setSchedulerMode('off');
-        else applyProfile(key);
-      }
+    select.addEventListener('keydown', (evt) => {
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(evt.key)) return;
+      evt.preventDefault();
+      const items = Array.from(refs.profileList.querySelectorAll('.profile-select:not(:disabled)'));
+      const step = ['ArrowLeft', 'ArrowUp'].includes(evt.key) ? -1 : 1;
+      const index = evt.key === 'Home' ? 0 : evt.key === 'End' ? items.length - 1 : (items.indexOf(select) + step + items.length) % items.length;
+      items[index]?.focus();
+      // Arrows explore choices; Enter/Space explicitly commits device changes.
+      items.forEach((item) => { item.tabIndex = item === items[index] ? 0 : -1; });
     });
     refs.profileList.appendChild(card);
   });
+  syncProfileChoiceSemantics();
 }
 
 function ensureHomeCpuRows(clusters) {

@@ -28,6 +28,9 @@ EOF
 chmod +x "$MOCK_BIN" || exit 2
 cp "$SOURCE_ROOT/scripts/cpu_profile.sh" "$MOD/scripts/" || exit 2
 cp "$SOURCE_ROOT/scripts/cpu_profile_lib.sh" "$MOD/scripts/" || exit 2
+cp "$SOURCE_ROOT/scripts/scheduler_capability_lib.sh" "$MOD/scripts/" || exit 2
+printf 'active\n' > "$MOD/.scheduler_mode"
+printf 'supported\n' > "$MOD/.scheduler_capability"
 printf 'pixel\n' > "$MOD/.cpu_sched_owner"
 printf 'battery\n' > "$MOD/.current_profile"
 for _t_root in "$CPU0" "$CPU4" "$CPU7"; do

@@ -36,7 +36,7 @@ function resolveChromiumExecutable() {
 
 module.exports = defineConfig({
   testDir: __dirname,
-  testMatch: 'webui.spec.js',
+  testMatch: '*.spec.js',
   timeout: 30_000,
   expect: { timeout: 8_000 },
   fullyParallel: false,
@@ -60,7 +60,10 @@ module.exports = defineConfig({
   projects: [
     { name: 'desktop-1440', use: { viewport: { width: 1440, height: 1000 } } },
     { name: 'mobile-320', use: { viewport: { width: 320, height: 720 }, isMobile: true, hasTouch: true } },
+    { name: 'mobile-360', use: { viewport: { width: 360, height: 800 }, isMobile: true, hasTouch: true } },
     { name: 'mobile-390', use: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } },
     { name: 'pixel-427', use: { viewport: { width: 427, height: 900 }, isMobile: true, hasTouch: true } },
+    { name: 'medium-600', use: { viewport: { width: 600, height: 900 }, hasTouch: true } },
+    { name: 'expanded-840', use: { viewport: { width: 840, height: 1000 }, hasTouch: true } },
   ],
 });

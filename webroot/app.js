@@ -201,11 +201,13 @@ function bindStaticEvents() {
   $('log-clear-btn').addEventListener('click', appFeatures.core.clearLogs);
   $('log-audit-btn').addEventListener('click', appFeatures.diagnostics.openAuditLog);
   $('theme-close-btn').addEventListener('click', appFeatures.ui.closeThemeSheet);
+  $('theme-close-x').addEventListener('click', appFeatures.ui.closeThemeSheet);
   $('detail-close-btn').addEventListener('click', appFeatures.ui.closeDetailModal);
   $('detail-close-x').addEventListener('click', appFeatures.ui.closeDetailModal);
   $('detail-minimize-btn').addEventListener('click', appFeatures.ui.toggleDetailMinimized);
   $('reboot-now-btn').addEventListener('click', appFeatures.thermal.rebootDevice);
   $('reboot-later-btn').addEventListener('click', appFeatures.ui.closeRebootModal);
+  $('reboot-close-x').addEventListener('click', appFeatures.ui.closeRebootModal);
   $('reboot-cancel-btn').addEventListener('click', appFeatures.thermal.cancelPendingRebootChange);
   $('open-cpu-detail-btn').addEventListener('click', () => {
     const detailState = appFeatures.profile.getCpuDetailState();
@@ -251,24 +253,13 @@ function bindStaticEvents() {
   refs.thermalList.addEventListener('click', (evt) => {
     const detailBtn = evt.target.closest('[data-action="thermal-detail"]');
     if (detailBtn) {
-      const offset = Number(detailBtn.dataset.offset);
-      openDetail(THERMAL_PRESETS[offset].name, THERMAL_PRESETS[offset].detail);
+      const preset = detailBtn.dataset.policy === 'system'
+        ? appFeatures.thermal.getSystemPreset()
+        : THERMAL_PRESETS[Number(detailBtn.dataset.offset)];
+      openDetail(preset.name, preset.detail || preset.summary);
     }
   });
-  window.addEventListener('popstate', (evt) => {
-    const s = evt.state;
-    if (refs.detailModal.classList.contains('open')) {
-      appFeatures.thermal.stopChart();
-      appFeatures.energy.stop();
-      appFeatures.analytics.stop();
-      refs.detailModal.classList.remove('open', 'energy-mode', 'history-mode', 'analytics-mode', 'detail-minimized');
-      $('detail-minimize-btn').setAttribute('aria-expanded', 'true');
-      return;
-    }
-    if (refs.swapTuneModal.classList.contains('open')) { refs.swapTuneModal.classList.remove('open'); appFeatures.core.queueNextPoll(POLL_MIN_DELAY_MS); return; }
-    if (refs.themeModal.classList.contains('open')) { refs.themeModal.classList.remove('open'); return; }
-    if (refs.rebootModal.classList.contains('open')) { refs.rebootModal.classList.remove('open'); return; }
-  });
+  window.addEventListener('popstate', appFeatures.ui.handlePopState);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden || document.visibilityState !== 'visible') pauseForegroundWork();
     else resumeForegroundWork();

@@ -3,8 +3,8 @@
 SOURCE_ROOT="$1"
 TEST_ROOT="$2"
 LIB="$SOURCE_ROOT/scripts/thermal_profile.sh"
-STOCK="$SOURCE_ROOT/system/vendor/etc/thermal_stock.json"
-STOCK_XL="$SOURCE_ROOT/system/vendor/etc/thermal_stock_xl.json"
+STOCK="$SOURCE_ROOT/tests/fixtures/thermal/caiman.json"
+STOCK_XL="$SOURCE_ROOT/tests/fixtures/thermal/komodo.json"
 
 PASS=0
 FAIL=0
@@ -158,8 +158,9 @@ fi
 
 assert_eq 'normalizes invalid offset to module default' 4 "$(thermal_normalize_offset 8 4)"
 assert_eq 'thermal contract owns ordered offsets' '-2 0 2 4 6' "$THERMAL_ALLOWED_OFFSETS"
-assert_eq 'thermal UI contract serializes offsets and default' \
-    '{"offsets":[-2,0,2,4,6],"default_offset":4}' "$(thermal_print_ui_contract_json)"
+assert_eq 'thermal UI separates selectable custom offsets from legacy zero' '-2 2 4 6' "$THERMAL_UI_OFFSETS"
+assert_eq 'thermal starts with no overlay' system "$THERMAL_DEFAULT_POLICY"
+assert_eq 'custom fallback is the contract default' 2 "$THERMAL_DEFAULT_OFFSET"
 if thermal_is_valid_offset 6; then
     ok 'accepts +6 offset'
 else
@@ -189,7 +190,7 @@ for _variant in pro xl; do
             case "$_offset" in
                 -2) _skin_slot6=50; _hint_slot6=50; _soc_slot6=54 ;;
                 0)  _skin_slot6=52; _hint_slot6=52; _soc_slot6=56 ;;
-                2|4|6) _skin_slot6=53.1; _hint_slot6=53; _soc_slot6=57.1 ;;
+                2|4|6) _skin_slot6=53; _hint_slot6=52.9; _soc_slot6=57 ;;
             esac
             assert_eq "VIRTUAL-SKIN slot 6 respects shutdown hysteresis $_offset" "$_skin_slot6" "$(hot_threshold_slot "$_out" VIRTUAL-SKIN 6)"
             assert_eq "HINT slot 6 respects shutdown hysteresis $_offset" "$_hint_slot6" "$(hot_threshold_slot "$_out" VIRTUAL-SKIN-HINT 6)"

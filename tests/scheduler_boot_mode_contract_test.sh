@@ -40,7 +40,7 @@ PERMISSION="$TEST_ROOT/permission"
 POWERHAL="$TEST_ROOT/powerhal"
 FAS_ALIVE="$TEST_ROOT/fas_alive"
 mkdir -p "$MOD/scripts" "$FAS" "$RUNTIME" || exit 2
-for _t_script in scheduler_owner_lib.sh scheduler_boot_mode_lib.sh scheduler_reconcile.sh scheduler_detect_lib.sh runtime_defaults_lib.sh cpu_profile_lib.sh cpu_profile.sh; do
+for _t_script in scheduler_capability_lib.sh scheduler_owner_lib.sh scheduler_boot_mode_lib.sh scheduler_reconcile.sh scheduler_detect_lib.sh runtime_defaults_lib.sh cpu_profile_lib.sh cpu_profile.sh; do
     cp "$SOURCE_ROOT/scripts/$_t_script" "$MOD/scripts/" || exit 2
 done
 
@@ -69,6 +69,8 @@ printf 'boot-a\n' > "$BOOT_ID"
 printf '0\n' > "$UGT_COUNT"
 printf 'ok\n' > "$PERMISSION"
 printf '0\n' > "$POWERHAL"
+printf 'active\n' > "$MOD/.scheduler_mode"
+printf 'supported\n' > "$MOD/.scheduler_capability"
 printf 'pixel\n' > "$MOD/.sched_owner_desired"
 printf 'pixel\n' > "$MOD/.cpu_sched_owner"
 printf 'off\n' > "$MOD/.game_handoff_policy"

@@ -29,7 +29,7 @@
       <div class="topbar-row">
         <div class="topbar-copy">
           <div class="kicker" id="topbar-kicker">加载中…</div>
-          <div class="topbar-title">温控调度控制台</div>
+          <h1 class="topbar-title">温控调度控制台</h1>
           <div class="topbar-subtitle" id="topbar-subtitle">状态总览</div>
         </div>
         <div class="topbar-actions">
@@ -78,7 +78,7 @@
               </div>
               <div class="header-actions">
                 <button class="tiny-btn tonal" id="home-temp-chart-btn" type="button">历史</button>
-                <span class="badge default" id="home-mod-badge">+4°C 已启用</span>
+                <span class="badge off" id="home-mod-badge">读取中</span>
               </div>
             </div>
             <div id="home-thermal-skel"><div class="skel" style="height:80px"></div></div>
@@ -164,7 +164,7 @@
             </button>
           </div>
           <div class="log-body" id="log-body">
-            <div class="log-toolbar"><span id="log-meta">本次会话 · 最多保留 40 条</span><span class="log-toolbar-actions"><span>失败项可展开</span><button class="tiny-btn sm tonal" id="log-audit-btn" type="button">后台日志</button><button class="tiny-btn sm danger-btn" id="log-clear-btn" type="button">清空记录</button></span></div>
+            <div class="log-toolbar"><span id="log-meta">本次会话 · 最多保留 40 条</span><span class="log-toolbar-actions"><button class="tiny-btn sm tonal" id="log-audit-btn" type="button">查看后台审计日志</button><button class="tiny-btn sm" id="log-clear-btn" type="button">清空本页记录</button></span></div>
             <div class="log-inner" id="log-inner"><span class="log-dim">等待操作…</span></div>
           </div>
         </div>
@@ -182,6 +182,10 @@
             <button class="seg-btn" id="profile-policy-auto-btn" type="button">自动</button>
           </div>
           <div class="section-sub" id="perf-policy-desc" style="margin-top:10px">读取当前调度策略…</div>
+        </article>
+        <article class="surface-card preference-card scheduler-card">
+          <div class="panel-title">调度接管与协调</div>
+          <div class="panel-desc">日常调度与游戏接管保持独立。</div>
           <div class="preference-group" id="external-scheduler-controls">
             <div class="ctrl-row" id="sched-owner-row" data-module-visible="ugt" hidden>
               <div class="ctrl-copy">
@@ -247,7 +251,7 @@
             <span class="disclosure-copy"><strong>调度说明</strong><small>自动策略与系统默认</small></span>
             <span class="disclosure-chevron" aria-hidden="true">›</span>
           </summary>
-          <div class="disclosure-body support-copy">省电与均衡会调整核心分配和升频节奏；系统默认仍属于本模块 active profile。“不启用本模块调度”会停止全部调度写入和 worker，两者不是同一状态。自动模式仅在均衡与省电之间切换。<span id="external-scheduler-help" data-module-visible="ugt|fas" hidden></span></div>
+          <div class="disclosure-body support-copy"><p id="perf-policy-detail"></p><p>省电与均衡会调整核心分配和升频节奏；系统默认仍属于本模块管理的档位。“不启用本模块调度”会停止全部调度写入和后台任务，两者不是同一状态。自动模式仅在均衡与省电之间切换。<span id="external-scheduler-help" data-module-visible="ugt|fas" hidden></span></p></div>
         </details>
 
         <div class="section-head" style="margin-top:6px">
@@ -275,8 +279,8 @@
           </div>
           <article class="thermal-card">
             <div class="panel-head">
-              <div class="panel-title">VIRTUAL-SKIN</div>
-              <span class="badge default" id="th-mod-badge">+4°C 已启用</span>
+              <div class="panel-title">机身综合温度</div>
+              <span class="badge off" id="th-mod-badge">读取中</span>
             </div>
             <div id="thermal-skel"><div class="skel" style="height:180px"></div></div>
             <div id="thermal-content" hidden>
@@ -306,12 +310,12 @@
           <div class="section-copy">
             <div class="kicker">温控阈值</div>
             <div class="section-title">档位选择</div>
-          <div class="section-sub">默认不修改温控、不添加配置；只有显式选择 custom 档位才创建 overlay。</div>
+          <div class="section-sub">默认沿用系统温控，选择其他档位后才应用调整。</div>
           </div>
           <div class="profile-list" id="thermal-list"></div>
         </div>
 
-        <div class="inline-alert warn"><strong>SHUTDOWN 阈值保留 stock</strong><span>前置阈值按档位平移；+4/+6°C 接近 55/59°C 时会自动限幅，保证数值严格递增。</span></div>
+        <div class="inline-alert warn"><strong>最终安全关机阈值保持原厂</strong><span>调整只影响前置温控介入。靠近安全阈值时自动限幅，具体参数可在档位说明中查看。</span></div>
       </div>
     </section>
 
@@ -329,14 +333,16 @@
               <div class="panel-desc" id="uecap-desc">选择载波组合配置，切换后自动校验是否生效。</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn tonal" id="uecap-detail-btn" type="button">详情</button>
+              <button class="tiny-btn text-btn" id="uecap-detail-btn" type="button" aria-label="查看 UE 网络能力说明">说明</button>
             </div>
           </div>
           <div class="uecap-btn-group" id="uecap-btn-group">
             <div class="skel" style="height:40px"></div>
           </div>
-          <details class="disclosure compact">
-            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>当前配置</strong><small>选择结果与生效校验</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
+          <div class="data-list uecap-summary" id="uecap-summary" aria-label="配置摘要"></div>
+          <div class="inline-alert warn" id="uecap-status-message" role="status" hidden></div>
+          <details class="disclosure compact" id="uecap-diagnostics">
+            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>配置与无线诊断</strong><small>生效依据、设备能力及来源</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
             <div class="disclosure-body"><div class="data-list" id="uecap-rows"><div class="skel" style="height:48px"></div></div></div>
           </details>
         </article>
@@ -349,7 +355,7 @@
               <div class="panel-desc" id="baseband-desc">查看独立基带模块的安装状态与关键配置。</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn tonal" id="baseband-detail-btn" type="button">详情</button>
+              <button class="tiny-btn text-btn" id="baseband-detail-btn" type="button" aria-label="查看基带配置模块说明">说明</button>
               <button class="tiny-btn tonal" id="baseband-refresh-btn" type="button">刷新</button>
             </div>
           </div>
@@ -367,7 +373,7 @@
               <div class="panel-desc" id="nr-switch-desc">息屏 5 分钟后切换至 LTE，亮屏自动恢复。</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn tonal" id="nr-switch-detail-btn" type="button">详情</button>
+              <button class="tiny-btn text-btn" id="nr-switch-detail-btn" type="button" aria-label="查看 NR 息屏降级说明">说明</button>
               <button class="tiny-btn primary" id="nr-switch-toggle-btn" type="button"><span id="nr-switch-toggle-label">读取中…</span></button>
             </div>
           </div>
@@ -410,7 +416,7 @@
               <div class="panel-desc" id="swap-desc">正在读取系统 owner、ZRAM 实际容量和 VM 参数。</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn tonal" id="swap-detail-btn" type="button">详情</button>
+              <button class="tiny-btn text-btn" id="swap-detail-btn" type="button" aria-label="查看内存优化说明">说明</button>
               <button class="tiny-btn tonal" id="swap-tune-btn" type="button">手动</button>
               <button class="tiny-btn primary" id="swap-toggle-btn" type="button"><span id="swap-toggle-label">读取中…</span></button>
             </div>
@@ -542,7 +548,7 @@
   </main>
 
   <nav class="bottom-nav" aria-label="主导航">
-    <button class="tab-item active" id="tab-home" data-tab="home" type="button">
+    <button class="tab-item active" id="tab-home" data-tab="home" type="button" aria-current="page">
       <span class="ti-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg></span>
       <span class="ti-label">状态</span>
     </button>
@@ -561,14 +567,17 @@
   </nav>
 </div>
 
-<div class="toast-wrap" id="toast-wrap"></div>
+<div class="toast-wrap" id="toast-wrap" role="status" aria-live="polite" aria-relevant="additions"></div>
 
-<div class="modal-wrap" id="modal-theme">
+<div class="modal-wrap" id="modal-theme" role="dialog" aria-modal="true" aria-labelledby="theme-modal-title" aria-hidden="true" inert>
   <div class="modal-bg"></div>
   <div class="modal-sheet">
     <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <h2 class="modal-s-title" id="theme-modal-title" tabindex="-1">界面主题</h2>
+      <button class="sheet-close-btn" id="theme-close-x" type="button" aria-label="关闭主题设置">×</button>
+    </div>
     <div class="modal-sheet-body">
-      <div class="modal-s-title">界面主题</div>
       <div class="modal-s-desc">主题只影响 WebUI 的显示层，不影响温控、调度和系统参数本身。</div>
       <div class="theme-grid">
         <button class="theme-choice" type="button" data-theme-option="system">
@@ -589,13 +598,16 @@
   </div>
 </div>
 
-<div class="modal-wrap" id="modal-reboot">
+<div class="modal-wrap" id="modal-reboot" role="dialog" aria-modal="true" aria-labelledby="reboot-modal-title" aria-hidden="true" inert>
   <div class="modal-bg"></div>
   <div class="modal-sheet">
     <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <h2 class="modal-s-title" id="reboot-modal-title" tabindex="-1">配置等待重启</h2>
+      <button class="sheet-close-btn" id="reboot-close-x" type="button" aria-label="稍后重启并关闭提示">×</button>
+    </div>
     <div class="modal-sheet-body">
       <div class="modal-s-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg></div>
-      <div class="modal-s-title" id="reboot-modal-title">温控服务未能自动重启</div>
       <div class="modal-s-desc" id="reboot-modal-desc">温控阈值已保存，但当前无法在线重启 thermal 服务。重启手机后新配置才会生效。</div>
       <div class="modal-actions">
         <button class="mbtn mbtn-primary" id="reboot-now-btn" type="button">立即重启</button>
@@ -606,12 +618,12 @@
   </div>
 </div>
 
-<div class="modal-wrap" id="modal-detail">
+<div class="modal-wrap" id="modal-detail" role="dialog" aria-modal="true" aria-labelledby="detail-title" aria-hidden="true" inert>
   <div class="modal-bg"></div>
   <div class="modal-sheet">
     <div class="sheet-handle"></div>
     <div class="sheet-head">
-      <div class="modal-s-title" id="detail-title">详情</div>
+      <h2 class="modal-s-title" id="detail-title" tabindex="-1">详情</h2>
       <button class="sheet-close-btn sheet-minimize-btn" id="detail-minimize-btn" type="button" aria-label="缩小详情" aria-expanded="true">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M6 11h12v2H6z"/></svg>
       </button>
@@ -621,17 +633,17 @@
     </div>
     <div class="modal-sheet-body">
       <div class="detail-content" id="detail-body"></div>
-      <div class="modal-actions"><button class="mbtn mbtn-ghost" id="detail-close-btn" type="button">关闭</button></div>
     </div>
+    <div class="modal-actions sheet-footer"><button class="mbtn mbtn-ghost" id="detail-close-btn" type="button">关闭详情</button></div>
   </div>
 </div>
 
-<div class="modal-wrap" id="modal-swap-tune">
+<div class="modal-wrap" id="modal-swap-tune" role="dialog" aria-modal="true" aria-labelledby="swap-tune-title" aria-hidden="true" inert>
   <div class="modal-bg"></div>
   <div class="modal-sheet">
     <div class="sheet-handle"></div>
     <div class="sheet-head">
-      <div class="modal-s-title">ZRAM / VM 手动调节</div>
+      <h2 class="modal-s-title" id="swap-tune-title" tabindex="-1">ZRAM / VM 手动调节</h2>
       <button class="sheet-close-btn" id="swap-tune-close-x" type="button" aria-label="关闭">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
       </button>
@@ -643,22 +655,22 @@
         <label class="swap-field" for="swap-input-swappiness">
           <span class="swap-field-head"><span>swappiness</span><b id="swap-value-swappiness">100</b></span>
           <input class="swap-range" id="swap-input-swappiness" type="range" min="0" max="200" step="5" value="100">
-          <input class="swap-number" id="swap-number-swappiness" type="number" min="0" max="200" step="5" inputmode="numeric" value="100">
+          <input class="swap-number" id="swap-number-swappiness" type="number" min="0" max="200" step="5" inputmode="numeric" value="100" aria-label="swappiness 精确数值">
         </label>
         <label class="swap-field" for="swap-input-minfree">
           <span class="swap-field-head"><span>min_free_kbytes</span><b><span id="swap-value-minfree">131072</span> KB</b></span>
           <input class="swap-range" id="swap-input-minfree" type="range" min="16384" max="262144" step="8192" value="131072">
-          <input class="swap-number" id="swap-number-minfree" type="number" min="16384" max="262144" step="8192" inputmode="numeric" value="131072">
+          <input class="swap-number" id="swap-number-minfree" type="number" min="16384" max="262144" step="8192" inputmode="numeric" value="131072" aria-label="min_free_kbytes 精确数值，KB">
         </label>
         <label class="swap-field" for="swap-input-watermark">
           <span class="swap-field-head"><span>watermark_scale_factor</span><b id="swap-value-watermark">200</b></span>
           <input class="swap-range" id="swap-input-watermark" type="range" min="10" max="500" step="10" value="200">
-          <input class="swap-number" id="swap-number-watermark" type="number" min="10" max="500" step="10" inputmode="numeric" value="200">
+          <input class="swap-number" id="swap-number-watermark" type="number" min="10" max="500" step="10" inputmode="numeric" value="200" aria-label="watermark_scale_factor 精确数值">
         </label>
         <label class="swap-field" for="swap-input-vfs">
           <span class="swap-field-head"><span>vfs_cache_pressure</span><b id="swap-value-vfs">60</b></span>
           <input class="swap-range" id="swap-input-vfs" type="range" min="10" max="200" step="5" value="60">
-          <input class="swap-number" id="swap-number-vfs" type="number" min="10" max="200" step="5" inputmode="numeric" value="60">
+          <input class="swap-number" id="swap-number-vfs" type="number" min="10" max="200" step="5" inputmode="numeric" value="60" aria-label="vfs_cache_pressure 精确数值">
         </label>
       </div>
       <div class="swap-preset-actions">

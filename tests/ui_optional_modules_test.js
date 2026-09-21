@@ -25,6 +25,7 @@ const postMount = fs.readFileSync(path.join(root, 'post-mount.sh'), 'utf8');
 const customize = fs.readFileSync(path.join(root, 'customize.sh'), 'utf8');
 const service = fs.readFileSync(path.join(root, 'service.sh'), 'utf8');
 const thermalLib = fs.readFileSync(path.join(root, 'scripts', 'thermal_profile.sh'), 'utf8');
+const thermalPolicyLib = fs.readFileSync(path.join(root, 'scripts', 'thermal_policy_lib.sh'), 'utf8');
 const bgRestrictLib = fs.readFileSync(path.join(root, 'scripts', 'bg_restrict_lib.sh'), 'utf8');
 const cpuProfileLib = fs.readFileSync(path.join(root, 'scripts', 'cpu_profile_lib.sh'), 'utf8');
 const nrModeLib = fs.readFileSync(path.join(root, 'scripts', 'nr_mode_lib.sh'), 'utf8');
@@ -57,6 +58,33 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function shellFunction(source, name) {
+  const start = source.indexOf(`${name}() {`);
+  const end = source.indexOf('\n}', start);
+  assert(start >= 0 && end > start, `shell function is missing: ${name}`);
+  return source.slice(start, end + 2);
+}
+
+function shellLiteral(source, name) {
+  const value = source.match(new RegExp(`^${name}=(?:"([^"\\r\\n]*)"|([^\\s#]+))`, 'm'));
+  assert(value, `shell contract literal is missing: ${name}`);
+  return value[1] ?? value[2];
+}
+
+function readProperties(source, label) {
+  const result = {};
+  source.split(/\r?\n/).forEach((rawLine) => {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) return;
+    const separator = line.indexOf('=');
+    assert(separator > 0, `${label} contains an invalid property`);
+    const key = line.slice(0, separator);
+    assert(!Object.prototype.hasOwnProperty.call(result, key), `${label} contains duplicate ${key}`);
+    result[key] = line.slice(separator + 1);
+  });
+  return result;
+}
+
 const htmlContracts = [
   [/<div class="preference-group" id="external-scheduler-controls">/, 'scheduler control group must remain visible for independent health state'],
   [/<div class="ctrl-row" id="sched-owner-row" data-module-visible="ugt" hidden>/, 'UGT daily owner row must require UGT'],
@@ -82,7 +110,8 @@ for (const transitionCopy of [
   assert(app.includes(transitionCopy), `current strategy transition copy is missing: ${transitionCopy}`);
 }
 assert(app.includes('function isCurrentStrategyBusy()'), 'current strategy controls must share one busy guard');
-assert(app.includes('refs.gameHandoffToggleBtn.disabled = strategyBusy || !isVerifiedSchedulerBoot()'), 'game handoff must require a verified Pixel or UGT baseline');
+const handoffDisabledGuard = app.match(/refs\.gameHandoffToggleBtn\.disabled\s*=\s*([^;]+);/)?.[1] || '';
+assert(handoffDisabledGuard.includes('strategyBusy') && handoffDisabledGuard.includes('!isVerifiedSchedulerBoot()') && handoffDisabledGuard.includes("state.schedulerMode !== 'active'"), 'game handoff must require an active, idle and verified Pixel or UGT baseline');
 assert(app.includes('refs.profilePolicyManualBtn.disabled = strategyBusy || !isVerifiedPixelBoot()'), 'profile policy must require a verified Pixel boot');
 
 for (const phrase of ['日常推荐', '性能更积极', '适合日常', '日常常用', '温度控制最稳妥', '机身更凉']) {
@@ -96,24 +125,66 @@ const thermalPresetBlock = app.slice(thermalPresetStart, thermalPresetEnd);
 for (const [label, source, prefix] of [
   ['thermal', thermalLib, '_tp_'],
   ['BG', bgRestrictLib, '_bg_'],
-  ['UECap', uecapProfile, '_uecap_'],
 ]) {
   const shellLocals = [...source.matchAll(/^\s*(_[A-Za-z0-9_]+)=/gm)].map((match) => match[1]);
   assert(shellLocals.every((name) => name.startsWith(prefix)), `${label} library has unscoped shell variables`);
   assert(!/^\s*(?:\.|source)\s+/m.test(source), `${label} leaf library must not source another library`);
 }
+// UECap became an orchestrator in the dual-SKU/slot work. Its manifest resolver
+// has one existing _p_full scratch name (not a shell local). Limit this exception
+// to that function and prove that the shared dependencies cannot collide with it.
+const uecapPayloadSource = shellFunction(uecapProfile, 'uecap_payload_source');
+const uecapOutsidePayloadSource = uecapProfile.replace(uecapPayloadSource, '');
+const uecapAssignments = [...uecapOutsidePayloadSource.matchAll(/^\s*(_[A-Za-z0-9_]+)=/gm)].map((match) => match[1]);
+assert(uecapAssignments.every((name) => name.startsWith('_uecap_')), 'UECap orchestration has unexpected unscoped scratch assignments');
+assert([...uecapPayloadSource.matchAll(/^\s*(_[A-Za-z0-9_]+)=/gm)].every((match) => match[1].startsWith('_uecap_') || match[1] === '_p_full'), 'UECap payload resolver has unexpected scratch assignments');
+assert(!/\b_p_full\b/.test(uecapOutsidePayloadSource), 'UECap manifest scratch must not escape its resolver');
+const uecapDependencies = [...uecapProfile.matchAll(/^\s*\.\s+"\$MODDIR\/([^"\r\n]+)"/gm)].map((match) => match[1]);
+assert((uecapProfile.match(/^\s*(?:\.|source)\s+/gm) || []).length === uecapDependencies.length
+  && uecapDependencies.length === 2 && new Set(uecapDependencies).size === 2
+  && uecapDependencies.includes('scripts/slot_transaction_lib.sh')
+  && uecapDependencies.includes('scripts/audit_log_lib.sh'), 'UECap must use only its declared slot and audit dependencies');
+for (const dependency of uecapDependencies) {
+  const dependencySource = fs.readFileSync(path.join(root, dependency), 'utf8');
+  assert(!/\b_p_full\b/.test(dependencySource), `UECap manifest scratch collides with ${dependency}`);
+}
+assert(uecapPayloadSource.includes('[ "$_p_target" = "$UECAP_TARGET_NAME" ] || return 1')
+  && uecapPayloadSource.includes('[ "$(uecap_hash "$_p_full")" = "$_p_sha" ] || return 1')
+  && uecapPayloadSource.includes('[ "$(wc -c < "$_p_full" 2>/dev/null | tr -d \' \')" = "$_p_bytes" ] || return 1'), 'UECap resolver must verify target identity, payload size and hash');
 assert(!app.includes('const THERMAL_OFFSETS') && !app.includes('THERMAL_DEFAULT_OFFSET'), 'thermal JS must not retain the offset allowlist or default');
 assert(app.includes('const raw = data?.thermal_contract') && app.includes('state.contract.offsets.forEach((offset) =>'), 'thermal UI must render the backend contract order');
-for (const offset of ['[-2]', '0', '2', '4', '6']) {
-  assert(thermalPresetBlock.includes(`${offset}: {`), `thermal preset ${offset} is missing`);
+const thermalCustomOffsets = shellLiteral(thermalLib, 'THERMAL_UI_OFFSETS').split(/\s+/).map(Number);
+const thermalAcceptedOffsets = shellLiteral(thermalLib, 'THERMAL_ALLOWED_OFFSETS').split(/\s+/).map(Number);
+const thermalPresets = new Function(`${thermalPresetBlock}\n}; return THERMAL_PRESETS;`)();
+assert(thermalCustomOffsets.length > 0 && new Set(thermalCustomOffsets).size === thermalCustomOffsets.length
+  && thermalCustomOffsets.every((offset) => Number.isFinite(offset) && thermalAcceptedOffsets.includes(offset)), 'custom thermal choices must be unique members of the backend accepted offsets');
+assert(Object.keys(thermalPresets).length === thermalCustomOffsets.length, 'thermal presentation must not add choices absent from the backend UI contract');
+for (const offset of thermalCustomOffsets) {
+  const preset = thermalPresets[offset];
+  assert(preset && ['name', 'summary', 'detail'].every((key) => typeof preset[key] === 'string' && preset[key].trim()), `thermal presentation for backend offset ${offset} is missing`);
 }
-assert(thermalCgi.includes('. "$THERMAL_LIB"'), 'thermal CGI must use the shared thermal library');
+assert(thermalCustomOffsets.includes(Number(shellLiteral(thermalLib, 'THERMAL_DEFAULT_OFFSET')))
+  && shellLiteral(thermalLib, 'THERMAL_DEFAULT_POLICY') === 'system'
+  && app.includes("appendCard('system', THERMAL_POLICY_PRESETS.system)"), 'thermal UI must preserve the backend system policy and valid custom default');
+assert(thermalCgi.includes('THERMAL_PROFILE_LIB="$MODDIR/scripts/thermal_profile.sh"')
+  && thermalCgi.includes('[ -r "$THERMAL_PROFILE_LIB" ] && . "$THERMAL_PROFILE_LIB"')
+  && thermalCgi.includes('thermal profile library not found'), 'thermal CGI must require the shared thermal profile library');
 assert(thermalCgi.includes('parse_thermal_offset'), 'thermal CGI must strictly parse the JSON offset body');
 assert(!thermalCgi.includes('sed \'s/.*"offset"'), 'thermal CGI must not use greedy offset extraction');
 assert(thermalCgi.includes('vendor.thermal.config') && thermalCgi.includes('thermal_info_config_lpm.json'), 'thermal CGI must follow the HAL-selected config');
 assert(customize.includes('vendor.thermal.config') && customize.includes('不支持的 Thermal HAL 配置'), 'installer must fail closed for unknown HAL config');
 assert(customize.includes('LPM 是顶层增量配置') || customize.includes('LPM is a top-level overlay'), 'installer must preserve LPM include semantics');
-assert(thermalCgi.includes('LPM includes the base config'), 'thermal CGI must mutate the included base config for LPM');
+const thermalConfigStart = thermalCgi.indexOf('case "$selected_config" in');
+const thermalConfigEnd = thermalCgi.indexOf('\nesac', thermalConfigStart);
+assert(thermalConfigStart >= 0 && thermalConfigEnd > thermalConfigStart, 'thermal CGI must validate the selected HAL config');
+const thermalConfigBranch = thermalCgi.slice(thermalConfigStart, thermalConfigEnd);
+assert(thermalConfigBranch.includes('thermal_info_config_lpm.json)')
+  && thermalConfigBranch.includes('[ -r "/vendor/etc/$selected_config" ]')
+  && thermalConfigBranch.includes("*) json_error '409 Conflict'")
+  && thermalCgi.includes('OUT_JSON="$THERMAL_OVERLAY_FILE"')
+  && thermalCgi.includes('thermal_policy_capture_stock /vendor/etc/thermal_info_config.json "$STOCK_JSON"')
+  && thermalCgi.includes('thermal_generate_config "$STOCK_JSON" "$TS_CANDIDATE" "$offset"')
+  && thermalPolicyLib.includes('THERMAL_OVERLAY_FILE="$THERMAL_POLICY_ROOT/system/vendor/etc/thermal_info_config.json"'), 'LPM custom thermal must verify the selected delta and rebuild only the included base from validated stock');
 assert(customize.includes('timeout 30') && customize.includes('保留当前默认值'), 'installer volume prompts must have a bounded timeout');
 assert(thermalCgi.includes('thermal_hal_effective_matches') && thermalCgi.includes('pending_reboot'), 'thermal CGI must distinguish service restart from HAL effective state');
 assert(app.includes('thermalContractRetryAttempts') && app.includes('thermalContractRetryTimer'), 'thermal UI must retry a transient contract read without a permanent blank card list');
@@ -290,7 +361,12 @@ assert(service.includes('scripts/nr_mode_lib.sh') && nrCgi.includes('scripts/nr_
 assert(nrModeLib.includes('nr_mode_write_verified()') && nrModeLib.includes('nr_mode_save_current()'), 'NR contract must verify writes and persist a restore mode');
 assert(nrCgi.includes('"screen_off_delay_s"') && app.includes('state.nrContract'), 'WebUI NR timing must come from the backend runtime contract');
 assert(!app.includes('30-50%'), 'NR detail must not promise an unverified fixed power-saving percentage');
-assert(customize.includes('不支持的设备') && customize.includes('XL 温控 stock 配置缺失'), 'installer must reject unknown devices and missing XL stock data');
+assert(customize.includes('不支持的设备') && /if ! thermal_policy_prepare_snapshot "\$device" "\$OLDDIR" yes; then[\s\S]*?\n\s*abort\r?\nfi/.test(customize), 'installer must reject unknown devices and abort when current-device stock preparation fails');
+const thermalSnapshotBody = shellFunction(thermalPolicyLib, 'thermal_policy_prepare_snapshot');
+assert(thermalSnapshotBody.includes('thermal_policy_snapshot_path "$_tpl_device"')
+  && thermalSnapshotBody.includes('[ "$_tpl_device" = komodo ] && _tpl_legacy_name=thermal_stock_xl.json')
+  && thermalSnapshotBody.includes('thermal_policy_capture_stock "$_tpl_candidate" "$_tpl_target"')
+  && thermalSnapshotBody.includes('thermal_policy_capture_stock /vendor/etc/thermal_info_config.json "$_tpl_target"'), 'stock preparation must preserve device-scoped snapshots, XL migration and current-device capture validation');
 assert(customize.includes('UECAP_EXTERNAL=1') && customize.includes('UECAP_DISABLED_REASON="device_external_stock"'), 'komodo installs must use the external/stock UECap policy');
 assert(customize.includes('magisk_uecap_unavailable'), 'Magisk managed UECap state must be explicit');
 assert(!customize.includes('uecap_unsupported_device') && !customize.includes('magisk_no_baseband'), 'retired UECap disable reasons must not remain in runtime installer logic');
@@ -310,10 +386,19 @@ function listFilesRecursively(directory) {
 assert(!listFilesRecursively(basebandRoot).some((entry) => entry.endsWith('.binarypb')), 'standalone baseband source must not contain UECap binarypb');
 assert(!service.includes('# v4.'), 'service.sh must not contain a release changelog');
 assert(!fs.existsSync(path.join(root, 'system.prop')), 'empty system.prop must not be packaged');
-assert(moduleProp.includes('version=v4.5.09') && moduleProp.includes('versionCode=114'), 'release version must be v4.5.09 / 114');
-for (const component of ['webui=4.5.06', 'scheduler=4.5.05', 'core=4.5.09']) {
-  assert(versionsProp.includes(component), `component version is stale: ${component}`);
+// module.prop and versions.prop own release metadata. Pinning an old release
+// here silently turns every legitimate component bump into an unrelated failure.
+const releaseProperties = readProperties(moduleProp, 'module.prop');
+const componentProperties = readProperties(versionsProp, 'versions.prop');
+assert(releaseProperties.id === 'pixel9pro_control'
+  && /^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(releaseProperties.version)
+  && /^[1-9]\d*$/.test(releaseProperties.versionCode)
+  && Number.isSafeInteger(Number(releaseProperties.versionCode)), 'release identity, version and numeric versionCode must be valid');
+assert(Object.keys(componentProperties).length === 3, 'component version contract must contain only its three owning components');
+for (const component of ['webui', 'scheduler', 'core']) {
+  assert(/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(componentProperties[component]), `component version is missing or invalid: ${component}`);
 }
+assert(webuiScripts.length > 0 && [...html.matchAll(/<script\s+src="([^"]+)"/g)].every((match) => match[1].endsWith('?v=__WEBUI_VER__')), 'WebUI scripts must use the build-injected component stamp instead of a pinned release');
 assert(commonCgi.includes("'413 Payload Too Large'") && commonCgi.includes('JSON object required'), 'all write CGI must share bounded JSON-object parsing');
 for (const cgi of [profileCgi, thermalCgi, ntpCgi, swapCgi, standbyCgi, nrCgi, uecapCgi]) {
   assert(cgi.includes('read_json_body '), 'write CGI must consume the shared JSON body reader');

@@ -1,59 +1,79 @@
-/* Pixel9Pro-Control WebUI — design tokens and reset. Shared tokens only; no bundler. */
+/* MD3 semantic roles and Pixel product tokens. Shapes 20/24 are project choices. */
 :root{
   color-scheme:light;
-  /* M3 表面色阶 (浅色: 越高越深, 用容器层级分层而非阴影) */
   --sc-lowest:#ffffff;
   --sc-low:#f3f6f3;
   --sc:#eceeec;
   --sc-high:#e6e9e7;
   --sc-highest:#e0e3e1;
   --bg:#f8fbf8;
-  --bg-canvas:linear-gradient(180deg,#f4faf6 0%,#eef4f0 52%,#f1f3ee 100%);
-  --surface:var(--sc-lowest);          /* 内容卡: 干净白, 在 bg 上读出抬升 */
-  --surface-2:var(--sc);               /* 内部 chip / 次级按钮 / 输入框 */
-  --surface-3:var(--sc-high);          /* 进度条轨道 / skeleton */
+  --bg-canvas:var(--bg);
+  --surface:var(--sc-lowest);
+  --surface-2:var(--sc);
+  --surface-3:var(--sc-high);
   --surface-4:var(--sc-highest);
-  --nav-bg:var(--sc);                  /* topbar / bottom-nav: 接地平面, 区别于白卡 */
-  --line:rgba(20,34,28,.10);
-  --line-2:rgba(20,34,28,.20);
+  --nav-bg:var(--sc);
   --outline:#707974;
   --outline-variant:#c2ccc5;
+  --line:var(--outline-variant);
+  --line-2:var(--outline);
   --text:#171d1b;
-  --text-2:rgba(23,29,27,.74);
-  --text-3:rgba(23,29,27,.52);
+  --text-2:#414943;
+  --text-3:#525c55;
   --primary:#006b57;
   --on-primary:#ffffff;
-  --primary-container:#d3efe3;         /* 清新淡青绿 (柔和不刺眼) */
+  --primary-container:#d3efe3;
   --on-primary-container:#00382c;
   --secondary-container:#d5e8df;
   --secondary-ink:#12201b;
   --tertiary:#5c6300;
   --tertiary-container:#e2efc8;
   --on-tertiary-container:#1a1f00;
-  --success:#217a49;
+  --success:#17683a;
   --success-container:#d9f0e1;
-  --warn:#9c6800;
+  --warn:#765000;
   --warn-container:#fff0ce;
-  --danger:#ba1a1a;
+  --danger:#a31212;
   --danger-container:#ffdad6;
-  --info:#2f6cb7;
+  --info:#245b9c;
   --info-container:#dce7ff;
-  --shadow:0 1px 2px rgba(10,30,25,.04),0 1px 3px rgba(10,30,25,.06);
-  --radius-sm:12px;
-  --radius-md:16px;
+  --temp-cool:#006b57;
+  --temp-normal:#17683a;
+  --temp-warm:#765000;
+  --temp-hot:#a6430c;
+  --temp-danger:#a31212;
+  --shadow:0 1px 2px rgba(10,30,25,.12),0 2px 6px rgba(10,30,25,.08);
+  --radius-sm:8px;
+  --radius-md:12px;
   --radius-lg:20px;
+  --radius-hero:24px;
   --radius-xl:28px;
-  --font-ui:"MiSans VF","Google Sans Text","Roboto","PingFang SC","Noto Sans SC",system-ui,sans-serif;
-  --fast:120ms;
-  --mid:200ms;
-  --slow:320ms;
+  --font-ui:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --font-mono:ui-monospace,"SFMono-Regular",Consolas,"Liberation Mono",monospace;
+  --font-body:1rem;
+  --font-support:.875rem;
+  --font-caption:.75rem;
+  --fast:100ms;
+  --mid:150ms;
+  --expand:250ms;
+  --slow:300ms;
   --ease:cubic-bezier(.2,0,0,1);
+  --ease-enter:cubic-bezier(0,0,0,1);
+  --ease-exit:cubic-bezier(.3,0,1,1);
   --topbar-h:64px;
-  --bottombar-h:74px;
+  --bottombar-h:80px;
+  --bottom-nav-occupied:calc(var(--bottombar-h) + env(safe-area-inset-bottom,0px));
+  --bottom-nav-height:var(--bottom-nav-occupied);
+  --detail-dock-height:0px;
+  --detail-dock-occupied:0px;
+  --keyboard-inset:0px;
+  --z-nav:20;
+  --z-dock:40;
+  --z-modal:50;
+  --z-feedback:60;
   background:var(--bg);
   overscroll-behavior:none;
 }
-
 :root[data-theme="dark"]{
   color-scheme:dark;
   --sc-lowest:#0b0f0d;
@@ -62,24 +82,21 @@
   --sc-high:#282b29;
   --sc-highest:#333735;
   --bg:#101513;
-  --bg-canvas:linear-gradient(180deg,#101513 0%,#0f1412 52%,#141917 100%);
-  --surface:var(--sc);                 /* 内容卡 */
+  --surface:var(--sc);
   --surface-2:var(--sc-high);
   --surface-3:var(--sc-highest);
   --surface-4:#3b403d;
-  --nav-bg:var(--sc-low);              /* topbar / bottom-nav */
-  --line:rgba(234,243,238,.10);
-  --line-2:rgba(234,243,238,.20);
+  --nav-bg:var(--sc-low);
   --outline:#89938d;
   --outline-variant:#404944;
   --text:#e0e3e1;
-  --text-2:rgba(224,227,225,.78);
-  --text-3:rgba(224,227,225,.55);
-  --primary:#84dcc5;                   /* 清新薄荷 (柔和不刺眼) */
+  --text-2:#c0c9c2;
+  --text-3:#adb8b0;
+  --primary:#84dcc5;
   --on-primary:#00382c;
   --primary-container:#0f4739;
   --on-primary-container:#a6f0db;
-  --secondary-container:#3e665b;
+  --secondary-container:#324d43;
   --secondary-ink:#d5e8df;
   --tertiary:#cdd99a;
   --tertiary-container:#3f4419;
@@ -92,23 +109,34 @@
   --danger-container:#4e1717;
   --info:#8dbbff;
   --info-container:#172b48;
-  --shadow:0 1px 3px rgba(0,0,0,.34),0 1px 2px rgba(0,0,0,.28);
+  --temp-cool:#84dcc5;
+  --temp-normal:#86d8aa;
+  --temp-warm:#ebcb7a;
+  --temp-hot:#ffb784;
+  --temp-danger:#ffb4ab;
+  --shadow:0 1px 3px rgba(0,0,0,.34),0 2px 8px rgba(0,0,0,.24);
 }
-
-*,
-*::before,
-*::after{box-sizing:border-box}
-
-html,body{height:100%}
-
-body{
-  margin:0;
-  font-family:var(--font-ui);
-  color:var(--text);
-  background:var(--bg-canvas);
-  overflow:hidden;
-}
-
+*,*::before,*::after{box-sizing:border-box}
+html{height:100%;font-size:100%;text-size-adjust:100%;-webkit-text-size-adjust:100%}
+body{height:100%;margin:0;font:400 var(--font-body)/1.5 var(--font-ui);color:var(--text);background:var(--bg);overflow:hidden}
+h1,h2,h3,h4,p{margin:0}
+strong,b{font-weight:500}
 button,input,textarea,select{font:inherit}
-button{border:none;background:none;padding:0;color:inherit}
+button{border:0;background:none;padding:0;color:inherit;min-width:48px;min-height:48px;touch-action:manipulation}
+input:not([type="checkbox"]):not([type="radio"]),select,textarea{min-height:48px;max-width:100%}
+button,summary{-webkit-tap-highlight-color:transparent}
+button:not(:disabled),summary{cursor:pointer}
+button:disabled{cursor:not-allowed}
+svg{display:block;flex-shrink:0}
+button svg{max-width:100%}
+:where(button,summary,[role="button"],input,select,textarea):focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+:lang(zh){letter-spacing:normal}
 [hidden]{display:none!important}
+/* Motion never owns business state or the control's hit rectangle. */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+}
+@media (prefers-contrast:more){
+  :root{--line:var(--outline)}
+  :where(button,summary,input,select,textarea):focus-visible{outline-width:3px}
+}

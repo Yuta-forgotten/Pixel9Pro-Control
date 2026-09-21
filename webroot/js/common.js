@@ -25,12 +25,19 @@ function escapeHtml(value) {
 }
 
 function showToast(msg, dur = 2500, type = '') {
+  if (!refs.toastWrap) return;
+  // Keep transient feedback bounded so rapid taps cannot build an overlay wall.
+  refs.toastWrap.querySelectorAll('.toast').forEach((toast) => toast.remove());
   const el = document.createElement('div');
   el.className = 'toast';
   if (!type && /失败|无效|错误|出错|超时/.test(msg)) type = 'err';
   if (type) el.classList.add(type);
   el.textContent = msg;
+  refs.toastWrap.setAttribute('role', 'status');
+  refs.toastWrap.setAttribute('aria-live', 'polite');
+  refs.toastWrap.setAttribute('aria-atomic', 'true');
   refs.toastWrap.appendChild(el);
+  requireFeature('ui').updateOverlayLayout();
   window.setTimeout(() => {
     el.classList.add('out');
     el.addEventListener('animationend', () => el.remove(), { once: true });
@@ -155,12 +162,7 @@ function isWebUiActive() {
 }
 
 function isAnyModalOpen() {
-  return Boolean(
-    (refs.detailModal && refs.detailModal.classList.contains('open'))
-    || (refs.swapTuneModal && refs.swapTuneModal.classList.contains('open'))
-    || (refs.themeModal && refs.themeModal.classList.contains('open'))
-    || (refs.rebootModal && refs.rebootModal.classList.contains('open'))
-  );
+  return Boolean(document.querySelector('.modal-wrap.open:not(.detail-minimized)'));
 }
 
 function isPollingRelaxed() {
@@ -271,7 +273,12 @@ function switchTab(tab) {
   if (tab === shellState.currentTab) return;
   shellState.currentTab = tab;
   document.querySelectorAll('.tab-page').forEach((page) => page.classList.toggle('active', page.dataset.tab === tab));
-  document.querySelectorAll('.tab-item').forEach((item) => item.classList.toggle('active', item.dataset.tab === tab));
+  document.querySelectorAll('.tab-item').forEach((item) => {
+    const selected = item.dataset.tab === tab;
+    item.classList.toggle('active', selected);
+    if (selected) item.setAttribute('aria-current', 'page');
+    else item.removeAttribute('aria-current');
+  });
   refs.topbarSubtitle.textContent = TAB_META[tab] || '控制台';
   syncTopbar();
   noteUserActivity();
@@ -296,7 +303,7 @@ function bindTabSwipe() {
   };
   refs.tabPages.addEventListener('touchstart', (evt) => {
     if (evt.touches.length !== 1) return;
-    if (document.querySelector('.modal-wrap.open')) return;
+    if (isAnyModalOpen()) return;
     const page = evt.target.closest('.tab-page');
     if (!page || !page.classList.contains('active')) return;
     const touch = evt.touches[0];

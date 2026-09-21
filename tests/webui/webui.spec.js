@@ -1,7 +1,10 @@
 const { test, expect } = require('@playwright/test');
 
-const CURRENT_MODULE_VERSION = 'v4.5.07';
-const CURRENT_VERSION_CODE = '112';
+const fs = require('fs');
+const path = require('path');
+const moduleProps = Object.fromEntries(fs.readFileSync(path.resolve(__dirname, '../../module.prop'), 'utf8').split(/\r?\n/).filter((line) => /^[a-zA-Z].*=/.test(line)).map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+const CURRENT_MODULE_VERSION = moduleProps.version;
+const CURRENT_VERSION_CODE = moduleProps.versionCode;
 
 async function expectNoHorizontalOverflow(page) {
   const result = await page.evaluate(() => {

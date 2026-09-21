@@ -22,7 +22,7 @@ new_fixture() {
     MOD="$FIXTURE/mod"
     FAS="$FIXTURE/fas"
     mkdir -p "$MOD/scripts" "$FAS/.test_runtime" || exit 2
-    for _t_script in owner_arbiter.sh scheduler_owner_lib.sh scheduler_detect_lib.sh cpu_profile_lib.sh \
+    for _t_script in owner_arbiter.sh scheduler_capability_lib.sh scheduler_owner_lib.sh scheduler_detect_lib.sh cpu_profile_lib.sh \
         scheduler_boot_mode_lib.sh scheduler_transition_guard_lib.sh profile_state_lib.sh \
         foreground_app_lib.sh owner_arbiter_state_lib.sh owner_arbiter_observation_lib.sh \
         owner_arbiter_external_lib.sh owner_arbiter_cpufreq_lib.sh; do
@@ -37,6 +37,10 @@ rm -f "$_root/../fas/.test_runtime/pixel_baseline_drift"
 [ ! -f "$_root/.fail_cpu_profile" ] || exit 1
 exit 0
 EOF
+    # The fixture exercises active, supported scheduling; do not depend on a
+    # missing mode file falling back to the production default.
+    printf 'active\n' > "$MOD/.scheduler_mode"
+    printf 'supported\n' > "$MOD/.scheduler_capability"
     printf '%s\n' "$_t_desired" > "$MOD/.sched_owner_desired"
     printf '%s\n' "$_t_effective" > "$MOD/.cpu_sched_owner"
     printf '%s\n' "$_t_handoff" > "$MOD/.game_handoff_policy"

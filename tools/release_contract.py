@@ -48,6 +48,13 @@ REQUIRED_ENTRIES: Final = frozenset(
         "scripts/telemetry_worker.sh",
         "webroot/cgi-bin/telemetry.sh",
         "webroot/cgi-bin/audit_log.sh",
+        "scripts/thermal_profile.sh",
+        "scripts/thermal_policy_lib.sh",
+        "scripts/slot_transaction_lib.sh",
+        "scripts/audit_log_lib.sh",
+        "uecap_profile.sh",
+        "config/uecap_devices.tsv",
+        "config/uecap_payloads.tsv",
     }
 )
 EXCLUDED_PARTS: Final = frozenset(
@@ -120,6 +127,8 @@ def _validate_archive_path(path: str) -> None:
         raise _error(f"PowerShell files are forbidden in the Android runtime package: {path}")
     if CANONICAL_TARGET.fullmatch(path):
         raise _error(f"canonical UECap target must not be pre-activated in ZIP: {path}")
+    if re.fullmatch(r"system/vendor/etc/thermal_(?:stock.*|info_config.*)\.json", path):
+        raise _error(f"thermal baseline or overlay must be created from the current device at install time: {path}")
 
 
 def validate_runtime_text(path: str, data: bytes) -> str:
@@ -206,10 +215,25 @@ def collect_runtime_files(root: Path) -> tuple[RuntimeFile, ...]:
     missing = REQUIRED_ENTRIES.difference(seen)
     if missing:
         raise _error(f"required runtime entries are missing: {', '.join(sorted(missing))}")
+    entries = {item.archive_path: item.data for item in files}
+    _validate_web_assets(entries)
+    from uecap_manifest import audit_payloads
+    audit_payloads(entries)
     total = sum(len(item.data) for item in files)
     if len(files) > MAX_ENTRIES or total > MAX_ARCHIVE_BYTES:
         raise _error(f"runtime package exceeds safety bounds: files={len(files)} bytes={total}")
     return tuple(files)
+
+
+def _validate_web_assets(entries: dict[str, bytes]) -> None:
+    index = entries.get('webroot/index.html', b'').decode('utf-8')
+    assets = re.findall(r'(?:src|href)="(/(?:js/|css/|app\.)[^"?]+)(?:\?[^\"]*)?"', index)
+    if not assets or len(assets) != len(set(assets)):
+        raise _error('WebUI asset references are empty or duplicated')
+    for asset in assets:
+        entry = 'webroot' + asset
+        if entry not in entries:
+            raise _error(f'WebUI referenced asset is missing: {entry}')
 
 
 def source_fingerprint(files: tuple[RuntimeFile, ...]) -> str:
@@ -231,9 +255,10 @@ def write_deterministic_zip(files: tuple[RuntimeFile, ...], output: Path) -> Non
     with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for item in files:
             info = zipfile.ZipInfo(item.archive_path, FIXED_ZIP_TIME)
-            info.create_system = 3
+            # APD compatibility: do not emit Unix file-type/symlink metadata.
+            info.create_system = 0
             info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = (stat.S_IFREG | item.mode) << 16
+            info.external_attr = item.mode
             archive.writestr(info, item.data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
     temporary.replace(output)
 
@@ -257,8 +282,8 @@ def audit_zip(path: Path) -> AuditReport:
                 raise _error(f"directories and symlinks are forbidden: {info.filename}")
             if info.date_time != FIXED_ZIP_TIME:
                 raise _error(f"non-deterministic ZIP timestamp: {info.filename}")
-            mode = (info.external_attr >> 16) & 0o777
-            if mode != _mode_for(info.filename):
+            mode = info.external_attr
+            if info.create_system != 0 or mode != _mode_for(info.filename):
                 raise _error(f"wrong ZIP permission {mode:o}: {info.filename}")
             if info.file_size > MAX_FILE_BYTES:
                 raise _error(f"oversized ZIP entry: {info.filename}")
@@ -279,6 +304,7 @@ def audit_zip(path: Path) -> AuditReport:
     versions = _read_properties(entries["versions.prop"], "versions.prop")
     from uecap_manifest import audit_payloads
 
+    _validate_web_assets(entries)
     payload_devices = audit_payloads(entries)
     return AuditReport(
         archive=str(path),

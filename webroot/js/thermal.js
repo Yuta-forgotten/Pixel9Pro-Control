@@ -23,7 +23,8 @@ const THERMAL_REINSTALL_NOTICE = '更改配置需卸载本模块、重启后重�
 const THERMAL_POLICY_PRESETS = {
   system: {
     name: '不修改温控',
-    summary: '不添加 vendor overlay，完全保留当前系统 Thermal HAL 配置。',
+    summary: '沿用系统温控，不应用额外调整。',
+    detail: '<p>本模块不添加温控覆盖，保留当前系统 Thermal HAL 配置。</p><p>切换后是否需要重启由后端能力决定；界面分别显示已保存、等待重启和实际生效状态。</p>',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/></svg>',
   },
 };
@@ -37,11 +38,11 @@ const openRebootModal = (...args) => requireFeature('ui').openRebootModal(...arg
 
 // 温度色阶 (单一真源): 青绿→黄→橙→红, 语义固定不交动态色 (doc 17 §11)
 const TEMP_SCALE = [
-  { max: 36, color: '#23a78c' }, // 凉爽
-  { max: 40, color: '#4aa95f' }, // 正常
-  { max: 44, color: '#bf8b16' }, // 偏热
-  { max: 48, color: '#d97c34' }, // 热
-  { color: '#c3472d' },          // 过热
+  { max: 36, color: 'var(--temp-cool)' },
+  { max: 40, color: 'var(--temp-normal)' },
+  { max: 44, color: 'var(--temp-warm)' },
+  { max: 48, color: 'var(--temp-hot)' },
+  { color: 'var(--temp-danger)' },
 ];
 
 function tempHex(t) {
@@ -166,48 +167,50 @@ function syncThermalUi() {
       && (state.currentPolicy !== 'custom' || Number(card.dataset.offset) === state.currentOffset);
     card.classList.toggle('selected', selected);
     card.classList.toggle('disabled', state.reinstallRequired);
-    card.setAttribute('aria-disabled', String(state.reinstallRequired));
-    card.tabIndex = state.reinstallRequired ? -1 : 0;
+    const select = card.querySelector('.profile-select');
+    select.disabled = state.reinstallRequired || state.thermalApplyBusy;
+    select.setAttribute('aria-checked', String(selected));
+    select.tabIndex = !select.disabled && selected ? 0 : -1;
   });
+  const choices = Array.from(refs.thermalList.querySelectorAll('.profile-select:not(:disabled)'));
+  if (!choices.some((choice) => choice.tabIndex === 0) && choices[0]) choices[0].tabIndex = 0;
   positionMarkers();
 }
 
 function renderThermalCards() {
   refs.thermalList.replaceChildren();
+  refs.thermalList.setAttribute('role', 'radiogroup');
+  refs.thermalList.setAttribute('aria-label', '温控档位');
   if (!state.contract) return;
   const appendCard = (policy, preset, offset = null) => {
     const card = document.createElement('article');
     card.className = `profile-card thermal-option${state.reinstallRequired ? ' disabled' : ''}`;
     card.dataset.policy = policy;
     if (offset !== null) card.dataset.offset = String(offset);
-    card.tabIndex = state.reinstallRequired ? -1 : 0;
-    card.setAttribute('aria-disabled', String(state.reinstallRequired));
-    const detailAction = policy === 'custom'
-      ? `<button class="card-info" type="button" data-action="thermal-detail" data-offset="${offset}" aria-label="查看${preset.name}详情">
-           <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M11 17h2v-6h-2v6zm0-8h2V7h-2v2zm1-7C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/></svg>
-         </button>`
-      : '';
+    const itemId = policy === 'system' ? 'system' : `offset-${offset}`;
+    const detailAction = `<button class="card-info" type="button" data-action="thermal-detail" data-policy="${policy}" data-offset="${offset ?? ''}" aria-label="查看${preset.name}详情">说明</button>`;
     setStaticHtml(card, `
-      <div class="profile-icon" aria-hidden="true">${preset.icon}</div>
-      <div class="profile-copy">
-        <div class="profile-name">${preset.name}</div>
-        <div class="profile-desc">${preset.summary}</div>
-      </div>
-      <div class="profile-actions">
-        ${detailAction}
-        <div class="p-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></div>
-      </div>`);
-    card.addEventListener('click', (evt) => {
-      if (evt.target.closest('[data-action="thermal-detail"]')) return;
+      <button class="profile-select" type="button" role="radio" aria-checked="false" aria-labelledby="thermal-name-${itemId}" aria-describedby="thermal-desc-${itemId}" ${state.reinstallRequired ? 'disabled' : ''}>
+        <span class="profile-icon" aria-hidden="true">${preset.icon}</span>
+        <span class="profile-copy">
+          <span class="profile-name" id="thermal-name-${itemId}">${preset.name}</span>
+          <span class="profile-desc" id="thermal-desc-${itemId}">${preset.summary}</span>
+        </span>
+        <span class="p-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
+      </button>${detailAction}`);
+    const select = card.querySelector('.profile-select');
+    select.addEventListener('click', () => {
       if (state.reinstallRequired) return;
       applyThermalSelection(policy, offset);
     });
-    card.addEventListener('keydown', (evt) => {
-      if (state.reinstallRequired) return;
-      if (evt.key === 'Enter' || evt.key === ' ') {
-        evt.preventDefault();
-        applyThermalSelection(policy, offset);
-      }
+    select.addEventListener('keydown', (evt) => {
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(evt.key)) return;
+      evt.preventDefault();
+      const items = Array.from(refs.thermalList.querySelectorAll('.profile-select:not(:disabled)'));
+      const step = ['ArrowLeft', 'ArrowUp'].includes(evt.key) ? -1 : 1;
+      const index = evt.key === 'Home' ? 0 : evt.key === 'End' ? items.length - 1 : (items.indexOf(select) + step + items.length) % items.length;
+      items[index]?.focus();
+      items.forEach((item) => { item.tabIndex = item === items[index] ? 0 : -1; });
     });
     refs.thermalList.appendChild(card);
   };
@@ -333,7 +336,7 @@ async function refreshThermal() {
       refs.tempStatus.textContent = tempStatus(tempC);
       refs.tempStatus.style.color = color;
       refs.tempFill.style.width = `${barPct(tempC)}%`;
-      refs.tempFill.style.background = `linear-gradient(90deg,${color}88,${color})`;
+      refs.tempFill.style.background = color;
     } else {
       refs.homeTempNum.textContent = '--';
       refs.homeTempStatus.textContent = 'VIRTUAL-SKIN 未找到';
@@ -378,6 +381,7 @@ async function applyThermalSelection(policy, offset) {
   const card = refs.thermalList.querySelector(selector);
   if (!card) return;
   state.thermalApplyBusy = true;
+  syncThermalUi();
   card.classList.add('loading');
   const target = policy === 'custom' ? THERMAL_PRESETS[offset] : THERMAL_POLICY_PRESETS[policy];
   appendLog(`切换温控策略 ${target.name}…`, 'dim');
@@ -409,6 +413,7 @@ async function applyThermalSelection(policy, offset) {
   } finally {
     card.classList.remove('loading');
     state.thermalApplyBusy = false;
+    syncThermalUi();
   }
 }
 
@@ -467,6 +472,7 @@ registerFeature('thermal', {
   positionMarkers,
   isRefreshing: () => state.thermalBusy,
   syncHeroDesc,
+  getSystemPreset: () => THERMAL_POLICY_PRESETS.system,
   openChart: openTempChart,
   triggerBurst: triggerThermalBurst,
   rebootDevice,

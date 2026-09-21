@@ -3,7 +3,7 @@
   const state = {
     open: false, source: 'thermal', rangeId: '30', customDays: 1, customGranularity: 'hour',
     view: null, cache: new Map(), requestId: 0, request: null, timer: null,
-    summary: null, observer: null
+    summary: null, observer: null, suspended: false
   };
   const core = () => requireFeature('core');
   const apiFetch = (...args) => core().apiFetch(...args);
@@ -92,12 +92,15 @@
   }
   function normalizeResponse(data, bounds) {
     const source = state.source;
+    const options = { ...bounds, granularity: data?.window?.granularity || bounds.granularity, quality: data?.window?.quality || '' };
     if (source === 'thermal') {
       const points = model().clip(model().normalizeThermal(data), bounds.startTs, bounds.endTs);
-      return { stats: model().temperatureStats(points), status: points.length < 2 ? '温度记录不足；亮屏采样才会写入温度历史。' : '' };
+      const stats = model().temperatureStats(points, options);
+      return { stats, status: stats.count < 2 ? '温度记录不足；亮屏采样才会写入温度历史。' : '' };
     }
     const points = model().clip(model().normalizePower(data), bounds.startTs, bounds.endTs);
-    return { stats: model().powerStats(points), status: points.length < 2 ? '功耗记录不足；电量百分比不会被当成功耗。' : '' };
+    const stats = model().powerStats(points, options);
+    return { stats, status: stats.count < 2 || !stats.series.length ? '当前区间没有足够的有效放电数据；缺测不会补零。' : '' };
   }
   async function fetchSource(bounds) {
     const params = { action: 'history' };
@@ -157,19 +160,28 @@
   function stopBurst() { if (!requireFeature('auth').hasToken()) return; apiFetch(API.thermalBurst, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }), timeoutMs: 2500, keepalive: true }).catch(() => {}); }
   function open(source = 'thermal') {
     init();
-    abort('analytics-open'); state.open = true; state.source = source; state.summary = null; const view = ensureView();
+    abort('analytics-open'); state.open = true; state.suspended = false; state.source = source; state.summary = null; const view = ensureView();
     refs.detailTitle.textContent = source === 'thermal' ? '温度与功耗历史' : '功耗与温度历史';
-    refs.detailModal.classList.remove('energy-mode', 'history-mode'); refs.detailModal.classList.add('analytics-mode', 'open');
+    refs.detailModal.classList.remove('energy-mode', 'history-mode', 'detail-minimized'); refs.detailModal.classList.add('analytics-mode', 'open');
+    refs.detailMinimizeBtn?.setAttribute('aria-expanded', 'true');
+    refs.detailMinimizeBtn?.setAttribute('aria-label', '缩小详情');
     requireFeature('ui').pushModalState('detail');
     const previousScroll = refs.detailBody.scrollTop; refs.detailBody.replaceChildren(view.root); refs.detailBody.scrollTop = previousScroll;
     if (source === 'thermal') triggerBurst({ prompt: false }); else stopBurst(); load(true);
   }
-  function stop() { state.open = false; abort('analytics-closed'); stopBurst(); }
-  function pause() { abort('page-hidden'); stopBurst(); }
-  function minimize() { if (state.timer) { clearTimeout(state.timer); state.timer = null; } stopBurst(); }
-  function resume() { if (!state.open || !isActive()) return; if (state.source === 'thermal') triggerBurst({ prompt: false }); load(false); }
+  function stop() { const active = state.open; state.open = false; state.suspended = true; abort('analytics-closed'); if (active) stopBurst(); }
+  function suspend(reason) { if (state.suspended) return; state.suspended = true; abort(reason); if (state.open) stopBurst(); }
+  function pause() { suspend('page-hidden'); }
+  function minimize() { suspend('analytics-minimized'); }
+  function resume() {
+    if (!state.open || !isActive() || (!state.suspended && (state.request || state.timer))) return;
+    state.suspended = false;
+    if (state.source === 'thermal') triggerBurst({ prompt: false });
+    load(false);
+  }
   function init() {
     if (state.observer || !refs.detailModal) return;
+    document.addEventListener('webui-theme-changed', () => { if (state.open && isActive()) updateView(); });
     state.observer = new MutationObserver(() => { if (!state.open) return; if (refs.detailModal.classList.contains('detail-minimized')) minimize(); else if (isActive() && !state.request && !state.timer) resume(); });
     state.observer.observe(refs.detailModal, { attributes: true, attributeFilter: ['class'] });
   }
