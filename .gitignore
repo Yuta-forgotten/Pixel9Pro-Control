@@ -1,0 +1,20 @@
+# Repository hygiene: runtime/source/tests only; evidence lives in the private integration project.
+/node_modules/
+/dist/
+/tmp/
+/work/
+/logs/
+/backup/
+/archive/
+/release_review/
+/.code-abyss/
+/ADB/
+/docs/
+/.ai_changelog.yaml
+/DESIGN.md
+/AUDIT.md
+/RELEASE_*.md
+/20??-??-??*.md
+*.zip
+*.tar
+*.bundle
