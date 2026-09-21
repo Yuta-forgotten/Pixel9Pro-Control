@@ -365,7 +365,9 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     _is_upgrade=1
     ui_print "  检测到已有配置, 正在迁移..."
     _migration_failed=0
-    for _sf in .thermal_offset .current_profile .profile_policy .profile_manual .profile_auto_reason .profile_history .nr_screen_switch \
+    for _sf in .thermal_policy .thermal_offset .scheduler_mode \
+               .feature_nr .feature_sim2 .feature_vm .feature_power_export \
+               .current_profile .profile_policy .profile_manual .profile_auto_reason .profile_history .nr_screen_switch \
                .sim2_auto_manage .idle_isolate_mode \
                .swap_mode .swap_custom .ntp_server .uecap_mode .uecap_manual_mode \
                .uecap_policy .uecap_reason .sim2_radio_off \
@@ -374,7 +376,8 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
                .thermal_history .power_history .power_session; do
         if [ -f "$OLDDIR/$_sf" ]; then
             cp "$OLDDIR/$_sf" "$MODPATH/$_sf" 2>/dev/null \
-                && [ -f "$MODPATH/$_sf" ] || _migration_failed=1
+                && [ -f "$MODPATH/$_sf" ] \
+                && cmp -s "$OLDDIR/$_sf" "$MODPATH/$_sf" || _migration_failed=1
         fi
     done
 if [ "$_migration_failed" -ne 0 ]; then
