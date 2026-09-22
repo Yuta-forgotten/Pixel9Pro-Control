@@ -29,7 +29,12 @@ assert_contains() {
 
 mkdir -p "$FIXTURE/webroot/cgi-bin" "$FIXTURE/scripts" "$FIXTURE/config" \
     "$FIXTURE/system/vendor/etc" "$FIXTURE/system/vendor/firmware/uecapconfig" \
+    "$FIXTURE/payloads/thermal/caiman" "$TEST_ROOT/tmp" \
     "$MOCK_BIN" "$MOCK_STATE_DIR" || exit 2
+mkdir -p "$TEST_ROOT/metamodule" "$TEST_ROOT/hybrid-mount" || exit 2
+printf 'id=hybrid_mount\nname=Hybrid Mount\nmetamodule=1\n' > "$TEST_ROOT/metamodule/module.prop"
+printf 'moduledir = "/data/adb/modules"\n' > "$TEST_ROOT/hybrid-mount/config.toml"
+ln -s "$TEST_ROOT/metamodule" "$TEST_ROOT/metamodule-link" || exit 2
 cp "$MOD/webroot/cgi-bin/_common.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$MOD/webroot/cgi-bin/nr_switch.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$MOD/webroot/cgi-bin/standby_guard.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
@@ -42,6 +47,8 @@ cp "$MOD/webroot/cgi-bin/owner_arbiter.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$MOD/scripts/runtime_defaults_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/nr_mode_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/thermal_profile.sh" "$FIXTURE/scripts/" || exit 2
+cp "$MOD/scripts/thermal_policy_lib.sh" "$FIXTURE/scripts/" || exit 2
+cp "$MOD/scripts/slot_transaction_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/bg_restrict_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/app_identity_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/display_state_lib.sh" "$FIXTURE/scripts/" || exit 2
@@ -49,13 +56,15 @@ cp "$MOD/scripts/scheduler_detect_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/uecap_profile.sh" "$FIXTURE/" || exit 2
 cp "$MOD/config/app_identities.tsv" "$FIXTURE/config/" || exit 2
 cp "$MOD/config/uecap_devices.tsv" "$FIXTURE/config/" || exit 2
-cp "$MOD/system/vendor/etc/thermal_stock.json" "$FIXTURE/system/vendor/etc/" || exit 2
-cp "$MOD/system/vendor/etc/thermal_info_config.json" "$FIXTURE/system/vendor/etc/" || exit 2
-cp "$MOD/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.special.binarypb" "$FIXTURE/system/vendor/firmware/uecapconfig/" || exit 2
-cp "$MOD/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.balanced.binarypb" "$FIXTURE/system/vendor/firmware/uecapconfig/" || exit 2
-cp "$MOD/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.universal.binarypb" "$FIXTURE/system/vendor/firmware/uecapconfig/" || exit 2
-cp "$MOD/system/vendor/firmware/uecapconfig/PLATFORM_9055801516233416490.balanced.binarypb" "$FIXTURE/uecap_target.binarypb" || exit 2
+cp "$MOD/config/uecap_payloads.tsv" "$FIXTURE/config/" || exit 2
+cp "$MOD/tests/fixtures/thermal/caiman.json" "$FIXTURE/payloads/thermal/caiman/stock.json" || exit 2
+cp "$MOD/tests/fixtures/thermal/caiman.json" "$FIXTURE/system/vendor/etc/thermal_info_config.json" || exit 2
+cp "$MOD/payloads/uecap/caiman/PLATFORM_9055801516233416490.special.binarypb" "$FIXTURE/system/vendor/firmware/uecapconfig/" || exit 2
+cp "$MOD/payloads/uecap/caiman/PLATFORM_9055801516233416490.balanced.binarypb" "$FIXTURE/system/vendor/firmware/uecapconfig/" || exit 2
+cp "$MOD/payloads/uecap/caiman/PLATFORM_9055801516233416490.universal.binarypb" "$FIXTURE/system/vendor/firmware/uecapconfig/" || exit 2
+cp "$MOD/payloads/uecap/caiman/PLATFORM_9055801516233416490.balanced.binarypb" "$FIXTURE/uecap_target.binarypb" || exit 2
 printf 'fixture-token' > "$FIXTURE/.webui_token"
+printf 'caiman' > "$FIXTURE/.device_variant"
 
 cat > "$MOCK_BIN/android_settings" <<'EOF'
 #!/bin/sh
@@ -130,6 +139,7 @@ run_cgi() {
         MOCK_SETTINGS_FAIL_PUT="$_test_settings_fail" \
         MOCK_CMD_FAIL_SIM="$_test_cmd_fail" \
         MOCK_START_FAIL_COUNT="$_test_start_fail_count" \
+        TMPDIR="$TEST_ROOT/tmp" \
         PIXEL9PRO_CGI_TEST_MODE=1 \
         PIXEL9PRO_ANDROID_SETTINGS="$MOCK_BIN/android_settings" \
         PIXEL9PRO_ANDROID_CMD="$MOCK_BIN/android_cmd" \
@@ -138,6 +148,31 @@ run_cgi() {
         PIXEL9PRO_ANDROID_START="$MOCK_BIN/android_start" \
         PIXEL9PRO_ANDROID_LOG="$MOCK_BIN/android_log" \
         PIXEL9PRO_MODDIR="$FIXTURE" \
+        REQUEST_METHOD=POST \
+        REMOTE_ADDR=127.0.0.1 \
+        CONTENT_TYPE=application/json \
+        CONTENT_LENGTH="$_test_len" \
+        HTTP_X_PIXEL9PRO_TOKEN=fixture-token \
+        sh "$FIXTURE/webroot/cgi-bin/$_test_script"
+}
+
+run_hybrid_cgi() {
+    _test_script="$1"
+    _test_body="$2"
+    _test_len=$(printf '%s' "$_test_body" | wc -c | tr -d ' ')
+    printf '%s' "$_test_body" | env \
+        MOCK_STATE_DIR="$MOCK_STATE_DIR" \
+        TMPDIR="$TEST_ROOT/tmp" \
+        PIXEL9PRO_CGI_TEST_MODE=1 \
+        TMPDIR="$TEST_ROOT/tmp" \
+        PIXEL9PRO_ANDROID_GETPROP="$MOCK_BIN/android_getprop" \
+        PIXEL9PRO_ANDROID_LOG="$MOCK_BIN/android_log" \
+        PIXEL9PRO_MODDIR="$FIXTURE" \
+        PIXEL9PRO_SLOT_ROOT="$FIXTURE/slots" \
+        PIXEL9PRO_METAMODULE_LINK="$TEST_ROOT/metamodule-link" \
+        PIXEL9PRO_UECAP_HYBRID_CONFIG="$TEST_ROOT/hybrid-mount/config.toml" \
+        PIXEL9PRO_UECAP_DEVICE=caiman \
+        APATCH=true \
         REQUEST_METHOD=POST \
         REMOTE_ADDR=127.0.0.1 \
         CONTENT_TYPE=application/json \
@@ -162,7 +197,7 @@ run_get_cgi() {
 
 printf '4' > "$FIXTURE/.thermal_offset"
 response=$(run_get_cgi set_thermal.sh)
-assert_contains 'thermal GET exposes backend-owned UI contract' "$response" '"thermal_contract":{"offsets":[-2,0,2,4,6],"default_offset":4}'
+assert_contains 'thermal GET exposes backend-owned UI contract' "$response" '"thermal_contract":{"policies":["system","custom"],"default_policy":"system","offsets":[-2,2,4,6],"default_offset":2}'
 
 response=$(run_get_cgi bg_restrict.sh)
 assert_contains 'BG GET exposes backend-owned UI contract' "$response" '"bg_contract":{"policy_order":["stop_after_leave","block_all","block_services","bucket"],"allowed_delays":[3,5,10],"default_policy":"stop_after_leave","default_delay":5}'
@@ -173,13 +208,13 @@ printf 'balanced' > "$FIXTURE/.uecap_manual_mode"
 printf 'fixture' > "$FIXTURE/.uecap_reason"
 TEST_UECAP_DEVICE=caiman
 response=$(run_get_cgi uecap.sh)
-assert_contains 'UECap GET exposes backend-owned UI contract' "$response" '"uecap_contract":{"mode_order":["balanced","special","universal"],"default_mode":"balanced"}'
+assert_contains 'UECap without an active MetaModule fails closed with an empty contract' "$response" '"uecap_contract":{"mode_order":[],"default_mode":"disabled"}'
 
 TEST_UECAP_DEVICE=komodo
 response=$(run_get_cgi uecap.sh)
 assert_contains 'disabled UECap keeps legacy fields' "$response" '"disabled":true'
 assert_contains 'disabled UECap adds an empty mode contract' "$response" '"uecap_contract":{"mode_order":[],"default_mode":"disabled"}'
-assert_contains 'external UECap reason is explicit' "$response" '"reason":"device_external_stock"'
+assert_contains 'unavailable UECap reason is explicit' "$response" '"reason":"metamodule_required"'
 TEST_UECAP_DEVICE=caiman
 printf 'manual' > "$FIXTURE/.uecap_policy"
 
@@ -234,7 +269,7 @@ printf '0' > "$MOCK_STATE_DIR/thermal_start_count"
 thermal_before=$(sha256sum "$FIXTURE/system/vendor/etc/thermal_info_config.json" | awk '{print $1}')
 response=$(run_cgi set_thermal.sh '{"offset":2}' 0 0 2)
 thermal_after=$(sha256sum "$FIXTURE/system/vendor/etc/thermal_info_config.json" | awk '{print $1}')
-assert_contains 'thermal restart failure returns HTTP error' "$response" 'previous config restored'
+assert_contains 'thermal restart failure returns HTTP error' "$response" 'thermal restart failed'
 assert_eq 'thermal restart failure restores config bytes' "$thermal_before" "$thermal_after"
 assert_eq 'thermal restart failure restores offset' 4 "$(cat "$FIXTURE/.thermal_offset")"
 assert_eq 'thermal rollback restarts prior service' running "$(cat "$MOCK_STATE_DIR/thermal_service_state")"
@@ -249,6 +284,27 @@ if [ "$thermal_before" != "$thermal_after" ]; then
     ok 'thermal success commits regenerated config'
 else
     not_ok 'thermal success commits regenerated config (hash unchanged)'
+fi
+
+# Hybrid Mount pending changes can be canceled before reboot.  The cancel
+# transaction must restore the previous persistent state and remove the
+# inactive slot; it must not trust a client-supplied previous value.
+printf 'custom' > "$FIXTURE/.thermal_policy"
+printf '4' > "$FIXTURE/.thermal_offset"
+response=$(run_hybrid_cgi set_thermal.sh '{"offset":2}')
+assert_contains 'hybrid thermal change reports pending reboot' "$response" '"effective_state":"pending_reboot"'
+assert_eq 'hybrid thermal change persists the new pending offset' 2 "$(cat "$FIXTURE/.thermal_offset")"
+test -n "$(cat "$FIXTURE/slots/thermal/pending")"
+hybrid_pending_id=$(printf '%s\n' "$response" | sed -n 's/.*"pending_id":"\([^"]*\)".*/\1/p')
+test -n "$hybrid_pending_id"
+response=$(run_hybrid_cgi set_thermal.sh "{\"action\":\"cancel_pending\",\"pending_id\":\"$hybrid_pending_id\"}")
+assert_contains 'hybrid thermal cancel returns confirmed cancellation' "$response" '"canceled":true'
+assert_eq 'hybrid thermal cancel restores the previous policy' custom "$(cat "$FIXTURE/.thermal_policy")"
+assert_eq 'hybrid thermal cancel restores the previous offset' 4 "$(cat "$FIXTURE/.thermal_offset")"
+if [ ! -e "$FIXTURE/slots/thermal/pending" ] && [ ! -e "$FIXTURE/slots/thermal/previous_state" ]; then
+    ok 'hybrid thermal cancel removes pending slot and rollback state'
+else
+    not_ok 'hybrid thermal cancel removes pending slot and rollback state'
 fi
 
 printf '[{"zone":"VIRTUAL-SKIN","temp":42000}]' > "$FIXTURE/.thermal_cache.json"

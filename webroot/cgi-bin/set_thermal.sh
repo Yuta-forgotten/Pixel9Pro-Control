@@ -153,10 +153,17 @@ emit_thermal_state() {
     if thermal_policy_validate_stock "$STOCK_JSON"; then _ts_custom=true; else _ts_custom=false; fi
     _ts_reinstall_required=false
     [ "$THERMAL_MOUNT_BACKEND" = metamodule_content ] && _ts_reinstall_required=true
-    printf '"policy":"%s","offset":%s,"overlay_present":%s,"custom_available":%s,"metamodule_active":%s,"mount_backend":"%s","reinstall_required":%s,"thermal_contract":' \
+    _ts_pending=false
+    _ts_pending_id=""
+    if [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ] && [ -n "$(slot_pending_value thermal 2>/dev/null)" ]; then
+        _ts_pending=true
+        _ts_pending_id=$(slot_pending_id thermal 2>/dev/null || true)
+    fi
+    printf '"policy":"%s","offset":%s,"overlay_present":%s,"custom_available":%s,"metamodule_active":%s,"mount_backend":"%s","reinstall_required":%s,"pending":%s,"pending_id":"%s","cancel_supported":%s,"reboot_required":%s,"thermal_contract":' \
         "$_ts_policy" "$_ts_offset" "$_ts_overlay" "$_ts_custom" \
         "$([ "$THERMAL_METAMODULE_ACTIVE" -eq 1 ] && printf true || printf false)" "$THERMAL_MOUNT_BACKEND" \
-        "$_ts_reinstall_required"
+        "$_ts_reinstall_required" "$_ts_pending" "$_ts_pending_id" \
+        "$([ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ] && printf true || printf false)" "$_ts_pending"
     thermal_print_ui_contract_json
 }
 
@@ -171,12 +178,87 @@ fi
 require_json_post
 require_token
 acquire_lock thermal
+read_json_body 512
+parse_thermal_action() {
+    printf '%s\n' "$1" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p'
+}
+
+_ts_action=$(parse_thermal_action "$JSON_BODY")
+THERMAL_PENDING_STATE_FILE="$SLOT_ROOT/thermal/previous_state"
+
+thermal_pending_state_write() {
+    _ts_pending_boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')
+    _ts_pending_id="${3:-}"
+    _ts_pending_phase="${4:-staged}"
+    slot_atomic_write "$THERMAL_PENDING_STATE_FILE" \
+        "$(printf 'phase=%s\npolicy=%s\noffset=%s\nboot_id=%s\npending_id=%s' "$_ts_pending_phase" "$1" "$2" "$_ts_pending_boot_id" "$_ts_pending_id")"
+}
+
+thermal_pending_state_read() {
+    THERMAL_PREVIOUS_POLICY=$(sed -n 's/^policy=//p' "$THERMAL_PENDING_STATE_FILE" | head -n 1)
+    THERMAL_PREVIOUS_OFFSET=$(sed -n 's/^offset=//p' "$THERMAL_PENDING_STATE_FILE" | head -n 1)
+    THERMAL_PREVIOUS_PHASE=$(sed -n 's/^phase=//p' "$THERMAL_PENDING_STATE_FILE" | head -n 1 | tr -d ' \n\r\t')
+    THERMAL_PREVIOUS_PENDING_ID=$(sed -n 's/^pending_id=//p' "$THERMAL_PENDING_STATE_FILE" | head -n 1 | tr -d ' \n\r\t')
+    thermal_policy_is_valid "$THERMAL_PREVIOUS_POLICY" || return 1
+    case "$THERMAL_PREVIOUS_PHASE" in staged|cancel_requested) ;; *) return 1 ;; esac
+    if [ "$THERMAL_PREVIOUS_POLICY" = custom ]; then
+        thermal_is_valid_offset "$THERMAL_PREVIOUS_OFFSET" || return 1
+    else
+        THERMAL_PREVIOUS_OFFSET=$(thermal_normalize_offset "$THERMAL_PREVIOUS_OFFSET" "$THERMAL_DEFAULT_OFFSET")
+    fi
+}
+
+if [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ] && [ "$_ts_action" = cancel_pending ]; then
+    _ts_pending=$(slot_pending_value thermal 2>/dev/null)
+    case "$_ts_pending" in
+        slot-a|slot-b) ;;
+        *) release_lock; json_error '409 Conflict' '当前没有可撤销的温控 pending 变更' ;;
+    esac
+    thermal_pending_state_read \
+        || { release_lock; json_error '409 Conflict' '温控 pending 缺少可验证的旧状态，拒绝盲目撤销'; }
+    _ts_pending_id=$(slot_pending_id thermal 2>/dev/null || true)
+    [ -n "$THERMAL_PREVIOUS_PENDING_ID" ] \
+        && [ "$THERMAL_PREVIOUS_PENDING_ID" = "$_ts_pending_id" ] \
+        || { release_lock; json_error '409 Conflict' '温控 pending 已变化，请刷新后再撤销'; }
+    _ts_requested_pending_id=$(printf '%s\n' "$JSON_BODY" | sed -n 's/.*"pending_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    [ -n "$_ts_requested_pending_id" ] \
+        && [ "$_ts_requested_pending_id" = "$_ts_pending_id" ] \
+        || { release_lock; json_error '409 Conflict' '取消请求不是当前温控 pending 变更'; }
+    _ts_current_policy=$(thermal_policy_read)
+    _ts_current_offset=$(cat "$THERMAL_OFFSET_FILE" 2>/dev/null | tr -d ' \r\n\t')
+    _ts_current_offset=$(thermal_normalize_offset "$_ts_current_offset" "$THERMAL_DEFAULT_OFFSET")
+    thermal_pending_state_write "$THERMAL_PREVIOUS_POLICY" "$THERMAL_PREVIOUS_OFFSET" \
+        "$_ts_pending_id" cancel_requested \
+        || { release_lock; json_error '500 Internal Server Error' '无法提交撤销意图，pending 仍保留'; }
+    if ! thermal_commit_state "$THERMAL_PREVIOUS_POLICY" "$THERMAL_PREVIOUS_OFFSET"; then
+        release_lock
+        json_error '500 Internal Server Error' '撤销前状态恢复失败，pending 仍保留'
+    fi
+    if ! slot_cancel_pending thermal; then
+        thermal_commit_state "$_ts_current_policy" "$_ts_current_offset" >/dev/null 2>&1 || true
+        release_lock
+        json_error '500 Internal Server Error' 'pending 删除失败，已尝试恢复原状态'
+    fi
+    rm -f "$THERMAL_PENDING_STATE_FILE" 2>/dev/null || true
+    release_lock
+    json_headers
+    printf '{"ok":true,"canceled":true,"restarted":false,"reboot_required":false,"effective_state":"restored_pending_canceled",'
+    emit_thermal_state
+    printf '}\n'
+    exit 0
+fi
+
+if [ -n "$_ts_action" ]; then
+    release_lock
+    json_error '400 Bad Request' 'invalid thermal action'
+fi
+
 if [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ] \
     && [ -n "$(slot_pending_value thermal 2>/dev/null)" ]; then
     release_lock
     json_error '409 Conflict' '已有温控变更等待重启或回滚复读；请先完成当前 pending 状态'
 fi
-read_json_body 512
+
 policy=$(parse_thermal_policy "$JSON_BODY")
 offset=$(parse_thermal_offset "$JSON_BODY")
 [ -n "$policy" ] || { [ -n "$offset" ] && policy=custom; }
@@ -207,12 +289,19 @@ thermal_snapshot_transaction \
 
     if [ "$policy" != custom ]; then
     if [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ]; then
+        thermal_pending_state_write "$TS_OLD_POLICY" "$TS_OLD_OFFSET" \
+            || json_error '500 Internal Server Error' '无法保存待撤销的温控旧状态'
         slot_stage_file thermal "$OUT_JSON" \
             "system/vendor/etc/thermal_info_config.json" remove \
             "$DEVICE" "$(thermal_service_getprop ro.build.fingerprint 2>/dev/null)" \
             vendor_configs_file \
-            || json_error '500 Internal Server Error' 'thermal pending slot commit failed'
+            || { rm -f "$THERMAL_PENDING_STATE_FILE"; json_error '500 Internal Server Error' 'thermal pending slot commit failed'; }
+        _ts_pending_id=$(slot_pending_id thermal 2>/dev/null || true)
+        thermal_pending_state_write "$TS_OLD_POLICY" "$TS_OLD_OFFSET" "$_ts_pending_id" \
+            || { slot_cancel_pending thermal >/dev/null 2>&1 || true; rm -f "$THERMAL_PENDING_STATE_FILE"; json_error '500 Internal Server Error' '无法提交温控 pending 标识'; }
         if ! thermal_commit_state "$policy" "$offset"; then
+            slot_cancel_pending thermal >/dev/null 2>&1 || true
+            rm -f "$THERMAL_PENDING_STATE_FILE" 2>/dev/null || true
             json_error '500 Internal Server Error' 'thermal state commit failed'
         fi
         json_headers
@@ -262,11 +351,16 @@ fi
 thermal_generate_config "$STOCK_JSON" "$TS_CANDIDATE" "$offset" \
     || json_error '500 Internal Server Error' 'THERMAL_CONFIG_INVALID'
 if [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ]; then
+    thermal_pending_state_write "$TS_OLD_POLICY" "$TS_OLD_OFFSET" \
+        || json_error '500 Internal Server Error' '无法保存待撤销的温控旧状态'
     slot_stage_file thermal "$TS_CANDIDATE" \
         "system/vendor/etc/thermal_info_config.json" staged \
         "$DEVICE" "$(thermal_service_getprop ro.build.fingerprint 2>/dev/null)" \
         vendor_configs_file \
-        || json_error '500 Internal Server Error' 'thermal pending slot commit failed'
+        || { rm -f "$THERMAL_PENDING_STATE_FILE"; json_error '500 Internal Server Error' 'thermal pending slot commit failed'; }
+    _ts_pending_id=$(slot_pending_id thermal 2>/dev/null || true)
+    thermal_pending_state_write "$TS_OLD_POLICY" "$TS_OLD_OFFSET" "$_ts_pending_id" \
+        || { slot_cancel_pending thermal >/dev/null 2>&1 || true; rm -f "$THERMAL_PENDING_STATE_FILE"; json_error '500 Internal Server Error' '无法提交温控 pending 标识'; }
 else
     mkdir -p "${OUT_JSON%/*}" 2>/dev/null \
         && mv "$TS_CANDIDATE" "$OUT_JSON" 2>/dev/null \

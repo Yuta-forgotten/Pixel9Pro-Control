@@ -695,6 +695,18 @@ if [ "$THERMAL_POLICY" = custom ]; then
         THERMAL_POLICY=system
         offset=0
         ui_print "  ⚠ 当前 stock 基线无法生成合法 custom thermal, 已 fail closed 到系统默认"
+    elif [ "${UECAP_BACKEND:-}" = hybrid_mount ] \
+        && { ! chcon u:object_r:vendor_configs_file:s0 "$OUT_JSON" 2>/dev/null \
+        || [ "$(ls -Zd "$OUT_JSON" 2>/dev/null | awk '{print $1}')" != u:object_r:vendor_configs_file:s0 ]; }; then
+        # Hybrid Mount scans the regular-module source before post-fs-data.
+        # An unlabeled/system_file thermal overlay makes thermal-hal abort and
+        # leaves system_server blocked in getThermalHalLocked during boot.
+        rm -f "$OUT_JSON" 2>/dev/null || true
+        installer_write "$THERMAL_POLICY_FILE" system
+        installer_write "$OFFSET_FILE" 0
+        THERMAL_POLICY=system
+        offset=0
+        ui_print "  ⚠ 无法设置 vendor_configs_file 标签, 已回退到系统温控"
     fi
 else
     thermal_policy_remove_overlay || abort

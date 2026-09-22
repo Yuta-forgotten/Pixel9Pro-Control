@@ -141,6 +141,11 @@ function initRefs() {
   refs.rebootModal = $('modal-reboot');
   refs.rebootModalTitle = $('reboot-modal-title');
   refs.rebootModalDesc = $('reboot-modal-desc');
+  refs.rebootCancelError = $('reboot-cancel-error');
+  refs.rebootNowBtn = $('reboot-now-btn');
+  refs.rebootLaterBtn = $('reboot-later-btn');
+  refs.rebootCloseBtn = $('reboot-close-x');
+  refs.rebootCancelBtn = $('reboot-cancel-btn');
   refs.schedulerHealthRow = $('scheduler-health-row');
   refs.schedulerHealthLabel = $('scheduler-health-label');
   refs.schedulerRetryBtn = $('scheduler-retry-btn');
@@ -265,10 +270,12 @@ function syncModalState() {
 function closeTopModal() {
   const record = activeModalRecord() || state.modalRecords.get(state.modalStack.at(-1));
   if (!record) return false;
+  let closed = true;
   if (record.name === 'detail') closeDetailModal();
   else if (record.name === 'theme') closeThemeSheet();
-  else if (record.name === 'reboot') closeRebootModal();
+  else if (record.name === 'reboot') closed = closeRebootModal();
   else if (record.name === 'swapTune') requireFeature('memory').closeSwapTuneModal();
+  if (!closed) return false;
   syncModalState();
   return true;
 }
@@ -281,6 +288,14 @@ function handlePopState() {
       state.deferredHistoryModal = '';
       if (state.modalRecords.get(name)?.opened) history.pushState({ modal: name }, '');
     }
+    return;
+  }
+  const active = activeModalRecord();
+  if (active?.name === 'reboot' && state.rebootContext === 'thermal'
+    && requireFeature('thermal').isCancelBusy?.()) {
+    // Do not let Back dismiss a modal while the cancellation transaction is
+    // in flight. Restore the history entry so a late response can be retried.
+    history.pushState({ modal: 'reboot' }, '');
     return;
   }
   state.handlingPopState = true;
@@ -361,9 +376,24 @@ function closeThemeSheet(){
   requireFeature('core').queueNextPoll(POLL_MIN_DELAY_MS);
 }
 
+function setRebootBusy(busy) {
+  const disabled = Boolean(busy);
+  [refs.rebootNowBtn, refs.rebootLaterBtn, refs.rebootCloseBtn, refs.rebootCancelBtn]
+    .filter(Boolean).forEach((button) => { button.disabled = disabled; });
+  refs.rebootModal?.classList.toggle('cancel-pending', disabled);
+}
+
+function setRebootError(message = '') {
+  if (!refs.rebootCancelError) return;
+  refs.rebootCancelError.textContent = String(message || '');
+  refs.rebootCancelError.hidden = !message;
+}
+
 function openRebootModal(pending, prev, context = 'thermal') {
   state.rebootContext = context;
   if (context === 'thermal') requireFeature('thermal').setPendingChange(pending, prev);
+  setRebootBusy(false);
+  setRebootError('');
   if (context === 'scheduler') {
     const target = requireFeature('profile').getSchedulerBootTargetMode() === 'ugt' ? 'UGT 日常调度模式' : 'Pixel 调度模式';
     refs.rebootModalTitle.textContent = `切换到${target}`;
@@ -378,12 +408,21 @@ function openRebootModal(pending, prev, context = 'thermal') {
   core.queueNextPoll(core.computeNextPollDelay());
 }
 
-function closeRebootModal() {
+function closeRebootModal(message = '', options = {}) {
+  const normalizedMessage = typeof message === 'string' ? message : '';
+  const normalizedOptions = options && typeof options === 'object' ? options : {};
+  if (!normalizedOptions.force && state.rebootContext === 'thermal'
+    && requireFeature('thermal').isCancelBusy?.()) return false;
   refs.rebootModal.classList.remove('open');
   popModalIfTop('reboot');
   const core = requireFeature('core');
   core.queueNextPoll(POLL_MIN_DELAY_MS);
-  core.showToast(state.rebootContext === 'scheduler' ? '切换已提交，重启后验证' : '策略已保存，重启后验证');
+  setRebootBusy(false);
+  setRebootError('');
+  if (!normalizedOptions.silent) {
+    core.showToast(normalizedMessage || (state.rebootContext === 'scheduler' ? '切换已提交，重启后验证' : '策略已保存，重启后验证'));
+  }
+  return true;
 }
 
 function openDetail(title, html) {
@@ -465,6 +504,8 @@ registerFeature('ui', {
   closeThemeSheet,
   openRebootModal,
   closeRebootModal,
+  setRebootBusy,
+  setRebootError,
   openDetail,
   toggleDetailMinimized,
   closeDetailModal,

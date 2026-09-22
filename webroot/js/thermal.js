@@ -9,13 +9,21 @@ const state = {
   thermalBadReads: 0,
   lastSkinTempC: null,
   thermalApplyBusy: false,
+  thermalCancelBusy: false,
   thermalContractRetryTimer: null,
   thermalContractRetryAttempts: 0,
   metamoduleActive: false,
   reinstallRequired: false,
   sensorRefs: null,
   homeSensorRefs: null,
-  thermalModal: { pending: null, prev: null }
+  thermalModal: {
+    pending: null,
+    prev: null,
+    pendingId: '',
+    cancelSupported: false,
+    rebootRequired: false,
+    cancelReconcileNeeded: false
+  }
 };
 
 const THERMAL_REINSTALL_NOTICE = '更改配置需卸载本模块、重启后重新安装并在向导选择';
@@ -100,6 +108,63 @@ function updateThermalRuntimeGuard(data) {
   }
   if (Object.prototype.hasOwnProperty.call(data, 'reinstall_required')) {
     state.reinstallRequired = data.reinstall_required === true || data.reinstall_required === 'true';
+  }
+}
+
+function validThermalSelection(policy, offset) {
+  if (!state.contract?.policies.includes(policy)) return false;
+  return policy !== 'custom' || state.contract.offsets.includes(Number(offset));
+}
+
+function applyThermalState(data) {
+  if (!validThermalSelection(data?.policy, data?.offset)) return false;
+  state.currentPolicy = data.policy;
+  state.currentOffset = Number(data.offset);
+  return true;
+}
+
+function pendingIdFrom(data) {
+  const id = typeof data?.pending_id === 'string' ? data.pending_id.trim() : '';
+  return id.length >= 1 && id.length <= 256 && !/[\r\n\t]/.test(id) ? id : '';
+}
+
+function setRebootError(message = '') {
+  requireFeature('ui').setRebootError(message);
+}
+
+function updatePendingState(data, { open = true } = {}) {
+  // Older non-Hybrid endpoints do not expose pending fields. Preserve their
+  // existing flow instead of interpreting an omitted field as "no pending".
+  if (!Object.prototype.hasOwnProperty.call(data || {}, 'pending')) return;
+  const pending = data.pending === true || data.pending === 'true';
+  const hadPending = Boolean(state.thermalModal.pendingId || state.thermalModal.pending);
+  const pendingId = pendingIdFrom(data);
+  state.thermalModal.pendingId = pendingId;
+  state.thermalModal.cancelSupported = data.cancel_supported !== false;
+  state.thermalModal.rebootRequired = data.reboot_required !== false;
+  state.thermalModal.cancelReconcileNeeded = false;
+  if (!pending) {
+    state.thermalModal.pending = null;
+    state.thermalModal.prev = null;
+    state.thermalModal.pendingId = '';
+    state.thermalModal.cancelSupported = false;
+    state.thermalModal.rebootRequired = false;
+    if (hadPending && !state.thermalCancelBusy && refs.rebootModal?.classList.contains('open')
+      && requireFeature('ui').getRebootContext?.() === 'thermal') {
+      requireFeature('ui').closeRebootModal('', { force: true, silent: true });
+    }
+    return;
+  }
+  state.thermalModal.pending = {
+    policy: data.policy,
+    offset: Number(data.offset),
+    pending_id: pendingId,
+    cancel_supported: state.thermalModal.cancelSupported,
+    reboot_required: state.thermalModal.rebootRequired
+  };
+  if (open && state.thermalModal.rebootRequired && pendingId
+    && !refs.rebootModal.classList.contains('open')) {
+    openRebootModal(state.thermalModal.pending, null);
   }
 }
 
@@ -281,6 +346,7 @@ async function loadThermalPreset() {
     state.currentOffset = state.contract.offsets.includes(Number(data.offset))
       ? Number(data.offset)
       : state.contract.defaultOffset;
+    updatePendingState(data);
     renderThermalCards();
   } catch (_) {
     // A transient WebUI/CGI failure must not erase an already valid contract.
@@ -388,9 +454,8 @@ async function applyThermalSelection(policy, offset) {
   refs.logCard.classList.add('open');
   try {
     const data = await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next), timeoutMs: 8000 });
-    if (data.ok) {
-      state.currentPolicy = data.policy;
-      state.currentOffset = Number(data.offset);
+    if (data.ok && applyThermalState(data)) {
+      updatePendingState(data, { open: false });
       syncThermalUi();
       syncHeroDesc();
       if (data.restarted) {
@@ -398,13 +463,28 @@ async function applyThermalSelection(policy, offset) {
         appendLog(`${target.name} 已重启 thermal 服务`, 'ok');
       } else if (data.reboot_required) {
         appendLog(`${target.name} 已保存（重启后生效）`, 'warn');
-        openRebootModal(next, prev);
+        const pendingId = pendingIdFrom(data);
+        const hybridPending = data.mount_backend === 'hybrid_mount'
+          || data.pending === true || Boolean(pendingId);
+        state.thermalModal.prev = prev;
+        state.thermalModal.pending = hybridPending ? {
+          ...next,
+          offset: Number(data.offset),
+          pending_id: pendingId,
+          cancel_supported: data.cancel_supported !== false,
+          reboot_required: true
+        } : null;
+        state.thermalModal.pendingId = hybridPending ? pendingId : '';
+        state.thermalModal.cancelSupported = hybridPending && data.cancel_supported !== false;
+        state.thermalModal.rebootRequired = hybridPending;
+        state.thermalModal.cancelReconcileNeeded = false;
+        openRebootModal(state.thermalModal.pending, prev);
       } else {
         showToast(`${target.name} 已生效`);
         appendLog(`${target.name} 已生效`, 'ok');
       }
     } else {
-      showToast(`切换失败：${data.error || '未知'}`);
+      showToast(`切换失败：${data.error || '后端返回了无效状态'}`);
       appendLog(data.error || '切换失败', 'err');
     }
   } catch (err) {
@@ -418,25 +498,106 @@ async function applyThermalSelection(policy, offset) {
 }
 
 async function cancelThermalChange() {
-  refs.rebootModal.classList.remove('open');
+  if (state.thermalCancelBusy) return;
   if (state.reinstallRequired) {
     showToast(THERMAL_REINSTALL_NOTICE, 4200);
     return;
   }
-  try {
-    const previous = state.thermalModal.prev;
-    const data = await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(previous), timeoutMs: 8000 });
-    state.currentPolicy = data.policy;
-    state.currentOffset = Number(data.offset);
+  const pendingId = state.thermalModal.pendingId;
+  const previous = state.thermalModal.prev;
+  if (!pendingId && state.thermalModal.pending?.reboot_required) {
+    setRebootError('后端未返回可验证的 pending_id，拒绝发送旧状态覆盖；请刷新状态后重试。');
+    showToast('撤销状态缺少 pending_id');
+    return;
+  }
+  if (!pendingId && !previous) {
+    setRebootError('当前页面没有可验证的待重启温控变更，请先刷新状态。');
+    showToast('未找到可撤销的温控变更');
+    return;
+  }
+  if (!state.thermalModal.cancelSupported && pendingId) {
+    setRebootError('当前后端不支持撤销此待重启变更，请先完成重启或刷新状态。');
+    showToast('当前后端不支持撤销');
+    return;
+  }
+  state.thermalCancelBusy = true;
+  requireFeature('ui').setRebootBusy(true);
+  setRebootError('');
+  let pendingMutationAttempted = false;
+
+  const finishConfirmedCancellation = (data) => {
+    if (!validThermalSelection(data.policy, data.offset)) {
+      throw new Error('后端返回了无效的恢复档位');
+    }
+    applyThermalState(data);
+    updatePendingState(data, { open: false });
+    state.thermalModal.cancelReconcileNeeded = false;
     syncThermalUi();
     syncHeroDesc();
-    showToast('已撤销，恢复原档位');
-  } catch (_) {
-    showToast('撤销失败，请手动重新选择');
+    requireFeature('ui').closeRebootModal('已撤销本次温控修改', { force: true });
+    appendLog('已撤销温控 pending 变更，重启不会应用新挡位', 'ok');
+  };
+
+  try {
+    if (pendingId && state.thermalModal.cancelReconcileNeeded) {
+      // A prior response or readback was uncertain. Reconcile first so a
+      // successful cancellation is not retried as a new mutation (409).
+      const reconciled = await apiFetch(API.thermalSet, { timeoutMs: 8000 });
+      if (reconciled?.pending === false && reconciled?.pending_id === ''
+        && reconciled?.reboot_required === false) {
+        finishConfirmedCancellation(reconciled);
+        return;
+      }
+      if (reconciled?.pending !== true || pendingIdFrom(reconciled) !== pendingId) {
+        throw new Error('状态复读显示了不同的温控 pending 变更');
+      }
+      state.thermalModal.cancelReconcileNeeded = false;
+    }
+    const body = pendingId
+      ? { action: 'cancel_pending', pending_id: pendingId }
+      : previous;
+    pendingMutationAttempted = Boolean(pendingId);
+    const data = await apiFetch(API.thermalSet, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), timeoutMs: 8000
+    });
+    if (pendingId) {
+      if (data?.ok !== true || data.canceled !== true || data.pending !== false
+        || data.pending_id !== '' || data.reboot_required !== false || !validThermalSelection(data.policy, data.offset)) {
+        throw new Error(data?.error || '后端返回的撤销状态不完整');
+      }
+      const readback = await apiFetch(API.thermalSet, { timeoutMs: 8000 });
+      if (readback?.pending !== false || readback?.pending_id !== ''
+        || !validThermalSelection(readback.policy, readback.offset)
+        || readback.policy !== data.policy || Number(readback.offset) !== Number(data.offset)) {
+        throw new Error('撤销已提交，但状态复读仍显示待重启变更');
+      }
+      finishConfirmedCancellation(readback);
+      return;
+    } else {
+      if (data?.ok !== true || !validThermalSelection(data.policy, data.offset)) {
+        throw new Error(data?.error || '后端未确认撤销');
+      }
+      finishConfirmedCancellation(data);
+      return;
+    }
+  } catch (err) {
+    if (pendingMutationAttempted || pendingId) state.thermalModal.cancelReconcileNeeded = true;
+    const uncertain = /timeout|超时|cancelled|取消/.test(String(err?.message || ''));
+    const message = uncertain
+      ? '撤销请求未确认，状态未知；请勿重启，保持此提示并重试。'
+      : `撤销未确认：${err?.message || '后端拒绝了撤销请求'}`;
+    setRebootError(message);
+    showToast(message);
+    appendLog(`撤销温控未确认：${err.message || err}`, 'err');
+  } finally {
+    state.thermalCancelBusy = false;
+    requireFeature('ui').setRebootBusy(false);
   }
 }
 
 async function rebootDevice() {
+  if (state.thermalCancelBusy) return;
   refs.rebootModal.classList.remove('open');
   showToast('正在重启设备…');
   try {
@@ -480,7 +641,14 @@ registerFeature('thermal', {
   setPendingChange(pending, prev) {
     state.thermalModal.pending = pending;
     state.thermalModal.prev = prev;
+    state.thermalModal.pendingId = pendingIdFrom(pending);
+    state.thermalModal.cancelSupported = Boolean(state.thermalModal.pendingId)
+      && pending?.cancel_supported !== false;
+    state.thermalModal.rebootRequired = Boolean(state.thermalModal.pendingId)
+      && pending?.reboot_required !== false;
+    state.thermalModal.cancelReconcileNeeded = false;
   },
+  isCancelBusy: () => state.thermalCancelBusy,
   isChartActive: () => analytics().isActive(),
   stopChart: stopTempChartRefresh,
   pauseChart: pauseTempChartRefresh,

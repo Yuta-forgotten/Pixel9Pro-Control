@@ -7,6 +7,99 @@ async function ready(page) {
   await expect(page.locator('#thermal-list .profile-select')).toHaveCount(5);
 }
 
+const THERMAL_CONTRACT = {
+  policies: ['system', 'custom'],
+  default_policy: 'system',
+  offsets: [-2, 2, 4, 6],
+  default_offset: 2
+};
+
+function fixtureState(model) {
+  const state = {
+    ok: true,
+    policy: model.policy,
+    offset: model.offset,
+    thermal_contract: THERMAL_CONTRACT,
+    mount_backend: model.hybrid ? 'hybrid_mount' : 'metamodule_content',
+    metamodule_active: true,
+    reinstall_required: false
+  };
+  if (model.hybrid) {
+    state.pending = model.pending;
+    state.pending_id = model.pending ? model.pendingId : '';
+    state.cancel_supported = true;
+    state.reboot_required = model.pending;
+  }
+  return state;
+}
+
+async function installThermalFixture(page, { policy = 'system', offset = 2, pending = false, hybrid = true } = {}) {
+  const model = {
+    policy,
+    offset,
+    pending,
+    pendingId: pending ? 'fixture-pending-001' : '',
+    hybrid,
+    previous: null,
+    cancelMode: 'success',
+    readbackFail: false,
+    requests: []
+  };
+  await page.route('**/cgi-bin/set_thermal.sh', async (route) => {
+    const request = route.request();
+    if (request.method() === 'GET') {
+      if (model.readbackFail) {
+        model.readbackFail = false;
+        return route.fulfill({ status: 503, json: { ok: false, error: 'readback unavailable' } });
+      }
+      return route.fulfill({ json: fixtureState(model) });
+    }
+    const body = request.postDataJSON() || {};
+    model.requests.push(body);
+    if (!model.hybrid && model.pending && !body.action && body.policy) {
+      model.policy = body.policy;
+      model.offset = body.policy === 'custom' ? Number(body.offset) : model.offset;
+      model.pending = false;
+      model.previous = null;
+      return route.fulfill({ json: { ok: true, policy: model.policy, offset: model.offset, restarted: false, reboot_required: false } });
+    }
+    if (body.action === 'cancel_pending') {
+      if (body.pending_id !== model.pendingId) {
+        return route.fulfill({ status: 409, json: { ok: false, error: 'pending_id 不匹配' } });
+      }
+      if (model.cancelMode === 'delay-failure') {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        return route.fulfill({ status: 503, json: { ok: false, error: 'cancel backend unavailable' } });
+      }
+      if (model.cancelMode === 'incomplete') {
+        return route.fulfill({ json: {
+          ok: true, canceled: true, pending: true, pending_id: model.pendingId,
+          reboot_required: true, policy: model.policy, offset: model.offset
+        } });
+      }
+      const restored = model.previous || { policy: 'system', offset: 2 };
+      model.policy = restored.policy;
+      model.offset = restored.offset;
+      model.pending = false;
+      model.pendingId = '';
+      model.previous = null;
+      return route.fulfill({ json: { ...fixtureState(model), ok: true, canceled: true, pending: false, pending_id: '', reboot_required: false } });
+    }
+    if (body.policy !== 'system' && body.policy !== 'custom') {
+      return route.fulfill({ status: 400, json: { ok: false, error: 'invalid policy' } });
+    }
+    model.previous = { policy: model.policy, offset: model.offset };
+    model.policy = body.policy;
+    model.offset = body.policy === 'custom' ? Number(body.offset) : model.offset;
+    model.pending = true;
+    model.pendingId = 'fixture-pending-001';
+    return route.fulfill({ json: { ...fixtureState(model), ok: true, restarted: false, reboot_required: true, effective_state: 'pending_reboot' } });
+  });
+  await ready(page);
+  await page.locator('#tab-tune').click();
+  return model;
+}
+
 async function layoutIssues(page) {
   return page.evaluate(() => {
     const width = document.documentElement.clientWidth;
@@ -53,6 +146,93 @@ test('档位选择与说明是独立控件，键盘打开说明不提交写入',
   expect(writes).toEqual([]);
   await expect(page.locator('#profile-list .profile-select[aria-checked=true]')).toHaveCount(1);
   await expect(page.locator('#thermal-list .profile-select[aria-checked=true]')).toHaveCount(1);
+});
+
+test('温控取消失败时必须保持弹窗，禁止关闭和重启并允许重试', async ({ page }) => {
+  const model = await installThermalFixture(page);
+  model.cancelMode = 'delay-failure';
+  await page.locator('[data-policy="custom"][data-offset="4"] .profile-select').click();
+  await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
+  const cancelRequest = page.locator('#reboot-cancel-btn').click();
+  await page.waitForFunction(() => document.querySelector('#reboot-cancel-btn').disabled);
+  await expect(page.locator('#reboot-now-btn')).toBeDisabled();
+  await expect(page.locator('#reboot-later-btn')).toBeDisabled();
+  await expect(page.locator('#reboot-close-x')).toBeDisabled();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
+  await cancelRequest;
+  await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
+  await expect(page.locator('#reboot-cancel-error')).toContainText('撤销未确认');
+  await expect(page.locator('#reboot-cancel-error')).toBeVisible();
+  await expect(page.locator('#reboot-now-btn')).toBeEnabled();
+  model.cancelMode = 'success';
+  await page.locator('#reboot-cancel-btn').click();
+  await expect(page.locator('#modal-reboot')).not.toHaveClass(/open/);
+  await expect(page.locator('#toast-wrap')).toContainText('已撤销本次温控修改');
+  expect(model.requests.filter((request) => request.action === 'cancel_pending')[0].pending_id).toBe('fixture-pending-001');
+});
+
+test('system、custom、自定义切换的 pending 均使用后端 id 并恢复原状态', async ({ page }) => {
+  const cases = [
+    { initial: { policy: 'system', offset: 2 }, target: '[data-policy="custom"][data-offset="4"]' },
+    { initial: { policy: 'custom', offset: 2 }, target: '[data-policy="custom"][data-offset="6"]' },
+    { initial: { policy: 'custom', offset: 4 }, target: '[data-policy="system"]' }
+  ];
+  for (const item of cases) {
+    const context = await page.context().browser().newContext({ viewport: { width: 390, height: 844 } });
+    const isolated = await context.newPage();
+    try {
+      const model = await installThermalFixture(isolated, item.initial);
+      await isolated.locator(item.target + ' .profile-select').click();
+      await expect(isolated.locator('#modal-reboot')).toHaveClass(/open/);
+      await isolated.locator('#reboot-cancel-btn').click();
+      await expect(isolated.locator('#modal-reboot')).not.toHaveClass(/open/);
+      expect(model.pending).toBe(false);
+      expect(model.policy).toBe(item.initial.policy);
+      expect(model.offset).toBe(item.initial.offset);
+      expect(model.requests.at(-1)).toMatchObject({ action: 'cancel_pending', pending_id: 'fixture-pending-001' });
+    } finally {
+      await context.close();
+    }
+  }
+});
+
+test('页面重载后可打开并取消仍然存在的 pending，异常成功响应不会关闭弹窗', async ({ page }) => {
+  const model = await installThermalFixture(page, { policy: 'system', offset: 2 });
+  await page.locator('[data-policy="custom"][data-offset="4"] .profile-select').click();
+  await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
+  await page.reload();
+  await expect(page.locator('#thermal-list .profile-select')).toHaveCount(5);
+  await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
+  model.cancelMode = 'incomplete';
+  await page.locator('#reboot-cancel-btn').click();
+  await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
+  await expect(page.locator('#reboot-cancel-error')).toContainText('撤销未确认');
+  model.cancelMode = 'success';
+  await page.locator('#reboot-cancel-btn').click();
+  await expect(page.locator('#modal-reboot')).not.toHaveClass(/open/);
+});
+
+test('非 Hybrid 后端继续用旧状态回写取消，不发送 cancel_pending', async ({ page }) => {
+  const model = await installThermalFixture(page, { policy: 'system', offset: 2, hybrid: false });
+  await page.locator('[data-policy="custom"][data-offset="4"] .profile-select').click();
+  await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
+  await page.locator('#reboot-cancel-btn').click();
+  await expect(page.locator('#modal-reboot')).not.toHaveClass(/open/);
+  expect(model.requests.at(-1)).toEqual({ policy: 'system', offset: 2 });
+});
+
+test('取消提交后复读超时，重试先 reconcile 而不是重复写入', async ({ page }) => {
+  const model = await installThermalFixture(page, { policy: 'system', offset: 2 });
+  await page.locator('[data-policy="custom"][data-offset="4"] .profile-select').click();
+  await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
+  model.readbackFail = true;
+  await page.locator('#reboot-cancel-btn').click();
+  await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
+  await expect(page.locator('#reboot-cancel-error')).toContainText('撤销未确认');
+  await page.locator('#reboot-cancel-btn').click();
+  await expect(page.locator('#modal-reboot')).not.toHaveClass(/open/);
+  expect(model.requests.filter((request) => request.action === 'cancel_pending')).toHaveLength(1);
 });
 
 test('UE能力只展示摘要，技术字段分组展开并保留用户的展开状态', async ({ page }) => {

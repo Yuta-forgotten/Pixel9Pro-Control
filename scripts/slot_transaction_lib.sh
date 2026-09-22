@@ -34,8 +34,35 @@ slot_atomic_write() {
 }
 
 slot_lock() {
-    mkdir "$SLOT_LOCK" 2>/dev/null || return 1
-    printf '%s\n' "$$" > "$SLOT_LOCK/pid" 2>/dev/null || true
+    if ! mkdir "$SLOT_LOCK" 2>/dev/null; then
+        _slot_lock_pid=$(cat "$SLOT_LOCK/pid" 2>/dev/null | tr -d ' \r\n\t')
+        _slot_lock_start=$(cat "$SLOT_LOCK/start_ticks" 2>/dev/null | tr -d ' \r\n\t')
+        _slot_lock_live=""
+        case "$_slot_lock_pid" in
+            ''|*[!0-9]*) ;;
+            *) _slot_lock_live=$(sed 's/^.*) //' "/proc/$_slot_lock_pid/stat" 2>/dev/null | awk '{print $20}') ;;
+        esac
+        if [ -z "$_slot_lock_pid" ] || [ -z "$_slot_lock_start" ] \
+            || [ -z "$_slot_lock_live" ] || [ "$_slot_lock_live" != "$_slot_lock_start" ]; then
+            rm -f "$SLOT_LOCK/pid" "$SLOT_LOCK/start_ticks" 2>/dev/null || true
+            rmdir "$SLOT_LOCK" 2>/dev/null || true
+            mkdir "$SLOT_LOCK" 2>/dev/null || return 1
+        else
+            return 1
+        fi
+    fi
+    printf '%s\n' "$$" > "$SLOT_LOCK/pid" 2>/dev/null || {
+        rm -f "$SLOT_LOCK/pid" "$SLOT_LOCK/start_ticks" 2>/dev/null || true
+        rmdir "$SLOT_LOCK" 2>/dev/null || true
+        return 1
+    }
+    _slot_lock_start=$(sed 's/^.*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}')
+    [ -n "$_slot_lock_start" ] || _slot_lock_start=unknown
+    printf '%s\n' "$_slot_lock_start" > "$SLOT_LOCK/start_ticks" 2>/dev/null || {
+        rm -f "$SLOT_LOCK/pid" "$SLOT_LOCK/start_ticks" 2>/dev/null || true
+        rmdir "$SLOT_LOCK" 2>/dev/null || true
+        return 1
+    }
 }
 
 slot_unlock() {
@@ -58,6 +85,54 @@ slot_current_value() {
 slot_pending_value() {
     _slot_component_dir=$(slot_component_dir "$1") || return 1
     cat "$_slot_component_dir/pending" 2>/dev/null | tr -d ' \n\r\t'
+}
+
+slot_pending_id() {
+    _slot_component="$1"
+    _slot_component_dir=$(slot_component_dir "$_slot_component") || return 1
+    _slot_pending=$(slot_pending_value "$_slot_component")
+    case "$_slot_pending" in
+        slot-a|slot-b) ;;
+        *) return 1 ;;
+    esac
+    _slot_manifest="$_slot_component_dir/$_slot_pending/manifest"
+    [ -r "$_slot_manifest" ] || return 1
+    _slot_created_boot=$(sed -n 's/^created_boot=//p' "$_slot_manifest" | head -n 1 | tr -d ' \n\r\t')
+    _slot_hash=$(sed -n 's/^hash=//p' "$_slot_manifest" | head -n 1 | tr -d ' \n\r\t')
+    [ -n "$_slot_created_boot" ] && [ -n "$_slot_hash" ] || return 1
+    printf '%s:%s:%s:%s' "$_slot_component" "$_slot_pending" "$_slot_created_boot" "$_slot_hash"
+}
+
+slot_cancel_pending() {
+    _slot_component="$1"
+    _slot_component_dir=$(slot_component_dir "$_slot_component") || return 1
+    slot_lock || return 1
+    _slot_pending=$(slot_pending_value "$_slot_component")
+    _slot_active=$(slot_current_value "$_slot_component")
+    case "$_slot_pending" in
+        slot-a|slot-b) ;;
+        *) slot_unlock; return 1 ;;
+    esac
+    [ "$_slot_pending" != "$_slot_active" ] || { slot_unlock; return 1; }
+    _slot_dir="$_slot_component_dir/$_slot_pending"
+    _slot_backup="$_slot_dir.cancel-backup.$$"
+    mv "$_slot_dir" "$_slot_backup" 2>/dev/null || {
+        slot_unlock
+        return 1
+    }
+    if ! rm -f "$_slot_component_dir/pending" \
+        "$_slot_component_dir/rollback_pending" 2>/dev/null; then
+        mv "$_slot_backup" "$_slot_dir" 2>/dev/null || true
+        slot_unlock
+        return 1
+    fi
+    # The marker removal is the commit point. Cleanup failure cannot recreate a
+    # pending transaction; leave only a private backup for later housekeeping.
+    rm -f "$_slot_backup"/* 2>/dev/null || true
+    rmdir "$_slot_backup" 2>/dev/null || true
+    sync
+    slot_unlock
+    return 0
 }
 
 slot_inactive_value() {

@@ -320,10 +320,13 @@ async function handleApi(req, res, url) {
       }
       return json(res, thermalZones());
     case '/cgi-bin/set_thermal.sh':
+      if (body.action === 'cancel_pending') {
+        return json(res, { ok: true, canceled: true, pending: false, pending_id: '', policy: 'custom', offset: 4, reboot_required: false, effective_state: 'restored_pending_canceled', thermal_contract: { policies: ['system', 'custom'], default_policy: 'custom', offsets: [-2, 2, 4, 6], default_offset: 4 } });
+      }
       if (Number.isFinite(body.offset)) runtime.offset = body.offset;
       return json(res, req.method === 'POST'
-        ? { ok: true, policy: 'custom', offset: runtime.offset, restarted: true, thermal_contract: { policies: ['system', 'custom'], default_policy: 'custom', offsets: [-2, 2, 4, 6], default_offset: 4 } }
-        : { policy: 'custom', offset: runtime.offset, thermal_contract: { policies: ['system', 'custom'], default_policy: 'custom', offsets: [-2, 2, 4, 6], default_offset: 4 } });
+        ? { ok: true, policy: 'custom', offset: runtime.offset, restarted: true, pending: false, pending_id: '', cancel_supported: true, thermal_contract: { policies: ['system', 'custom'], default_policy: 'custom', offsets: [-2, 2, 4, 6], default_offset: 4 } }
+        : { policy: 'custom', offset: runtime.offset, pending: false, pending_id: '', cancel_supported: true, thermal_contract: { policies: ['system', 'custom'], default_policy: 'custom', offsets: [-2, 2, 4, 6], default_offset: 4 } });
     case '/cgi-bin/swap.sh':
       if (body.mode) runtime.swapMode = body.mode;
       return json(res, swapState());
