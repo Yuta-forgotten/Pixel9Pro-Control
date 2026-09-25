@@ -578,7 +578,13 @@ GAME_MATCH="no"
 case "$SCREEN_STATE" in
     on) ;;
     *)
-        printf '%s\n' "screen_${SCREEN_STATE}_noop"
+        # Screen-off ticks still publish an observation receipt. They never
+        # mutate scheduler nodes, but stale owner timestamps make the control
+        # plane look dead after Doze and hide the real effective owner.
+        APPLY_RESULT="screen_${SCREEN_STATE}_noop"
+        write_state >/dev/null 2>&1 || true
+        append_history >/dev/null 2>&1 || true
+        printf '%s\n' "$APPLY_RESULT"
         exit 0
         ;;
 esac
