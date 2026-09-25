@@ -23,6 +23,12 @@ SCHEDULER_INVENTORY_PATH="$MODDIR/.scheduler_inventory"
 SERVICE_LOCK_DIR="$MODDIR/.service_lock"
 SERVICE_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')"
 
+service_uptime() {
+    _svc_up=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null)
+    case "$_svc_up" in ''|*[!0-9]*) _svc_up=0 ;; esac
+    printf '%s' "$_svc_up"
+}
+
 service_start_ticks() {
     sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | awk '{print $20}'
 }
@@ -934,7 +940,7 @@ fi
 #    若已降到 LTE, 改为较短复查周期，避免亮屏后长期停留 LTE
 #    WiFi multicast: 仅在屏幕状态变化时切换，不轮询
 #    NR 降级: 集成防抖，仅在开启时生效
-#    温度历史: 仅亮屏记录，WebUI 前台突发窗口缩短为 5s
+#    温度历史: 亮屏 60s、息屏 600s；息屏样本显式标记 screen_off_paused，WebUI 前台突发窗口缩短为 5s
 #    UECap: manual profile is applied only during boot or an explicit WebUI action
 # ──────────────────────────────────────────────────────────
 NR_SWITCH_FILE="$MODDIR/.nr_screen_switch"
@@ -945,11 +951,17 @@ THERMAL_BURST_FILE="$MODDIR/.thermal_burst_until"
 POWER_HISTORY="$MODDIR/.power_history"
 POWER_HISTORY_MAX=20160
 POWER_SESSION_FILE="$MODDIR/.power_session"
+HISTORY_META="$MODDIR/.history.meta"
+HISTORY_SOURCE=service_worker
+HISTORY_SESSION_ID="service_${SERVICE_BOOT_ID}"
+HISTORY_INTERVAL_ON=60
+HISTORY_INTERVAL_OFF=600
 
 [ -f "$NR_SWITCH_FILE" ] || runtime_write_value "$NR_SWITCH_FILE" "$NR_SCREEN_SWITCH_DEFAULT" >/dev/null 2>&1 \
     || log -t pixel9pro_ctrl "WARNING: failed to initialize NR switch state"
 
 (
+    HISTORY_SESSION_ID="service_${SERVICE_BOOT_ID}_$$_$(date +%s 2>/dev/null | tr -cd '0-9')"
     . "$MODDIR/webroot/cgi-bin/_thermal_cache.sh"
 
     # Automatic profile decisions are disposable. If another scheduler
@@ -1088,17 +1100,69 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
         fi
     }
 
+    _write_history_meta() {
+        _hm_now="$1"
+        _hm_tmp="${HISTORY_META}.tmp.$$"
+        _hm_stats=$(awk -F, '
+            $1 ~ /^[0-9]+$/ { raw++; if ($6 == 1) valid++; if ($6 == 0) invalid++; if ($7 ~ /^[0-9]+$/ && $7 > 0) gaps++; if (!first) first=$1; last=$1 }
+            END { printf "%d|%d|%d|%d|%s|%s", raw,valid,invalid,gaps,first,last }
+        ' "$THERMAL_HISTORY" 2>/dev/null)
+        _hm_t_raw=${_hm_stats%%|*}; _hm_rest=${_hm_stats#*|}
+        _hm_t_valid=${_hm_rest%%|*}; _hm_rest=${_hm_rest#*|}
+        _hm_t_invalid=${_hm_rest%%|*}; _hm_rest=${_hm_rest#*|}
+        _hm_t_gaps=${_hm_rest%%|*}; _hm_rest=${_hm_rest#*|}
+        _hm_t_first=${_hm_rest%%|*}; _hm_t_last=${_hm_rest#*|}
+        _hm_stats=$(awk -F, '
+            $1 ~ /^[0-9]+$/ { raw++; if ($8 == 1) valid++; if ($8 == 0) invalid++; if ($9 ~ /^[0-9]+$/ && $9 > 0) gaps++; if (!first) first=$1; last=$1 }
+            END { printf "%d|%d|%d|%d|%s|%s", raw,valid,invalid,gaps,first,last }
+        ' "$POWER_HISTORY" 2>/dev/null)
+        _hm_p_raw=${_hm_stats%%|*}; _hm_rest=${_hm_stats#*|}
+        _hm_p_valid=${_hm_rest%%|*}; _hm_rest=${_hm_rest#*|}
+        _hm_p_invalid=${_hm_rest%%|*}; _hm_rest=${_hm_rest#*|}
+        _hm_p_gaps=${_hm_rest%%|*}; _hm_rest=${_hm_rest#*|}
+        _hm_p_first=${_hm_rest%%|*}; _hm_p_last=${_hm_rest#*|}
+        case "$_hm_t_raw:$_hm_t_valid:$_hm_t_invalid:$_hm_t_gaps:$_hm_p_raw:$_hm_p_valid:$_hm_p_invalid:$_hm_p_gaps" in
+            *[!0-9:]*) _hm_t_raw=0; _hm_t_valid=0; _hm_t_invalid=0; _hm_t_gaps=0; _hm_p_raw=0; _hm_p_valid=0; _hm_p_invalid=0; _hm_p_gaps=0 ;;
+        esac
+        _hm_quality=complete
+        [ $((_hm_t_raw + _hm_p_raw)) -gt 0 ] 2>/dev/null || _hm_quality=no_data
+        _hm_t_unknown=$((_hm_t_raw - _hm_t_valid - _hm_t_invalid))
+        _hm_p_unknown=$((_hm_p_raw - _hm_p_valid - _hm_p_invalid))
+        [ "$_hm_t_unknown" -gt 0 ] 2>/dev/null || [ "$_hm_p_unknown" -gt 0 ] 2>/dev/null && _hm_quality=legacy_history
+        [ "$_hm_t_invalid" -gt 0 ] 2>/dev/null || [ "$_hm_p_invalid" -gt 0 ] 2>/dev/null || [ "$_hm_t_gaps" -gt 0 ] 2>/dev/null || [ "$_hm_p_gaps" -gt 0 ] 2>/dev/null && _hm_quality=partial
+        [ "${_history_write_error:-none}" = none ] || _hm_quality=write_failed
+        _hm_first=$_hm_t_first
+        [ -n "$_hm_first" ] || _hm_first=$_hm_p_first
+        _hm_last=$_hm_p_last
+        [ -n "$_hm_last" ] || _hm_last=$_hm_t_last
+        _hm_coverage=0
+        if [ -n "$_hm_first" ] && [ -n "$_hm_last" ] && [ "$_hm_now" -gt "$_hm_first" ] 2>/dev/null; then
+            _hm_coverage=$(((_hm_last - _hm_first) * 100 / (_hm_now - _hm_first)))
+            [ "$_hm_coverage" -gt 100 ] 2>/dev/null && _hm_coverage=100
+            [ "$_hm_coverage" -lt 0 ] 2>/dev/null && _hm_coverage=0
+        fi
+        {
+            printf 'schema=2\nboot_id=%s\nsession_id=%s\nsource=%s\nupdated_ts=%s\n' "$SERVICE_BOOT_ID" "$HISTORY_SESSION_ID" "$HISTORY_SOURCE" "$_hm_now"
+            printf 'thermal_raw_samples=%s\nthermal_display_samples=%s\nthermal_valid_samples=%s\nthermal_invalid_samples=%s\nthermal_gap_count=%s\n' "$_hm_t_raw" "$_hm_t_raw" "$_hm_t_valid" "$_hm_t_invalid" "$_hm_t_gaps"
+            printf 'power_raw_samples=%s\npower_display_samples=%s\npower_valid_samples=%s\npower_invalid_samples=%s\npower_gap_count=%s\n' "$_hm_p_raw" "$_hm_p_raw" "$_hm_p_valid" "$_hm_p_invalid" "$_hm_p_gaps"
+            printf 'coverage_percent=%s\nquality=%s\n' "$_hm_coverage" "$_hm_quality"
+            printf 'thermal_unknown_samples=%s\npower_unknown_samples=%s\n' "$_hm_t_unknown" "$_hm_p_unknown"
+            printf 'reason=%s\ninterval_on_sec=%s\ninterval_off_sec=%s\nlast_screen=%s\n' "${_history_write_error:-none}" "$HISTORY_INTERVAL_ON" "$HISTORY_INTERVAL_OFF" "$_screen"
+        } > "$_hm_tmp" 2>/dev/null && mv "$_hm_tmp" "$HISTORY_META" 2>/dev/null || rm -f "$_hm_tmp" 2>/dev/null
+    }
+
     _track_power_window() {
         _p_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null | tr -d '\r')
         _p_status=$(printf '%s' "$_p_status" | sed 's/[[:space:]]*$//')
         _p_level=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null | tr -d ' \n\r')
         _p_charge=$(cat /sys/class/power_supply/battery/charge_counter 2>/dev/null | tr -d ' \n\r')
-
+        _p_valid=1
+        _p_quality=ok
         case "$_p_level" in
-            ''|*[!0-9]*) return ;;
+            ''|*[!0-9]*) _p_level=0; _p_valid=0; _p_quality=missing_capacity ;;
         esac
         case "$_p_charge" in
-            ''|*[!0-9-]*) _p_charge=0 ;;
+            ''|*[!0-9-]*) _p_charge=0; _p_valid=0; _p_quality=missing_charge_counter ;;
         esac
 
         _p_is_charging=0
@@ -1151,9 +1215,21 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
 
         if [ "$_should_sample" -eq 1 ]; then
             _compact_power_history_if_needed
-            printf '%s,%s,%s,%s\n' "$_now" "$_p_level" "$_p_charge" "$_p_status" >> "$POWER_HISTORY"
-            _power_history_lines=$((_power_history_lines + 1))
-            _power_last_sample=$_now
+            _p_gap=0
+            if [ "${_power_last_uptime:-0}" -gt 0 ] 2>/dev/null && [ "$_uptime_now" -ge "$_power_last_uptime" ] 2>/dev/null \
+                && [ $((_uptime_now - _power_last_uptime)) -gt $((_power_interval * 2)) ] 2>/dev/null; then
+                _p_gap=$((_uptime_now - _power_last_uptime - _power_interval))
+                [ "$_p_quality" = ok ] && _p_quality=gap
+            fi
+            if printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$_now" "$_p_level" "$_p_charge" "$_p_status" \
+                "$SERVICE_BOOT_ID" "$HISTORY_SESSION_ID" "$HISTORY_SOURCE" "$_p_valid" "$_p_gap" "$_p_quality" "$_screen" "$_uptime_now" >> "$POWER_HISTORY"; then
+                _power_history_lines=$((_power_history_lines + 1))
+                _power_last_sample=$_now
+                _power_last_uptime=$_uptime_now
+                _history_changed=1
+            else
+                _history_write_error=power_write_failed
+            fi
         fi
 
         _power_last_status="$_p_status"
@@ -1285,9 +1361,14 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
     # 300s 把 wakeup 密度降到 12 次/h,给 kernel 真正的 deep suspend 窗口。
     # 代价:屏幕点亮后 NR 恢复最多滞后 5 分钟(用户体感可接受,RIL 数据通道不受影响)。
     _NR_LTE_POLL="$NR_LTE_RECHECK_S"
-    _POWER_SAMPLE_INTERVAL_ON=60
-    _POWER_SAMPLE_INTERVAL_OFF=600
+    _POWER_SAMPLE_INTERVAL_ON=$HISTORY_INTERVAL_ON
+    _POWER_SAMPLE_INTERVAL_OFF=$HISTORY_INTERVAL_OFF
+    _thermal_last_sample=$(tail -n 1 "$THERMAL_HISTORY" 2>/dev/null | cut -d, -f1)
+    case "$_thermal_last_sample" in ''|*[!0-9]*) _thermal_last_sample=0 ;; esac
+    _thermal_last_uptime=0
+    _history_prev_screen=unknown
     _power_last_sample=0
+    _power_last_uptime=0
     _power_last_status=""
     _power_last_level=-1
     _power_last_charge=0
@@ -1310,6 +1391,7 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
     case "$_power_history_lines" in ''|*[!0-9]*) _power_history_lines=0 ;; esac
     _compact_thermal_history_if_needed
     _compact_power_history_if_needed
+    _write_history_meta "$(date +%s 2>/dev/null || printf 0)"
     _auto_hot_since=0
     _auto_cool_since=0
     _auto_charge_hot_since=0
@@ -1320,6 +1402,9 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
 
     while true; do
         _now=$(date +%s 2>/dev/null || echo 0)
+        _uptime_now=$(service_uptime)
+        _history_changed=0
+        _history_write_error=none
         _cycle_count=$((_cycle_count + 1))
         _active_profile=$(profile_state_read_profile "$PROFILE_FILE" "$_active_profile")
         _sched_owner=$(read_valid_sched_owner)
@@ -1445,8 +1530,8 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
             fi
         fi
 
-        # Screen-off skips thermal/profile sampling to protect deep standby,
-        # while power tracking remains active for session accounting.
+        # History uses the same epoch clock on both sides of a screen transition.
+        # Screen-off lowers sampling to 600s without discarding the interval.
         _burst_until=$(cat "$THERMAL_BURST_FILE" 2>/dev/null | tr -d ' \n\r')
         _burst_active=0
         if [ -n "$_burst_until" ] && [ "$_burst_until" -gt "$_now" ] 2>/dev/null; then
@@ -1461,26 +1546,48 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
 
         _worker_mode="deep_standby"
         _vs_temp=""
-        if [ "$_screen" = "on" ]; then
-            _worker_mode="screen_on"
-            # --- 仅亮屏执行 thermal 更新；WebUI 历史页可临时提高采样频率 ---
+        _thermal_interval=$HISTORY_INTERVAL_OFF
+        [ "$_screen" = on ] && _thermal_interval=$HISTORY_INTERVAL_ON
+        [ "$_burst_effective" -eq 1 ] && _thermal_interval=5
+        if [ "$_thermal_last_sample" -eq 0 ] || [ $((_now - _thermal_last_sample)) -ge "$_thermal_interval" ] 2>/dev/null \
+            || { [ "$_screen" = off ] && [ "$_history_prev_screen" != off ]; }; then
+            [ "$_screen" = on ] && _worker_mode=screen_on
             _json=$(build_thermal_json 2>/dev/null)
+            _thermal_valid=0
+            _thermal_quality=missing_source
+            _thermal_gap=0
+            _vs_temp=""
             if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
                 if ! runtime_write_value "$THERMAL_CACHE" "$_json"; then
                     log -t pixel9pro_ctrl "WARNING: failed to refresh thermal cache"
                 fi
-
                 _vs_temp=$(printf '%s' "$_json" | sed 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/')
-                if [ -n "$_vs_temp" ] && [ "$_vs_temp" != "$_json" ]; then
-                    _compact_thermal_history_if_needed
-                    printf '%s,%s\n' "$_now" "$_vs_temp" >> "$THERMAL_HISTORY"
-                    _thermal_history_lines=$((_thermal_history_lines + 1))
-                fi
+                case "$_vs_temp" in ''|*[!0-9]*) _vs_temp="" ;; *) _thermal_valid=1; _thermal_quality=ok ;; esac
+            fi
+            if [ "$_screen" != on ]; then
+                _vs_temp=""
+                _thermal_valid=0
+                _thermal_quality=screen_off_paused
+            fi
+            if [ "${_thermal_last_uptime:-0}" -gt 0 ] 2>/dev/null && [ "$_uptime_now" -ge "$_thermal_last_uptime" ] 2>/dev/null \
+                && [ $((_uptime_now - _thermal_last_uptime)) -gt $((_thermal_interval * 2)) ] 2>/dev/null; then
+                _thermal_gap=$((_uptime_now - _thermal_last_uptime - _thermal_interval))
+                [ "$_thermal_quality" = ok ] && _thermal_quality=gap
+            fi
+            _compact_thermal_history_if_needed
+            if printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$_now" "$_vs_temp" "$SERVICE_BOOT_ID" "$HISTORY_SESSION_ID" \
+                "$HISTORY_SOURCE" "$_thermal_valid" "$_thermal_gap" "$_thermal_quality" "$_screen" "$_uptime_now" >> "$THERMAL_HISTORY"; then
+                _thermal_history_lines=$((_thermal_history_lines + 1))
+                _thermal_last_sample=$_now
+                _thermal_last_uptime=$_uptime_now
+                _history_changed=1
             else
-                rm -f "${THERMAL_CACHE}.$$.$_now.tmp"
+                _history_write_error=thermal_write_failed
             fi
         fi
 
+        # Isolate mode affects policy mutations, not the observability source.
+        _track_power_window
         if [ "$_screen_off_isolate" -eq 1 ]; then
             _worker_mode="idle_isolate"
             _auto_hot_since=0
@@ -1488,7 +1595,6 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
             _auto_charge_hot_since=0
             _auto_charge_cool_since=0
         else
-            _track_power_window
             if [ -z "$_vs_temp" ] && [ "$_screen" = "on" ]; then
                 _vs_temp=$(sed -n 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/p' "$THERMAL_CACHE" 2>/dev/null | head -1)
                 case "$_vs_temp" in
@@ -1608,6 +1714,15 @@ POWER_SESSION_FILE="$MODDIR/.power_session"
                 _auto_charge_cool_since=0
             fi
         fi
+
+        if [ "$_history_changed" -eq 1 ] || [ "$_history_write_error" != none ]; then
+            _write_history_meta "$_now"
+        fi
+        _history_prev_screen="$_screen"
+        # Attribution snapshots have their own persisted 15-minute throttle.
+        # Do not put batterystats collection on the history/UI response path.
+        [ ! -r "$MODDIR/scripts/power_rank_collect.sh" ] \
+            || sh "$MODDIR/scripts/power_rank_collect.sh" >/dev/null 2>&1 &
 
         _enforce_stop_after_leave
 

@@ -14,7 +14,7 @@ TELEMETRY_MAX_HISTORY_AGE_SEC=604800
 
 query_value() {
     _tg_key="$1"
-    _tg_value=$(printf '%s' "${QUERY_STRING:-}" | sed -n "s/.*\(^\|&\)${_tg_key}=\([^&]*\).*/\2/p" | head -n 1)
+    _tg_value=$(printf '%s' "${QUERY_STRING:-}" | tr '&' '\n' | sed -n "s/^${_tg_key}=//p" | head -n 1)
     printf '%s' "$_tg_value"
 }
 
@@ -48,6 +48,16 @@ read_session_fields() {
     TG_QUALITY=$(telemetry_state_value "$_tg_state_file" quality unknown)
     TG_RESETS=$(telemetry_state_value "$_tg_state_file" reset_count 0)
     TG_STOP_REQUESTED=$(telemetry_state_value "$_tg_state_file" stop_requested 0)
+    TG_BOOT_ID=$(telemetry_state_value "$_tg_state_file" boot_id "$(telemetry_boot_id)")
+    TG_SOURCE=$(telemetry_state_value "$_tg_state_file" source telemetry_worker)
+    TG_VALID_SAMPLES=$(telemetry_state_value "$_tg_state_file" valid_samples 0)
+    TG_INVALID_SAMPLES=$(telemetry_state_value "$_tg_state_file" invalid_samples 0)
+    TG_GAP_COUNT=$(telemetry_state_value "$_tg_state_file" gap_count 0)
+    TG_FIRST_SAMPLE=$(telemetry_state_value "$_tg_state_file" first_sample_ts 0)
+    TG_INTERVAL_ON=$(telemetry_state_value "$_tg_state_file" interval_on_sec 60)
+    TG_INTERVAL_OFF=$(telemetry_state_value "$_tg_state_file" interval_off_sec 600)
+    TG_LAST_SCREEN=$(telemetry_state_value "$_tg_state_file" last_screen unknown)
+    TG_LAST_CHARGE_STATUS=$(telemetry_state_value "$_tg_state_file" last_charge_status unknown)
     [ -n "$TG_DIR" ] || TG_DIR=$(telemetry_state_value "$_tg_state_file" session_dir "")
     [ "$_tg_requested_valid" -eq 1 ] && [ -s "$_tg_state_file" ] || [ "$_tg_requested_valid" -eq 0 ] || TG_DIR=""
     telemetry_valid_id "$TG_ID" || TG_ID=""
@@ -77,9 +87,17 @@ emit_session_json() {
     printf '"worker_pid":%s,"worker_alive":%s,"last_sample_ts":%s,"sample_count":%s,"bytes":%s,"max_bytes":%s,' \
         "$(telemetry_num "$TG_PID")" "$_tg_alive" "$(telemetry_num "$TG_LAST_SAMPLE")" \
         "$(telemetry_num "$TG_SAMPLES")" "$(telemetry_num "$TG_BYTES")" "$(telemetry_num "$TG_MAX_BYTES")"
-    printf '"quality":"%s","reset_count":%s,"reason":"%s","stop_requested":%s}' \
+    printf '"quality":"%s","reset_count":%s,"reason":"%s","stop_requested":%s,' \
         "$(telemetry_json_escape "$TG_QUALITY")" "$(telemetry_num "$TG_RESETS")" \
         "$(telemetry_json_escape "$TG_REASON")" "$(json_bool "$TG_STOP_REQUESTED")"
+    printf '"boot_id":"%s","source":"%s","valid_samples":%s,"invalid_samples":%s,"gap_count":%s,' \
+        "$(telemetry_json_escape "$TG_BOOT_ID")" "$(telemetry_json_escape "$TG_SOURCE")" \
+        "$(telemetry_num "$TG_VALID_SAMPLES")" "$(telemetry_num "$TG_INVALID_SAMPLES")" \
+        "$(telemetry_num "$TG_GAP_COUNT")"
+    printf '"first_sample_ts":%s,"interval_on_sec":%s,"interval_off_sec":%s,"last_screen":"%s","last_charge_status":"%s"}' \
+        "$(telemetry_num "$TG_FIRST_SAMPLE")" "$(telemetry_num "$TG_INTERVAL_ON")" \
+        "$(telemetry_num "$TG_INTERVAL_OFF")" "$(telemetry_json_escape "$TG_LAST_SCREEN")" \
+        "$(telemetry_json_escape "$TG_LAST_CHARGE_STATUS")"
 }
 
 emit_status() {
@@ -138,7 +156,8 @@ emit_history_array() {
     awk -F, -v start="$_tg_start" -v end="$_tg_end" -v kind="$_tg_kind" -v bucket="$_tg_bucket" '
         BEGIN { first=1; last_bucket=-1 }
         $1 ~ /^[0-9]+$/ && $1 + 0 >= start && $1 + 0 <= end {
-            if (bucket > 0) { current_bucket = int(($1 + 0) / bucket); if (current_bucket == last_bucket) next; last_bucket = current_bucket }
+            bucket_start = $1 + 0
+            if (bucket > 0) { current_bucket = int(($1 + 0) / bucket); if (current_bucket == last_bucket) next; last_bucket = current_bucket; bucket_start = current_bucket * bucket }
             if (!first) printf ","; first=0
             if (kind == "power") {
                 printf "{\"ts\":%s,\"screen\":\"%s\",\"status\":\"%s\",\"level_pct\":", $1, $2, $3
@@ -148,7 +167,7 @@ emit_history_array() {
                 printf ",\"voltage_uv\":"; if ($7 ~ /^-?[0-9]+$/) printf "%s", $7; else printf "null"
                 printf ",\"odpm_modem_uws\":"; if ($14 ~ /^-?[0-9]+$/) printf "%s", $14; else printf "null"
                 printf ",\"odpm_rffe_uws\":"; if ($15 ~ /^-?[0-9]+$/) printf "%s", $15; else printf "null"
-                printf ",\"quality\":\"%s\"}", $16
+                printf ",\"quality\":\"%s\",\"bucket_start\":%d,\"boot_id\":\"%s\",\"session_id\":\"%s\",\"source\":\"%s\",\"valid\":%s,\"thermal_valid\":%s,\"power_valid\":%s,\"gap_sec\":%s}", ($23 != "" ? $23 : $16), bucket_start, ($18 != "" ? $18 : "unknown"), ($19 != "" ? $19 : ""), ($20 != "" ? $20 : "legacy_history"), ($21 ~ /^[01]$/ ? ($21 == 1 ? "true" : "false") : "false"), ($26 ~ /^[01]$/ ? ($26 == 1 ? "true" : "false") : "false"), ($27 ~ /^[01]$/ ? ($27 == 1 ? "true" : "false") : "false"), ($22 ~ /^[0-9]+$/ ? $22 : "0")
             } else {
                 printf "{\"ts\":%s,\"screen\":\"%s\",\"virtual_skin_mc\":", $1, $2
                 if ($8 ~ /^-?[0-9]+$/) printf "%s", $8; else printf "null"
@@ -157,7 +176,7 @@ emit_history_array() {
                 printf ",\"charging_therm_mc\":"; if ($11 ~ /^-?[0-9]+$/) printf "%s", $11; else printf "null"
                 printf ",\"btmspkr_therm_mc\":"; if ($12 ~ /^-?[0-9]+$/) printf "%s", $12; else printf "null"
                 printf ",\"thermal_status\":"; if ($13 ~ /^[0-9]+$/) printf "%s", $13; else printf "null"
-                printf ",\"quality\":\"%s\"}", $16
+                printf ",\"quality\":\"%s\",\"bucket_start\":%d,\"boot_id\":\"%s\",\"session_id\":\"%s\",\"source\":\"%s\",\"valid\":%s,\"thermal_valid\":%s,\"power_valid\":%s,\"gap_sec\":%s}", ($23 != "" ? $23 : $16), bucket_start, ($18 != "" ? $18 : "unknown"), ($19 != "" ? $19 : ""), ($20 != "" ? $20 : "legacy_history"), ($21 ~ /^[01]$/ ? ($21 == 1 ? "true" : "false") : "false"), ($26 ~ /^[01]$/ ? ($26 == 1 ? "true" : "false") : "false"), ($27 ~ /^[01]$/ ? ($27 == 1 ? "true" : "false") : "false"), ($22 ~ /^[0-9]+$/ ? $22 : "0")
             }
         }
     ' "$_tg_file" 2>/dev/null
@@ -188,11 +207,33 @@ emit_legacy_array() {
     ' "$_tg_file" 2>/dev/null
 }
 
+emit_service_array() {
+    _tg_file="$1"; _tg_kind="$2"; _tg_start="$3"; _tg_end="$4"; _tg_bucket="$5"
+    awk -F, -v start="$_tg_start" -v end="$_tg_end" -v kind="$_tg_kind" -v bucket="$_tg_bucket" '
+      BEGIN { first=1; last_bucket=-1 }
+      $1 ~ /^[0-9]+$/ && $1 >= start && $1 <= end {
+        bucket_start=$1+0; if (bucket > 0) { b=int(($1+0)/bucket); if (b == last_bucket) next; last_bucket=b; bucket_start=b*bucket }
+        if (!first) printf ","; first=0
+        if (kind == "power") {
+          printf "{\"ts\":%s,\"bucket_start\":%d,\"level_pct\":%s,\"charge_uah\":%s,\"status\":\"%s\",\"boot_id\":\"%s\",\"session_id\":\"%s\",\"source\":\"%s\",\"valid\":%s,\"thermal_valid\":false,\"power_valid\":%s,\"gap_sec\":%s,\"quality\":\"%s\"}", $1,bucket_start,($2~/^-?[0-9]+$/?$2:"null"),($3~/^-?[0-9]+$/?$3:"null"),$4,$5,$6,$7,($8==1?"true":"false"),($8==1?"true":"false"),($9~/^[0-9]+$/?$9:0),$10
+        } else {
+          printf "{\"ts\":%s,\"bucket_start\":%d,\"virtual_skin_mc\":%s,\"boot_id\":\"%s\",\"session_id\":\"%s\",\"source\":\"%s\",\"valid\":%s,\"thermal_valid\":%s,\"power_valid\":false,\"gap_sec\":%s,\"quality\":\"%s\"}", $1,bucket_start,($2~/^-?[0-9]+$/?$2:"null"),$3,$4,$5,($6==1?"true":"false"),($6==1?"true":"false"),($7~/^[0-9]+$/?$7:0),$8
+        }
+      }
+    ' "$_tg_file" 2>/dev/null
+}
+
 emit_history() {
     history_bounds
     read_session_fields
     [ "${_tg_requested_valid:-0}" -eq 1 ] && [ -z "$TG_DIR" ] \
         && json_error '404 Not Found' 'telemetry session not found'
+    # History without an explicit session_id is the persistent service ledger.
+    # The mutable latest-session pointer must never hide background samples.
+    if [ "${_tg_requested_valid:-0}" -eq 0 ]; then
+        TG_DIR=""
+        TG_ID=""
+    fi
     _tg_legacy=0
     if [ -n "$TG_DIR" ]; then
         _tg_csv=$(telemetry_sample_file "$TG_DIR")
@@ -202,11 +243,55 @@ emit_history() {
     fi
     _tg_coverage_file="$_tg_csv"
     [ "$_tg_legacy" -eq 1 ] && _tg_coverage_file="${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.power_history"
-    _tg_coverage=$(awk -F, -v start="$TG_START_FILTER" -v end="$TG_END_FILTER" '
-        $1 ~ /^[0-9]+$/ && $1 >= start && $1 <= end { if (!first) first=$1; last=$1; n++ }
-        END { if (n && end > start) { c=last-first; if(c<0)c=0; if(c>end-start)c=end-start; printf "%.3f", c/(end-start) } else printf "0" }
+    _tg_stats=$(awk -F, -v start="$TG_START_FILTER" -v end="$TG_END_FILTER" -v legacy="$_tg_legacy" '
+        $1 ~ /^[0-9]+$/ && $1 >= start && $1 <= end {
+            if (!first) first=$1; last=$1; n++
+            valid_col=(legacy ? 8 : 27); gap_col=(legacy ? 9 : 22)
+            if ($valid_col == 1) valid++
+            if ($valid_col == 0) invalid++
+            if ($gap_col ~ /^[0-9]+$/ && $gap_col > 0) gaps++
+        }
+        END { c=0; if (n && end > start) { c=last-first; if(c<0)c=0; if(c>end-start)c=end-start }
+            ratio=0; if (end > start) ratio=c/(end-start)
+            printf "%.3f|%d|%d|%d|%d", ratio,n,valid,invalid,gaps }
     ' "$_tg_coverage_file" 2>/dev/null)
+    _tg_coverage=${_tg_stats%%|*}; _tg_rest=${_tg_stats#*|}
+    _tg_samples=${_tg_rest%%|*}; _tg_rest=${_tg_rest#*|}
+    _tg_valid=${_tg_rest%%|*}; _tg_rest=${_tg_rest#*|}
+    _tg_invalid=${_tg_rest%%|*}; _tg_gaps=${_tg_rest#*|}
+    case "$_tg_coverage" in ''|*[!0-9.]*) _tg_coverage=0 ;; esac
+    case "$_tg_samples:$_tg_valid:$_tg_invalid:$_tg_gaps" in *[!0-9:]*) _tg_samples=0; _tg_valid=0; _tg_invalid=0; _tg_gaps=0 ;; esac
     [ -n "$_tg_coverage" ] || _tg_coverage=0
+    if [ "$_tg_legacy" -eq 0 ]; then
+        _tg_stats=$(awk -F, '
+            $1 ~ /^[0-9]+$/ { n++; if ($27 == 1) valid++; if ($27 == 0) invalid++; if ($22 ~ /^[0-9]+$/ && $22 > 0) gaps++ }
+            END { printf "%d|%d|%d|%d", n,valid,invalid,gaps }
+        ' "$_tg_file" 2>/dev/null)
+        _tg_samples=${_tg_stats%%|*}; _tg_rest=${_tg_stats#*|}
+        _tg_valid=${_tg_rest%%|*}; _tg_rest=${_tg_rest#*|}
+        _tg_invalid=${_tg_rest%%|*}; _tg_gaps=${_tg_rest#*|}
+    fi
+    _tg_thermal_file="$_tg_coverage_file"
+    [ "$_tg_legacy" -eq 1 ] && _tg_thermal_file="${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.thermal_history"
+    [ "$_tg_legacy" -eq 0 ] && _tg_thermal_file="$_tg_csv"
+    _tg_th_stats=$(awk -F, -v start="$TG_START_FILTER" -v end="$TG_END_FILTER" -v legacy="$_tg_legacy" '
+        $1 ~ /^[0-9]+$/ && $1 >= start && $1 <= end { n++; valid_col=(legacy ? 6 : 26); gap_col=(legacy ? 7 : 22); if ($valid_col == 1) valid++; if ($valid_col == 0) invalid++; if ($gap_col ~ /^[0-9]+$/ && $gap_col > 0) gaps++ }
+        END { printf "%d|%d|%d|%d", n,valid,invalid,gaps }
+    ' "$_tg_thermal_file" 2>/dev/null)
+    _tg_th_samples=${_tg_th_stats%%|*}; _tg_rest=${_tg_th_stats#*|}
+    _tg_th_valid=${_tg_rest%%|*}; _tg_rest=${_tg_rest#*|}
+    _tg_th_invalid=${_tg_rest%%|*}; _tg_th_gaps=${_tg_rest#*|}
+    case "$_tg_th_samples:$_tg_th_valid:$_tg_th_invalid:$_tg_th_gaps" in *[!0-9:]*) _tg_th_samples=0; _tg_th_valid=0; _tg_th_invalid=0; _tg_th_gaps=0 ;; esac
+    _tg_data_source=telemetry_session
+    [ "$_tg_legacy" -eq 1 ] && _tg_data_source=service_history
+    if [ "$_tg_legacy" -eq 1 ]; then
+        _tg_meta_file="${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.history.meta"
+        _tg_meta_boot=$(telemetry_state_value "$_tg_meta_file" boot_id unknown)
+        _tg_meta_ts=$(telemetry_state_value "$_tg_meta_file" updated_ts 0)
+        _tg_revision="${_tg_meta_boot}:${_tg_meta_ts}:${_tg_samples}:${_tg_th_samples}"
+    else
+        _tg_revision="${TG_BOOT_ID}:${TG_LAST_SAMPLE}:${_tg_samples}"
+    fi
     _tg_quality="$TG_QUALITY"
     [ "$_tg_legacy" -eq 1 ] && _tg_quality=legacy_history
     _tg_attr_source=batterystats_start_end
@@ -214,17 +299,17 @@ emit_history() {
     _tg_json_start=$(telemetry_num "$TG_START_FILTER")
     _tg_json_end=$(telemetry_num "$TG_END_FILTER")
     json_headers
-    printf '{"ok":true,"schema":%s,"session_id":"%s","window":{"start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_ratio":%s,"quality":"%s"},"power":[' \
-        "$TELEMETRY_SCHEMA" "$(telemetry_json_escape "$TG_ID")" "$_tg_json_start" "$_tg_json_end" \
-        "$(telemetry_json_escape "$TG_GRANULARITY")" "$_tg_coverage" "$(telemetry_json_escape "$_tg_quality")"
+    printf '{"ok":true,"schema":%s,"session_id":"%s","source":"%s","data_revision":"%s","window":{"start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_ratio":%s,"samples":%s,"valid_samples":%s,"invalid_samples":%s,"gap_count":%s,"quality":"%s"},"sources":{"power":{"raw_samples":%s,"display_samples":%s,"valid_samples":%s,"invalid_samples":%s,"gap_count":%s},"thermal":{"raw_samples":%s,"display_samples":%s,"valid_samples":%s,"invalid_samples":%s,"gap_count":%s}},"power":[' \
+        "$TELEMETRY_SCHEMA" "$(telemetry_json_escape "$TG_ID")" "$(telemetry_json_escape "$_tg_data_source")" "$(telemetry_json_escape "$_tg_revision")" "$_tg_json_start" "$_tg_json_end" \
+        "$(telemetry_json_escape "$TG_GRANULARITY")" "$_tg_coverage" "$_tg_samples" "$_tg_valid" "$_tg_invalid" "$_tg_gaps" "$(telemetry_json_escape "$_tg_quality")" "$_tg_samples" "$_tg_samples" "$_tg_valid" "$_tg_invalid" "$_tg_gaps" "$_tg_th_samples" "$_tg_th_samples" "$_tg_th_valid" "$_tg_th_invalid" "$_tg_th_gaps"
     if [ "$_tg_legacy" -eq 1 ]; then
-        emit_legacy_array "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.power_history" power "$TG_START_FILTER" "$TG_END_FILTER" "$TG_BUCKET_SEC"
+        emit_service_array "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.power_history" power "$TG_START_FILTER" "$TG_END_FILTER" "$TG_BUCKET_SEC"
     else
         emit_history_array "$_tg_csv" power "$TG_START_FILTER" "$TG_END_FILTER" "$TG_BUCKET_SEC"
     fi
     printf '],"thermal":['
     if [ "$_tg_legacy" -eq 1 ]; then
-        emit_legacy_array "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.thermal_history" thermal "$TG_START_FILTER" "$TG_END_FILTER" "$TG_BUCKET_SEC"
+        emit_service_array "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.thermal_history" thermal "$TG_START_FILTER" "$TG_END_FILTER" "$TG_BUCKET_SEC"
     else
         emit_history_array "$_tg_csv" thermal "$TG_START_FILTER" "$TG_END_FILTER" "$TG_BUCKET_SEC"
     fi
@@ -245,10 +330,24 @@ write_session_json() {
         END { if(n && end>start){ c=last-first; if(c<0)c=0; if(c>end-start)c=end-start; printf "%.3f", c/(end-start) } else printf "0" }
     ' "$_tg_file" 2>/dev/null)
     [ -n "$_tg_coverage" ] || _tg_coverage=0
+    _tg_stats=$(awk -F, '
+        $1 ~ /^[0-9]+$/ { n++; if ($27 == 1) valid++; if ($27 == 0) invalid++; if ($22 ~ /^[0-9]+$/ && $22 > 0) gaps++ }
+        END { printf "%d|%d|%d|%d", n,valid,invalid,gaps }
+    ' "$_tg_dir/samples.csv" 2>/dev/null)
+    _tg_samples=${_tg_stats%%|*}; _tg_rest=${_tg_stats#*|}
+    _tg_valid=${_tg_rest%%|*}; _tg_rest=${_tg_rest#*|}
+    _tg_invalid=${_tg_rest%%|*}; _tg_gaps=${_tg_rest#*|}
+    case "$_tg_samples:$_tg_valid:$_tg_invalid:$_tg_gaps" in *[!0-9:]*) _tg_samples=0; _tg_valid=0; _tg_invalid=0; _tg_gaps=0 ;; esac
+    _tg_th_stats=$(awk -F, '{ n++; if ($26 == 1) valid++; if ($26 == 0) invalid++; if ($22 ~ /^[0-9]+$/ && $22 > 0) gaps++ } END { printf "%d|%d|%d|%d", n,valid,invalid,gaps }' "$_tg_dir/samples.csv" 2>/dev/null)
+    _tg_th_samples=${_tg_th_stats%%|*}; _tg_rest=${_tg_th_stats#*|}
+    _tg_th_valid=${_tg_rest%%|*}; _tg_rest=${_tg_rest#*|}
+    _tg_th_invalid=${_tg_rest%%|*}; _tg_th_gaps=${_tg_rest#*|}
+    case "$_tg_th_samples:$_tg_th_valid:$_tg_th_invalid:$_tg_th_gaps" in *[!0-9:]*) _tg_th_samples=0; _tg_th_valid=0; _tg_th_invalid=0; _tg_th_gaps=0 ;; esac
     {
-        printf '{"schema":%s,"session_id":"%s","window":{"start_ts":%s,"end_ts":%s,"coverage_ratio":%s,"quality":"%s"},' \
-            "$TELEMETRY_SCHEMA" "$(telemetry_json_escape "$TG_ID")" "$(telemetry_num "$_tg_start")" \
-            "$(telemetry_num "$_tg_end")" "$_tg_coverage" "$(telemetry_json_escape "$_tg_quality")"
+        printf '{"schema":%s,"session_id":"%s","boot_id":"%s","source":"%s","window":{"start_ts":%s,"end_ts":%s,"coverage_ratio":%s,"samples":%s,"valid_samples":%s,"invalid_samples":%s,"gap_count":%s,"quality":"%s"},' \
+            "$TELEMETRY_SCHEMA" "$(telemetry_json_escape "$TG_ID")" "$(telemetry_json_escape "$TG_BOOT_ID")" "$(telemetry_json_escape "$TG_SOURCE")" "$(telemetry_num "$_tg_start")" \
+            "$(telemetry_num "$_tg_end")" "$_tg_coverage" "$_tg_samples" "$_tg_valid" "$_tg_invalid" "$_tg_gaps" "$(telemetry_json_escape "$_tg_quality")"
+        printf '"sources":{"power":{"raw_samples":%s,"valid_samples":%s,"invalid_samples":%s,"gap_count":%s},"thermal":{"raw_samples":%s,"valid_samples":%s,"invalid_samples":%s,"gap_count":%s}},' "$_tg_samples" "$_tg_valid" "$_tg_invalid" "$_tg_gaps" "$_tg_th_samples" "$_tg_th_valid" "$_tg_th_invalid" "$_tg_th_gaps"
         printf '"sample_csv":"samples.csv","sample_jsonl":"samples.jsonl","units":{"charge_uah":"uAh","current_ua":"uA","voltage_uv":"uV","temperature_mc":"mC","odpm_uws":"uWs"},'
         printf '"batterystats":{"start_snapshot":%s,"end_snapshot":%s,"scope":"independent snapshots; not selected-window attribution"}}\n' \
             "$( [ -s "$_tg_dir/batterystats_start.txt" ] && printf true || printf false )" \
@@ -264,7 +363,7 @@ export_session() {
     # A stop can race the worker's one-time startup. Preserve an honest,
     # exportable empty session instead of failing only because no sample ran.
     if [ ! -e "$TG_DIR/samples.csv" ]; then
-        printf 'ts,screen,charge_status,level_pct,charge_uah,current_ua,voltage_uv,virtual_skin_mc,battery_mc,soc_mc,charging_therm_mc,btmspkr_therm_mc,thermal_status,odpm_modem_uws,odpm_rffe_uws,sample_quality,top_processes\n' > "$TG_DIR/samples.csv" 2>/dev/null || json_error '500 Internal Server Error' 'cannot initialize empty telemetry samples'
+        printf 'ts,screen,charge_status,level_pct,charge_uah,current_ua,voltage_uv,virtual_skin_mc,battery_mc,soc_mc,charging_therm_mc,btmspkr_therm_mc,thermal_status,odpm_modem_uws,odpm_rffe_uws,sample_quality,top_processes,boot_id,session_id,source,valid,gap_sec,quality,uptime_sec,thermal_valid,power_valid\n' > "$TG_DIR/samples.csv" 2>/dev/null || json_error '500 Internal Server Error' 'cannot initialize empty telemetry samples'
     fi
     _tg_now=$(telemetry_now)
     _tg_stamp=$(date '+%Y%m%d_%H%M%S' 2>/dev/null || printf '%s' "$_tg_now")

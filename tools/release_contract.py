@@ -32,7 +32,7 @@ ROOT_FILES: Final = frozenset(
     }
 )
 ROOT_DIRS: Final = frozenset({"META-INF", "config", "payloads", "scripts", "system", "webroot"})
-TEXT_SUFFIXES: Final = frozenset({".css", ".html", ".js", ".json", ".prop", ".sh", ".tsv", ".xml"})
+TEXT_SUFFIXES: Final = frozenset({".awk", ".css", ".html", ".js", ".json", ".prop", ".sh", ".tsv", ".xml"})
 REQUIRED_ENTRIES: Final = frozenset(
     {
         "META-INF/com/google/android/update-binary",
@@ -46,7 +46,11 @@ REQUIRED_ENTRIES: Final = frozenset(
         "webroot/index.html",
         "scripts/telemetry_lib.sh",
         "scripts/telemetry_worker.sh",
+        "scripts/power_rank_collect.sh",
+        "scripts/power_rank_calc.awk",
+        "scripts/power_rank_parse.awk",
         "webroot/cgi-bin/telemetry.sh",
+        "webroot/cgi-bin/power_rank.sh",
         "webroot/cgi-bin/audit_log.sh",
         "scripts/thermal_profile.sh",
         "scripts/thermal_policy_lib.sh",
@@ -188,7 +192,7 @@ def collect_runtime_files(root: Path) -> tuple[RuntimeFile, ...]:
             for path in base.rglob("*"):
                 if not (path.is_file() or path.is_symlink()):
                     continue
-                if directory == "scripts" and path.suffix.lower() != ".sh":
+                if directory == "scripts" and path.suffix.lower() not in {".awk", ".sh"}:
                     continue
                 candidates.append(path)
     files: list[RuntimeFile] = []

@@ -50,17 +50,22 @@ case "$QUERY_STRING" in *trend=1*)
     _trend_cutoff=$(( $(date +%s) - _trend_minutes * 60 ))
     if [ -s "$POWER_HISTORY" ]; then
         awk -F, -v cutoff="$_trend_cutoff" -v now="$(date +%s)" '
-            BEGIN { printf "{\"points\":["; first=1; count=0 }
+            BEGIN { printf "{\"points\":["; first=1; count=0; valid=0; invalid=0; gaps=0; first_ts=0; last_ts=0 }
             $1 ~ /^[0-9]+$/ && $1 + 0 >= cutoff && $1 + 0 <= now {
                 if (!first) printf ","; first=0
                 status=$4; gsub(/[^A-Za-z ]/, "", status)
-                printf "[%d,%d,%d,\"%s\"]", $1 + 0, $2 + 0, $3 + 0, status
+                ok=($8 == 1 ? "true" : "false"); quality=($10 != "" ? $10 : "legacy_history")
+                gap=($9 ~ /^[0-9]+$/ ? $9 + 0 : 0)
+                if ($8 == 1) valid++; else invalid++
+                if (gap > 0) gaps++
+                if (!first_ts) first_ts=$1+0; last_ts=$1+0
+                printf "[%d,%d,%d,\"%s\",%s,%d,\"%s\",\"%s\",\"%s\"]", $1 + 0, $2 + 0, $3 + 0, status, ok, gap, quality, ($5 != "" ? $5 : "unknown"), ($6 != "" ? $6 : "")
                 count++
             }
-            END { printf "],\"count\":%d,\"source\":\"module_power_history\"}\n", count }
+            END { span=last_ts-first_ts; ratio=0; if (now > cutoff) ratio=span/(now-cutoff); if (ratio>1) ratio=1; printf "],\"count\":%d,\"valid_samples\":%d,\"invalid_samples\":%d,\"gap_count\":%d,\"coverage_ratio\":%.3f,\"quality\":\"%s\",\"source\":\"module_power_history\"}\n", count,valid,invalid,gaps,ratio,(invalid||gaps ? "partial" : "complete") }
         ' "$POWER_HISTORY"
     else
-        printf '{"points":[],"count":0,"source":"module_power_history"}\n'
+        printf '{"points":[],"count":0,"valid_samples":0,"invalid_samples":0,"gap_count":0,"coverage_ratio":0,"quality":"no_data","source":"module_power_history"}\n'
     fi
     exit 0
     ;;
@@ -218,7 +223,7 @@ build_power_window_json() {
             prev_charge_valid = 0
             expected_elapsed = minutes * 60
         }
-        $1 ~ /^[0-9]+$/ && $1 + 0 < start {
+        $1 ~ /^[0-9]+$/ && ($8 == "" || $8 == 1) && $1 + 0 < start {
             baseline_available = 1
             baseline_ts = $1 + 0
             baseline_level = $2 + 0
@@ -227,7 +232,7 @@ build_power_window_json() {
             baseline_charge_valid = ($3 ~ /^-?[0-9]+$/ && baseline_charge > 0)
             next
         }
-        $1 ~ /^[0-9]+$/ && $1 + 0 >= start && $1 + 0 <= now {
+        $1 ~ /^[0-9]+$/ && ($8 == "" || $8 == 1) && $1 + 0 >= start && $1 + 0 <= now {
             ts = $1 + 0
             level = $2 + 0
             charge = $3 + 0
@@ -640,7 +645,7 @@ if [ -s "$POWER_HISTORY" ]; then
         cur_charge_valid = (cur_charge ~ /^-?[0-9]+$/ && cur_charge + 0 > 0)
         prev_charge_valid = 0
     }
-    $1 + 0 >= start {
+    $1 + 0 >= start && ($8 == "" || $8 == 1) {
         ts = $1 + 0
         level = $2 + 0
         charge = $3 + 0

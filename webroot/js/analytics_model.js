@@ -6,6 +6,9 @@
     { id: '30', minutes: 30, label: '30 分钟', shortLabel: '30 分' },
     { id: '60', minutes: 60, label: '60 分钟', shortLabel: '60 分' },
     { id: '720', minutes: 720, label: '12 小时', shortLabel: '12 小时' },
+    { id: '1440', minutes: 1440, label: '1 天', shortLabel: '1 天' },
+    { id: '4320', minutes: 4320, label: '3 天', shortLabel: '3 天' },
+    { id: '10080', minutes: 10080, label: '7 天', shortLabel: '7 天' },
     { id: 'custom', minutes: 0, label: '自定义', shortLabel: '自定义' }
   ]);
 
@@ -21,7 +24,12 @@
     (Array.isArray(points) ? points : []).forEach((point) => {
       if (!point || typeof point !== 'object') return;
       const ts = finite(point.ts);
-      if (ts !== null && ts > 0) byTime.set(ts, { ...point, ts });
+      if (ts === null || ts <= 0) return;
+      // A timestamp alone is not a sample identity: the same second can occur
+      // in two sessions after a reboot or service restart. Keep those records
+      // separate so a cross-session window cannot silently lose evidence.
+      const identity = [point.bootId || point.boot_id || '', point.sessionId || point.session_id || '', ts].join('|');
+      byTime.set(identity, { ...point, ts });
     });
     return Array.from(byTime.values()).sort((a, b) => a.ts - b.ts);
   };
@@ -33,23 +41,34 @@
     const number = finite(value);
     return number !== null && number >= 0 ? number : null;
   };
+  const sameSession = (left, right) => {
+    const leftId = [left?.bootId, left?.sessionId].filter(Boolean).join('|');
+    const rightId = [right?.bootId, right?.sessionId].filter(Boolean).join('|');
+    return !leftId || !rightId || leftId === rightId;
+  };
 
   function rangeFor(id) {
     return RANGES.find((range) => range.id === String(id)) || RANGES[1];
   }
 
   function normalizeThermal(payload) {
+    const envelope = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
     const source = Array.isArray(payload) ? payload : (payload?.points || payload?.thermal);
+    const defaultBootId = envelope.boot_id || envelope.bootId || '';
+    const defaultSessionId = envelope.session_id || envelope.sessionId || '';
+    const defaultSource = envelope.source || 'thermal';
     const mapped = (Array.isArray(source) ? source : []).map((point) => {
       if (Array.isArray(point)) {
         const raw = finite(point[1]);
-        return { ts: point[0], tempC: raw === null ? null : validTemperature(raw / 1000) };
+        return { ts: point[0], tempC: raw === null ? null : validTemperature(raw / 1000), bootId: defaultBootId, sessionId: defaultSessionId, source: defaultSource, valid: raw !== null };
       }
       if (!point || typeof point !== 'object') return null;
       const hasMc = 'virtual_skin_mc' in point || 'temp_mc' in point;
       const raw = finite('virtual_skin_mc' in point ? point.virtual_skin_mc : 'temp_mc' in point ? point.temp_mc : point.temp ?? point.value);
       const value = raw === null ? null : (hasMc || raw > 200 ? raw / 1000 : raw);
-      return { ts: point.ts, tempC: validTemperature(value), screen: point.screen || 'unknown' };
+      const fieldValid = point.thermal_valid === false || point.thermal_valid === 0 ? false : point.thermal_valid === true || point.thermal_valid === 1 ? true : null;
+      const valid = fieldValid === false || point.valid === false || point.valid === 0 ? false : fieldValid === true ? validTemperature(value) !== null : validTemperature(value) !== null;
+      return { ts: point.ts, tempC: valid ? validTemperature(value) : null, screen: point.screen || 'unknown', bootId: point.boot_id || point.bootId || defaultBootId, sessionId: point.session_id || point.sessionId || defaultSessionId, source: point.source || defaultSource, valid, quality: String(point.quality || point.sample_quality || '') };
     });
     // Keep timestamped missing readings: filtering them out joins the valid
     // points on either side and overstates threshold duration and coverage.
@@ -57,20 +76,32 @@
   }
 
   function normalizePower(payload) {
+    const envelope = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
     const source = Array.isArray(payload) ? payload : payload?.power;
+    const defaultBootId = envelope.boot_id || envelope.bootId || '';
+    const defaultSessionId = envelope.session_id || envelope.sessionId || '';
+    const defaultSource = envelope.source || 'power';
     const mapped = (Array.isArray(source) ? source : []).map((point) => {
-      if (Array.isArray(point)) return { ts: point[0], screen: 'unknown', levelPct: finite(point[1]), chargeUah: nonnegative(point[2]), currentUa: null, voltageUv: null, status: String(point[3] || '') };
+      if (Array.isArray(point)) return { ts: point[0], screen: 'unknown', levelPct: finite(point[1]), chargeUah: nonnegative(point[2]), currentUa: null, voltageUv: null, status: String(point[3] || ''), bootId: defaultBootId, sessionId: defaultSessionId, source: defaultSource, valid: finite(point[2]) !== null };
       if (!point || typeof point !== 'object') return null;
       const voltage = finite(point.voltage_uv);
+      const chargeUah = nonnegative('charge_uah' in point ? point.charge_uah : point.charge);
+      const currentUa = finite(point.current_ua);
+      const fieldValid = point.power_valid === false || point.power_valid === 0 ? false : point.power_valid === true || point.power_valid === 1 ? true : null;
+      const valid = fieldValid === false || point.valid === false || point.valid === 0 ? false : fieldValid === true ? (chargeUah !== null || (currentUa !== null && voltage !== null && voltage > 0)) : (chargeUah !== null || (currentUa !== null && voltage !== null && voltage > 0));
       return {
         ts: point.ts,
         screen: point.screen || 'unknown',
         levelPct: finite(point.level_pct ?? point.level),
-        chargeUah: nonnegative('charge_uah' in point ? point.charge_uah : point.charge),
-        currentUa: finite(point.current_ua),
+        chargeUah,
+        currentUa,
         voltageUv: voltage !== null && voltage > 0 ? voltage : null,
         status: String(point.status || point.charge_status || ''),
-        quality: String(point.quality || point.sample_quality || '')
+        quality: String(point.quality || point.sample_quality || ''),
+        bootId: point.boot_id || point.bootId || defaultBootId,
+        sessionId: point.session_id || point.sessionId || defaultSessionId,
+        source: point.source || defaultSource,
+        valid
       };
     });
     return sortPoints(mapped);
@@ -94,7 +125,9 @@
     // returns one actual reading per requested bucket, not a bucket average.
     const bucket = options.granularity === 'hour' ? 3600 : options.granularity === 'minute' ? 60 : 0;
     const interval = previous?.screen === 'on' ? 60 : previous?.screen === 'off' ? 600 : typical;
-    return Math.max(source === 'power' ? 180 : 90, Math.max(bucket, interval) * 4);
+    // One missing bucket must become an explicit gap. A four-bucket tolerance
+    // hid hours of absent data behind a seemingly continuous trace.
+    return Math.max(source === 'power' ? 180 : 90, Math.max(bucket, interval) * 2);
   }
 
   function windowFor(points, options) {
@@ -135,12 +168,12 @@
       const previous = sorted[index - 1];
       if (previous) {
         const delta = point.ts - previous.ts;
-        const continuous = delta <= gapThreshold(previous, 'thermal', typical, options) && previous.tempC !== null && point.tempC !== null;
+        const continuous = sameSession(previous, point) && delta <= gapThreshold(previous, 'thermal', typical, options) && previous.tempC !== null && point.tempC !== null;
         if (continuous) {
           coverageSec += delta;
           if (previous.tempC >= thresholdValue) thresholdSec += delta;
         } else {
-          addGap(gapRanges, previous.ts, point.ts, 'missing');
+          addGap(gapRanges, previous.ts, point.ts, sameSession(previous, point) ? 'missing' : 'session_changed');
           if (run.length) runs.push(run);
           run = [];
         }
@@ -149,11 +182,13 @@
     });
     if (run.length) runs.push(run);
     boundaryGaps(sorted, window, gapRanges);
+    const validCount = valid.length;
+    const missingCount = Math.max(0, sorted.length - validCount);
     return {
       ...window, points: sorted, runs, gapRanges,
       gaps: gapRanges.map((gap) => [{ ts: gap.startTs }, { ts: gap.endTs }]),
       chartSegments: runs.map((segment) => segment.map((point) => ({ ts: point.ts, value: point.tempC }))),
-      seriesUnit: '°C', count: valid.length, sampleCount: sorted.length,
+      seriesUnit: '°C', count: validCount, validCount, missingCount, sampleCount: sorted.length,
       gapThresholdSec: gapThreshold(null, 'thermal', typical, options),
       coverageSec, unknownSec: Math.max(0, window.elapsedSec - coverageSec),
       lastSampleTs: valid[valid.length - 1]?.ts ?? null,
@@ -162,6 +197,7 @@
       max: values.length ? Math.max(...values) : null,
       avg: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null,
       thresholdSec,
+      coveragePct: window.elapsedSec > 0 ? Math.min(100, (coverageSec / window.elapsedSec) * 100) : 0,
       quality: !values.length ? 'no_data' : coverageSec > 0 ? (gapRanges.length ? 'partial' : 'good') : 'insufficient'
     };
   }
@@ -177,14 +213,15 @@
     let measuredSec = 0;
     let nonDischargeSec = 0;
     let resetDetected = /reset|mismatch/i.test(String(options.quality || '')) || sorted.some((point) => /reset|mismatch/i.test(String(point.quality || '')));
-    const hasCounter = (point) => Number.isFinite(point.chargeUah) && point.chargeUah >= 0;
-    const hasCurrent = (point) => Number.isFinite(point.currentUa) && Number.isFinite(point.voltageUv) && point.voltageUv > 0;
+    const hasCounter = (point) => point.valid !== false && Number.isFinite(point.chargeUah) && point.chargeUah >= 0;
+    const hasCurrent = (point) => point.valid !== false && Number.isFinite(point.currentUa) && Number.isFinite(point.voltageUv) && point.voltageUv > 0;
     for (let i = 1; i < sorted.length; i += 1) {
       const previous = sorted[i - 1];
       const point = sorted[i];
       const deltaSec = point.ts - previous.ts;
       const interval = { startTs: previous.ts, endTs: point.ts, counterRate: null, mw: null, reason: '' };
       intervals.push(interval);
+      if (!sameSession(previous, point)) { interval.reason = 'session_changed'; continue; }
       if (deltaSec > gapThreshold(previous, 'power', typical, options)) { interval.reason = 'missing'; continue; }
       const beforeStatus = String(previous.status || '').trim().toLowerCase();
       const afterStatus = String(point.status || '').trim().toLowerCase();
@@ -241,15 +278,18 @@
     });
     if (segment.length) chartSegments.push(segment);
     boundaryGaps(sorted, window, gapRanges);
-    const count = sorted.filter((point) => hasCounter(point) || hasCurrent(point)).length;
+    const count = sorted.filter((point) => point.valid !== false && (hasCounter(point) || hasCurrent(point))).length;
+    const validCount = count;
+    const missingCount = Math.max(0, sorted.length - validCount);
     return {
       ...window, points: sorted, series, seriesUnit, chartSegments, gapRanges,
       gaps: gapRanges.map((gap) => [{ ts: gap.startTs }, { ts: gap.endTs }]),
       gapThresholdSec: gapThreshold(null, 'power', typical, options),
-      count, sampleCount: sorted.length, coverageSec, nonDischargeSec,
+      count, validCount, missingCount, sampleCount: sorted.length, coverageSec, nonDischargeSec,
       unknownSec: Math.max(0, window.elapsedSec - coverageSec - nonDischargeSec),
       consumedMah: !resetDetected && activeSec > 0 ? consumedUah / 1000 : null,
       avgMahPerHour, avgMw, activeSec: resetDetected ? 0 : activeSec, measuredSec,
+      coveragePct: window.elapsedSec > 0 ? Math.min(100, (coverageSec / window.elapsedSec) * 100) : 0,
       quality: resetDetected ? 'reset_or_mismatch' : !count ? 'no_data' : coverageSec > 0 ? (gapRanges.length ? 'partial' : 'good') : 'insufficient'
     };
   }

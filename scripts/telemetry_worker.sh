@@ -20,6 +20,18 @@ _tw_last_sample=0
 _tw_quality=complete
 _tw_reset_count=0
 _tw_prev_charge=""
+_tw_boot_id=$(telemetry_boot_id)
+_tw_source=telemetry_worker
+_tw_valid_samples=0
+_tw_invalid_samples=0
+_tw_gap_count=0
+_tw_first_sample=0
+_tw_prev_sample=0
+_tw_prev_uptime=0
+_tw_prev_screen=unknown
+_tw_prev_charge_status=unknown
+_tw_interval_on=60
+_tw_interval_off=600
 
 telemetry_worker_update() {
     _tw_status="$1"
@@ -34,7 +46,10 @@ telemetry_worker_update() {
     telemetry_state_write "$_tw_id" "$_tw_status" "$_tw_start_ts" "$_tw_end" \
         "$_tw_duration_state" "$_tw_max_state" "$_tw_pid" "$_tw_pid_start" \
         "$_tw_reason" "$_tw_samples" "$_tw_bytes" "$_tw_last_sample" \
-        "$_tw_quality" "$_tw_reset_count" "$_tw_stop" "$_tw_dir"
+        "$_tw_quality" "$_tw_reset_count" "$_tw_stop" "$_tw_dir" \
+        "$_tw_boot_id" "$_tw_source" "$_tw_valid_samples" "$_tw_invalid_samples" \
+        "$_tw_gap_count" "$_tw_first_sample" "$_tw_interval_on" "$_tw_interval_off" \
+        "$_tw_prev_screen" "$_tw_prev_charge_status"
 }
 
 telemetry_worker_finish() {
@@ -68,7 +83,7 @@ _tw_csv=$(telemetry_sample_file "$_tw_dir")
 _tw_jsonl=$(telemetry_jsonl_file "$_tw_dir")
 [ ! -e "$_tw_csv" ] || exit 4
 {
-    printf 'ts,screen,charge_status,level_pct,charge_uah,current_ua,voltage_uv,virtual_skin_mc,battery_mc,soc_mc,charging_therm_mc,btmspkr_therm_mc,thermal_status,odpm_modem_uws,odpm_rffe_uws,sample_quality,top_processes\n'
+    printf 'ts,screen,charge_status,level_pct,charge_uah,current_ua,voltage_uv,virtual_skin_mc,battery_mc,soc_mc,charging_therm_mc,btmspkr_therm_mc,thermal_status,odpm_modem_uws,odpm_rffe_uws,sample_quality,top_processes,boot_id,session_id,source,valid,gap_sec,quality,uptime_sec,thermal_valid,power_valid\n'
 } > "$_tw_csv" 2>/dev/null || exit 4
 : > "$_tw_jsonl" 2>/dev/null || exit 4
 chmod 600 "$_tw_csv" "$_tw_jsonl" 2>/dev/null
@@ -100,9 +115,40 @@ while :; do
     telemetry_collect_top
 
     _tw_sample_quality=ok
+    _tw_valid=1
+    _tw_gap_sec=0
+    _tw_quality_field=ok
+    _tw_uptime=$(telemetry_uptime)
+    _tw_expected_interval=$_tw_interval_off
+    [ "$TL_SCREEN" = on ] && _tw_expected_interval=$_tw_interval_on
+    if [ "$_tw_prev_uptime" -gt 0 ] && [ "$_tw_uptime" -ge "$_tw_prev_uptime" ] 2>/dev/null; then
+        _tw_delta=$((_tw_uptime - _tw_prev_uptime))
+        if [ "$_tw_delta" -gt $((_tw_expected_interval * 2)) ] 2>/dev/null; then
+            _tw_gap_sec=$((_tw_delta - _tw_expected_interval))
+            _tw_gap_count=$((_tw_gap_count + 1))
+            _tw_quality_field=gap
+            _tw_quality=partial
+        fi
+    fi
+    _tw_power_valid=0
+    if [ -n "$TL_CHARGE" ] || { [ -n "$TL_CURRENT" ] && [ -n "$TL_VOLTAGE" ]; }; then _tw_power_valid=1; fi
+    _tw_thermal_valid=0
+    if [ -n "$TL_SKIN" ] || [ -n "$TL_BATTERY" ] || [ -n "$TL_SOC" ] || [ -n "$TL_CHARGING" ] || [ -n "$TL_SPEAKER" ]; then _tw_thermal_valid=1; fi
+    _tw_has_value=0
+    if [ "$_tw_power_valid" -eq 1 ] || [ "$_tw_thermal_valid" -eq 1 ]; then _tw_has_value=1; fi
+    if [ "$_tw_has_value" -ne 1 ]; then
+        _tw_valid=0
+        _tw_invalid_samples=$((_tw_invalid_samples + 1))
+        _tw_sample_quality=missing_source
+        _tw_quality_field=missing_source
+        _tw_quality=partial
+    else
+        _tw_valid_samples=$((_tw_valid_samples + 1))
+    fi
     if [ -z "$TL_CHARGE" ]; then
         _tw_sample_quality=missing_charge_counter
         _tw_quality=partial
+        [ "$_tw_quality_field" = ok ] && _tw_quality_field=missing_charge_counter
     elif [ -n "$_tw_prev_charge" ]; then
         _tw_delta=$((TL_CHARGE - _tw_prev_charge))
         _tw_abs=$_tw_delta
@@ -118,7 +164,7 @@ while :; do
     _tw_screen=$(telemetry_sanitize_field "$TL_SCREEN")
     _tw_status_value=$(telemetry_sanitize_field "$TL_STATUS")
     _tw_top=$(telemetry_sanitize_field "$TL_TOP")
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "$_tw_now" "$_tw_screen" "$_tw_status_value" "$(telemetry_num "$TL_LEVEL" | sed 's/null//')" \
         "$(telemetry_num "$TL_CHARGE" | sed 's/null//')" "$(telemetry_num "$TL_CURRENT" | sed 's/null//')" \
         "$(telemetry_num "$TL_VOLTAGE" | sed 's/null//')" "$(telemetry_num "$TL_SKIN" | sed 's/null//')" \
@@ -126,6 +172,9 @@ while :; do
         "$(telemetry_num "$TL_CHARGING" | sed 's/null//')" "$(telemetry_num "$TL_SPEAKER" | sed 's/null//')" \
         "$(telemetry_num "$TL_THERMAL_STATUS" | sed 's/null//')" "$(telemetry_num "$TL_ODPM_MODEM" | sed 's/null//')" \
         "$(telemetry_num "$TL_ODPM_RFFE" | sed 's/null//')" "$_tw_sample_quality" "$_tw_top" \
+        "$(telemetry_sanitize_field "$_tw_boot_id")" "$(telemetry_sanitize_field "$_tw_id")" \
+        "$_tw_source" "$_tw_valid" "$_tw_gap_sec" "$_tw_quality_field" "$_tw_uptime" \
+        "$_tw_thermal_valid" "$_tw_power_valid" \
         >> "$_tw_csv" 2>/dev/null || { telemetry_worker_finish failed write_csv; break; }
 
     _tw_json_screen=$(telemetry_json_escape "$_tw_screen")
@@ -139,13 +188,22 @@ while :; do
         printf '"virtual_skin_mc":%s,"battery_mc":%s,"soc_mc":%s,"charging_therm_mc":%s,"btmspkr_therm_mc":%s,"thermal_status":%s,' \
             "$(telemetry_num "$TL_SKIN")" "$(telemetry_num "$TL_BATTERY")" "$(telemetry_num "$TL_SOC")" \
             "$(telemetry_num "$TL_CHARGING")" "$(telemetry_num "$TL_SPEAKER")" "$(telemetry_num "$TL_THERMAL_STATUS")"
-        printf '"odpm_modem_uws":%s,"odpm_rffe_uws":%s,"sample_quality":"%s","top_processes":"%s"}\n' \
+        printf '"odpm_modem_uws":%s,"odpm_rffe_uws":%s,"sample_quality":"%s","top_processes":"%s",' \
             "$(telemetry_num "$TL_ODPM_MODEM")" "$(telemetry_num "$TL_ODPM_RFFE")" "$_tw_json_quality" "$_tw_json_top"
+        printf '"boot_id":"%s","session_id":"%s","source":"%s","valid":%s,"gap_sec":%s,"quality":"%s","uptime_sec":%s,"thermal_valid":%s,"power_valid":%s}\n' \
+            "$(telemetry_json_escape "$_tw_boot_id")" "$(telemetry_json_escape "$_tw_id")" \
+            "$(telemetry_json_escape "$_tw_source")" "$_tw_valid" "$_tw_gap_sec" \
+            "$(telemetry_json_escape "$_tw_quality_field")" "$_tw_uptime" "$_tw_thermal_valid" "$_tw_power_valid"
     } >> "$_tw_jsonl" 2>/dev/null || { telemetry_worker_finish failed write_json; break; }
 
     _tw_previous_last_sample="$_tw_last_sample"
     _tw_samples=$((_tw_samples + 1))
     _tw_last_sample="$_tw_now"
+    [ "$_tw_first_sample" -gt 0 ] 2>/dev/null || _tw_first_sample="$_tw_now"
+    _tw_prev_sample="$_tw_now"
+    _tw_prev_uptime="$_tw_uptime"
+    _tw_prev_screen="$_tw_screen"
+    _tw_prev_charge_status="$_tw_status_value"
     _tw_bytes=$(wc -c < "$_tw_csv" 2>/dev/null | tr -d ' \r\n')
     _tw_json_bytes=$(wc -c < "$_tw_jsonl" 2>/dev/null | tr -d ' \r\n')
     case "$_tw_bytes:$_tw_json_bytes" in *[!0-9:]*) _tw_bytes=0 ;; *) _tw_bytes=$((_tw_bytes + _tw_json_bytes)) ;; esac
@@ -160,6 +218,15 @@ while :; do
             && mv "$_tw_trim_json" "$_tw_jsonl" 2>/dev/null; then
             _tw_samples=$((_tw_samples - 1))
             [ "$_tw_samples" -ge 0 ] 2>/dev/null || _tw_samples=0
+            if [ "$_tw_valid" -eq 1 ] 2>/dev/null; then
+                _tw_valid_samples=$((_tw_valid_samples - 1))
+                [ "$_tw_valid_samples" -ge 0 ] 2>/dev/null || _tw_valid_samples=0
+            else
+                _tw_invalid_samples=$((_tw_invalid_samples - 1))
+                [ "$_tw_invalid_samples" -ge 0 ] 2>/dev/null || _tw_invalid_samples=0
+            fi
+            [ "$_tw_gap_sec" -gt 0 ] 2>/dev/null && _tw_gap_count=$((_tw_gap_count - 1))
+            [ "$_tw_gap_count" -ge 0 ] 2>/dev/null || _tw_gap_count=0
             _tw_last_sample="$_tw_previous_last_sample"
             _tw_bytes=$(wc -c < "$_tw_csv" 2>/dev/null | tr -d ' \r\n')
             _tw_json_bytes=$(wc -c < "$_tw_jsonl" 2>/dev/null | tr -d ' \r\n')

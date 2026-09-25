@@ -2,8 +2,10 @@
 (() => {
   const state = {
     open: false, source: 'thermal', rangeId: '30', customDays: 1, customGranularity: 'hour',
-    view: null, cache: new Map(), requestId: 0, request: null, timer: null,
-    summary: null, observer: null, suspended: false
+    view: null, cache: new Map(), rankCache: new Map(), requestId: 0, request: null,
+    overviewRequest: null, rankRequest: null, rankGeneration: 0, timer: null,
+    summary: null, ranking: { status: 'idle' }, rankRefreshRequested: false,
+    historyFingerprint: '', activeKey: '', selectedBounds: null, lastCaptureStatus: '', detailsDue: true, lastDetailsAt: 0, observer: null, suspended: false
   };
   const core = () => requireFeature('core');
   const apiFetch = (...args) => core().apiFetch(...args);
@@ -16,7 +18,7 @@
   const endpoint = () => (globalThis.API && API.telemetry) || '/cgi-bin/telemetry.sh';
 
   function key() {
-    return `${state.source}:${state.rangeId}:${state.customDays}:${state.customGranularity}`;
+    return `${state.source}:${state.rangeId}:${state.customDays}:${state.customGranularity}:${effectiveGranularity()}`;
   }
   function query(path, params) {
     const search = new URLSearchParams(params);
@@ -29,24 +31,33 @@
     }
     const minutes = model().rangeFor(state.rangeId).minutes;
     const endTs = Math.floor(Date.now() / 1000);
-    return { startTs: endTs - minutes * 60, endTs, granularity: '' };
+    return { startTs: endTs - minutes * 60, endTs, granularity: effectiveGranularity() };
+  }
+  function effectiveGranularity() {
+    if (state.rangeId === 'custom') return state.customGranularity;
+    return model().rangeFor(state.rangeId).minutes <= 60 ? 'minute' : 'hour';
+  }
+  function cancelSlot(slot, reason) {
+    const controller = state[slot];
+    if (controller) controller.abort(reason);
+    state[slot] = null;
   }
   function abort(reason = 'analytics-replaced') {
     state.requestId += 1;
-    if (state.request) state.request.abort(reason);
-    state.request = null;
+    cancelSlot('request', reason); cancelSlot('overviewRequest', reason); cancelSlot('rankRequest', reason);
+    state.rankGeneration += 1;
     capture().abort(reason);
     if (state.timer) { clearTimeout(state.timer); state.timer = null; }
   }
-  async function request(path, timeoutMs = 8000) {
+  async function request(path, timeoutMs = 8000, slot = 'request') {
     const requestId = state.requestId;
     const controller = new AbortController();
-    state.request = controller;
+    cancelSlot(slot, 'request-replaced'); state[slot] = controller;
     try {
       return await apiFetch(path, { timeoutMs, controller });
     } finally {
-      if (state.request === controller) state.request = null;
-      if (requestId !== state.requestId) return null;
+      if (state[slot] === controller) state[slot] = null;
+      if (slot === 'request' && requestId !== state.requestId) return null;
     }
   }
   function ensureView() {
@@ -68,7 +79,7 @@
           } else {
             const data = await capture().start(duration); if (data?.session) appendLog(`低功耗记录已开始（${duration ? `${duration} 秒` : '手动结束'}）`, 'ok');
           }
-          await capture().status(); updateView();
+          await capture().status(); state.rankRefreshRequested = active?.status === 'running'; state.detailsDue = true; load(true, active?.status === 'running');
         } catch (err) { showToast(`记录操作失败：${err.message || err}`); appendLog(String(err), 'err'); }
         button.disabled = false;
       },
@@ -79,54 +90,158 @@
         catch (err) { showToast(`记录导出失败：${err.message || err}`); appendLog(String(err), 'err'); }
         button.disabled = false;
       },
+      onRefresh: async (button) => { button.disabled = true; state.rankRefreshRequested = true; state.detailsDue = true; await load(true, true); button.disabled = false; },
       onExport: (button) => exportRange(button)
     });
     return state.view;
   }
-  function updateView() {
+  function updateView(details = false) {
     if (!state.view) return;
     const session = capture().getSession();
     const cached = state.cache.get(key());
     if (!cached) return;
-    viewFeature().update(state.view, { source: state.source, rangeId: state.rangeId, stats: cached.stats, status: cached.status, summary: state.summary, capture: { session } });
+    const refreshDetails = details || state.detailsDue || !state.lastDetailsAt || (Date.now() - state.lastDetailsAt) >= 120000;
+    viewFeature().update(state.view, { source: state.source, rangeId: state.rangeId, stats: cached.stats, status: cached.status, summary: state.summary, ranking: state.ranking, details: refreshDetails, capture: { session } });
+    if (refreshDetails) { state.detailsDue = false; state.lastDetailsAt = Date.now(); }
   }
   function normalizeResponse(data, bounds) {
     const source = state.source;
-    const options = { ...bounds, granularity: data?.window?.granularity || bounds.granularity, quality: data?.window?.quality || '' };
+    const windowMeta = data?.window || {};
+    const sourceMeta = data?.meta || data?.sources?.[source] || {};
+    const meta = { ...windowMeta, ...sourceMeta };
+    const options = { ...bounds, granularity: meta.granularity || bounds.granularity, quality: meta.quality || '' };
+    const annotate = (stats) => {
+      stats.backendSampleCount = Number.isFinite(Number(meta.raw_samples ?? meta.samples ?? meta.sample_count)) ? Number(meta.raw_samples ?? meta.samples ?? meta.sample_count) : null;
+      stats.backendValidSamples = Number.isFinite(Number(meta.valid_samples)) ? Number(meta.valid_samples) : null;
+      stats.backendInvalidSamples = Number.isFinite(Number(meta.invalid_samples)) ? Number(meta.invalid_samples) : null;
+      stats.backendGapCount = Number.isFinite(Number(meta.gap_count ?? meta.gaps)) ? Number(meta.gap_count ?? meta.gaps) : null;
+      const coverage = Number(meta.coverage_ratio ?? meta.coverage);
+      stats.backendCoverageRatio = Number.isFinite(coverage) ? (coverage > 1 ? coverage / 100 : coverage) : null;
+      stats.backendQuality = String(meta.quality || '');
+      stats.dataRevision = String(data?.data_revision ?? data?.history_revision ?? meta.data_revision ?? meta.history_revision ?? '');
+      return stats;
+    };
     if (source === 'thermal') {
       const points = model().clip(model().normalizeThermal(data), bounds.startTs, bounds.endTs);
       const stats = model().temperatureStats(points, options);
-      return { stats, status: stats.count < 2 ? '温度记录不足；亮屏采样才会写入温度历史。' : '' };
+      return { stats: annotate(stats), status: stats.count < 2 ? '温度记录不足；亮屏采样才会写入温度历史。' : '' };
     }
     const points = model().clip(model().normalizePower(data), bounds.startTs, bounds.endTs);
     const stats = model().powerStats(points, options);
-    return { stats, status: stats.count < 2 || !stats.series.length ? '当前区间没有足够的有效放电数据；缺测不会补零。' : '' };
+    return { stats: annotate(stats), status: stats.count < 2 || !stats.series.length ? '当前区间没有足够的有效放电数据；缺测不会补零。' : '' };
   }
   async function fetchSource(bounds) {
     const params = { action: 'history' };
     if (bounds.startTs !== null && Number.isFinite(Number(bounds.startTs))) params.start_ts = Math.floor(bounds.startTs);
     if (bounds.endTs !== null && Number.isFinite(Number(bounds.endTs))) params.end_ts = Math.floor(bounds.endTs);
-    const session = capture().getSession(); if (session?.id) params.session_id = session.id;
-    return capture().history({ sessionId: params.session_id, startTs: params.start_ts, endTs: params.end_ts, granularity: bounds.granularity });
+    // The main history sheet represents the entire selected time range. A
+    // recent manual capture must not hide service history from the same range.
+    return capture().history({ startTs: params.start_ts, endTs: params.end_ts, granularity: bounds.granularity });
   }
-  async function fetchEnergySummary() {
+  function rankKey(bounds, stats) {
+    const windowId = state.rangeId === 'custom' ? `custom-${state.customDays}d` : `range-${state.rangeId}`;
+    const step = bounds.granularity === 'hour' ? 3600 : bounds.granularity === 'minute' ? 60 : 1;
+    const start = Math.floor(Number(bounds.startTs) / step) * step;
+    const end = Math.floor(Number(bounds.endTs) / step) * step;
+    return `${windowId}|${start}|${end}|${bounds.granularity || 'raw'}`;
+  }
+  function rankWindow(bounds, stats) {
+    const windowLabel = state.rangeId === 'custom' ? `最近 ${state.customDays} 天` : model().rangeFor(state.rangeId).label;
+    const ratio = Number.isFinite(Number(stats?.backendCoverageRatio)) ? Number(stats.backendCoverageRatio) * 100 : stats?.coveragePct;
+    return { label: windowLabel, granularity: bounds.granularity, coveragePct: ratio, validSamples: stats?.backendValidSamples ?? stats?.validCount ?? stats?.count };
+  }
+  async function fetchEnergySummary(bounds, stats, forceRank = false, contextKey = state.activeKey) {
     if (state.source !== 'power') return;
     try {
-      const fast = await request(API.energyFast, 4000); if (fast) { state.summary = fast; updateView(); }
-      const full = await request(API.energy, 16000); if (full) { state.summary = full; updateView(); }
-    } catch (_) { /* trend remains usable when system batterystats is slow */ }
+      const fast = await request(API.energyFast, 4000, 'overviewRequest');
+      if (!state.open || !isActive() || state.activeKey !== contextKey || state.source !== 'power') return;
+      if (fast) { state.summary = fast; updateView(); }
+    } catch (_) {
+      // The real-time card remains usable when the fast summary is unavailable.
+    }
+    const cacheKey = rankKey(bounds, stats);
+    const cached = state.rankCache.get(cacheKey);
+    const window = rankWindow(bounds, stats);
+    if (!state.open || !isActive() || state.activeKey !== contextKey || state.source !== 'power') return;
+    if (!forceRank && cached) {
+      state.ranking = { ...cached, window, updatedAt: cached.updatedAt || Date.now() };
+      updateView();
+      return;
+    }
+    cancelSlot('rankRequest', 'ranking-replaced');
+    const generation = ++state.rankGeneration;
+    state.ranking = { status: 'loading', window, cacheKey };
+    updateView();
+    try {
+      const full = await request(query(API.powerRank || '/cgi-bin/power_rank.sh', { start_ts: bounds.startTs, end_ts: bounds.endTs, granularity: bounds.granularity }), 16000, 'rankRequest');
+      if (!state.open || !isActive() || generation !== state.rankGeneration || state.source !== 'power' || !full) return;
+      if (full.ok !== true) throw new Error(full.error || full.reason || '后台未返回有效排行');
+      const rankCoverage = Number(full.coverage_ratio);
+      const rankMeta = { label: `${new Date(bounds.startTs * 1000).toLocaleString()} — ${new Date(bounds.endTs * 1000).toLocaleString()}`, granularity: bounds.granularity, coveragePct: Number.isFinite(rankCoverage) ? (rankCoverage > 1 ? rankCoverage : rankCoverage * 100) : null, validSamples: full.valid_samples ?? null, gapCount: Array.isArray(full.gaps) ? full.gaps.length : null };
+      const result = { status: full.status || 'ready', summary: full, window: rankMeta, cacheKey, updatedAt: Number(full.updated_at) > 0 ? Number(full.updated_at) * 1000 : Date.now(), revision: String(full.data_revision || '') };
+      state.rankCache.set(cacheKey, result);
+      state.ranking = result;
+      updateView();
+    } catch (err) {
+      if (!state.open || !isActive() || generation !== state.rankGeneration || state.source !== 'power') return;
+      state.ranking = { status: 'error', error: err?.message || String(err), window, cacheKey };
+      updateView();
+    }
   }
-  async function load(force = false) {
+  async function load(force = false, forceRank = false) {
     if (!state.open || !isActive()) return;
-    const view = ensureView(); const bounds = rangeBounds(); const cacheKey = key();
-    abort('new-range'); state.requestId += 1; const requestId = state.requestId;
-    if (!force && state.cache.has(cacheKey)) { updateView(); schedule(); return; }
+    const view = ensureView(); const cacheKey = key(); const requestedBounds = rangeBounds();
+    const selectionChanged = state.activeKey !== cacheKey;
+    if (selectionChanged) {
+      state.activeKey = cacheKey; state.summary = null; state.rankRefreshRequested = false;
+      state.selectedBounds = requestedBounds;
+      state.detailsDue = true;
+      cancelSlot('overviewRequest', 'range-changed'); cancelSlot('rankRequest', 'range-changed'); state.rankGeneration += 1;
+      state.ranking = { status: 'idle' };
+    }
+    // A periodic refresh updates the selected range's history without moving
+    // its anchor. Only a new selection or an explicit user refresh changes the
+    // ranking window; this prevents a rolling end timestamp from defeating the
+    // ranking cache every ten seconds.
+    if (selectionChanged || forceRank || !state.selectedBounds) state.selectedBounds = requestedBounds;
+    const bounds = state.selectedBounds;
+    cancelSlot('request', 'new-history'); capture().abort('new-history'); state.requestId += 1; const requestId = state.requestId;
+    const requestedRank = forceRank || state.rankRefreshRequested || selectionChanged;
+    state.rankRefreshRequested = false;
+    if (!force && state.cache.has(cacheKey)) {
+      updateView();
+      if (state.source === 'power') {
+        fetchEnergySummary(bounds, state.cache.get(cacheKey).stats, requestedRank, cacheKey);
+        const previousCaptureStatus = state.lastCaptureStatus;
+        capture().status().then((captureData) => {
+          const currentCaptureStatus = captureData?.session?.status || '';
+          state.lastCaptureStatus = currentCaptureStatus;
+          if (previousCaptureStatus === 'running' && ['completed', 'stopped', 'failed'].includes(currentCaptureStatus)) {
+            state.rankRefreshRequested = true;
+            load(true, true);
+          } else updateView();
+        }).catch(() => {});
+      }
+      schedule(); return;
+    }
     if (!state.cache.has(cacheKey)) viewFeature().loading(view, state.source, state.rangeId);
     try {
       const data = await fetchSource(bounds); if (requestId !== state.requestId || !data) return;
-      const normalized = normalizeResponse(data, bounds); state.cache.set(cacheKey, normalized); updateView();
+      const normalized = normalizeResponse(data, bounds);
+      state.cache.set(cacheKey, normalized); updateView();
       if (normalized.stats.count < 2) viewFeature().empty(view, state.source, state.rangeId, normalized.status);
-      if (state.source === 'power') fetchEnergySummary();
+      if (state.source === 'power') fetchEnergySummary(bounds, normalized.stats, requestedRank, cacheKey);
+      if (state.source === 'power') {
+        const previousCaptureStatus = state.lastCaptureStatus;
+        capture().status().then((captureData) => {
+          const currentCaptureStatus = captureData?.session?.status || '';
+          state.lastCaptureStatus = currentCaptureStatus;
+          if (previousCaptureStatus === 'running' && ['completed', 'stopped', 'failed'].includes(currentCaptureStatus)) {
+            state.rankRefreshRequested = true;
+            load(true, true);
+          } else updateView();
+        }).catch(() => {});
+      }
       if (state.source === 'thermal') capture().status().catch(() => {}).then(() => updateView());
     } catch (err) {
       if (requestId !== state.requestId) return;
@@ -134,7 +249,7 @@
     }
     schedule();
   }
-  function schedule(delay = 10000) {
+  function schedule(delay = state.source === 'thermal' ? 10000 : 30000) {
     if (state.timer) clearTimeout(state.timer); state.timer = null;
     if (!state.open || !isActive()) return;
     state.timer = window.setTimeout(() => { state.timer = null; load(true); }, delay);
@@ -160,7 +275,7 @@
   function stopBurst() { if (!requireFeature('auth').hasToken()) return; apiFetch(API.thermalBurst, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }), timeoutMs: 2500, keepalive: true }).catch(() => {}); }
   function open(source = 'thermal') {
     init();
-    abort('analytics-open'); state.open = true; state.suspended = false; state.source = source; state.summary = null; const view = ensureView();
+    abort('analytics-open'); state.open = true; state.suspended = false; state.source = source; state.summary = null; state.detailsDue = true; const view = ensureView();
     refs.detailTitle.textContent = source === 'thermal' ? '温度与功耗历史' : '功耗与温度历史';
     refs.detailModal.classList.remove('energy-mode', 'history-mode', 'detail-minimized'); refs.detailModal.classList.add('analytics-mode', 'open');
     refs.detailMinimizeBtn?.setAttribute('aria-expanded', 'true');
@@ -174,7 +289,7 @@
   function pause() { suspend('page-hidden'); }
   function minimize() { suspend('analytics-minimized'); }
   function resume() {
-    if (!state.open || !isActive() || (!state.suspended && (state.request || state.timer))) return;
+    if (!state.open || !isActive() || (!state.suspended && (state.request || state.overviewRequest || state.rankRequest || state.timer))) return;
     state.suspended = false;
     if (state.source === 'thermal') triggerBurst({ prompt: false });
     load(false);
@@ -182,7 +297,7 @@
   function init() {
     if (state.observer || !refs.detailModal) return;
     document.addEventListener('webui-theme-changed', () => { if (state.open && isActive()) updateView(); });
-    state.observer = new MutationObserver(() => { if (!state.open) return; if (refs.detailModal.classList.contains('detail-minimized')) minimize(); else if (isActive() && !state.request && !state.timer) resume(); });
+    state.observer = new MutationObserver(() => { if (!state.open) return; if (refs.detailModal.classList.contains('detail-minimized')) minimize(); else if (isActive() && !state.request && !state.overviewRequest && !state.rankRequest && !state.timer) resume(); });
     state.observer.observe(refs.detailModal, { attributes: true, attributeFilter: ['class'] });
   }
   registerFeature('analytics', { init, open, stop, pause, minimize, resume, triggerBurst, schedule, isActive: () => state.open && isActive(), getState: () => ({ ...state, cache: undefined }) });

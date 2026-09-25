@@ -3,7 +3,7 @@
 # authenticated CGI and the detached worker; it never starts a wakelock or an
 # alarm.  All state changes are atomic and scoped to one generated session id.
 
-TELEMETRY_SCHEMA=1
+TELEMETRY_SCHEMA=2
 TELEMETRY_ROOT="${PIXEL9PRO_TELEMETRY_ROOT:-${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.telemetry}"
 TELEMETRY_STATE="$TELEMETRY_ROOT/state"
 TELEMETRY_SESSIONS="$TELEMETRY_ROOT/sessions"
@@ -14,6 +14,21 @@ telemetry_now() {
     _tl_now=$(date +%s 2>/dev/null || printf '0')
     case "$_tl_now" in ''|*[!0-9]*) _tl_now=0 ;; esac
     printf '%s' "$_tl_now"
+}
+
+telemetry_uptime() {
+    _tl_up=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null)
+    case "$_tl_up" in ''|*[!0-9]*) _tl_up=0 ;; esac
+    printf '%s' "$_tl_up"
+}
+
+telemetry_boot_id() {
+    _tl_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n')
+    case "$_tl_boot" in
+        ''|*[!A-Za-z0-9-]*) _tl_boot=$(getprop ro.boot.bootreason 2>/dev/null | tr -d ' \r\n') ;;
+    esac
+    [ -n "$_tl_boot" ] || _tl_boot=unknown
+    printf '%s' "$_tl_boot" | cut -c1-80
 }
 
 telemetry_num() {
@@ -60,6 +75,37 @@ telemetry_state_write() {
     _tl_reset_count="${14}"
     _tl_stop_requested="${15}"
     _tl_session_dir="${16}"
+    _tl_boot_id="${17:-}"
+    _tl_source="${18:-}"
+    _tl_valid_samples="${19:-}"
+    _tl_invalid_samples="${20:-}"
+    _tl_gap_count="${21:-}"
+    _tl_first_sample="${22:-}"
+    _tl_interval_on="${23:-}"
+    _tl_interval_off="${24:-}"
+    _tl_last_screen="${25:-}"
+    _tl_last_charge_status="${26:-}"
+    _tl_existing_id=$(telemetry_state_value "$TELEMETRY_STATE" session_id "")
+    if [ "$_tl_status" = pending ] && [ "$_tl_existing_id" != "$_tl_session_id" ]; then
+        _tl_boot_id=$(telemetry_boot_id)
+        _tl_source=telemetry_worker
+        _tl_valid_samples=0
+        _tl_invalid_samples=0
+        _tl_gap_count=0
+        _tl_first_sample=0
+        _tl_last_screen=unknown
+        _tl_last_charge_status=unknown
+    fi
+    [ -n "$_tl_boot_id" ] || _tl_boot_id=$(telemetry_state_value "$TELEMETRY_STATE" boot_id "$(telemetry_boot_id)")
+    [ -n "$_tl_source" ] || _tl_source=$(telemetry_state_value "$TELEMETRY_STATE" source telemetry_worker)
+    [ -n "$_tl_valid_samples" ] || _tl_valid_samples=$(telemetry_state_value "$TELEMETRY_STATE" valid_samples 0)
+    [ -n "$_tl_invalid_samples" ] || _tl_invalid_samples=$(telemetry_state_value "$TELEMETRY_STATE" invalid_samples 0)
+    [ -n "$_tl_gap_count" ] || _tl_gap_count=$(telemetry_state_value "$TELEMETRY_STATE" gap_count 0)
+    [ -n "$_tl_first_sample" ] || _tl_first_sample=$(telemetry_state_value "$TELEMETRY_STATE" first_sample_ts 0)
+    [ -n "$_tl_interval_on" ] || _tl_interval_on=$(telemetry_state_value "$TELEMETRY_STATE" interval_on_sec 60)
+    [ -n "$_tl_interval_off" ] || _tl_interval_off=$(telemetry_state_value "$TELEMETRY_STATE" interval_off_sec 600)
+    [ -n "$_tl_last_screen" ] || _tl_last_screen=$(telemetry_state_value "$TELEMETRY_STATE" last_screen unknown)
+    [ -n "$_tl_last_charge_status" ] || _tl_last_charge_status=$(telemetry_state_value "$TELEMETRY_STATE" last_charge_status unknown)
     _tl_tmp="${TELEMETRY_STATE}.tmp.$$"
     mkdir -p "$TELEMETRY_ROOT" "$TELEMETRY_SESSIONS" 2>/dev/null || return 1
     [ ! -d "$TELEMETRY_STATE" ] || return 1
@@ -73,6 +119,13 @@ telemetry_state_write() {
             "$(telemetry_sanitize_field "$_tl_reason")" "$_tl_samples" "$_tl_bytes" "$_tl_last_sample"
         printf 'quality=%s\nreset_count=%s\nstop_requested=%s\nsession_dir=%s\n' \
             "$(telemetry_sanitize_field "$_tl_quality")" "$_tl_reset_count" "$_tl_stop_requested" "$_tl_session_dir"
+        printf 'boot_id=%s\nsource=%s\nvalid_samples=%s\ninvalid_samples=%s\n' \
+            "$(telemetry_sanitize_field "$_tl_boot_id")" "$(telemetry_sanitize_field "$_tl_source")" \
+            "$_tl_valid_samples" "$_tl_invalid_samples"
+        printf 'gap_count=%s\nfirst_sample_ts=%s\ninterval_on_sec=%s\ninterval_off_sec=%s\n' \
+            "$_tl_gap_count" "$_tl_first_sample" "$_tl_interval_on" "$_tl_interval_off"
+        printf 'last_screen=%s\nlast_charge_status=%s\n' \
+            "$(telemetry_sanitize_field "$_tl_last_screen")" "$(telemetry_sanitize_field "$_tl_last_charge_status")"
     } > "$_tl_tmp" 2>/dev/null \
         && mv "$_tl_tmp" "$TELEMETRY_STATE" 2>/dev/null \
         && [ -f "$TELEMETRY_STATE" ] || {

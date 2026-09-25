@@ -374,13 +374,30 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
                .uecap_policy .uecap_reason .sim2_radio_off \
                .nr_saved_mode .webui_theme \
                .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .cpu_sched_owner .sched_owner_desired .game_handoff_policy .game_handoff_source \
-               .thermal_history .power_history .power_session; do
+               .thermal_history .power_history .power_session .history.meta; do
         if [ -f "$OLDDIR/$_sf" ]; then
             cp "$OLDDIR/$_sf" "$MODPATH/$_sf" 2>/dev/null \
                 && [ -f "$MODPATH/$_sf" ] \
                 && cmp -s "$OLDDIR/$_sf" "$MODPATH/$_sf" || _migration_failed=1
         fi
     done
+    # Keep completed telemetry sessions and attribution snapshots across a
+    # module upgrade. The old global worker state is deliberately not copied:
+    # its PID belongs to the previous installation and must be reconciled by
+    # the new service boot.
+    if [ -d "$OLDDIR/.telemetry/sessions" ]; then
+        mkdir -p "$MODPATH/.telemetry/sessions" 2>/dev/null \
+            && cp -R "$OLDDIR/.telemetry/sessions/." "$MODPATH/.telemetry/sessions/" 2>/dev/null \
+            || _migration_failed=1
+    fi
+    if [ -d "$OLDDIR/.power_rank/snapshots" ]; then
+        mkdir -p "$MODPATH/.power_rank/snapshots" 2>/dev/null \
+            && cp -R "$OLDDIR/.power_rank/snapshots/." "$MODPATH/.power_rank/snapshots/" 2>/dev/null \
+            || _migration_failed=1
+        [ -f "$OLDDIR/.power_rank/last_collect_ts" ] \
+            && cp "$OLDDIR/.power_rank/last_collect_ts" "$MODPATH/.power_rank/last_collect_ts" 2>/dev/null \
+            || true
+    fi
 if [ "$_migration_failed" -ne 0 ]; then
         ui_print "  ✗ 用户配置迁移不完整, 已中止安装"
         abort

@@ -77,10 +77,11 @@
     canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-label', '历史趋势图');
     chartWrap.appendChild(canvas); chartCard.appendChild(chartWrap);
     const legend = el('div', 'analytics-chart-legend'); chartCard.appendChild(legend);
+    const quality = el('div', 'analytics-status'); quality.setAttribute('role', 'status'); quality.hidden = true; chartCard.appendChild(quality);
     chartSection.append(chartHead, chartCard);
     const more = document.createElement('details'); more.className = 'analytics-disclosure';
     const moreSummary = el('summary', 'analytics-disclosure-summary');
-    const moreCopy = el('span', 'analytics-disclosure-copy'); moreCopy.append(el('strong', '', '更多统计'), el('small', '', '采样覆盖、差分口径与阈值时长'));
+    const moreCopy = el('span', 'analytics-disclosure-copy'); moreCopy.append(el('strong', '', '更多统计'), el('small', '', '采样覆盖、差分口径与阈值时长 · 区间切换或主动刷新立即更新，自动慢更新约 2 分钟'));
     moreSummary.append(moreCopy, el('span', 'analytics-disclosure-chevron', '›'));
     const moreBody = el('div', 'analytics-disclosure-body'); more.append(moreSummary, moreBody);
     const capture = el('section', 'analytics-capture-card');
@@ -94,11 +95,13 @@
     captureControls.append(duration, captureBtn, captureExport);
     capture.append(el('div', 'analytics-section-title', '低功耗记录'), el('div', 'analytics-section-desc', '后台按设备采样策略记录时间戳、功耗、温度、屏幕状态、Top 进程与 ODPM；息屏温度缺测会保留为空。'), captureState, captureControls);
     const actions = el('div', 'analytics-export-actions analytics-actions');
+    const refresh = el('button', 'tiny-btn tonal', '刷新数据'); refresh.type = 'button';
+    refresh.addEventListener('click', () => callbacks.onRefresh?.(refresh)); actions.appendChild(refresh);
     const exportWindow = el('button', 'tiny-btn tonal', '导出当前区间'); exportWindow.type = 'button';
     exportWindow.addEventListener('click', () => callbacks.onExport(exportWindow)); actions.appendChild(exportWindow);
     root.append(intro, source, range, custom, stateLine, hero, chartSection, more, capture, actions);
     view.root = root; view.sourceGroup = source; view.rangeGroup = range; view.custom = custom; view.customDays = days; view.customGranularity = granularity; view.stateLine = stateLine; view.hero = hero;
-    view.heroKicker = heroHead.querySelector('.analytics-hero-kicker'); view.heroValue = heroHead.querySelector('.analytics-hero-value'); view.heroStatus = heroHead.querySelector('.analytics-hero-status'); view.heroBadge = heroHead.querySelector('.analytics-hero-badge'); view.summary = Array.from(summary.children); view.canvas = canvas; view.legend = legend; view.moreBody = moreBody; view.captureState = captureState; view.captureBtn = captureBtn; view.captureExport = captureExport; view.duration = duration; view.exportWindow = exportWindow;
+    view.heroKicker = heroHead.querySelector('.analytics-hero-kicker'); view.heroValue = heroHead.querySelector('.analytics-hero-value'); view.heroStatus = heroHead.querySelector('.analytics-hero-status'); view.heroBadge = heroHead.querySelector('.analytics-hero-badge'); view.summary = Array.from(summary.children); view.canvas = canvas; view.legend = legend; view.quality = quality; view.moreBody = moreBody; view.captureState = captureState; view.captureBtn = captureBtn; view.captureExport = captureExport; view.duration = duration; view.refresh = refresh; view.exportWindow = exportWindow;
     return view;
   }
 
@@ -153,18 +156,28 @@
     return list;
   }
 
-  function appendPowerAttribution(body, summary) {
-    body.append(el('div', 'analytics-section-title', '软件耗电排行'), el('div', 'analytics-section-desc', '来自当前 batterystats 窗口；仅展示有正向耗电归因的项目。'));
-    const hasFull = summary && (Number(summary.system_generated_at) > 0 || summary.fast !== true);
+  function appendPowerAttribution(body, summary, ranking) {
+    body.append(el('div', 'analytics-section-title', '软件耗电排行'), el('div', 'analytics-section-desc', '排行按当前时间窗和粒度独立读取；失败不会阻塞温度或实时功耗趋势。'));
+    const rankState = ranking || { status: 'idle' };
+    if (rankState.status === 'loading') {
+      body.appendChild(el('div', 'analytics-loading-card', '正在读取当前窗口的功耗排行…'));
+      return;
+    }
+    if (rankState.status === 'error' || rankState.status === 'unavailable') {
+      body.appendChild(el('div', 'analytics-error', `功耗排行读取失败：${rankState.error || rankState.summary?.reason || '未知原因'}。可点击“刷新数据”重试。`));
+      return;
+    }
+    summary = rankState.summary || summary;
+    const hasFull = summary && (Array.isArray(summary.apps) || Array.isArray(summary.components));
     if (!hasFull) {
-      body.appendChild(el('div', 'analytics-empty', '系统归因正在后台更新，趋势数据不受影响。'));
+      body.appendChild(el('div', 'analytics-empty', '当前时间窗暂无可用系统归因；趋势数据仍可用。'));
       return;
     }
     const apps = (Array.isArray(summary.apps) ? summary.apps : [])
       .map((app) => ({ value: Number(app.mah), label: packageLabel(app), subtitle: [app.pkg, app.category, app.uid || (Number.isFinite(Number(app.uid_num)) ? 'UID ' + app.uid_num : '')].filter(Boolean).join(' · ') }))
       .filter((app) => Number.isFinite(app.value) && app.value > 0)
       .sort((a, b) => b.value - a.value);
-    const components = [
+    const components = Array.isArray(summary.components) ? summary.components.map((item) => ({ label: item.label || item.key || '系统分项', value: Number(item.mah) })) : [
       ['CPU 分项', summary.cpu], ['亮屏分项', summary.scron], ['息屏分项', summary.scroff],
       ['Wi‑Fi 分项', summary.wifi], ['唤醒锁', summary.wakelock]
     ].map(([label, value]) => ({ label, value: Number(value) }))
@@ -178,7 +191,18 @@
     systemGroup.appendChild(el('div', 'analytics-group-title', '系统分项'));
     systemGroup.appendChild(components.length ? rankList(components.slice(0, 5), 'system') : el('div', 'analytics-empty', '暂无系统分项'));
     groups.append(appGroup, systemGroup); body.appendChild(groups);
-    const values = [['系统估算总耗电', summary.drain], ['当前统计窗口', summary.bat_time]];
+    const windowMeta = rankState.window || {};
+    const metaText = [
+      windowMeta.label ? `时间窗 ${windowMeta.label}` : '',
+      windowMeta.granularity ? `粒度 ${windowMeta.granularity === 'minute' ? '分钟' : '小时'}` : '',
+      rankState.status === 'partial' ? `排行质量 partial${rankState.summary?.reason ? `：${rankState.summary.reason}` : ''}` : '',
+      Number.isFinite(Number(windowMeta.coveragePct)) ? `覆盖率 ${Number(windowMeta.coveragePct).toFixed(1)}%` : '',
+      Number.isFinite(Number(windowMeta.validSamples)) ? `有效样本 ${Number(windowMeta.validSamples)}` : '',
+      Number.isFinite(Number(windowMeta.gapCount)) && windowMeta.gapCount ? `间断 ${Number(windowMeta.gapCount)} 段` : '',
+      rankState.updatedAt ? `更新时间 ${new Date(rankState.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''
+    ].filter(Boolean).join(' · ');
+    if (metaText) body.appendChild(el('div', 'analytics-note', metaText));
+    const values = [['系统估算总耗电', summary.total_mah ?? summary.drain], ['当前统计窗口', summary.bat_time || rankState.window?.label]];
     const list = el('div', 'data-list');
     values.forEach(([label, value]) => { if (value !== null && value !== undefined && value !== '') list.appendChild(row(label, label === '系统估算总耗电' ? value + ' mAh' : value)); });
     if (list.childElementCount) body.appendChild(list);
@@ -201,8 +225,10 @@
     const gapRanges = (stats.gapRanges || []).filter((gap) => Number.isFinite(gap.startTs) && Number.isFinite(gap.endTs) && gap.endTs > gap.startTs);
     canvas.setAttribute('aria-label', `${source === 'thermal' ? '温度' : '放电'}趋势图，单位 ${unit}；${stats.count || 0} 个有效采样点，有效覆盖 ${model().formatDuration(stats.coverageSec)}，未知 ${model().formatDuration(stats.unknownSec)}${gapRanges.length ? `，${gapRanges.length} 段间断以时间轴虚线标记` : ''}。`);
     if (!Number.isFinite(stats.startTs) || !Number.isFinite(stats.endTs)) return;
+    const spanSec = Math.max(1, stats.endTs - stats.startTs);
     const dayCrossing = new Date(stats.startTs * 1000).toDateString() !== new Date(stats.endTs * 1000).toDateString();
-    const pad = { left: 46, right: 12, top: 26, bottom: dayCrossing ? 58 : 42 }; const plotW = width - pad.left - pad.right; const plotH = height - pad.top - pad.bottom;
+    const showDates = dayCrossing || spanSec >= 86400;
+    const pad = { left: 46, right: 12, top: 26, bottom: showDates ? 58 : 42 }; const plotW = width - pad.left - pad.right; const plotH = height - pad.top - pad.bottom;
     const min = values.length ? Math.min(...values) : 0; const max = values.length ? Math.max(...values) : 1;
     const padding = source === 'thermal' ? 1 : Math.max(1, Math.abs(max || min) * 0.2);
     const lo = min === max ? min - padding : min; const hi = min === max ? max + padding : max; const span = Math.max(1, stats.endTs - stats.startTs);
@@ -225,12 +251,23 @@
     }
     const timeLabel = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const dateLabel = (ts) => new Date(ts * 1000).toLocaleDateString([], { month: '2-digit', day: '2-digit' });
-    // Anchor the first and final labels inside the canvas, including empty
-    // windows. The last sample must not silently become the requested endpoint.
-    ctx.textAlign = 'left'; ctx.fillText(timeLabel(stats.startTs), pad.left, height - 8);
-    if (dayCrossing) ctx.fillText(dateLabel(stats.startTs), pad.left, height - 23);
-    ctx.textAlign = 'right'; ctx.fillText(timeLabel(stats.endTs), width - pad.right, height - 8);
-    if (dayCrossing) ctx.fillText(dateLabel(stats.endTs), width - pad.right, height - 23);
+    // Always render intermediate ticks. Endpoint-only labels made a dense
+    // minute/hour series look empty and hid gaps between the endpoints.
+    const tickCount = Math.max(4, Math.min(6, Math.floor(plotW / 64) + 1));
+    const ticks = Array.from({ length: tickCount }, (_, index) => ({ ts: stats.startTs + (spanSec * index) / (tickCount - 1), index }));
+    ctx.save();
+    ctx.strokeStyle = grid; ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
+    ticks.forEach((tick) => {
+      const tickX = x(tick.ts);
+      ctx.beginPath(); ctx.moveTo(tickX, pad.top); ctx.lineTo(tickX, pad.top + plotH); ctx.stroke();
+    });
+    ctx.restore();
+    ticks.forEach((tick) => {
+      const tickX = x(tick.ts);
+      ctx.textAlign = tick.index === 0 ? 'left' : tick.index === ticks.length - 1 ? 'right' : 'center';
+      ctx.fillText(timeLabel(tick.ts), tickX, height - 8);
+      if (showDates) ctx.fillText(dateLabel(tick.ts), tickX, height - 23);
+    });
     ctx.strokeStyle = primary; ctx.fillStyle = primary; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     segments.forEach((segment) => {
       ctx.setLineDash([]); ctx.beginPath();
@@ -248,9 +285,10 @@
   }
 
   function update(view, payload) {
-    const { source, rangeId, stats, status, summary, capture } = payload;
+    const { source, rangeId, stats, status, summary, ranking, capture } = payload;
+    const refreshDetails = payload.details !== false;
     setActive(view, source, rangeId); view.stats = stats;
-    view.hero.classList.toggle('warn', source === 'thermal' ? Number(stats?.current) >= 37 : stats?.quality === 'partial' || stats?.quality === 'reset_or_mismatch');
+    view.hero.classList.toggle('warn', source === 'thermal' ? Number(stats?.current) >= 37 : ['partial', 'partial_window', 'reset_or_mismatch', 'insufficient_samples', 'no_coverage'].includes(stats?.backendQuality || stats?.quality));
     view.stateLine.textContent = status || '';
     view.stateLine.hidden = !status;
     const isThermal = source === 'thermal';
@@ -262,15 +300,26 @@
     const labels = isThermal ? ['最低', '平均', '最高'] : ['实际耗电', '平均放电', '平均功率'];
     const suffixes = isThermal ? ['°C', '°C', '°C'] : [' mAh', ' mAh/h', ' mW'];
     view.summary.forEach((item, index) => { item.querySelector('span').textContent = labels[index]; item.querySelector('strong').textContent = Number.isFinite(values[index]) ? `${values[index].toFixed(1)}${suffixes[index]}` : '—'; });
-    view.legend.textContent = `${stats?.count || 0} 个有效采样点 · 有效覆盖 ${model().formatDuration(stats?.coverageSec)} · 未知 ${model().formatDuration(stats?.unknownSec)}${stats?.nonDischargeSec ? ` · 非放电 ${model().formatDuration(stats.nonDischargeSec)}` : ''}${stats?.gaps?.length ? ` · ${stats.gaps.length} 段间断` : ''}`;
+    const backendCount = Number.isFinite(Number(stats?.backendSampleCount)) ? `后台记录 ${Number(stats.backendSampleCount)}` : `后台记录 ${stats?.sampleCount || 0}`;
+    view.legend.textContent = `${backendCount} · 图表点 ${stats?.sampleCount || 0} · 有效 ${stats?.validCount ?? stats?.count ?? 0} · 有效覆盖 ${model().formatDuration(stats?.coverageSec)} · 未知 ${model().formatDuration(stats?.unknownSec)}${stats?.nonDischargeSec ? ` · 非放电 ${model().formatDuration(stats.nonDischargeSec)}` : ''}${stats?.gaps?.length ? ` · ${stats.gaps.length} 段间断` : ''}`;
     if (!isThermal) view.legend.textContent += ` · 曲线单位 ${stats?.seriesUnit || 'mAh/h'}（区间平均）`;
-    view.moreBody.replaceChildren();
-    const qualityLabel = { good: '有效区间连续', partial: '存在间断或缺测', reset_or_mismatch: '电荷计重置或不一致', insufficient: '证据不足', no_data: '没有有效数据' };
-    view.moreBody.append(row('数据范围', stats?.startTs && stats?.endTs ? relativeTime(stats.startTs) + ' — ' + relativeTime(stats.endTs) : '—'), row('有效采样点', stats?.count), row('曲线有效覆盖', model().formatDuration(stats?.coverageSec)), row('曲线未知时长', model().formatDuration(stats?.unknownSec)));
-    if (isThermal) view.moreBody.append(row('温控阈值累计', model().formatDuration(stats?.thresholdSec)));
-    else {
-      view.moreBody.append(row('可证明放电', Number.isFinite(stats?.consumedMah) ? stats.consumedMah.toFixed(2) + ' mAh' : '—'), row('有效电荷差分时长', model().formatDuration(stats?.activeSec)), row('有效电流测量时长', model().formatDuration(stats?.measuredSec)), row('非放电时长', model().formatDuration(stats?.nonDischargeSec)), row('数据质量', qualityLabel[stats?.quality] || '未知'));
-      appendPowerAttribution(view.moreBody, summary);
+    if (refreshDetails) {
+      view.moreBody.replaceChildren();
+      const qualityLabel = { good: '有效区间连续', partial: '存在间断或缺测', reset_or_mismatch: '电荷计重置或不一致', insufficient: '证据不足', no_data: '没有有效数据' };
+      const backendCoverage = Number.isFinite(Number(stats?.backendCoverageRatio)) ? Number(stats.backendCoverageRatio) * 100 : null;
+      const coverageValue = backendCoverage === null ? stats?.coveragePct : backendCoverage;
+      const invalidCount = Number.isFinite(Number(stats?.backendInvalidSamples)) ? Number(stats.backendInvalidSamples) : Number(stats?.missingCount || 0);
+      const qualityText = `${qualityLabel[stats?.backendQuality] || qualityLabel[stats?.quality] || '数据质量未知'} · 覆盖率 ${Number.isFinite(Number(coverageValue)) ? Number(coverageValue).toFixed(1) + '%' : '—'}${invalidCount ? ` · 缺失/无效 ${invalidCount}` : ''}${Number.isFinite(Number(stats?.backendGapCount)) && stats.backendGapCount ? ` · 间断 ${stats.backendGapCount} 段` : ''}`;
+      view.quality.textContent = qualityText;
+      const qualityState = stats?.backendQuality || stats?.quality;
+      view.quality.className = `analytics-status ${['good', 'complete_window', 'usable_window'].includes(qualityState) ? 'good' : ['no_data', 'no_coverage'].includes(qualityState) ? 'err' : 'warn'}`;
+      view.quality.hidden = false;
+      view.moreBody.append(row('数据范围', stats?.startTs && stats?.endTs ? relativeTime(stats.startTs) + ' — ' + relativeTime(stats.endTs) : '—'), row('后台记录数', stats?.backendSampleCount ?? stats?.sampleCount), row('后台有效记录', stats?.backendValidSamples ?? stats?.validCount ?? stats?.count), row('后台无效记录', stats?.backendInvalidSamples ?? stats?.missingCount), row('有效采样点', stats?.count), row('曲线有效覆盖', model().formatDuration(stats?.coverageSec)), row('曲线未知时长', model().formatDuration(stats?.unknownSec)));
+      if (isThermal) view.moreBody.append(row('温控阈值累计', model().formatDuration(stats?.thresholdSec)));
+      else {
+        view.moreBody.append(row('可证明放电', Number.isFinite(stats?.consumedMah) ? stats.consumedMah.toFixed(2) + ' mAh' : '—'), row('有效电荷差分时长', model().formatDuration(stats?.activeSec)), row('有效电流测量时长', model().formatDuration(stats?.measuredSec)), row('非放电时长', model().formatDuration(stats?.nonDischargeSec)), row('数据质量', qualityLabel[stats?.quality] || '未知'));
+        appendPowerAttribution(view.moreBody, summary, ranking);
+      }
     }
     draw(view, source, stats);
     if (capture) { view.captureState.textContent = capture.session ? `${capture.session.status || '运行中'} · ${capture.session.sample_count || 0} 个采样点` : '未开始记录'; view.captureBtn.textContent = capture.session?.status === 'running' ? '结束记录' : '开始记录'; view.captureExport.disabled = !capture.session || capture.session.status === 'running'; }

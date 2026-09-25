@@ -45,7 +45,7 @@
 
 偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前置 severity 先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。靠近 SHUTDOWN 时，生成器按 stock `HotHysteresis` 从后向前收窄，并额外保留 `0.1°C` 的严格间隔，保证“前一档阈值 `<` 下一档阈值减下一档 hysteresis”；只检查阈值递增并不足以保证 Pixel Thermal HAL 接受配置。SELinux 只验证 effective `/vendor/etc/thermal_info_config.json` 的 `vendor_configs_file`；模块 source 的 `system_file` label 不再被错误地当成挂载证明。
 
-WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，避免普通刷新被 `dumpsys thermalservice` 慢路径阻塞；当缓存缺失、无 `VIRTUAL-SKIN`、温度越界或连续异常时，自动走 `fresh=1` 重建。
+WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，避免普通刷新被 `dumpsys thermalservice` 慢路径阻塞；当缓存缺失、无 `VIRTUAL-SKIN`、温度越界或连续异常时，自动走 `fresh=1` 重建。历史页按 15/30/60 分钟、12 小时和 1/3/7 天窗口显示 minute/hour 粒度；图表保留中间时间刻度、缺测 gap 和后台 raw/display/valid/invalid 计数。
 
 温控档位提交后进入模块私有 `.thermal_tx` journal。同一 boot 且 backend 返回
 `cancel_supported=true` 时，“放弃本次修改”会携带 `pending_id` 原子恢复旧 source、policy
@@ -126,7 +126,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 
 ### WebUI 控制台
 
-端口 6210，`http://127.0.0.1:6210`（仅绑定本机回环地址）。采用 Material 3 设计，提供状态、性能温控、网络和系统四个页面；温度与功耗历史可查看采样覆盖、缺测区间并导出记录。
+端口 6210，`http://127.0.0.1:6210`（仅绑定本机回环地址）。采用 Material 3 设计，提供状态、性能温控、网络和系统四个页面；温度与功耗历史可查看采样覆盖、缺测区间并导出记录。实时功耗摘要与功耗排行分开刷新；排行按选定时间窗、粒度和 ledger revision 缓存，无法证明窗口时显示 unavailable，不把当前 batterystats 总计伪装成历史排行。
 
 ### 隐私安全审计日志
 

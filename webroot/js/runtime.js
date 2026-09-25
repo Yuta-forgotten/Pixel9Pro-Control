@@ -23,6 +23,7 @@ const API = {
   ntp: '/cgi-bin/ntp.sh',
   energy: '/cgi-bin/energy.sh',
   energyFast: '/cgi-bin/energy.sh?fast=1',
+  powerRank: '/cgi-bin/power_rank.sh',
   historyExport: '/cgi-bin/history_export.sh',
   telemetry: '/cgi-bin/telemetry.sh',
   auditLog: '/cgi-bin/audit_log.sh',
