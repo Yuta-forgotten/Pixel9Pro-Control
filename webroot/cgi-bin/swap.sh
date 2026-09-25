@@ -65,9 +65,13 @@ emit_state() {
     swap_total_kb=$(awk '/^SwapTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
     [ "${swap_kb:-0}" -gt 0 ] 2>/dev/null && zram_active=true || zram_active=false
     mmd_owned=false
-    [ "$(getprop mmd.setup_complete 2>/dev/null | tr -d ' \n\r\t')" = "true" ] && mmd_owned=true
+    vm_zram_mmd_ready && mmd_owned=true
     target_property="$VM_ZRAM_SIZE_PROPERTY"
+    if [ "$mmd_owned" = true ]; then
+        target_property="$VM_MMD_ZRAM_SIZE_PROPERTY"
+    fi
     target_value=$(getprop "$target_property" 2>/dev/null | tr -d ' \n\r\t')
+    [ -n "$target_value" ] || target_value=$(getprop "$VM_ZRAM_SIZE_PROPERTY" 2>/dev/null | tr -d ' \n\r\t')
     [ -n "$target_value" ] || target_value=50%
     target_size_bytes=$(vm_zram_size_to_bytes "$target_value")
 
@@ -121,13 +125,15 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             fi
             ;;
         stock)
+            set -- $(vm_profile_params stock)
             if persist_value "$VM_FEATURE_FILE" system \
-                && persist_value "$SWAP_MODE_FILE" stock; then
+                && persist_value "$SWAP_MODE_FILE" stock \
+                && vm_write_params "$1" "$2" "$3" "$4"; then
                 [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event vm policy success VM_SYSTEM_NO_WRITE 0 >/dev/null 2>&1 || true
                 emit_state
             else
-                restore_vm_policy_state >/dev/null 2>&1 || true
-                json_error '500 Internal Server Error' 'failed to persist system VM policy; previous state restored'
+                restore_vm_state >/dev/null 2>&1 || true
+                json_error '500 Internal Server Error' 'failed to restore system VM params; previous state restored'
             fi
             ;;
         custom)
@@ -167,13 +173,15 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             fi
             ;;
         disabled)
+            set -- $(vm_profile_params stock)
             if persist_value "$VM_FEATURE_FILE" disabled \
-                && persist_value "$SWAP_MODE_FILE" disabled; then
+                && persist_value "$SWAP_MODE_FILE" disabled \
+                && vm_write_params "$1" "$2" "$3" "$4"; then
                 [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event vm policy success VM_DISABLED_NO_WRITE 0 >/dev/null 2>&1 || true
                 emit_state
             else
-                restore_vm_policy_state >/dev/null 2>&1 || true
-                json_error '500 Internal Server Error' 'failed to persist disabled VM policy; previous state restored'
+                restore_vm_state >/dev/null 2>&1 || true
+                json_error '500 Internal Server Error' 'failed to restore VM params while disabling module policy'
             fi
             ;;
         zram_size)
@@ -182,16 +190,30 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             _zram_requested=$(printf '%s' "$body" | sed -n 's/.*"size_bytes"[[:space:]]*:[[:space:]]*"\{0,1\}\([0-9][0-9]*%\{0,1\}\)"\{0,1\}.*/\1/p')
             vm_zram_size_is_valid "$_zram_requested" \
                 || json_error '400 Bad Request' 'invalid zram size_bytes (1GiB..16GiB or percent)'
-            if [ "$(getprop mmd.setup_complete 2>/dev/null | tr -d ' \n\r\t')" != "true" ]; then
+            if ! vm_zram_mmd_ready; then
                 json_error '409 Conflict' 'mmd owner is not ready; zram size change requires reboot'
             fi
-            setprop "$VM_ZRAM_SIZE_PROPERTY" "$_zram_requested" 2>/dev/null \
-                || json_error '500 Internal Server Error' 'failed to persist zram size property'
-            [ "$(getprop "$VM_ZRAM_SIZE_PROPERTY" 2>/dev/null | tr -d ' \n\r\t')" = "$_zram_requested" ] \
-                || json_error '500 Internal Server Error' 'zram size property readback mismatch'
+            _zram_property="$VM_MMD_ZRAM_SIZE_PROPERTY"
+            if ! setprop "$VM_MMD_ZRAM_SIZE_PROPERTY" "$_zram_requested" 2>/dev/null \
+                || [ "$(getprop "$VM_MMD_ZRAM_SIZE_PROPERTY" 2>/dev/null | tr -d ' \n\r\t')" != "$_zram_requested" ]; then
+                _zram_property="$VM_ZRAM_SIZE_PROPERTY"
+                setprop "$VM_ZRAM_SIZE_PROPERTY" "$_zram_requested" 2>/dev/null \
+                    && [ "$(getprop "$VM_ZRAM_SIZE_PROPERTY" 2>/dev/null | tr -d ' \n\r\t')" = "$_zram_requested" ] \
+                    || json_error '409 Conflict' 'mmd zram size property is not writable on this build'
+            fi
+            _zram_mode=pending_reboot
+            if ! vm_zram_is_active; then
+                vm_mmd_setup_zram >/dev/null 2>&1 || true
+                sleep 1
+                _zram_requested_bytes=$(vm_zram_size_to_bytes "$_zram_requested")
+                [ "$(vm_zram_read_disksize)" = "$_zram_requested_bytes" ] \
+                    && _zram_mode=applied_online
+            fi
             json_headers
             [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event vm zram success ZRAM_REBOOT_REQUEST 0 >/dev/null 2>&1 || true
-            printf '{"ok":true,"mode":"pending_reboot","zram_size_property":"%s","zram_size_requested":"%s","message":"重启后由 mmd 应用，当前运行态不变"}\n' "$VM_ZRAM_SIZE_PROPERTY" "$_zram_requested"
+            printf '{"ok":true,"mode":"%s","zram_size_property":"%s","zram_size_requested":"%s","message":"%s"}\n' \
+                "$_zram_mode" "$_zram_property" "$_zram_requested" \
+                "$( [ "$_zram_mode" = applied_online ] && printf 'mmd 已在线应用容量' || printf '当前 swap 正在使用，重启后由 mmd 应用' )"
             ;;
         *)
             json_error '400 Bad Request' 'invalid mode'

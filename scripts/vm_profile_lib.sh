@@ -1,12 +1,14 @@
 #!/system/bin/sh
 
-# Pixel 9 Pro ZRAM/VM contract shared by boot service and swap CGI.
-# Values are device-policy data, not Android-wide defaults. Keeping them here
-# prevents boot restore, WebUI writes, and status classification from drifting.
+# Pixel 9 Pro VM contract shared by boot service and swap CGI.
+# VM tuning remains module policy; ZRAM is an observation-only view of the
+# Android/APatch mmd owner. Keeping both contracts here prevents status and UI
+# classification from inventing a second ZRAM owner.
 
 VM_ZRAM_ALGO="lz77eh"
 VM_ZRAM_SIZE_BYTES="11945377792"
 VM_ZRAM_SIZE_PROPERTY="persist.vendor.zram_swap_size_v2"
+VM_MMD_ZRAM_SIZE_PROPERTY="mmd.zram.size"
 VM_ZRAM_SIZE_MIN_BYTES=1073741824
 VM_ZRAM_SIZE_MAX_BYTES=17179869184
 VM_ZRAM_SIZE_STEP_BYTES=268435456
@@ -146,7 +148,8 @@ vm_contract_json() {
         "$VM_MIN_FREE_KBYTES_MIN" "$VM_MIN_FREE_KBYTES_MAX" \
         "$VM_WATERMARK_SCALE_MIN" "$VM_WATERMARK_SCALE_MAX" \
         "$VM_VFS_CACHE_PRESSURE_MIN" "$VM_VFS_CACHE_PRESSURE_MAX"
-    printf '"zram_target":{"algorithm":"%s","size_bytes":%s,"property":"%s","policy":"mmd_owned_on_supported_builds"},' "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES" "$VM_ZRAM_SIZE_PROPERTY"
+    printf '"zram_target":{"algorithm":"%s","size_bytes":%s,"property":"%s","mmd_property":"%s","policy":"mmd_owner_online_if_inactive"},' \
+        "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES" "$VM_ZRAM_SIZE_PROPERTY" "$VM_MMD_ZRAM_SIZE_PROPERTY"
     printf '"zram_size_limits":{"min_bytes":%s,"max_bytes":%s,"step_bytes":%s}' "$VM_ZRAM_SIZE_MIN_BYTES" "$VM_ZRAM_SIZE_MAX_BYTES" "$VM_ZRAM_SIZE_STEP_BYTES"
 }
 
@@ -166,50 +169,91 @@ vm_zram_size_to_bytes() {
 }
 
 vm_zram_matches() {
-    _vm_zram_algo=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | sed 's/.*\[\(.*\)\].*/\1/')
-    _vm_zram_size=$(cat /sys/block/zram0/disksize 2>/dev/null | tr -d ' \n\r')
+    _vm_zram_algo=$(vm_zram_read_algorithm)
+    _vm_zram_size=$(vm_zram_read_disksize)
     [ "$_vm_zram_algo" = "$1" ] && [ "$_vm_zram_size" = "$2" ] \
-        && awk '$1 ~ /(^|\/)zram0$/ { found=1 } END { exit found ? 0 : 1 }' /proc/swaps 2>/dev/null
+        && vm_zram_is_active
 }
 
-vm_configure_zram_raw() {
-    printf '1\n' > /sys/block/zram0/reset 2>/dev/null \
-        && printf '%s\n' "$1" > /sys/block/zram0/comp_algorithm 2>/dev/null \
-        && printf '%s\n' "$2" > /sys/block/zram0/disksize 2>/dev/null \
-        && mkswap /dev/block/zram0 >/dev/null 2>&1 \
-        && swapon /dev/block/zram0 2>/dev/null
+# ZRAM is owned by Android mmd or fs_mgr.  Runtime code may only read the
+# effective device and the persistent request; it never mutates kernel ZRAM
+# state or takes over the active swap device.
+vm_zram_read_algorithm() {
+    cat /sys/block/zram0/comp_algorithm 2>/dev/null \
+        | sed 's/.*\[\([^]]*\)\].*/\1/' \
+        | tr -d ' \n\r\t'
 }
 
-vm_enable_existing_zram() {
-    mkswap /dev/block/zram0 >/dev/null 2>&1 && swapon /dev/block/zram0 2>/dev/null \
-        && awk '$1 ~ /(^|\/)zram0$/ { found=1 } END { exit found ? 0 : 1 }' /proc/swaps 2>/dev/null
+vm_zram_read_disksize() {
+    cat /sys/block/zram0/disksize 2>/dev/null | tr -d ' \n\r\t'
 }
 
-vm_reconfigure_zram() {
-    _vm_target_algo="$1"
-    _vm_target_size="$2"
-    _vm_old_algo=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | sed 's/.*\[\(.*\)\].*/\1/')
-    _vm_old_size=$(cat /sys/block/zram0/disksize 2>/dev/null | tr -d ' \n\r')
-    case "$_vm_target_algo" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac
-    case "$_vm_old_algo" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac
-    case "$_vm_target_size" in ''|*[!0-9]*) return 1 ;; esac
-    case "$_vm_old_size" in ''|*[!0-9]*) return 1 ;; esac
+vm_zram_read_swap_kb() {
+    awk '$1 ~ /(^|\/)zram0$/ { print $3; found=1 } END { if (!found) print 0 }' \
+        /proc/swaps 2>/dev/null | tail -1 | tr -d ' \n\r\t'
+}
 
-    # An interrupted boot/OTA can leave zram configured but absent from
-    # /proc/swaps.  In that state swapoff returns ENOENT even though it is
-    # safe (and necessary) to reset and re-enable the device.
-    if awk '$1 ~ /(^|\/)zram0$/ { found=1 } END { exit found ? 0 : 1 }' /proc/swaps 2>/dev/null; then
-        swapoff /dev/block/zram0 2>/dev/null || return 1
-    fi
-    if vm_configure_zram_raw "$_vm_target_algo" "$_vm_target_size" \
-        && vm_zram_matches "$_vm_target_algo" "$_vm_target_size"; then
-        return 0
-    fi
+vm_zram_is_active() {
+    [ "$(vm_zram_read_swap_kb)" -gt 0 ] 2>/dev/null
+}
 
-    swapoff /dev/block/zram0 2>/dev/null || true
-    if vm_configure_zram_raw "$_vm_old_algo" "$_vm_old_size" >/dev/null 2>&1 \
-        && vm_zram_matches "$_vm_old_algo" "$_vm_old_size"; then
-        return 1
+vm_zram_read_swap_total_kb() {
+    awk '/^SwapTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null \
+        | tr -d ' \n\r\t'
+}
+
+vm_zram_mmd_ready() {
+    [ "$(getprop mmd.enabled_aconfig 2>/dev/null | tr -d ' \n\r\t')" = true ] \
+        && [ "$(getprop mmd.zram.enabled 2>/dev/null | tr -d ' \n\r\t')" = true ]
+}
+
+vm_zram_owner() {
+    if vm_zram_mmd_ready; then
+        printf mmd
+    else
+        printf unknown
     fi
-    return 2
+}
+
+vm_zram_read_requested_algorithm() {
+    _vm_requested_algo=$(getprop persist.vendor.zram_comp_algorithm 2>/dev/null \
+        | tr -d ' \n\r\t')
+    [ -n "$_vm_requested_algo" ] && printf '%s' "$_vm_requested_algo" || printf unset
+}
+
+vm_zram_read_requested_size() {
+    _vm_requested_size=$(getprop "$VM_MMD_ZRAM_SIZE_PROPERTY" 2>/dev/null \
+        | tr -d ' \n\r\t')
+    [ -n "$_vm_requested_size" ] || _vm_requested_size=$(getprop "$VM_ZRAM_SIZE_PROPERTY" 2>/dev/null \
+        | tr -d ' \n\r\t')
+    [ -n "$_vm_requested_size" ] && printf '%s' "$_vm_requested_size" || printf unset
+}
+
+vm_zram_receipt() {
+    printf 'owner=%s\n' "$(vm_zram_owner)"
+    printf 'mmd_setup_complete=%s\n' "$(getprop mmd.setup_complete 2>/dev/null | tr -d ' \n\r\t')"
+    printf 'mmd_enabled_aconfig=%s\n' "$(getprop mmd.enabled_aconfig 2>/dev/null | tr -d ' \n\r\t')"
+    printf 'mmd_zram_enabled=%s\n' "$(getprop mmd.zram.enabled 2>/dev/null | tr -d ' \n\r\t')"
+    printf 'mmd_requested_size=%s\n' "$(getprop mmd.zram.size 2>/dev/null | tr -d ' \n\r\t')"
+    printf 'mmd_requested_algorithm=%s\n' "$(getprop mmd.zram.comp_algorithm 2>/dev/null | tr -d ' \n\r\t')"
+    printf 'algorithm=%s\n' "$(vm_zram_read_algorithm)"
+    printf 'disksize_bytes=%s\n' "$(vm_zram_read_disksize)"
+    printf 'active=%s\n' "$(vm_zram_is_active && printf true || printf false)"
+    printf 'swap_kb=%s\n' "$(vm_zram_read_swap_kb)"
+    printf 'swap_total_kb=%s\n' "$(vm_zram_read_swap_total_kb)"
+    printf 'requested_algorithm=%s\n' "$(vm_zram_read_requested_algorithm)"
+    printf 'requested_size=%s\n' "$(vm_zram_read_requested_size)"
+}
+
+vm_zram_read_requested_mmd_size() {
+    getprop "$VM_MMD_ZRAM_SIZE_PROPERTY" 2>/dev/null | tr -d ' \n\r\t'
+}
+
+vm_mmd_setup_zram() {
+    _vm_mmd_bin=""
+    for _vm_candidate in /system/bin/mmd /vendor/bin/mmd /product/bin/mmd; do
+        [ -x "$_vm_candidate" ] && _vm_mmd_bin="$_vm_candidate" && break
+    done
+    [ -n "$_vm_mmd_bin" ] || return 127
+    "$_vm_mmd_bin" --setup-zram >/dev/null 2>&1
 }

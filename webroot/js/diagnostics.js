@@ -1,7 +1,27 @@
 // 运行记录、错误面板与诊断摘要；与请求/轮询公共层分离。
 'use strict';
 (() => {
-  const state = { entries: [], maxEntries: 40, auditSession: null, auditClearPending: false };
+  const LOG_STORAGE_KEY = 'pixel9pro_runtime_log_v2';
+  const state = { entries: [], maxEntries: 80, auditSession: null, auditClearPending: false };
+
+  function loadStoredLogs() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(LOG_STORAGE_KEY) || '[]');
+      if (!Array.isArray(raw)) return;
+      state.entries = raw.slice(-state.maxEntries).map((entry) => ({
+        ts: new Date(Number(entry.ts) || Date.now()),
+        text: String(entry.text || '—'), type: String(entry.type || ''), detail: String(entry.detail || '')
+      }));
+    } catch (_) { state.entries = []; }
+  }
+
+  function persistLogs() {
+    try {
+      localStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(state.entries.map((entry) => ({
+        ts: entry.ts.getTime(), text: entry.text, type: entry.type, detail: entry.detail
+      }))));
+    } catch (_) {}
+  }
 
   function errorBlock(msg) {
     const el = document.createElement('div');
@@ -23,7 +43,7 @@
       empty.className = 'log-dim'; empty.textContent = '等待操作…';
       refs.logInner.appendChild(empty);
       if (refs.logPreview) refs.logPreview.textContent = '暂无操作';
-      if (refs.logMeta) refs.logMeta.textContent = '本次会话 · 最多保留 40 条';
+      if (refs.logMeta) refs.logMeta.textContent = '本地记录 · 最多保留 80 条';
       return;
     }
     state.entries.forEach((entry) => {
@@ -55,11 +75,13 @@
       detail: String(detail || (type === 'err' ? text : ''))
     });
     if (state.entries.length > state.maxEntries) state.entries.splice(0, state.entries.length - state.maxEntries);
+    persistLogs();
     renderLogs();
   }
 
   function clearLogs() {
     state.entries.length = 0;
+    persistLogs();
     renderLogs();
     refs.logCard?.classList.remove('open');
     refs.logToggle?.setAttribute('aria-expanded', 'false');
@@ -238,5 +260,6 @@
   document.addEventListener('freeze', pauseAuditRead);
   window.addEventListener('pagehide', pauseAuditRead);
 
-  registerFeature('diagnostics', { errorBlock, appendLog, clearLogs, openAuditLog });
+  loadStoredLogs();
+  registerFeature('diagnostics', { initialize: renderLogs, errorBlock, appendLog, clearLogs, openAuditLog });
 })();

@@ -11,10 +11,12 @@
 #   - clamp earlier entries strictly below the next severity's stock
 #     HotHysteresis boundary, with a one-decimal safety margin
 #
-# Pixel Thermal HAL rejects an earlier threshold at or above
+# Pixel Thermal HAL rejects an earlier threshold above
 # (next threshold - next HotHysteresis). See ParseSensorInfo in AOSP
 # hardware/google/pixel/thermal/utils/thermal_info.cpp. A plain translation can
 # overlap a fixed 55/59 shutdown severity, so higher offsets taper near it.
+# The extra strict margin is this module's conservative policy, not an AOSP
+# parser requirement. Generation never changes labels, mounts or HAL services.
 
 THERMAL_ALLOWED_OFFSETS="-2 0 2 4 6"
 THERMAL_UI_OFFSETS="-2 2 4 6"

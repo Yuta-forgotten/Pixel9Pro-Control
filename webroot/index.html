@@ -160,11 +160,11 @@
           <div class="log-head">
             <button class="log-toggle" id="log-toggle" type="button" aria-expanded="false" aria-controls="log-body">
               <span class="log-copy"><span class="log-label">运行记录</span><small id="log-preview">暂无操作</small></span>
-              <span class="log-arrow" aria-hidden="true">▾</span>
+              <span class="disclosure-chevron log-arrow" aria-hidden="true">›</span>
             </button>
           </div>
           <div class="log-body" id="log-body">
-            <div class="log-toolbar"><span id="log-meta">本次会话 · 最多保留 40 条</span><span class="log-toolbar-actions"><button class="tiny-btn sm tonal" id="log-audit-btn" type="button">查看后台审计日志</button><button class="tiny-btn sm" id="log-clear-btn" type="button">清空本页记录</button></span></div>
+            <div class="log-toolbar"><span id="log-meta">本地记录 · 最多保留 80 条</span><span class="log-toolbar-actions"><button class="tiny-btn sm tonal" id="log-audit-btn" type="button">查看后台审计日志</button><button class="tiny-btn sm" id="log-clear-btn" type="button">清空本页记录</button></span></div>
             <div class="log-inner" id="log-inner"><span class="log-dim">等待操作…</span></div>
           </div>
         </div>
@@ -651,7 +651,7 @@
     </div>
     <div class="modal-sheet-body">
         <div class="swap-tune-note">下方四个 VM 参数支持真实即时写入、权威复读和失败回滚，并以 custom 模式随下次开机恢复。ZRAM 容量可通过系统持久属性请求在下次重启由 mmd 应用；当前运行态不会被在线 reset。</div>
-        <details class="swap-zram-request"><summary>ZRAM 容量（重启后应用）</summary><div class="swap-zram-size-form"><label for="swap-zram-size-number">容量请求</label><div class="swap-zram-size-row"><input id="swap-zram-size-number" type="number" inputmode="numeric" placeholder="读取中…" aria-describedby="swap-zram-size-help"><span>bytes</span><button class="tiny-btn" id="swap-zram-size-apply-btn" type="button">保存请求</button></div><div id="swap-zram-size-help" class="field-help">范围和当前请求由后端 contract 提供；保存后仅写入系统属性，重启后由 mmd 应用。</div></div></details>
+        <details class="swap-zram-request"><summary>ZRAM 容量</summary><div class="swap-zram-size-form"><label for="swap-zram-size-number">容量请求</label><div class="swap-zram-size-row"><input id="swap-zram-size-number" type="number" inputmode="numeric" placeholder="读取中…" aria-describedby="swap-zram-size-help"><span>bytes</span><button class="tiny-btn" id="swap-zram-size-apply-btn" type="button">应用请求</button></div><div id="swap-zram-size-help" class="field-help">inactive zram 且 mmd 支持时尝试在线应用；active swap 会返回重启后生效。</div></div></details>
       <div class="swap-tune-form">
         <label class="swap-field" for="swap-input-swappiness">
           <span class="swap-field-head"><span>swappiness</span><b id="swap-value-swappiness">100</b></span>

@@ -1,90 +1,40 @@
 #!/system/bin/sh
 
-# Hybrid Mount promotion boundary. This promotes already-validated pending
-# files from the regular module; APD may have scanned the source before this
-# hook, so post-mount hash/context readback remains mandatory. This script never
-# mounts, binds, or writes /vendor directly.
+# APatch runs this hook after the metamodule mount hook. Thermal and UECap are
+# observation-only here; neither writes a mounted vendor path nor tries to
+# repair the current boot.
 MODDIR="${PIXEL9PRO_MODDIR:-${MODDIR:-${0%/*}}}"
-[ -r "$MODDIR/scripts/slot_transaction_lib.sh" ] || exit 0
-. "$MODDIR/scripts/slot_transaction_lib.sh" || exit 0
-slot_init || exit 0
 
-[ -r "$MODDIR/uecap_profile.sh" ] && . "$MODDIR/uecap_profile.sh" 2>/dev/null || true
-if [ "${UECAP_BACKEND:-}" = hybrid_mount ] || [ -f "$MODDIR/.uecap_backend" ] && [ "$(cat "$MODDIR/.uecap_backend" 2>/dev/null)" = hybrid_mount ]; then
-    _uecap_target_path="$MODDIR/system/vendor/firmware/uecapconfig/${UECAP_TARGET_NAME:-PLATFORM_9055801516233416490.binarypb}"
-    if slot_rollback_pending uecap; then
-        if slot_rollback_last_good uecap "$_uecap_target_path"; then
-            rm -f "$SLOT_ROOT/uecap/rollback_pending" 2>/dev/null || true
-        fi
-    else
-        slot_promote_pending uecap "$_uecap_target_path" || true
-    fi
-fi
-
-_thermal_target="$MODDIR/system/vendor/etc/thermal_info_config.json"
-_thermal_cancel_marker="$SLOT_ROOT/thermal/previous_state"
-_thermal_cancelled=0
-_thermal_cancel_requested=0
-if [ -r "$MODDIR/scripts/thermal_profile.sh" ]; then
-    . "$MODDIR/scripts/thermal_profile.sh" 2>/dev/null || true
-fi
-if [ "$(sed -n 's/^phase=//p' "$_thermal_cancel_marker" 2>/dev/null | head -n 1 | tr -d ' \n\r\t')" = cancel_requested ]; then
-    _thermal_cancel_requested=1
-    _thermal_cancel_id=$(sed -n 's/^pending_id=//p' "$_thermal_cancel_marker" 2>/dev/null | head -n 1 | tr -d ' \n\r\t')
-    _thermal_pending_id=$(slot_pending_id thermal 2>/dev/null || true)
-    if [ -z "$_thermal_pending_id" ] || [ "$_thermal_pending_id" = "$_thermal_cancel_id" ]; then
-        _thermal_previous_policy=$(sed -n 's/^policy=//p' "$_thermal_cancel_marker" 2>/dev/null | head -n 1)
-        _thermal_previous_offset=$(sed -n 's/^offset=//p' "$_thermal_cancel_marker" 2>/dev/null | head -n 1)
-        _thermal_previous_valid=0
-        case "$_thermal_previous_policy" in
-            system|custom)
-                case "$_thermal_previous_offset" in
-                    -[0-9]|[0-9])
-                        if [ "$_thermal_previous_policy" = custom ] \
-                            && command -v thermal_is_valid_offset >/dev/null 2>&1; then
-                            thermal_is_valid_offset "$_thermal_previous_offset" && _thermal_previous_valid=1
-                        elif [ "$_thermal_previous_policy" = system ]; then
-                            _thermal_previous_valid=1
-                        fi
-                        ;;
-                esac
-                ;;
-        esac
-        if [ "$_thermal_previous_valid" -eq 1 ] \
-            && { [ -z "$_thermal_pending_id" ] || slot_cancel_pending thermal; }; then
-            if slot_atomic_write "$MODDIR/.thermal_policy" "$_thermal_previous_policy" \
-                && slot_atomic_write "$MODDIR/.thermal_offset" "$_thermal_previous_offset"; then
-                rm -f "$_thermal_cancel_marker" 2>/dev/null || true
-                _thermal_cancelled=1
-            fi
-        fi
-    fi
-fi
-if [ "$_thermal_cancelled" -eq 1 ]; then
-    :
-elif [ "$_thermal_cancel_requested" -eq 1 ]; then
-    # A cancel intent is durable. Never promote a matching/unknown pending slot
-    # until the marker can be consumed and the previous state is restored.
-    log -t pixel9pro_ctrl "WARNING: thermal cancel intent remains pending; skip promotion"
-elif slot_rollback_pending thermal; then
-    _thermal_rollback_ok=0
-    if slot_lock; then
-        if slot_rollback_last_good thermal "$_thermal_target"; then
-            rm -f "$SLOT_ROOT/thermal/previous_state" 2>/dev/null || true
-            _thermal_rollback_ok=1
-        fi
-        slot_unlock
-    fi
-    if [ "$_thermal_rollback_ok" -eq 1 ]; then
-        # Keep rollback_pending when the last-good copy failed; the next boot
-        # must retry instead of silently exposing a potentially bad source.
-        rm -f "$SLOT_ROOT/thermal/rollback_pending" 2>/dev/null || true
-    fi
-else
-    if [ -n "$(slot_pending_value thermal 2>/dev/null)" ] && slot_lock; then
-        if slot_promote_pending thermal "$_thermal_target"; then
-            rm -f "$SLOT_ROOT/thermal/previous_state" 2>/dev/null || true
-        fi
-        slot_unlock
-    fi
-fi
+# Thermal is a plain Hybrid Mount source.  This hook does not lock, promote,
+# roll back, or relabel thermal content.  Record only what is
+# visible in the current namespace; post-mount performs the final readback.
+_thermal_source="$MODDIR/system/vendor/etc/thermal_info_config.json"
+_thermal_effective=/vendor/etc/thermal_info_config.json
+_thermal_source_hash=none
+_thermal_source_context=none
+_thermal_source_present=false
+_thermal_effective_hash=none
+_thermal_effective_context=none
+_thermal_config_name=$(getprop vendor.thermal.config 2>/dev/null | tr -d ' \n\r\t')
+[ -n "$_thermal_config_name" ] || _thermal_config_name=thermal_info_config.json
+[ -f "$_thermal_source" ] && _thermal_source_present=true \
+    && _thermal_source_hash=$(sha256sum "$_thermal_source" 2>/dev/null | awk '{print $1}') \
+    && _thermal_source_context=$(ls -Zd "$_thermal_source" 2>/dev/null | awk '{print $1}')
+[ -f "$_thermal_effective" ] && _thermal_effective_hash=$(sha256sum "$_thermal_effective" 2>/dev/null | awk '{print $1}')
+[ -e "$_thermal_effective" ] && _thermal_effective_context=$(ls -Zd "$_thermal_effective" 2>/dev/null | awk '{print $1}')
+_thermal_receipt_tmp="$MODDIR/.thermal_runtime_receipt.tmp.$$"
+{
+    printf 'schema=2\nboot_id=%s\nbackend=%s\nphase=post_fs_data_observed\n' \
+        "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')" \
+        "${UECAP_BACKEND:-unknown}"
+    printf 'policy=%s\nsource_path=%s\nsource_present=%s\n' \
+        "$(cat "$MODDIR/.thermal_policy" 2>/dev/null | tr -d ' \n\r\t')" \
+        "$_thermal_source" "$_thermal_source_present"
+    printf 'source_hash=%s\nsource_context=%s\n' "$_thermal_source_hash" "$_thermal_source_context"
+    printf 'effective_path=%s\neffective_hash=%s\neffective_context=%s\n' \
+        "$_thermal_effective" "$_thermal_effective_hash" "$_thermal_effective_context"
+    printf 'selected_config=%s\n' "$_thermal_config_name"
+    printf 'status=post_fs_data_observed\n'
+} > "$_thermal_receipt_tmp" 2>/dev/null \
+    && mv -f "$_thermal_receipt_tmp" "$MODDIR/.thermal_runtime_receipt" 2>/dev/null \
+    || rm -f "$_thermal_receipt_tmp" 2>/dev/null

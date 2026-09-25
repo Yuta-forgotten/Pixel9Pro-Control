@@ -3,7 +3,7 @@
 # Privacy-safe structured audit log. Callers pass controlled facts only; raw
 # requests, endpoints, dumpsys/logcat output and personal identifiers are banned.
 
-AUDIT_LOG_SCHEMA=1
+AUDIT_LOG_SCHEMA=2
 AUDIT_LOG_MAX_BYTES="${PIXEL9PRO_AUDIT_LOG_MAX_BYTES:-262144}"
 AUDIT_LOG_KEEP="${PIXEL9PRO_AUDIT_LOG_KEEP:-3}"
 
@@ -106,8 +106,9 @@ audit_log_event() {
     case "$_al_epoch" in ''|*[!0-9]*) _al_epoch=0 ;; esac
     _al_device=$(audit_log_context_value "$AUDIT_MODULE_ROOT/.device_variant" unknown)
     _al_root=$(audit_log_context_value "$AUDIT_MODULE_ROOT/.root_family" unknown)
-    printf 'schema=%s ts=%s module_version=%s root_family=%s device=%s phase=%s operation=%s result=%s reason_code=%s duration_ms=%s\n' \
-        "$AUDIT_LOG_SCHEMA" "$_al_epoch" "$(audit_log_module_version)" "$_al_root" "$_al_device" \
+    _al_boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n\t')
+    printf 'schema=%s ts=%s boot_id=%s module_version=%s root_family=%s device=%s phase=%s operation=%s result=%s reason_code=%s duration_ms=%s\n' \
+        "$AUDIT_LOG_SCHEMA" "$_al_epoch" "$(audit_log_token "$_al_boot_id")" "$(audit_log_module_version)" "$_al_root" "$_al_device" \
         "$_al_phase" "$_al_operation" "$_al_result" "$_al_reason" "$_al_duration" \
         >> "$AUDIT_LOG_FILE" 2>/dev/null || return 1
     chmod 600 "$AUDIT_LOG_FILE" 2>/dev/null

@@ -731,7 +731,16 @@ async function refreshBaseband() {
     const data = await apiFetch(API.checkBaseband, { timeoutMs: 6000 });
     renderBasebandRows(data);
   } catch (err) {
-    refs.basebandRows.replaceChildren(); refs.basebandRows.appendChild(errorBlock('获取失败：' + err.message));
+    const status = Number(err?.status || 0);
+    const detail = err?.detail || err?.message || 'unknown';
+    const reason = status === 404
+      ? '基带状态 CGI 不存在或当前 WebUI source 未更新，请检查模块是否启用及 webroot/cgi-bin/check_baseband.sh。'
+      : status === 503
+        ? '基带状态依赖的运行 receipt 不可用，请先等待 late-start 完成或重启后复读。'
+        : '请查看后端返回的错误字段和模块 receipt。';
+    const message = `基带配置读取失败（HTTP ${status || 'unknown'}）：${detail}\n${reason}`;
+    refs.basebandRows.replaceChildren(); refs.basebandRows.appendChild(errorBlock(message));
+    appendLog(message, 'err');
   }
 }
 

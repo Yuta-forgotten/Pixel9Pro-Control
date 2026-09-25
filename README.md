@@ -34,7 +34,7 @@
 
 ### 温控策略与自定义阈值
 
-默认只有一个零修改选项：**不修改温控（不添加配置）**。该选项不创建 `/vendor/etc/thermal_info_config.json` overlay，也不修改或停止系统 Thermal HAL。只有用户明确选择 custom 时，才从当前设备真实 vendor 配置或已验证的模块私有 stock snapshot 生成下列偏移。
+默认只有一个零修改选项：**不修改温控（不添加配置）**。该选项不创建 `/vendor/etc/thermal_info_config.json` overlay，也不修改或停止系统 Thermal HAL。只有用户明确选择 custom 时，才从当前设备真实 vendor 配置或已验证的模块私有 stock snapshot 生成下列偏移。Hybrid Mount 只消费模块 regular source；WebUI 修改写入 source 并标记 `pending_reboot`，不在运行期 promotion、bind 或重启 Thermal HAL。
 
 | 档位 | Offset 偏移值 | 最早介入温度 (HINT) | 说明 |
 |------|--------|---------------------------|------|
@@ -43,16 +43,20 @@
 | 日常放宽 | +4°C | 41°C | 显式 custom；靠近 SHUTDOWN 时收敛 |
 | 最大放宽 | +6°C | 43°C | 前置 severity 温控 +6°C，最后安全阈值不平移 |
 
-偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前置 severity 先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。靠近 SHUTDOWN 时，生成器按 stock `HotHysteresis` 从后向前收窄，并额外保留 `0.1°C` 的严格间隔，保证“前一档阈值 `<` 下一档阈值减下一档 hysteresis”；只检查阈值递增并不足以保证 Pixel Thermal HAL 接受配置。
+偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前置 severity 先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。靠近 SHUTDOWN 时，生成器按 stock `HotHysteresis` 从后向前收窄，并额外保留 `0.1°C` 的严格间隔，保证“前一档阈值 `<` 下一档阈值减下一档 hysteresis”；只检查阈值递增并不足以保证 Pixel Thermal HAL 接受配置。SELinux 只验证 effective `/vendor/etc/thermal_info_config.json` 的 `vendor_configs_file`；模块 source 的 `system_file` label 不再被错误地当成挂载证明。
 
 WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，避免普通刷新被 `dumpsys thermalservice` 慢路径阻塞；当缓存缺失、无 `VIRTUAL-SKIN`、温度越界或连续异常时，自动走 `fresh=1` 重建。
+
+温控档位提交后进入模块私有 `.thermal_tx` journal。同一 boot 且 backend 返回
+`cancel_supported=true` 时，“放弃本次修改”会携带 `pending_id` 原子恢复旧 source、policy
+和 offset；跨 boot 或 readback degraded 状态不会显示撤销按钮。待重启期间禁止再次选择其他档位，避免覆盖同一 source。
 
 ### ZRAM / 内存优化
 
 - 算法：由当前系统 owner 初始化；caiman / `CP41.260814.003.B1` 实机为 `lz77eh`（Emerald Hill 硬件加速）
-- 容量：WebUI 显示设备实际 `disksize` 与 swap 状态；
+- 容量：WebUI 只读显示设备实际 `disksize`、owner、swap 状态与 `SwapTotal`；APatch 0.13.8 + Hybrid Mount 下由 mmd 独占 ZRAM，Control 不 reset/swapoff/resize；
 - VM 参数：`swappiness=100`、`min_free_kbytes=131072`、`watermark_scale_factor=200`、`vfs_cache_pressure=60`
-- 首次安装默认 `feature_vm=system`，模块不写 VM、ZRAM 或 dirty 参数。可显式选择模块优化或禁用本模块写入；WebUI 的模块优化/手动值均属于显式 mutation。ZRAM 算法/容量在 mmd-owned build 上只读显示 owner、实际容量、`/proc/swaps` 活跃状态和 `SwapTotal`。
+- 首次安装默认 `feature_vm=system`，模块不写 ZRAM；VM/dirty 参数仅在用户显式选择后写入。WebUI 的 ZRAM 容量请求先写 mmd 官方 `mmd.zram.size`，仅在当前 swap 未启用且设备提供 `mmd --setup-zram` 时尝试在线应用；正在使用的 zram 不执行 swapoff/reset，返回 `pending_reboot` 由 mmd 在下次启动应用。
 
 ### 待机与 modem 策略（以 Google 默认机制为主）
 
@@ -143,10 +147,13 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 
 ## 安装
 
+本次挂载后端设计、APatch/Hybrid Mount 生命周期与官方约束见
+[`DESIGN.md`](DESIGN.md) 及 `E:\Pixel ADB\docs\` 下的研究文档。
+
 1. 温控模块使用 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中发布；基带模块 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases#release-v1.1.0-rc3)
 2. KernelSU /Apatch用户需先安装 metamodule（如 `Hybrid Mount`）并重启
 3. APatch / KernelSU / Magisk → 模块 → 从存储安装
-4. **首次安装**：音量键交互向导依次配置温控、CPU 调度、按 SKU 的 UECap、NR、SIM2、VM/ZRAM 和 NTP；最终摘要后再次倒计时确认。安全默认是温控不添加配置、NR 关闭、VM/ZRAM system no-write，调度能力不完整时强制 off，komodo UECap 保持 stock。`meta-overlayfs` backend 使用 content staging；Hybrid Mount backend 使用 regular module source staging；两者都在重启后复读有效 `/vendor`，不执行运行期动态 bind。
+4. **首次安装**：音量键交互向导依次配置温控、CPU 调度、按 SKU 的 UECap、NR、SIM2、VM/ZRAM 和 NTP；最终摘要后再次倒计时确认。安全默认是温控不添加配置、NR 关闭、VM/ZRAM system no-write，调度能力不完整时强制 off，komodo UECap 保持 stock。`meta-overlayfs` backend 使用 content image（温控变更需卸载重装）；Hybrid Mount backend 使用单一 regular module source（温控变更写 source，重启后复读有效 `/vendor`），两者都不执行运行期动态 bind。
 5. **升级安装**：Control 自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；
 若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline。
 若 MetaModule content image 仍有旧 Control 内容，安装器会拒绝覆盖并要求先卸载旧 Control、重启，再安装新包，避免 stale thermal/UECap 文件残留。
@@ -158,7 +165,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 
 - `Pixel 9 Pro (caiman)` / `Pixel 9 Pro XL (komodo)`
 - `Android 17 QPR2 Beta4  (SDK 37)` 当前验证基线
-- APatch 与 `Hybrid Mount` OverlayFS 挂载已在本机测试
+- APatch 0.13.8 bundled KernelPatch + `Hybrid Mount` 采用 regular source 挂载；安装后必须以同一 boot 的 effective readback receipt 为准
 - `KernelSU 0.9+` 代码兼容
 - `Magisk v27+` 普通功能代码兼容；UECap managed profiles 明确停用
 
@@ -177,9 +184,9 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 | 原因 | 解决 |
 |------|------|
 | `thermal_info_config.json` 格式错误 | 安全模式删除 `/data/adb/modules/pixel9pro_control/` |
-| Control 在活动 `MetaModule` 的 post-mount 后动态 bind `/vendor` | 已改为安装阶段 content staging；post-mount 只做有效路径/hash 复读 |
-| 活动 MetaModule 下通过 WebUI 修改 UECap/自定义温控 | 返回 `409 Conflict`，保留当前有效状态；卸载 Control、重启后重新安装并在安装向导中选择目标档位 |
-| `service.sh` 阻塞启动 | 同上 |
+| thermal source 与 effective context 不同 | source 只作输入；post-mount 只读复核 effective `vendor_configs_file`，不再强制 source `chcon` |
+| 活动 MetaModule content image 下通过 WebUI 修改自定义温控 | 返回 `409 Conflict`，卸载 Control、重启后重新安装并在安装向导中选择目标档位 |
+| Hybrid Mount 下温控挡位反复互锁 | 已删除 thermal A/B slot、promotion 与 post-fs-data 写 `/vendor`；使用单一 `.thermal_tx` journal，同一 boot 可按 txid 撤销，复读成功后自动清理 |
 
 **紧急恢复**：长按电源键 → 第二屏时`电源`+`音量下`进安全模式 → 重启。
 

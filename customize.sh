@@ -311,6 +311,7 @@ esac
 ui_print ""
 
 thermal_policy_init "$MODPATH" || abort
+installer_write "$MODPATH/.thermal_config_name" "$THERMAL_CONFIG_NAME"
 if ! thermal_policy_prepare_snapshot "$device" "$OLDDIR" yes; then
     ui_print "  ✗ 无法从当前设备/旧模块建立温控 stock 基线, 已中止安装"
     abort
@@ -695,18 +696,11 @@ if [ "$THERMAL_POLICY" = custom ]; then
         THERMAL_POLICY=system
         offset=0
         ui_print "  ⚠ 当前 stock 基线无法生成合法 custom thermal, 已 fail closed 到系统默认"
-    elif [ "${UECAP_BACKEND:-}" = hybrid_mount ] \
-        && { ! chcon u:object_r:vendor_configs_file:s0 "$OUT_JSON" 2>/dev/null \
-        || [ "$(ls -Zd "$OUT_JSON" 2>/dev/null | awk '{print $1}')" != u:object_r:vendor_configs_file:s0 ]; }; then
-        # Hybrid Mount scans the regular-module source before post-fs-data.
-        # An unlabeled/system_file thermal overlay makes thermal-hal abort and
-        # leaves system_server blocked in getThermalHalLocked during boot.
-        rm -f "$OUT_JSON" 2>/dev/null || true
-        installer_write "$THERMAL_POLICY_FILE" system
-        installer_write "$OFFSET_FILE" 0
-        THERMAL_POLICY=system
-        offset=0
-        ui_print "  ⚠ 无法设置 vendor_configs_file 标签, 已回退到系统温控"
+    elif ! thermal_policy_label_source; then
+        # APatch may restore the regular-module source to a generic label before
+        # Hybrid Mount scans it. Keep the source and defer the authoritative
+        # SELinux decision to effective /vendor readback after reboot.
+        ui_print "  ⚠ thermal source label 未能在安装阶段确认，将在重启后复读 effective context"
     fi
 else
     thermal_policy_remove_overlay || abort
@@ -714,18 +708,13 @@ else
     installer_write "$OFFSET_FILE" 0
 fi
 
-if [ "$UECAP_BACKEND" = hybrid_mount ]; then
-    if [ "$THERMAL_POLICY" = custom ] && [ -f "$OUT_JSON" ]; then
-        slot_stage_file thermal "$OUT_JSON" \
-            system/vendor/etc/thermal_info_config.json staged "$device" \
-            "$(getprop ro.build.fingerprint 2>/dev/null)" vendor_configs_file \
-            || { ui_print "  ✗ 无法提交 Hybrid thermal pending slot"; abort; }
-    else
-        slot_stage_file thermal "$OUT_JSON" \
-            system/vendor/etc/thermal_info_config.json remove "$device" \
-            "$(getprop ro.build.fingerprint 2>/dev/null)" vendor_configs_file \
-            || { ui_print "  ✗ 无法提交 Hybrid thermal remove slot"; abort; }
-    fi
+# Hybrid Mount consumes the regular module source before post-fs-data.  Thermal
+# has no second A/B store: the generated source is the only desired payload and
+# becomes effective on the next reboot.  Never promote or relabel it at boot.
+rm -f "$MODPATH/scripts/slot_transaction_lib.sh" 2>/dev/null || true
+if [ -r "$MODPATH/scripts/thermal_policy_lib.sh" ] \
+    && command -v thermal_policy_cleanup_legacy_state >/dev/null 2>&1; then
+    thermal_policy_cleanup_legacy_state "$MODPATH"
 fi
 
 ui_print "  温控偏移: $(thermal_format_offset "$offset")"

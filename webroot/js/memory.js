@@ -607,17 +607,19 @@ async function toggleSwapMode() {
   if (state.swapBusy) return;
   state.swapBusy = true;
   const newMode = state.featureVm === 'optimized' ? 'stock' : 'optimized';
+  appendLog(newMode === 'optimized' ? '正在应用模块 VM 优化…' : '正在恢复系统默认 VM 参数…', 'dim');
   try {
     const data = await apiFetch(API.swap, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: newMode }), timeoutMs: 8000 });
     state.swapMode = data.mode || newMode;
     state.featureVm = data.feature_vm || (newMode === 'optimized' ? 'optimized' : 'system');
     state.swapData = data;
-    showToast(newMode === 'optimized' ? '已应用模块优化 VM 参数' : '已切换为系统默认，后续开机不再写 VM/ZRAM');
-    appendLog(newMode === 'optimized' ? 'VM 模块优化已应用' : 'VM/ZRAM 已切换为系统默认 no-write', 'ok');
+    showToast(newMode === 'optimized' ? '已应用模块优化 VM 参数' : '已恢复系统默认 VM 参数，后续开机不再写 VM/ZRAM');
+    appendLog(newMode === 'optimized' ? 'VM 模块优化已应用' : 'VM 参数已立即恢复系统默认，后续开机 no-write', 'ok');
     renderSwapCard(data);
     refreshSwap();
-  } catch (_) {
-    showToast('请求失败');
+  } catch (err) {
+    showToast(`请求失败：${err?.message || '未知错误'}`);
+    appendLog(`VM 设置失败：${err?.message || '未知错误'}`, 'err');
   } finally {
     state.swapBusy = false;
   }
@@ -626,6 +628,7 @@ async function toggleSwapMode() {
 async function applySwapCustom() {
   if (state.swapBusy) return;
   state.swapBusy = true;
+  appendLog('正在提交自定义 VM 参数…', 'dim');
   const values = getSwapTuneValues();
   try {
     const data = await apiFetch(API.swap, {
@@ -644,6 +647,7 @@ async function applySwapCustom() {
     refreshSwap();
   } catch (err) {
     showToast(`请求失败：${err.message || '未知错误'}`);
+    appendLog(`Swap 自定义参数失败：${err.message || '未知错误'}`, 'err');
   } finally {
     state.swapBusy = false;
   }
@@ -659,12 +663,16 @@ async function applyZramSizeRequest() {
     refs.swapZramSizeNumber?.focus();
     return;
   }
+  appendLog(`正在提交 ZRAM 容量请求：${value}`, 'dim');
   try {
     const data = await apiFetch(API.swap, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'zram_size', size_bytes: value }), timeoutMs: 8000 });
     showToast(data.message || 'ZRAM 容量将在重启后由 mmd 应用');
     appendLog(`ZRAM 容量请求已保存：${value}（重启生效）`, 'ok');
     refreshSwap();
-  } catch (err) { showToast(`ZRAM 容量请求失败：${err.message || '未知错误'}`); }
+  } catch (err) {
+    showToast(`ZRAM 容量请求失败：${err.message || '未知错误'}`);
+    appendLog(`ZRAM 容量请求失败：${err.message || '未知错误'}`, 'err');
+  }
 }
 
 registerFeature('memory', {

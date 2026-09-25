@@ -50,7 +50,6 @@ REQUIRED_ENTRIES: Final = frozenset(
         "webroot/cgi-bin/audit_log.sh",
         "scripts/thermal_profile.sh",
         "scripts/thermal_policy_lib.sh",
-        "scripts/slot_transaction_lib.sh",
         "scripts/audit_log_lib.sh",
         "uecap_profile.sh",
         "config/uecap_devices.tsv",

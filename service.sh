@@ -21,26 +21,42 @@ IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
 SCHEDULER_INVENTORY_PATH="$MODDIR/.scheduler_inventory"
 SERVICE_LOCK_DIR="$MODDIR/.service_lock"
+SERVICE_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')"
+
+service_start_ticks() {
+    sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | awk '{print $20}'
+}
 
 service_singleton_or_exit() {
     if mkdir "$SERVICE_LOCK_DIR" 2>/dev/null; then
-        printf '%s\n' "$$" > "$SERVICE_LOCK_DIR/pid" 2>/dev/null || true
-        trap 'rm -f "$SERVICE_LOCK_DIR/pid" 2>/dev/null; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null' EXIT
+        printf 'pid=%s\nboot_id=%s\nstart_ticks=%s\n' "$$" "$SERVICE_BOOT_ID" "$(service_start_ticks $$)" \
+            > "$SERVICE_LOCK_DIR/owner" 2>/dev/null || true
+        trap 'rm -f "$SERVICE_LOCK_DIR/owner" 2>/dev/null; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null' EXIT
         return 0
     fi
-    _service_old_pid=$(cat "$SERVICE_LOCK_DIR/pid" 2>/dev/null | tr -d ' \r\n\t')
+    _service_wait=0
+    while [ ! -s "$SERVICE_LOCK_DIR/owner" ] && [ "$_service_wait" -lt 3 ]; do
+        sleep 1
+        _service_wait=$((_service_wait + 1))
+    done
+    [ -s "$SERVICE_LOCK_DIR/owner" ] || exit 0
+    _service_old_pid=$(sed -n 's/^pid=//p' "$SERVICE_LOCK_DIR/owner" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+    _service_old_boot=$(sed -n 's/^boot_id=//p' "$SERVICE_LOCK_DIR/owner" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+    _service_old_ticks=$(sed -n 's/^start_ticks=//p' "$SERVICE_LOCK_DIR/owner" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
     case "$_service_old_pid" in ''|*[!0-9]*) _service_old_pid="" ;; esac
-    if [ -n "$_service_old_pid" ] && [ -r "/proc/$_service_old_pid/cmdline" ]; then
-        _service_old_cmd=$(tr '\0' ' ' < "/proc/$_service_old_pid/cmdline" 2>/dev/null)
-        case "$_service_old_cmd" in
-            *pixel9pro_control/service.sh*) exit 0 ;;
-        esac
+    _service_live_ticks=""
+    [ -n "$_service_old_pid" ] && _service_live_ticks=$(service_start_ticks "$_service_old_pid")
+    if [ -n "$_service_old_pid" ] && [ "$_service_old_boot" = "$SERVICE_BOOT_ID" ] \
+        && kill -0 "$_service_old_pid" 2>/dev/null \
+        && [ -n "$_service_old_ticks" ] && [ "$_service_live_ticks" = "$_service_old_ticks" ]; then
+        exit 0
     fi
-    rm -f "$SERVICE_LOCK_DIR/pid" 2>/dev/null || true
+    rm -f "$SERVICE_LOCK_DIR/owner" 2>/dev/null || true
     rmdir "$SERVICE_LOCK_DIR" 2>/dev/null || exit 0
     mkdir "$SERVICE_LOCK_DIR" 2>/dev/null || exit 0
-    printf '%s\n' "$$" > "$SERVICE_LOCK_DIR/pid" 2>/dev/null || true
-    trap 'rm -f "$SERVICE_LOCK_DIR/pid" 2>/dev/null; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null' EXIT
+    printf 'pid=%s\nboot_id=%s\nstart_ticks=%s\n' "$$" "$SERVICE_BOOT_ID" "$(service_start_ticks $$)" \
+        > "$SERVICE_LOCK_DIR/owner" 2>/dev/null || true
+    trap 'rm -f "$SERVICE_LOCK_DIR/owner" 2>/dev/null; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null' EXIT
 }
 
 service_singleton_or_exit
@@ -241,13 +257,16 @@ apply_uecap_profile() {
         _mode=$(uecap_current_manual_mode)
         if uecap_pre_modem_receipt_is_current "$_mode"; then
             _source=$(uecap_resolve_source "$_mode")
-            uecap_capture_radio_snapshot >/dev/null 2>&1 || true
             UECAP_RELOAD_DISPATCHED=false
             UECAP_RELOAD_RESULT="not_required_pre_modem"
             uecap_write_runtime_receipt "$_mode" "$(uecap_hash "$_source")" \
                 "$(uecap_hash "$UECAP_TARGET")" pre_modem applied pre_modem_observed \
                 >/dev/null 2>&1 || log -t pixel9pro_ctrl "WARNING: failed to refresh UECap pre-modem receipt"
             log -t pixel9pro_ctrl "UECap bind receipt refreshed: $_mode; modem load remains unconfirmed, actual_rat=$(uecap_receipt_get actual_rat 2>/dev/null || echo unknown), nr_registered=$(uecap_receipt_get nr_registered 2>/dev/null || echo unknown)"
+            return 0
+        fi
+        if [ "$UECAP_BACKEND" = hybrid_mount ] || [ "$UECAP_BACKEND" = metamodule_content ]; then
+            log -t pixel9pro_ctrl "UECap source/effective receipt is not current; no runtime mount or bind will be attempted"
             return 0
         fi
         if uecap_apply_mode "$_mode" "boot_manual" 2>/dev/null; then
@@ -695,64 +714,17 @@ fi
 # sched_util_clamp_min is applied with the selected CPU profile: balanced and
 # battery use 0; default and the internal performance baseline use 1024.
 
-# === ZRAM / VM 配置 ===
+# === ZRAM observation / VM policy ===
 if [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
-zram_record_state() {
-    _zr_algo=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | sed 's/.*\[\(.*\)\].*/\1/')
-    _zr_size=$(cat /sys/block/zram0/disksize 2>/dev/null | tr -d ' \n\r')
-    _zr_swap=$(awk '$1 ~ /(^|\/)zram0$/ { print $3; found=1 } END { if (!found) print 0 }' /proc/swaps 2>/dev/null | tail -1)
-    _zr_total=$(awk '/^SwapTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
-    runtime_write_value "$ZRAM_STATE_FILE" "epoch=$(date +%s)\nalgorithm=${_zr_algo:-unknown}\ndisksize=${_zr_size:-0}\nswap_kb=${_zr_swap:-0}\nswap_total_kb=${_zr_total:-0}\n" 2>/dev/null || true
-}
-# 原厂出厂: persist.vendor.zram_comp_algorithm 默认为 lz4, ZRAM 大小 50% RAM ≈ 8GB.
-# init.rc 代码兜底默认是 lz77eh (Emerald Hill 硬件), 但出厂 persist 属性覆盖为 lz4.
-# 目标算法、大小和 VM 预设由 scripts/vm_profile_lib.sh 统一定义。
-#
-# persist 属性确保后续重启时 init.rc 直接使用 lz77eh, 减少 swapoff 次数.
-if ! setprop persist.vendor.zram_comp_algorithm "$VM_ZRAM_ALGO" 2>/dev/null \
-    || [ "$(getprop persist.vendor.zram_comp_algorithm 2>/dev/null | tr -d ' \n\r\t')" != "$VM_ZRAM_ALGO" ]; then
-    log -t pixel9pro_ctrl "WARNING: failed to persist ZRAM algorithm property"
-fi
-
-CURRENT_ALGO=$(cat /sys/block/zram0/comp_algorithm 2>/dev/null | sed 's/.*\[\(.*\)\].*/\1/')
-CURRENT_SIZE=$(cat /sys/block/zram0/disksize 2>/dev/null)
-
-# 参数相同不等于 swap 正在使用：init/OTA/异常 swapoff 可能留下正确的
-# comp_algorithm/disksize，却把 zram0 从 /proc/swaps 移除。必须复用共享
-# contract 的完整匹配（含 active swap）判定，否则会错误地 skip swapon。
-if [ "$(getprop mmd.setup_complete 2>/dev/null | tr -d ' \n\r\t')" = "true" ]; then
-    # On current caiman builds mmd is the authoritative zram owner; fs_mgr
-    # explicitly skips zram setup when mmd has initialized it. Do not reset or
-    # resize it from the module, because the kernel-backed size is capped by
-    # mmd/fstab (currently ~7.6 GiB). Only verify that swap is active.
-    if vm_zram_matches "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES"; then
-        log -t pixel9pro_ctrl "ZRAM: mmd-owned target already active"
-    elif vm_enable_existing_zram && vm_zram_matches "$CURRENT_ALGO" "$CURRENT_SIZE"; then
-        log -t pixel9pro_ctrl "ZRAM: mmd-owned existing size retained and enabled"
-    else
-        log -t pixel9pro_ctrl "ZRAM: mmd-owned; retained effective size without module reset"
-    fi
-elif ! vm_zram_matches "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES"; then
-    log -t pixel9pro_ctrl "ZRAM reconfigure: ${CURRENT_ALGO}/${CURRENT_SIZE} -> ${VM_ZRAM_ALGO}/${VM_ZRAM_SIZE_BYTES}"
-    if vm_reconfigure_zram "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES"; then
-        log -t pixel9pro_ctrl "ZRAM: $VM_ZRAM_ALGO $(($VM_ZRAM_SIZE_BYTES / 1048576))MB ready"
-    else
-        _zram_rc=$?
-        if [ "$_zram_rc" -eq 2 ]; then
-            log -t pixel9pro_ctrl "ERROR: ZRAM reconfigure failed and previous configuration restore was incomplete"
-        else
-            log -t pixel9pro_ctrl "WARNING: ZRAM reconfigure failed; previous configuration restored"
-            if vm_enable_existing_zram; then
-                log -t pixel9pro_ctrl "ZRAM fallback: re-enabled existing kernel-supported size"
-            else
-                log -t pixel9pro_ctrl "ERROR: ZRAM fallback re-enable failed"
-            fi
-        fi
-    fi
-else
-    log -t pixel9pro_ctrl "ZRAM: already $VM_ZRAM_ALGO $(($VM_ZRAM_SIZE_BYTES / 1048576))MB, skip"
-fi
-zram_record_state
+    # mmd/fs_mgr own setup when the standard owner properties are enabled. The
+    # receipt records setup state, actual device values and inactive swap; boot
+    # never seizes ownership or mutates zram0.
+    _zram_receipt=$(printf 'schema=2\nepoch=%s\nboot_id=%s\n' \
+        "$(date +%s)" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; \
+        vm_zram_receipt)
+    runtime_write_value "$ZRAM_STATE_FILE" "$_zram_receipt" \
+        || log -t pixel9pro_ctrl "WARNING: failed to record ZRAM observation"
+    log -t pixel9pro_ctrl "ZRAM observed: owner=$(vm_zram_owner) algorithm=$(vm_zram_read_algorithm) size=$(vm_zram_read_disksize) active=$(vm_zram_is_active && printf true || printf false)"
 
 # === Swap / 内存回收调优 (按上次用户选择恢复) ===
 SWAP_CUSTOM_FILE="$MODDIR/.swap_custom"

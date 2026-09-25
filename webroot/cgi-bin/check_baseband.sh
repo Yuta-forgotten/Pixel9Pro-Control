@@ -1,3 +1,4 @@
+#!/system/bin/sh
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
 . "$MODDIR/webroot/cgi-bin/_baseband_status.sh"
 

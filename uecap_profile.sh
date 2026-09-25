@@ -35,7 +35,7 @@ UECAP_DEVICE_CONTRACT="${PIXEL9PRO_UECAP_CONTRACT:-$MODDIR/config/uecap_devices.
 UECAP_PAYLOAD_CONTRACT="${PIXEL9PRO_UECAP_PAYLOAD_CONTRACT:-$MODDIR/config/uecap_payloads.tsv}"
 UECAP_METAMODULE_LINK="${PIXEL9PRO_METAMODULE_LINK:-/data/adb/metamodule}"
 UECAP_STOCK_BASELINE_FILE="${PIXEL9PRO_UECAP_STOCK_BASELINE_FILE:-$MODDIR/.uecap_stock_baseline_hash}"
-UECAP_BACKEND="dynamic_bind"
+UECAP_BACKEND="unsupported"
 UECAP_STAGE_RESULT="not_run"
 UECAP_MOUNT_OBSERVED="unknown"
 UECAP_CONTEXT_VERIFIED="unknown"
@@ -67,10 +67,6 @@ UECAP_RECEIPT_FRESHNESS="unknown"
 UECAP_RADIO_SNAPSHOT_RESULT="not_run"
 UECAP_NSA_STATUS="not_applicable"
 UECAP_NSA_REASON="no_confirmed_nsa_cell"
-
-if [ -r "$MODDIR/scripts/slot_transaction_lib.sh" ]; then
-    . "$MODDIR/scripts/slot_transaction_lib.sh" 2>/dev/null || true
-fi
 
 if ! command -v audit_log_event >/dev/null 2>&1 \
     && [ -r "$MODDIR/scripts/audit_log_lib.sh" ]; then
@@ -223,7 +219,8 @@ uecap_refresh_runtime_policy() {
             return 0
         fi
     else
-        UECAP_BACKEND="dynamic_bind"
+        UECAP_BACKEND="unsupported"
+        UECAP_STATUS_REASON="hybrid_mount_required"
     fi
     case "$UECAP_CONTRACT_RESULT:$UECAP_DEVICE_POLICY:$UECAP_ROOT_IMPL" in
         valid:managed_profiles:magisk|valid:single_candidate:magisk)
@@ -543,7 +540,6 @@ uecap_hybrid_readback_mode() {
         _uecap_hybrid_source_context=$(ls -Zd "$_uecap_hybrid_source" 2>/dev/null | awk '{print $1}')
         [ -n "$_uecap_hybrid_source_hash" ] \
             && [ "$(uecap_hash "$_uecap_hybrid_source")" = "$_uecap_hybrid_source_hash" ] \
-            && [ "$_uecap_hybrid_source_context" = u:object_r:vendor_fw_file:s0 ] \
             && [ "$_uecap_hybrid_source_hash" = "$UECAP_READBACK_EFFECTIVE_HASH" ] || return 1
         uecap_hybrid_mount_observed || return 1
         UECAP_READBACK_SOURCE_HASH="$_uecap_hybrid_source_hash"
@@ -647,10 +643,7 @@ uecap_hybrid_stage_mode() {
             _uecap_hybrid_context=$(ls -Zd "$UECAP_TARGET" 2>/dev/null | awk '{print $1}')
             [ -n "$_uecap_hybrid_baseline" ] \
                 && [ "$_uecap_hybrid_context" = u:object_r:vendor_fw_file:s0 ] || return 1
-            slot_stage_file uecap "$_uecap_hybrid_stage_target" \
-                "system/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME" remove \
-                "$UECAP_DEVICE" "$(getprop ro.build.fingerprint 2>/dev/null)" vendor_fw_file \
-                || return 1
+            rm -f "$_uecap_hybrid_stage_target" 2>/dev/null || return 1
             uecap_atomic_write "$UECAP_STOCK_BASELINE_FILE" "$_uecap_hybrid_baseline" || return 1
             uecap_atomic_write "$MODDIR/.uecap_content_image" metadata_staging || return 1
             uecap_atomic_write "$MODDIR/.uecap_backend" hybrid_mount || return 1
@@ -661,10 +654,19 @@ uecap_hybrid_stage_mode() {
     esac
     _uecap_hybrid_stage_source=$(uecap_resolve_source "$_uecap_hybrid_stage_mode") || return 1
     [ -f "$_uecap_hybrid_stage_source" ] || return 1
-    slot_stage_file uecap "$_uecap_hybrid_stage_source" \
-        "system/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME" staged \
-        "$UECAP_DEVICE" "$(getprop ro.build.fingerprint 2>/dev/null)" \
-        u:object_r:vendor_fw_file:s0 || return 1
+    mkdir -p "$_uecap_hybrid_stage_root" || return 1
+    _uecap_hybrid_stage_tmp="${_uecap_hybrid_stage_target}.tmp.$$"
+    cp -f "$_uecap_hybrid_stage_source" "$_uecap_hybrid_stage_tmp" || return 1
+    chmod 0644 "$_uecap_hybrid_stage_tmp" 2>/dev/null || {
+        rm -f "$_uecap_hybrid_stage_tmp" 2>/dev/null
+        return 1
+    }
+    chcon u:object_r:vendor_fw_file:s0 "$_uecap_hybrid_stage_tmp" 2>/dev/null || true
+    [ "$(uecap_hash "$_uecap_hybrid_stage_tmp")" = "$(uecap_hash "$_uecap_hybrid_stage_source")" ] || {
+        rm -f "$_uecap_hybrid_stage_tmp" 2>/dev/null
+        return 1
+    }
+    mv -f "$_uecap_hybrid_stage_tmp" "$_uecap_hybrid_stage_target" || return 1
     uecap_atomic_write "$MODDIR/.uecap_content_image" metadata_staging || return 1
     uecap_atomic_write "$MODDIR/.uecap_backend" hybrid_mount || return 1
     UECAP_CONTENT_IMAGE="$_uecap_hybrid_stage_target"
@@ -1387,12 +1389,22 @@ uecap_apply_mode() {
         uecap_log_line "UECap mode change rejected: MetaModule content staging requires module reinstall and reboot"
         return 4
     fi
+    if [ "$UECAP_BACKEND" != hybrid_mount ]; then
+        UECAP_APPLY_RESULT="hybrid_mount_required"
+        uecap_log_line "UECap mode change rejected: Hybrid Mount source backend is required"
+        return 4
+    fi
     _uecap_apply_mode_value=$(uecap_mode_label "$1")
     [ "$_uecap_apply_mode_value" != "unknown" ] || return 1
     _uecap_apply_reason="${2:-manual}"
     case "$_uecap_apply_reason" in ''|*[!A-Za-z0-9_.:-]*) return 1 ;; esac
 
     if [ "$UECAP_BACKEND" = hybrid_mount ]; then
+        if [ -f "$MODDIR/.uecap_reboot_required" ] \
+            && [ "$(uecap_current_manual_mode)" != "$_uecap_apply_mode_value" ]; then
+            UECAP_APPLY_RESULT="pending_reboot_exists"
+            return 5
+        fi
         uecap_stage_mode "$_uecap_apply_mode_value" || {
             UECAP_APPLY_RESULT="hybrid_stage_failed"
             return 1

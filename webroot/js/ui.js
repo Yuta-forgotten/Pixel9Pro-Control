@@ -392,6 +392,10 @@ function setRebootError(message = '') {
 function openRebootModal(pending, prev, context = 'thermal') {
   state.rebootContext = context;
   if (context === 'thermal') requireFeature('thermal').setPendingChange(pending, prev);
+  if (refs.rebootCancelBtn) {
+    refs.rebootCancelBtn.hidden = context === 'thermal'
+      && pending?.cancel_supported !== true;
+  }
   setRebootBusy(false);
   setRebootError('');
   if (context === 'scheduler') {
@@ -413,11 +417,15 @@ function closeRebootModal(message = '', options = {}) {
   const normalizedOptions = options && typeof options === 'object' ? options : {};
   if (!normalizedOptions.force && state.rebootContext === 'thermal'
     && requireFeature('thermal').isCancelBusy?.()) return false;
+  if (!normalizedOptions.force && !normalizedOptions.silent && state.rebootContext === 'thermal') {
+    requireFeature('thermal').dismissPendingModal?.();
+  }
   refs.rebootModal.classList.remove('open');
   popModalIfTop('reboot');
   const core = requireFeature('core');
   core.queueNextPoll(POLL_MIN_DELAY_MS);
   setRebootBusy(false);
+  if (refs.rebootCancelBtn) refs.rebootCancelBtn.hidden = false;
   setRebootError('');
   if (!normalizedOptions.silent) {
     core.showToast(normalizedMessage || (state.rebootContext === 'scheduler' ? '切换已提交，重启后验证' : '策略已保存，重启后验证'));
