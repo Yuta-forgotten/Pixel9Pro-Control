@@ -46,6 +46,25 @@ restore_vm_policy_state() {
     [ "$_vm_policy_restore_failed" -eq 0 ]
 }
 
+restore_zram_request_state() {
+    _zram_restore_failed=0
+    vm_zram_restore_property "$VM_MMD_ZRAM_SIZE_PROPERTY" "$_old_mmd_zram_size" \
+        || _zram_restore_failed=1
+    vm_zram_restore_property "$VM_ZRAM_SIZE_PROPERTY" "$_old_vendor_zram_size" \
+        || _zram_restore_failed=1
+    vm_zram_restore_property persist.vendor.zram_comp_algorithm "$_old_vendor_zram_algo" \
+        || _zram_restore_failed=1
+    [ "$_zram_restore_failed" -eq 0 ]
+}
+
+ensure_stock_zram_request() {
+    vm_zram_apply_stock_request && return 0
+    _stock_expected=$(vm_zram_stock_size_bytes)
+    [ "$(vm_zram_read_requested_size)" = "$_stock_expected" ] \
+        && [ "$(vm_zram_read_disksize)" = "$_stock_expected" ] \
+        && [ "$(vm_zram_read_algorithm)" = "$VM_ZRAM_ALGO" ]
+}
+
 vm_write_error() {
     if restore_vm_state; then
         json_error '500 Internal Server Error' 'failed to write VM params; previous state restored'
@@ -70,8 +89,8 @@ emit_state() {
     if [ "$mmd_owned" = true ]; then
         target_property="$VM_MMD_ZRAM_SIZE_PROPERTY"
     fi
-    target_value=$(getprop "$target_property" 2>/dev/null | tr -d ' \n\r\t')
-    [ -n "$target_value" ] || target_value=$(getprop "$VM_ZRAM_SIZE_PROPERTY" 2>/dev/null | tr -d ' \n\r\t')
+    target_value=$(vm_zram_property_value "$target_property")
+    [ -n "$target_value" ] || target_value=$(vm_zram_property_value "$VM_ZRAM_SIZE_PROPERTY")
     [ -n "$target_value" ] || target_value=50%
     target_size_bytes=$(vm_zram_size_to_bytes "$target_value")
 
@@ -82,17 +101,24 @@ emit_state() {
     mem_used=$(echo "$mm" | awk '{print $3}')
 
     # 原厂 ZRAM 大小 = 50% RAM (fstab.zram.50p), 用 awk 避免 32 位溢出
-    stock_zram_bytes=$(awk '/MemTotal/{printf "%.0f", $2 * 512}' /proc/meminfo 2>/dev/null)
+    stock_zram_bytes=$(vm_zram_stock_size_bytes)
+    zram_reboot_required=false
+    if [ "$mmd_owned" = true ] \
+        && [ -n "${disksize:-}" ] \
+        && [ -n "${target_size_bytes:-}" ] \
+        && [ "$disksize" != "$target_size_bytes" ]; then
+        zram_reboot_required=true
+    fi
 
     mode=$(vm_detect_mode)
     feature_vm=$(cat "$VM_FEATURE_FILE" 2>/dev/null | tr -d ' \r\n\t')
     case "$feature_vm" in system|optimized|disabled) ;; *) feature_vm=system ;; esac
     contract=$(vm_contract_json)
 
-    printf '{"swappiness":%s,"min_free_kbytes":%s,"watermark_scale_factor":%s,"vfs_cache_pressure":%s,"zram_algo":"%s","zram_disksize":%s,"zram_active":%s,"zram_swap_kb":%s,"swap_total_kb":%s,"zram_owner":"%s","zram_target_supported":%s,"zram_size_property":"%s","zram_size_requested":"%s","zram_target_current_bytes":%s,"stock_zram_size":%s,"zram_orig_bytes":%s,"zram_compr_bytes":%s,"zram_mem_used_bytes":%s,"mode":"%s","feature_vm":"%s",%s}' \
+    printf '{"swappiness":%s,"min_free_kbytes":%s,"watermark_scale_factor":%s,"vfs_cache_pressure":%s,"zram_algo":"%s","zram_disksize":%s,"zram_active":%s,"zram_swap_kb":%s,"swap_total_kb":%s,"zram_owner":"%s","zram_target_supported":%s,"zram_size_property":"%s","zram_size_requested":"%s","zram_target_current_bytes":%s,"stock_zram_size":%s,"zram_reboot_required":%s,"zram_orig_bytes":%s,"zram_compr_bytes":%s,"zram_mem_used_bytes":%s,"mode":"%s","feature_vm":"%s",%s}' \
         "${sw:-0}" "${mfk:-0}" "${wsf:-0}" "${vcp:-0}" "$(json_escape "${algo:-unknown}")" \
         "${disksize:-0}" "$zram_active" "${swap_kb:-0}" "${swap_total_kb:-0}" "$([ "$mmd_owned" = true ] && echo mmd || echo module)" "$([ "$mmd_owned" = true ] && echo false || echo true)" "$target_property" "$target_value" "$target_size_bytes" "${stock_zram_bytes:-0}" \
-        "${orig:-0}" "${compr:-0}" "${mem_used:-0}" "$mode" "$feature_vm" "$contract"
+        "$zram_reboot_required" "${orig:-0}" "${compr:-0}" "${mem_used:-0}" "$mode" "$feature_vm" "$contract"
 }
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
@@ -112,6 +138,9 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     _old_mode=$(cat "$SWAP_MODE_FILE" 2>/dev/null)
     _old_custom=$(cat "$SWAP_CUSTOM_FILE" 2>/dev/null)
     _old_feature=$(cat "$VM_FEATURE_FILE" 2>/dev/null)
+    _old_mmd_zram_size=$(vm_zram_property_value "$VM_MMD_ZRAM_SIZE_PROPERTY")
+    _old_vendor_zram_size=$(vm_zram_property_value "$VM_ZRAM_SIZE_PROPERTY")
+    _old_vendor_zram_algo=$(vm_zram_property_value persist.vendor.zram_comp_algorithm)
     case "$mode" in
         optimized)
             set -- $(vm_profile_params optimized)
@@ -126,15 +155,19 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             ;;
         stock)
             set -- $(vm_profile_params stock)
-            if persist_value "$VM_FEATURE_FILE" system \
-                && persist_value "$SWAP_MODE_FILE" stock \
-                && vm_write_params "$1" "$2" "$3" "$4"; then
-                [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event vm policy success VM_SYSTEM_NO_WRITE 0 >/dev/null 2>&1 || true
-                emit_state
-            else
-                restore_vm_state >/dev/null 2>&1 || true
-                json_error '500 Internal Server Error' 'failed to restore system VM params; previous state restored'
+            if ! ensure_stock_zram_request; then
+                restore_zram_request_state >/dev/null 2>&1 || true
+                json_error '409 Conflict' 'stock ZRAM request readback failed; previous request restored'
             fi
+            if ! persist_value "$VM_FEATURE_FILE" system \
+                || ! persist_value "$SWAP_MODE_FILE" stock \
+                || ! vm_write_params "$1" "$2" "$3" "$4"; then
+                restore_zram_request_state >/dev/null 2>&1 || true
+                restore_vm_state >/dev/null 2>&1 || true
+                json_error '500 Internal Server Error' 'failed to commit system VM state; previous state restored'
+            fi
+            [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event vm policy success VM_SYSTEM_NO_WRITE 0 >/dev/null 2>&1 || true
+            emit_state
             ;;
         custom)
             sw=$(json_num_field "$body" swappiness)
@@ -174,15 +207,19 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             ;;
         disabled)
             set -- $(vm_profile_params stock)
-            if persist_value "$VM_FEATURE_FILE" disabled \
-                && persist_value "$SWAP_MODE_FILE" disabled \
-                && vm_write_params "$1" "$2" "$3" "$4"; then
-                [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event vm policy success VM_DISABLED_NO_WRITE 0 >/dev/null 2>&1 || true
-                emit_state
-            else
-                restore_vm_state >/dev/null 2>&1 || true
-                json_error '500 Internal Server Error' 'failed to restore VM params while disabling module policy'
+            if ! ensure_stock_zram_request; then
+                restore_zram_request_state >/dev/null 2>&1 || true
+                json_error '409 Conflict' 'stock ZRAM request readback failed; previous request restored'
             fi
+            if ! persist_value "$VM_FEATURE_FILE" disabled \
+                || ! persist_value "$SWAP_MODE_FILE" disabled \
+                || ! vm_write_params "$1" "$2" "$3" "$4"; then
+                restore_zram_request_state >/dev/null 2>&1 || true
+                restore_vm_state >/dev/null 2>&1 || true
+                json_error '500 Internal Server Error' 'failed to commit disabled VM state; previous state restored'
+            fi
+            [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event vm policy success VM_DISABLED_NO_WRITE 0 >/dev/null 2>&1 || true
+            emit_state
             ;;
         zram_size)
             [ "$(cat "$VM_FEATURE_FILE" 2>/dev/null | tr -d ' \r\n\t')" = optimized ] \

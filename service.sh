@@ -738,10 +738,11 @@ SWAP_CUSTOM_FILE="$MODDIR/.swap_custom"
 SWAP_MODE=$(cat "$MODDIR/.swap_mode" 2>/dev/null | tr -d ' \n\r')
 case "$SWAP_MODE" in
     stock)
-        if vm_write_params "$VM_STOCK_SWAPPINESS" "$VM_STOCK_MIN_FREE_KBYTES" "$VM_STOCK_WATERMARK_SCALE" "$VM_STOCK_VFS_CACHE_PRESSURE"; then
+        if vm_zram_apply_stock_request \
+            && vm_write_params "$VM_STOCK_SWAPPINESS" "$VM_STOCK_MIN_FREE_KBYTES" "$VM_STOCK_WATERMARK_SCALE" "$VM_STOCK_VFS_CACHE_PRESSURE"; then
             log -t pixel9pro_ctrl "Swap: restored stock VM params"
         else
-            log -t pixel9pro_ctrl "WARNING: failed to restore stock VM params"
+            log -t pixel9pro_ctrl "WARNING: failed to restore stock VM/ZRAM request"
         fi
         ;;
     custom)

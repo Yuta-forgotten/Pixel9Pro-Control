@@ -66,6 +66,11 @@ if [ ! -r "$MODPATH/scripts/runtime_defaults_lib.sh" ]; then
     abort
 fi
 . "$MODPATH/scripts/runtime_defaults_lib.sh" || abort
+if [ ! -r "$MODPATH/scripts/vm_profile_lib.sh" ] \
+    || ! . "$MODPATH/scripts/vm_profile_lib.sh"; then
+    ui_print "  ✗ 缺少 VM/ZRAM contract, 已中止安装"
+    abort
+fi
 if [ ! -r "$MODPATH/scripts/display_state_lib.sh" ] \
     || ! . "$MODPATH/scripts/display_state_lib.sh"; then
     ui_print "  ✗ 缺少屏幕状态配置, 已中止安装"
@@ -652,6 +657,20 @@ else
         installer_write "$MODPATH/.ntp_server" "$_ntp_default"
     fi
 fi
+
+# 系统默认/禁用策略必须向 mmd/fs_mgr 提交明确的 stock ZRAM 请求，避免
+# 旧的自定义容量在下一次启动继续生效。只写 Android property 并做读回，
+# 不 resetprop、不 swapoff、不接管当前运行中的 zram0。
+_swap_mode_current=$(cat "$MODPATH/.swap_mode" 2>/dev/null | tr -d ' \n\r\t')
+case "$_swap_mode_current" in
+    stock|disabled)
+        if vm_zram_apply_stock_request; then
+            ui_print "  ✓ 系统默认 ZRAM 请求已提交: $(vm_zram_stock_size_bytes) bytes (重启后由 mmd 应用)"
+        else
+            ui_print "  ⚠ 系统默认 ZRAM 请求读回失败; 保留现有状态并由 service 重试"
+        fi
+        ;;
+esac
 
 if [ "$UECAP_EXTERNAL" -eq 0 ] && [ "$UECAP_DISABLED" -eq 0 ] \
     && { [ "$UECAP_BACKEND" = metamodule_content ] || [ "$UECAP_BACKEND" = hybrid_mount ]; }; then

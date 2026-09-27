@@ -59,9 +59,10 @@ WebUI 的所有 API 请求经过统一 Request Hub：GET 在途请求按 endpoin
 ### ZRAM / 内存优化
 
 - 算法：由当前系统 owner 初始化；caiman / `CP41.260814.003.B1` 实机为 `lz77eh`（Emerald Hill 硬件加速）
-- 容量：WebUI 只读显示设备实际 `disksize`、owner、swap 状态与 `SwapTotal`；APatch 0.13.8 + Hybrid Mount 下由 mmd 独占 ZRAM，Control 不 reset/swapoff/resize；
+- 容量：WebUI 显示设备实际 `disksize`、owner、swap 状态与 `SwapTotal`；APatch 0.13.8 + Hybrid Mount 下由 mmd 独占 ZRAM，Control 不 reset/swapoff/resize，只提交经过读回验证的启动请求；
 - VM 参数：`swappiness=100`、`min_free_kbytes=131072`、`watermark_scale_factor=200`、`vfs_cache_pressure=60`
-- 首次安装默认 `feature_vm=system`，模块不写 ZRAM；VM/dirty 参数仅在用户显式选择后写入。WebUI 的 ZRAM 容量请求先写 mmd 官方 `mmd.zram.size`，仅在当前 swap 未启用且设备提供 `mmd --setup-zram` 时尝试在线应用；正在使用的 zram 不执行 swapoff/reset，返回 `pending_reboot` 由 mmd 在下次启动应用。
+- 首次安装默认 `feature_vm=system`，系统默认/禁用档会把 stock 50% RAM 容量和 `lz77eh` 算法写入 `mmd.zram.size`、`persist.vendor.zram_swap_size_v2` 与算法 property，并逐项读回；当前 active swap 不执行 swapoff/reset，若实际容量仍不同则返回 `zram_reboot_required=true`，由 mmd 在下次启动应用。
+- WebUI 的 ZRAM 容量请求只在模块优化档开放，优先写 mmd 官方 property；正在使用的 zram 不执行 reset/resize，返回 `pending_reboot`。
 
 ### 待机与 modem 策略（以 Google 默认机制为主）
 

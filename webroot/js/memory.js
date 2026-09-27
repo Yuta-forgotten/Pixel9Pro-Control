@@ -56,9 +56,9 @@ function describeVfs(v) {
 }
 function swapModeIntro(mode) {
   if (mode === 'optimized') return '<b>当前方案：模块默认</b><br>面向 Pixel 9 Pro 日常使用与 Tensor G4 低热取向的一组平衡 VM 参数。';
-  if (mode === 'system') return '<b>当前方案：系统默认</b><br>模块不写 VM、ZRAM 或 dirty 参数；下方数值仅为只读状态。';
-  if (mode === 'disabled') return '<b>当前方案：模块写入禁用</b><br>模块只读取当前状态，不修改 VM/ZRAM。';
-  if (mode === 'stock') return '<b>当前方案：系统参数口径</b><br>当前数值接近已知 stock 参考值。';
+  if (mode === 'system') return '<b>当前方案：系统默认</b><br>VM 与 dirty 参数按系统值恢复；ZRAM 只提交 stock 请求，由 mmd 在下次启动应用。';
+  if (mode === 'disabled') return '<b>当前方案：模块写入禁用</b><br>模块不写优化参数，并向系统 owner 提交 stock ZRAM 请求。';
+  if (mode === 'stock') return '<b>当前方案：系统参数口径</b><br>VM 当前接近 stock；ZRAM 请求由 mmd 保留并在重启时对齐系统默认。';
   return '<b>当前方案：自定义</b><br>以下为基于你手动设定值的实时分析；应用后以 custom 模式随下次开机恢复。';
 }
 function buildSwapDetail(data) {
@@ -176,7 +176,7 @@ function renderSwapCard(data) {
     { label: 'ZRAM 状态', value: zramActive ? `已启用（${zramOwner}）` : '异常：未启用', cls: zramActive ? 'good' : 'off' },
     { label: 'ZRAM 算法', value: isEH ? '硬件加速' : data.zram_algo, cls: isEH && zramActive ? 'good' : 'warn' },
     { label: 'ZRAM 实际大小', value: `${sizeGB}GB`, cls: zramActive ? 'good' : 'off' },
-    { label: 'ZRAM 开机请求', value: `${requestedSize} · ${targetSupport ? '可尝试' : '由系统 owner 管理'}`, cls: targetSupport ? 'warn' : 'off' },
+    { label: 'ZRAM 开机请求', value: `${requestedSize} · ${data.zram_reboot_required ? '待重启对齐' : targetSupport ? '可尝试' : '由系统 owner 管理'}`, cls: data.zram_reboot_required ? 'warn' : targetSupport ? 'warn' : 'off' },
     { label: 'swappiness', value: String(data.swappiness), cls: data.swappiness === optimized.swappiness ? 'good' : data.swappiness === stock.swappiness ? 'warn' : 'off' },
     { label: 'min_free_kbytes', value: String(data.min_free_kbytes), cls: data.min_free_kbytes === optimized.min_free_kbytes ? 'good' : data.min_free_kbytes === stock.min_free_kbytes ? 'warn' : 'off' },
     { label: 'watermark_scale_factor', value: String(data.watermark_scale_factor || 0), cls: data.watermark_scale_factor === optimized.watermark_scale_factor ? 'good' : data.watermark_scale_factor === stock.watermark_scale_factor ? 'warn' : 'off' },
@@ -619,8 +619,13 @@ async function toggleSwapMode() {
     state.swapMode = data.mode || newMode;
     state.featureVm = data.feature_vm || (newMode === 'optimized' ? 'optimized' : 'system');
     state.swapData = data;
-    showToast(newMode === 'optimized' ? '已应用模块优化 VM 参数' : '已恢复系统默认 VM 参数，后续开机不再写 VM/ZRAM');
-    appendLog(newMode === 'optimized' ? 'VM 模块优化已应用' : 'VM 参数已立即恢复系统默认，后续开机 no-write', 'ok');
+    const zramPending = data.zram_reboot_required === true;
+    showToast(newMode === 'optimized'
+      ? '已应用模块优化 VM 参数'
+      : (zramPending ? 'VM 已恢复；系统默认 ZRAM 将在重启后应用' : '已恢复系统默认 VM 与 ZRAM 请求'));
+    appendLog(newMode === 'optimized'
+      ? 'VM 模块优化已应用'
+      : (zramPending ? 'VM 已恢复，ZRAM stock 请求已保存，重启生效' : 'VM 与 ZRAM 请求已恢复系统默认'), 'ok');
     renderSwapCard(data);
     void refreshSwap();
   } catch (err) {

@@ -56,6 +56,7 @@ vm_write_params() {
     vm_is_uint_range "$_vm_mfk" "$VM_MIN_FREE_KBYTES_MIN" "$VM_MIN_FREE_KBYTES_MAX" || return 1
     vm_is_uint_range "$_vm_wsf" "$VM_WATERMARK_SCALE_MIN" "$VM_WATERMARK_SCALE_MAX" || return 1
     vm_is_uint_range "$_vm_vcp" "$VM_VFS_CACHE_PRESSURE_MIN" "$VM_VFS_CACHE_PRESSURE_MAX" || return 1
+    vm_params_match "$_vm_sw" "$_vm_mfk" "$_vm_wsf" "$_vm_vcp" && return 0
 
     _vm_old=$(vm_current_params)
     if ! vm_write_params_raw "$_vm_sw" "$_vm_mfk" "$_vm_wsf" "$_vm_vcp" \
@@ -168,6 +169,65 @@ vm_zram_size_to_bytes() {
     esac
 }
 
+vm_zram_stock_size_bytes() {
+    # fstab's 50p request is rounded by mmd to the zram page boundary.  Use
+    # the same 4 KiB ceiling so a successful reboot is not reported pending
+    # merely because MemTotal*50% lands on a half-page.
+    awk '/^MemTotal:/{bytes=$2 * 512; printf "%.0f", int((bytes + 4095) / 4096) * 4096; exit}' /proc/meminfo 2>/dev/null
+}
+
+vm_zram_property_value() {
+    getprop "$1" 2>/dev/null | tr -d ' \n\r\t'
+}
+
+vm_zram_set_property_verified() {
+    [ -n "$1" ] || return 1
+    [ -n "$2" ] || return 1
+    [ "$(vm_zram_property_value "$1")" = "$2" ] && return 0
+    setprop "$1" "$2" 2>/dev/null || return 1
+    [ "$(vm_zram_property_value "$1")" = "$2" ]
+}
+
+vm_zram_restore_property() {
+    [ -n "$1" ] || return 1
+    [ "$(vm_zram_property_value "$1")" = "${2:-}" ] && return 0
+    setprop "$1" "${2:-}" 2>/dev/null || return 1
+    [ "$(vm_zram_property_value "$1")" = "${2:-}" ]
+}
+
+vm_zram_apply_stock_request() {
+    # mmd/fs_mgr remain the sole kernel ZRAM owners.  The module only updates
+    # the documented boot request and proves both property writes by readback.
+    # Never delete a property: an empty/deleted request can make init choose an
+    # invalid vendor path during the next early-boot transaction.
+    _vm_stock_size=$(vm_zram_stock_size_bytes)
+    vm_zram_size_is_valid "$_vm_stock_size" || return 1
+    if [ "$(vm_zram_read_requested_size)" = "$_vm_stock_size" ] \
+        && [ "$(vm_zram_read_algorithm)" = "$VM_ZRAM_ALGO" ]; then
+        return 0
+    fi
+    _vm_old_mmd_size=$(vm_zram_property_value "$VM_MMD_ZRAM_SIZE_PROPERTY")
+    _vm_old_vendor_size=$(vm_zram_property_value "$VM_ZRAM_SIZE_PROPERTY")
+    _vm_old_vendor_algo=$(vm_zram_property_value persist.vendor.zram_comp_algorithm)
+    _vm_algo_ok=0
+    [ "$(vm_zram_read_algorithm)" = "$VM_ZRAM_ALGO" ] && _vm_algo_ok=1
+    if vm_zram_set_property_verified "$VM_MMD_ZRAM_SIZE_PROPERTY" "$_vm_stock_size" \
+        && vm_zram_set_property_verified "$VM_ZRAM_SIZE_PROPERTY" "$_vm_stock_size" \
+        && { [ "$_vm_algo_ok" -eq 1 ] || vm_zram_set_property_verified persist.vendor.zram_comp_algorithm "$VM_ZRAM_ALGO"; }; then
+        [ "$(vm_zram_read_requested_size)" = "$_vm_stock_size" ] || {
+            vm_zram_restore_property "$VM_MMD_ZRAM_SIZE_PROPERTY" "$_vm_old_mmd_size" >/dev/null 2>&1 || true
+            vm_zram_restore_property "$VM_ZRAM_SIZE_PROPERTY" "$_vm_old_vendor_size" >/dev/null 2>&1 || true
+            vm_zram_restore_property persist.vendor.zram_comp_algorithm "$_vm_old_vendor_algo" >/dev/null 2>&1 || true
+            return 1
+        }
+        return 0
+    fi
+    vm_zram_restore_property "$VM_MMD_ZRAM_SIZE_PROPERTY" "$_vm_old_mmd_size" >/dev/null 2>&1 || true
+    vm_zram_restore_property "$VM_ZRAM_SIZE_PROPERTY" "$_vm_old_vendor_size" >/dev/null 2>&1 || true
+    vm_zram_restore_property persist.vendor.zram_comp_algorithm "$_vm_old_vendor_algo" >/dev/null 2>&1 || true
+    return 1
+}
+
 vm_zram_matches() {
     _vm_zram_algo=$(vm_zram_read_algorithm)
     _vm_zram_size=$(vm_zram_read_disksize)
@@ -175,9 +235,9 @@ vm_zram_matches() {
         && vm_zram_is_active
 }
 
-# ZRAM is owned by Android mmd or fs_mgr.  Runtime code may only read the
-# effective device and the persistent request; it never mutates kernel ZRAM
-# state or takes over the active swap device.
+# ZRAM is owned by Android mmd or fs_mgr.  Runtime code may read the effective
+# device and update only the documented persistent request; it never mutates
+# kernel ZRAM state or takes over the active swap device.
 vm_zram_read_algorithm() {
     cat /sys/block/zram0/comp_algorithm 2>/dev/null \
         | sed 's/.*\[\([^]]*\)\].*/\1/' \
@@ -216,16 +276,13 @@ vm_zram_owner() {
 }
 
 vm_zram_read_requested_algorithm() {
-    _vm_requested_algo=$(getprop persist.vendor.zram_comp_algorithm 2>/dev/null \
-        | tr -d ' \n\r\t')
+    _vm_requested_algo=$(vm_zram_property_value persist.vendor.zram_comp_algorithm)
     [ -n "$_vm_requested_algo" ] && printf '%s' "$_vm_requested_algo" || printf unset
 }
 
 vm_zram_read_requested_size() {
-    _vm_requested_size=$(getprop "$VM_MMD_ZRAM_SIZE_PROPERTY" 2>/dev/null \
-        | tr -d ' \n\r\t')
-    [ -n "$_vm_requested_size" ] || _vm_requested_size=$(getprop "$VM_ZRAM_SIZE_PROPERTY" 2>/dev/null \
-        | tr -d ' \n\r\t')
+    _vm_requested_size=$(vm_zram_property_value "$VM_MMD_ZRAM_SIZE_PROPERTY")
+    [ -n "$_vm_requested_size" ] || _vm_requested_size=$(vm_zram_property_value "$VM_ZRAM_SIZE_PROPERTY")
     [ -n "$_vm_requested_size" ] && printf '%s' "$_vm_requested_size" || printf unset
 }
 
@@ -246,7 +303,7 @@ vm_zram_receipt() {
 }
 
 vm_zram_read_requested_mmd_size() {
-    getprop "$VM_MMD_ZRAM_SIZE_PROPERTY" 2>/dev/null | tr -d ' \n\r\t'
+    vm_zram_property_value "$VM_MMD_ZRAM_SIZE_PROPERTY"
 }
 
 vm_mmd_setup_zram() {
