@@ -723,6 +723,13 @@ if [ "$THERMAL_POLICY" = custom ]; then
         THERMAL_POLICY=system
         offset=0
         ui_print "  ⚠ 当前 stock 基线无法生成合法 custom thermal, 已 fail closed 到系统默认"
+    elif ! chmod 0644 "$OUT_JSON" 2>/dev/null; then
+        ui_print "  ✗ thermal source 权限无法设为 0644，已 fail closed 到系统默认"
+        thermal_policy_remove_overlay || abort
+        installer_write "$THERMAL_POLICY_FILE" system
+        installer_write "$OFFSET_FILE" 0
+        THERMAL_POLICY=system
+        offset=0
     elif ! thermal_policy_label_source; then
         # APatch may restore the regular-module source to a generic label before
         # Hybrid Mount scans it. Keep the source and defer the authoritative

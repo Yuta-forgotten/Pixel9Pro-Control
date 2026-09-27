@@ -190,6 +190,7 @@ thermal_tx_restore() {
             [ -n "$_tx_context" ] && [ "$_tx_context" != none ] \
                 && chcon "$_tx_context" "$_tx_restore_tmp" 2>/dev/null || true
         fi
+        chmod 0644 "$_tx_restore_tmp" 2>/dev/null || return 1
         mv -f "$_tx_restore_tmp" "$THERMAL_SOURCE_FILE" || return 1
     else
         rm -f "$THERMAL_SOURCE_FILE" || return 1
@@ -370,6 +371,8 @@ if [ "$policy" = custom ]; then
         || json_error '500 Internal Server Error' 'cannot create thermal source directory'
     cp "$TS_CANDIDATE" "$TS_SOURCE_TMP" 2>/dev/null \
         || json_error '500 Internal Server Error' 'cannot stage thermal source'
+    chmod 0644 "$TS_SOURCE_TMP" 2>/dev/null \
+        || json_error '500 Internal Server Error' 'cannot set thermal source mode'
     chcon "$THERMAL_SOURCE_CONTEXT" "$TS_SOURCE_TMP" 2>/dev/null || true
     mv "$TS_SOURCE_TMP" "$THERMAL_SOURCE_FILE" 2>/dev/null \
         || json_error '500 Internal Server Error' 'thermal source commit failed'

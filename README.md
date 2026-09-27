@@ -35,6 +35,7 @@
 ### 温控策略与自定义阈值
 
 默认只有一个零修改选项：**不修改温控（不添加配置）**。该选项不创建 `/vendor/etc/thermal_info_config.json` overlay，也不修改或停止系统 Thermal HAL。只有用户明确选择 custom 时，才从当前设备真实 vendor 配置或已验证的模块私有 stock snapshot 生成下列偏移。Hybrid Mount 只消费模块 regular source；WebUI 修改写入 source 并标记 `pending_reboot`，不在运行期 promotion、bind 或重启 Thermal HAL。
+Thermal source 在安装、WebUI staging 和撤销恢复时固定为 `0644`；post-mount 复读同时检查 effective `/vendor` mode、hash 与 `vendor_configs_file` context，避免 Thermal HAL 以 UID 1000 读到私有 `0600` source。
 
 | 档位 | Offset 偏移值 | 最早介入温度 (HINT) | 说明 |
 |------|--------|---------------------------|------|

@@ -231,6 +231,11 @@ thermal_policy_effective_context() {
     ls -Zd "$THERMAL_EFFECTIVE_FILE" 2>/dev/null | awk '{print $1}'
 }
 
+thermal_policy_effective_mode() {
+    [ -e "$THERMAL_EFFECTIVE_FILE" ] || { printf '%s' none; return 0; }
+    stat -c '%a' "$THERMAL_EFFECTIVE_FILE" 2>/dev/null | tr -d ' \n\r\t'
+}
+
 # Read-only SELinux/hash gate. It never chcon and never writes /vendor.
 thermal_policy_readback_check() {
     _tpl_policy="$1"
@@ -238,6 +243,7 @@ thermal_policy_readback_check() {
     _tpl_effective_hash=$(thermal_policy_effective_hash)
     _tpl_source_context=$(thermal_policy_source_context)
     _tpl_effective_context=$(thermal_policy_effective_context)
+    _tpl_effective_mode=$(thermal_policy_effective_mode)
     if [ "$_tpl_policy" = system ]; then
         [ "$_tpl_source_hash" = none ] || return 1
         _tpl_device=$(cat "$THERMAL_POLICY_ROOT/.device_variant" 2>/dev/null | tr -d ' \n\r\t')
@@ -250,6 +256,7 @@ thermal_policy_readback_check() {
         return 1
     fi
     [ "$_tpl_effective_context" = "$THERMAL_SOURCE_CONTEXT" ] || return 1
+    [ "$_tpl_effective_mode" = 644 ] || return 1
     return 0
 }
 
