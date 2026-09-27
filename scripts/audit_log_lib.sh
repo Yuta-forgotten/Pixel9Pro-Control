@@ -33,8 +33,17 @@ audit_log_token() {
             return 0
             ;;
     esac
-    _al_value=$(printf '%s' "$1" | tr '\r\n=|' '____' | tr -cd 'A-Za-z0-9._:@,+/-')
+    _al_value=$(printf '%s' "$1" | tr -cd 'A-Za-z0-9._:@,+/-')
     [ -n "$_al_value" ] && printf '%s' "$_al_value" || printf unknown
+}
+
+audit_log_read_first_line() {
+    _al_read_value=
+    [ -r "$1" ] || return 0
+    IFS= read -r _al_read_value < "$1" || true
+    _al_read_cr=$(printf '\r')
+    _al_read_value=${_al_read_value%"$_al_read_cr"}
+    printf '%s' "$_al_read_value"
 }
 
 audit_log_prepare() {
@@ -49,7 +58,7 @@ audit_log_prepare() {
 audit_log_day_roll() {
     _al_today=$(date '+%Y-%m-%d' 2>/dev/null || printf unknown)
     _al_day_file="$AUDIT_LOG_DIR/.events_day"
-    _al_previous=$(cat "$_al_day_file" 2>/dev/null | tr -d ' \r\n\t')
+    _al_previous=$(audit_log_read_first_line "$_al_day_file")
     if [ -n "$_al_previous" ] && [ "$_al_previous" != "$_al_today" ] && [ -s "$AUDIT_LOG_FILE" ]; then
         mv "$AUDIT_LOG_FILE" "$AUDIT_LOG_DIR/events-$_al_previous.log" 2>/dev/null || return 1
         : > "$AUDIT_LOG_FILE" 2>/dev/null || return 1
@@ -84,12 +93,17 @@ audit_log_rotate() {
 audit_log_context_value() {
     _al_context_path="$1"
     _al_context_fallback="$2"
-    _al_context=$(cat "$_al_context_path" 2>/dev/null | tr -d ' \r\n\t')
+    _al_context=$(audit_log_read_first_line "$_al_context_path")
     [ -n "$_al_context" ] && audit_log_token "$_al_context" || printf '%s' "$_al_context_fallback"
 }
 
 audit_log_module_version() {
-    _al_version=$(sed -n 's/^version=//p' "$AUDIT_MODULE_ROOT/module.prop" 2>/dev/null | head -n 1)
+    _al_version=
+    while IFS='=' read -r _al_key _al_value || [ -n "$_al_key" ]; do
+        [ "$_al_key" = version ] || continue
+        _al_version="$_al_value"
+        break
+    done < "$AUDIT_MODULE_ROOT/module.prop"
     [ -n "$_al_version" ] && audit_log_token "$_al_version" || printf unknown
 }
 
@@ -106,7 +120,7 @@ audit_log_event() {
     case "$_al_epoch" in ''|*[!0-9]*) _al_epoch=0 ;; esac
     _al_device=$(audit_log_context_value "$AUDIT_MODULE_ROOT/.device_variant" unknown)
     _al_root=$(audit_log_context_value "$AUDIT_MODULE_ROOT/.root_family" unknown)
-    _al_boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n\t')
+    _al_boot_id=$(audit_log_read_first_line /proc/sys/kernel/random/boot_id)
     printf 'schema=%s ts=%s boot_id=%s module_version=%s root_family=%s device=%s phase=%s operation=%s result=%s reason_code=%s duration_ms=%s\n' \
         "$AUDIT_LOG_SCHEMA" "$_al_epoch" "$(audit_log_token "$_al_boot_id")" "$(audit_log_module_version)" "$_al_root" "$_al_device" \
         "$_al_phase" "$_al_operation" "$_al_result" "$_al_reason" "$_al_duration" \

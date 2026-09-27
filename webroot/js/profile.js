@@ -75,6 +75,7 @@ const state = {
 
 const core = () => requireFeature('core');
 const apiFetch = (...args) => core().apiFetch(...args);
+const isCancelled = (err) => core().isRequestCancelled?.(err) === true;
 const appendLog = (...args) => core().appendLog(...args);
 const escapeHtml = (...args) => core().escapeHtml(...args);
 const showToast = (...args) => core().showToast(...args);
@@ -772,7 +773,7 @@ function invalidateFullProfileStateRefresh() {
 function refreshFullProfileState() {
   const generation = ++profileFullStateGeneration;
   const mutationRevision = profileMutationStateRevision;
-  return apiFetch(API.profile, { timeoutMs: 45000 })
+  return apiFetch(API.profile, { timeoutMs: 45000, priority: 'background', scope: 'profile.full.read' })
     .then((fullState) => {
       if (generation !== profileFullStateGeneration) return false;
       const newerMutationState = mutationRevision !== profileMutationStateRevision
@@ -782,15 +783,18 @@ function refreshFullProfileState() {
       if (newerMutationState) applyProfileMutationState(newerMutationState);
       return true;
     })
-    .catch(() => false);
+    .catch((err) => isCancelled(err) ? null : false);
 }
 
 async function loadSavedProfile() {
   try {
-    const data = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: 8000 });
-    applyProfileMutationState(data);
+    const revision = profileMutationStateRevision;
+    const data = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: 8000, priority: 'normal', scope: 'profile.read' });
+    if (revision === profileMutationStateRevision) applyProfileMutationState(data);
     void refreshFullProfileState();
-  } catch (_) {
+    return true;
+  } catch (err) {
+    if (isCancelled(err)) return null;
     state.currentProfile = 'unknown';
     state.schedulerMode = 'off';
     state.schedulerCapability = 'unknown';
@@ -845,15 +849,15 @@ async function loadSavedProfile() {
     state.autoReason = '';
     syncProfileUi();
     syncHeroDesc();
+    return false;
   }
 }
 
-async function refreshCpu() {
-  if (state.cpuBusy) return;
+async function refreshCpuTask() {
   state.cpuBusy = true;
   if (refs.refreshBtn) refs.refreshBtn.disabled = true;
   try {
-    const clusters = await apiFetch(API.status, { timeoutMs: 6000 });
+    const clusters = await apiFetch(API.status, { timeoutMs: 6000, priority: 'normal', scope: 'profile.cpu.read' });
     state.lastClusters = clusters;
     ensurePerfCpuRows(clusters);
     ensureHomeCpuRows(clusters);
@@ -870,11 +874,14 @@ async function refreshCpu() {
       home.freq.textContent = !cluster.cur || Number.isNaN(cluster.cur) ? '—' : `${(cluster.cur / 1000).toFixed(0)} MHz`;
       home.fill.style.transform = `scaleX(${!cluster.cur ? 0 : Math.min(cluster.cur / maxHz, 1).toFixed(3)})`;
     });
+    const mutationRevision = profileMutationStateRevision;
     try {
-      const profileData = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: 8000 });
-      applyProfileMutationState(profileData);
-    } catch (_) {}
+      const profileData = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: 8000, priority: 'background', scope: 'profile.read' });
+      if (mutationRevision === profileMutationStateRevision) applyProfileMutationState(profileData);
+    } catch (err) { if (!isCancelled(err)) {} }
+    return true;
   } catch (err) {
+    if (isCancelled(err)) return null;
     state.cpuRows = null;
     state.homeCpuRows = null;
     const el = document.createElement('div');
@@ -887,10 +894,15 @@ async function refreshCpu() {
     refs.cpuRows.replaceChildren();
     refs.cpuRows.appendChild(el);
     appendLog(`CPU 频率读取失败：${err.message}`, 'err');
+    return false;
   } finally {
     if (refs.refreshBtn) refs.refreshBtn.disabled = false;
     state.cpuBusy = false;
   }
+}
+
+async function refreshCpu() {
+  return core().runFeatureTask('profile.cpu.refresh', () => refreshCpuTask());
 }
 
 async function applyProfile(profile) {
@@ -905,7 +917,7 @@ async function applyProfile(profile) {
       : '本模块 CPU 调度未启用，未切换 profile', 'warn');
     return;
   }
-  if (profile === state.currentProfile || state.cpuBusy || isCurrentStrategyBusy()) return;
+  if (profile === state.currentProfile || isCurrentStrategyBusy()) return;
   const prevPolicy = state.profilePolicy;
   const card = refs.profileList.querySelector(`[data-profile="${profile}"]`);
   if (!card) return;
@@ -916,7 +928,7 @@ async function applyProfile(profile) {
   appendLog(`切换到 ${PROFILES[profile].name}…`, 'dim');
   refs.logCard.classList.add('open');
   try {
-    const data = await apiFetch(API.profile, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile }), timeoutMs: PROFILE_MUTATION_TIMEOUT_MS });
+    const data = await apiFetch(API.profile, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile }), timeoutMs: PROFILE_MUTATION_TIMEOUT_MS, priority: 'interactive', scope: 'profile.mutation' });
     if (data.ok) {
       applyProfileMutationState(data);
       const forcedManual = prevPolicy === 'auto' && data.policy === 'manual';
@@ -947,7 +959,7 @@ async function setSchedulerMode(mode) {
   try {
     const data = await apiFetch(API.profile, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body), timeoutMs: 25000
+      body: JSON.stringify(body), timeoutMs: 25000, priority: 'interactive', scope: 'profile.mutation'
     });
     if (data.ok) {
       applyProfileMutationState(data);
@@ -990,7 +1002,7 @@ async function setProfilePolicy(policy) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ policy }),
-      timeoutMs: PROFILE_MUTATION_TIMEOUT_MS
+      timeoutMs: PROFILE_MUTATION_TIMEOUT_MS, priority: 'interactive', scope: 'profile.mutation'
     });
     if (data.ok) {
       applyProfileMutationState(data);
@@ -1033,7 +1045,7 @@ async function toggleSchedOwner() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sched_owner: nextOwner }),
-      timeoutMs: 25000
+      timeoutMs: 25000, priority: 'interactive', scope: 'profile.mutation'
     });
     if (typeof data.sched_owner === 'string') applyProfileMutationState(data);
     if (data.ok && data.final === false) {
@@ -1065,7 +1077,7 @@ async function cancelSchedulerChange() {
   try {
     const data = await apiFetch(API.profile, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scheduler_action: 'cancel_pending' }), timeoutMs: 25000
+      body: JSON.stringify({ scheduler_action: 'cancel_pending' }), timeoutMs: 25000, priority: 'interactive', scope: 'profile.mutation'
     });
     if (data.scheduler_boot) applyProfileMutationState(data);
     if (data.ok) {
@@ -1094,7 +1106,7 @@ async function retrySchedulerValidation() {
   try {
     const data = await apiFetch(API.profile, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scheduler_action: 'retry' }), timeoutMs: 45000
+      body: JSON.stringify({ scheduler_action: 'retry' }), timeoutMs: 45000, priority: 'interactive', scope: 'profile.mutation'
     });
     if (data.scheduler_boot) applyProfileMutationState(data);
     if (data.ok) {
@@ -1127,7 +1139,7 @@ async function toggleGameHandoff() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ game_handoff: nextPolicy }),
-      timeoutMs: 45000
+      timeoutMs: 45000, priority: 'interactive', scope: 'profile.mutation'
     });
     if (typeof data.game_handoff_policy === 'string') applyProfileMutationState(data);
     if (data.accepted && data.final === false) {
@@ -1165,7 +1177,7 @@ async function triggerOwnerArbiter() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'tick' }),
-      timeoutMs: 10000
+      timeoutMs: 10000, priority: 'interactive', scope: 'profile.owner'
     });
     if (data.ok) {
       showToast('调度状态已更新');

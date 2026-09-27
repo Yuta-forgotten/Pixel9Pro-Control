@@ -222,16 +222,16 @@ function saveThemeToServer() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mode: state.mode, palette: state.paletteName, custom: state.paletteCustom }),
-    timeoutMs: 5000
+    timeoutMs: 5000, priority: 'interactive', scope: 'theme.mutation'
   }).catch(() => {});
 }
 
 // 仅当 localStorage 完全无主题记录 (新装 / WebView 被清) 时, 回读服务端兜底并应用
 async function restoreThemeFromServerIfNeeded() {
-  if (readPreference(STORAGE_THEME_KEY) || readPreference(STORAGE_PALETTE_KEY) || readPreference(STORAGE_PALETTE_CUSTOM_KEY)) return;
+  if (readPreference(STORAGE_THEME_KEY) || readPreference(STORAGE_PALETTE_KEY) || readPreference(STORAGE_PALETTE_CUSTOM_KEY)) return true;
   try {
-    const data = await requireFeature('core').apiFetch(API.theme, { timeoutMs: 5000 });
-    if (!data) return;
+    const data = await requireFeature('core').apiFetch(API.theme, { timeoutMs: 5000, priority: 'background', scope: 'theme.read' });
+    if (!data) return true;
     if (data.custom && isValidHex(data.custom)) {
       state.paletteCustom = normalizeHex(data.custom);
       writePreference(STORAGE_PALETTE_CUSTOM_KEY, state.paletteCustom);
@@ -244,7 +244,11 @@ async function restoreThemeFromServerIfNeeded() {
       writePreference(STORAGE_PALETTE_KEY, data.palette);
       applyPalette(data.palette, false);
     }
-  } catch (_) {}
+    return true;
+  } catch (err) {
+    if (requireFeature('core').isRequestCancelled?.(err)) return null;
+    return false;
+  }
 }
 
 registerFeature('theme', {

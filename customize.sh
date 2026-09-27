@@ -316,6 +316,9 @@ if ! thermal_policy_prepare_snapshot "$device" "$OLDDIR" yes; then
     ui_print "  ✗ 无法从当前设备/旧模块建立温控 stock 基线, 已中止安装"
     abort
 fi
+if ! thermal_policy_profile_cache_prepare "$device"; then
+    ui_print "  ⚠ 温控预生成缓存失败，WebUI 将在首次选择时重新生成"
+fi
 
 if [ "$ROOT_IMPL" = APatch ] || [ "$ROOT_IMPL" = KernelSU ]; then
     if ! uecap_active_metamodule; then
@@ -706,7 +709,14 @@ if [ "$THERMAL_POLICY" = custom ]; then
     # Generate only from the current-device snapshot; never use a packaged
     # thermal JSON or a snapshot from another SKU/build.
     mkdir -p "${OUT_JSON%/*}" || { ui_print "  ✗ 无法创建温控配置输出目录"; abort; }
-    if ! thermal_generate_config "$THERMAL_POLICY_ROOT/payloads/thermal/$device/stock.json" "$OUT_JSON" "$offset"; then
+    _cached_profile=$(thermal_policy_profile_cache_path "$device" "$offset" 2>/dev/null || true)
+    if thermal_policy_profile_cache_valid "$device" "$THERMAL_POLICY_ROOT/payloads/thermal/$device/stock.json" \
+        && [ -s "$_cached_profile" ]; then
+        cp -f "$_cached_profile" "$OUT_JSON" 2>/dev/null
+    else
+        thermal_generate_config "$THERMAL_POLICY_ROOT/payloads/thermal/$device/stock.json" "$OUT_JSON" "$offset"
+    fi
+    if [ ! -s "$OUT_JSON" ]; then
         thermal_policy_remove_overlay || abort
         installer_write "$THERMAL_POLICY_FILE" system
         installer_write "$OFFSET_FILE" 0

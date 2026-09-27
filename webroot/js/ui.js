@@ -392,9 +392,18 @@ function setRebootError(message = '') {
 function openRebootModal(pending, prev, context = 'thermal') {
   state.rebootContext = context;
   if (context === 'thermal') requireFeature('thermal').setPendingChange(pending, prev);
+  const saving = context === 'thermal' && pending?.saving === true;
+  if (refs.rebootNowBtn) {
+    refs.rebootNowBtn.hidden = saving;
+    refs.rebootNowBtn.textContent = '立即重启';
+  }
+  if (refs.rebootLaterBtn) {
+    refs.rebootLaterBtn.hidden = false;
+    refs.rebootLaterBtn.textContent = saving ? '后台保存' : '稍后重启';
+  }
   if (refs.rebootCancelBtn) {
-    refs.rebootCancelBtn.hidden = context === 'thermal'
-      && pending?.cancel_supported !== true;
+    refs.rebootCancelBtn.hidden = saving || (context === 'thermal'
+      && pending?.cancel_supported !== true);
   }
   setRebootBusy(false);
   setRebootError('');
@@ -402,12 +411,16 @@ function openRebootModal(pending, prev, context = 'thermal') {
     const target = requireFeature('profile').getSchedulerBootTargetMode() === 'ugt' ? 'UGT 日常调度模式' : 'Pixel 调度模式';
     refs.rebootModalTitle.textContent = `切换到${target}`;
     refs.rebootModalDesc.textContent = `启动状态已提交。重启后才会进入${target}并完成最终验证。`;
+  } else if (saving) {
+    refs.rebootModalTitle.textContent = '温控策略保存中';
+    refs.rebootModalDesc.textContent = '正在写入模块 source；完成后可选择立即重启、稍后重启或放弃本次修改。';
   } else {
     refs.rebootModalTitle.textContent = '温控策略等待重启';
     refs.rebootModalDesc.textContent = '温控策略已保存；当前 overlay 需要在重启后完成最终切换和复读。';
   }
+  const wasOpen = refs.rebootModal.classList.contains('open');
   refs.rebootModal.classList.add('open');
-  pushModalState('reboot');
+  if (!wasOpen) pushModalState('reboot');
   const core = requireFeature('core');
   core.queueNextPoll(core.computeNextPollDelay());
 }
@@ -425,6 +438,8 @@ function closeRebootModal(message = '', options = {}) {
   const core = requireFeature('core');
   core.queueNextPoll(POLL_MIN_DELAY_MS);
   setRebootBusy(false);
+  if (refs.rebootNowBtn) refs.rebootNowBtn.hidden = false;
+  if (refs.rebootLaterBtn) refs.rebootLaterBtn.textContent = '稍后重启';
   if (refs.rebootCancelBtn) refs.rebootCancelBtn.hidden = false;
   setRebootError('');
   if (!normalizedOptions.silent) {

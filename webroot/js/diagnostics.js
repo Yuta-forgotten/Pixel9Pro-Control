@@ -129,14 +129,14 @@
     setAuditBusy(session, true);
     setAuditStatus(session, '正在读取后台审计记录…');
     try {
-      const data = await requireFeature('core').apiFetch(`${API.auditLog}?limit=80`, { timeoutMs: 5000, controller });
+      const data = await requireFeature('core').apiFetch(`${API.auditLog}?limit=80`, { timeoutMs: 5000, controller, priority: 'interactive', scope: 'diagnostics.audit.read' });
       if (!isCurrentAudit(session)) return;
       const lines = validateAuditLines(data);
       renderAuditLines(session, lines);
       setAuditStatus(session, `已读取 ${lines.length} 条记录。`);
     } catch (err) {
       if (!isCurrentAudit(session)) return;
-      if (controller.signal.aborted && !requireFeature('core').isWebUiActive()) {
+      if (requireFeature('core').isRequestCancelled?.(err) || (controller.signal.aborted && !requireFeature('core').isWebUiActive())) {
         setAuditStatus(session, '读取已暂停。返回后可点“刷新记录”继续。');
         return;
       }
@@ -155,7 +155,7 @@
     setAuditBusy(session, true);
     setAuditStatus(session, '正在准备可用审计记录…');
     try {
-      const data = await requireFeature('core').apiFetch(`${API.auditLog}?all=1&limit=2000`, { timeoutMs: 5000, controller });
+      const data = await requireFeature('core').apiFetch(`${API.auditLog}?all=1&limit=2000`, { timeoutMs: 5000, controller, priority: 'interactive', scope: 'diagnostics.audit.read' });
       if (!isCurrentAudit(session)) return;
       const lines = validateAuditLines(data);
       const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
@@ -171,7 +171,7 @@
       requireFeature('core').showToast('后台审计记录已导出');
     } catch (err) {
       if (isCurrentAudit(session)) {
-        const paused = controller.signal.aborted && !requireFeature('core').isWebUiActive();
+        const paused = requireFeature('core').isRequestCancelled?.(err) || (controller.signal.aborted && !requireFeature('core').isWebUiActive());
         setAuditStatus(session, paused ? '导出准备已暂停。返回后可重新导出。' : `导出失败：${err.message || err}。可重新导出。`, !paused);
       }
     } finally {
@@ -192,12 +192,12 @@
       // never abort/retry it automatically or let it update another detail.
       const data = await requireFeature('core').apiFetch(API.auditLog, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'clear' }), timeoutMs: 5000
+        body: JSON.stringify({ action: 'clear' }), timeoutMs: 5000, priority: 'interactive', scope: 'diagnostics.audit'
       });
       if (data?.ok !== true || data.action !== 'clear') throw new Error(data?.error || '后台未确认清理结果');
       committed = true;
       renderAuditLines(session, [], '清理请求已成功，正在回读后台记录…');
-      const readback = await requireFeature('core').apiFetch(`${API.auditLog}?limit=80`, { timeoutMs: 5000 });
+      const readback = await requireFeature('core').apiFetch(`${API.auditLog}?limit=80`, { timeoutMs: 5000, priority: 'normal', scope: 'diagnostics.audit.read' });
       const lines = validateAuditLines(readback);
       if (isCurrentAudit(session)) {
         renderAuditLines(session, lines);

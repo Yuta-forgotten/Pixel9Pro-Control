@@ -17,6 +17,15 @@ if [ -r "$MODDIR/scripts/audit_log_lib.sh" ] \
     AUDIT_LOG_AVAILABLE=1
 fi
 
+# Audit records are supplementary telemetry. Queue them after the CGI response
+# has been written so a policy mutation never holds the WebUI request open on
+# log rotation, chmod or retention cleanup. The child inherits the same
+# Android shell/SELinux domain and writes only to the existing private log.
+audit_log_event_async() {
+    [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] || return 0
+    ( audit_log_event "$@" >/dev/null 2>&1 ) &
+}
+
 json_headers() {
     printf 'Content-Type: application/json\r\nCache-Control: no-store\r\n\r\n'
 }

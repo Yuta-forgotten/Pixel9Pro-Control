@@ -9,6 +9,7 @@
   };
   const core = () => requireFeature('core');
   const apiFetch = (...args) => core().apiFetch(...args);
+  const isCancelled = (err) => core().isRequestCancelled?.(err) === true;
   const showToast = (...args) => core().showToast(...args);
   const appendLog = (...args) => core().appendLog(...args);
   const isActive = () => core().isWebUiActive() && refs.detailModal?.classList.contains('open') && !refs.detailModal.classList.contains('detail-minimized');
@@ -54,7 +55,7 @@
     const controller = new AbortController();
     cancelSlot(slot, 'request-replaced'); state[slot] = controller;
     try {
-      return await apiFetch(path, { timeoutMs, controller });
+      return await apiFetch(path, { timeoutMs, controller, priority: slot === 'rankRequest' ? 'background' : 'normal', scope: `analytics.${slot}` });
     } finally {
       if (state[slot] === controller) state[slot] = null;
       if (slot === 'request' && requestId !== state.requestId) return null;
@@ -200,7 +201,7 @@
     }
   }
   async function load(force = false, forceRank = false) {
-    if (!state.open || !isActive()) return;
+    if (!state.open || !isActive()) return null;
     const view = ensureView(); const cacheKey = key(); const requestedBounds = rangeBounds();
     const selectionChanged = state.activeKey !== cacheKey;
     if (selectionChanged) {
@@ -233,11 +234,11 @@
           } else updateView();
         }).catch(() => {});
       }
-      schedule(); return;
+      schedule(); return true;
     }
     if (!state.cache.has(cacheKey)) viewFeature().loading(view, state.source, state.rangeId);
     try {
-      const data = await fetchSource(bounds); if (requestId !== state.requestId || !data) return;
+      const data = await fetchSource(bounds); if (requestId !== state.requestId || !data) return null;
       const normalized = normalizeResponse(data, bounds);
       state.cache.set(cacheKey, normalized); updateView();
       if (normalized.stats.count < 2) viewFeature().empty(view, state.source, state.rangeId, normalized.status);
@@ -255,15 +256,18 @@
       }
       if (state.source === 'thermal') capture().status().catch(() => {}).then(() => updateView());
     } catch (err) {
-      if (requestId !== state.requestId) return;
+      if (requestId !== state.requestId) return null;
+      if (isCancelled(err)) return null;
       viewFeature().error(view, state.source, state.rangeId, `读取失败：${err.message || err}`);
+      return false;
     }
     schedule();
+    return true;
   }
   function schedule(delay = state.source === 'thermal' ? TEMP_CHART_REFRESH_MS : 30000) {
     if (state.timer) clearTimeout(state.timer); state.timer = null;
     if (!state.open || !isActive()) return;
-    state.timer = window.setTimeout(() => { state.timer = null; load(true); }, delay);
+    state.timer = window.setTimeout(() => { state.timer = null; void load(true); }, delay);
   }
   async function exportRange(button) {
     button.disabled = true;
@@ -272,7 +276,7 @@
       if (session?.status === 'running' || session?.status === 'completed' || session?.status === 'stopped') {
         const data = await capture().export(session.id); showToast(data?.directory ? '记录已导出' : '导出已提交');
       } else if (state.rangeId !== 'custom') {
-        const data = await apiFetch(API.historyExport, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'export', minutes: model().rangeFor(state.rangeId).minutes }), timeoutMs: 10000 });
+        const data = await apiFetch(API.historyExport, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'export', minutes: model().rangeFor(state.rangeId).minutes }), timeoutMs: 10000, priority: 'interactive', scope: 'analytics.export' });
         if (data?.ok) { showToast(`已保存 ${data.power_samples || 0} 个功耗点 / ${data.thermal_samples || 0} 个温度点`); appendLog('历史导出已保存（含温度）', 'ok'); }
       } else showToast('自定义区间请先开始一段记录，再导出完整文件');
     } catch (err) { showToast(`导出失败：${err.message || err}`); appendLog(String(err), 'err'); }
@@ -281,9 +285,9 @@
   async function triggerBurst(options = {}) {
     if (!state.open || state.source !== 'thermal') return false;
     if (!requireFeature('auth').hasToken()) return false;
-    try { await apiFetch(API.thermalBurst, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'start', duration_sec: 300 }), timeoutMs: 4000 }); return true; } catch (_) { return false; }
+    try { await apiFetch(API.thermalBurst, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'start', duration_sec: 300 }), timeoutMs: 4000, priority: 'interactive', scope: 'analytics.burst' }); return true; } catch (err) { return isCancelled(err) ? null : false; }
   }
-  function stopBurst() { if (!requireFeature('auth').hasToken()) return; apiFetch(API.thermalBurst, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }), timeoutMs: 2500, keepalive: true }).catch(() => {}); }
+  function stopBurst() { if (!requireFeature('auth').hasToken()) return; apiFetch(API.thermalBurst, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }), timeoutMs: 2500, keepalive: true, priority: 'background', scope: 'analytics.burst' }).catch(() => {}); }
   function open(source = 'thermal') {
     init();
     abort('analytics-open'); state.open = true; state.suspended = false; state.source = source; state.summary = null; state.detailsDue = true; const view = ensureView();

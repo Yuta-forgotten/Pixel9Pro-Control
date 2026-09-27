@@ -29,24 +29,18 @@ async function doFullRefresh() {
     if (refreshButton) refreshButton.disabled = true;
     showToast('正在刷新…', 1000);
     if (tabRefreshPromise) await tabRefreshPromise.catch(() => {});
-    const failures = [];
-    const run = async (name, task) => {
-      try {
-        await task();
-      } catch (error) {
-        failures.push(`${name}: ${error?.message || error}`);
-        appFeatures.core.appendLog(`${name}刷新失败：${error?.message || error}`, 'err');
-      }
-    };
-    // BusyBox httpd is intentionally kept single-listener and several of
-    // these endpoints execute dumpsys. Serialize the manual path so one slow
-    // thermal read cannot starve every other refresh request.
-    await run('CPU', () => appFeatures.profile.refresh());
-    await run('温控', () => appFeatures.thermal.refresh());
-    await run('内存', () => appFeatures.memory.refresh());
-    await run('网络', () => appFeatures.network.refresh());
-    await run('后台限制', () => appFeatures.memory.refreshRestrictions());
-    await run('系统信息', () => appFeatures.shell.loadInfo());
+    const tasks = [
+      ['CPU', () => appFeatures.profile.refresh()],
+      ['温控', () => appFeatures.thermal.refresh()],
+      ['内存', () => appFeatures.memory.refresh()],
+      ['网络', () => appFeatures.network.refresh()],
+      ['后台限制', () => appFeatures.memory.refreshRestrictions()],
+      ['系统信息', () => appFeatures.shell.loadInfo()]
+    ];
+    const results = await Promise.allSettled(tasks.map(([, task]) => task()));
+    const failures = results.flatMap((result, index) => result.status === 'rejected'
+      ? [`${tasks[index][0]}: ${result.reason?.message || result.reason}`] : []);
+    failures.forEach((message) => appFeatures.core.appendLog(`${message}刷新失败`, 'err'));
     appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow']);
     appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay());
     showToast(failures.length ? '已刷新，部分模块超时或失败' : '已刷新');
@@ -86,25 +80,22 @@ function refreshCurrentTabData() {
   tabRefreshPromise = (async () => {
     if (tab === 'home') {
       appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow'], now);
-      await appFeatures.profile.refresh();
-      await appFeatures.thermal.refresh();
-      await appFeatures.memory.refresh();
-      await appFeatures.network.refresh();
-      await appFeatures.shell.loadInfo();
+      await Promise.allSettled([
+        appFeatures.profile.refresh(), appFeatures.thermal.refresh(),
+        appFeatures.memory.refresh(), appFeatures.network.refresh(), appFeatures.shell.loadInfo()
+      ]);
     } else if (tab === 'tune') {
       appFeatures.core.markPollFresh(['cpu', 'thermal'], now);
-      await appFeatures.profile.refresh();
-      await appFeatures.thermal.refresh();
+      await Promise.allSettled([appFeatures.profile.refresh(), appFeatures.thermal.refresh()]);
     } else if (tab === 'network') {
       appFeatures.core.markPollFresh(['slow'], now);
-      await appFeatures.network.refresh();
-      await appFeatures.shell.loadInfo();
+      await Promise.allSettled([appFeatures.network.refresh(), appFeatures.shell.loadInfo()]);
     } else if (tab === 'system') {
       appFeatures.core.markPollFresh(['optim', 'slow'], now);
-      await appFeatures.memory.refresh();
-      await appFeatures.memory.refreshRestrictions();
-      await appFeatures.network.refresh();
-      await appFeatures.shell.loadInfo();
+      await Promise.allSettled([
+        appFeatures.memory.refresh(), appFeatures.memory.refreshRestrictions(),
+        appFeatures.network.refresh(), appFeatures.shell.loadInfo()
+      ]);
     }
   })().catch(() => {}).finally(() => {
     tabRefreshPromise = null;
@@ -290,9 +281,9 @@ function bindStaticEvents() {
 
 async function refreshDeferredInitData() {
   appFeatures.core.markPollFresh(['optim', 'slow']);
-  await appFeatures.memory.refresh();
-  await appFeatures.memory.refreshRestrictions();
-  await appFeatures.network.refresh();
+  await Promise.allSettled([
+    appFeatures.memory.refresh(), appFeatures.memory.refreshRestrictions(), appFeatures.network.refresh()
+  ]);
   appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay());
 }
 

@@ -144,6 +144,73 @@ thermal_policy_prepare_snapshot() {
     return 1
 }
 
+# Pre-generate the four selectable custom profiles during installation. The
+# profile generator is intentionally strict and runs two awk passes over the
+# stock file; doing that work in a button CGI made an otherwise local click
+# wait several seconds. The cache is tied to the device fingerprint and stock
+# hash, and is never used when either provenance value changes.
+thermal_policy_profile_cache_root() {
+    _tpl_cache_device="$1"
+    thermal_policy_snapshot_path "$_tpl_cache_device" >/dev/null || return 1
+    printf '%s/payloads/thermal/%s/profiles' "$THERMAL_POLICY_ROOT" "$_tpl_cache_device"
+}
+
+thermal_policy_profile_cache_meta() {
+    _tpl_cache_root=$(thermal_policy_profile_cache_root "$1") || return 1
+    printf '%s/meta' "$_tpl_cache_root"
+}
+
+thermal_policy_profile_cache_path() {
+    _tpl_cache_device="$1"
+    _tpl_cache_offset="$2"
+    thermal_is_valid_offset "$_tpl_cache_offset" || return 1
+    _tpl_cache_root=$(thermal_policy_profile_cache_root "$_tpl_cache_device") || return 1
+    printf '%s/profile_%s.json' "$_tpl_cache_root" "$_tpl_cache_offset"
+}
+
+thermal_policy_profile_cache_valid() {
+    _tpl_cache_device="$1"
+    _tpl_cache_stock="$2"
+    _tpl_cache_meta=$(thermal_policy_profile_cache_meta "$_tpl_cache_device") || return 1
+    [ -r "$_tpl_cache_meta" ] || return 1
+    _tpl_cache_fingerprint=$(getprop ro.build.fingerprint 2>/dev/null)
+    _tpl_cache_recorded_fingerprint=$(sed -n 's/^fingerprint=//p' "$_tpl_cache_meta" 2>/dev/null)
+    _tpl_cache_recorded_hash=$(sed -n 's/^sha256=//p' "$_tpl_cache_meta" 2>/dev/null)
+    [ -n "$_tpl_cache_fingerprint" ] \
+        && [ "$_tpl_cache_recorded_fingerprint" = "$_tpl_cache_fingerprint" ] \
+        && [ "$_tpl_cache_recorded_hash" = "$(sha256sum "$_tpl_cache_stock" 2>/dev/null | awk '{print $1}')" ] \
+        || return 1
+    for _tpl_cache_offset in $THERMAL_UI_OFFSETS; do
+        _tpl_cache_file=$(thermal_policy_profile_cache_path "$_tpl_cache_device" "$_tpl_cache_offset") || return 1
+        [ -s "$_tpl_cache_file" ] || return 1
+    done
+}
+
+thermal_policy_profile_cache_prepare() {
+    _tpl_cache_device="$1"
+    _tpl_cache_stock=$(thermal_policy_snapshot_path "$_tpl_cache_device") || return 1
+    thermal_policy_profile_cache_valid "$_tpl_cache_device" "$_tpl_cache_stock" && return 0
+    _tpl_cache_root=$(thermal_policy_profile_cache_root "$_tpl_cache_device") || return 1
+    mkdir -p "$_tpl_cache_root" 2>/dev/null || return 1
+    for _tpl_cache_offset in $THERMAL_UI_OFFSETS; do
+        _tpl_cache_file=$(thermal_policy_profile_cache_path "$_tpl_cache_device" "$_tpl_cache_offset") || return 1
+        _tpl_cache_tmp="${_tpl_cache_file}.tmp.$$"
+        rm -f "$_tpl_cache_tmp" 2>/dev/null
+        thermal_generate_config "$_tpl_cache_stock" "$_tpl_cache_tmp" "$_tpl_cache_offset" \
+            || { rm -f "$_tpl_cache_tmp"; return 1; }
+        mv -f "$_tpl_cache_tmp" "$_tpl_cache_file" 2>/dev/null \
+            || { rm -f "$_tpl_cache_tmp"; return 1; }
+        chmod 600 "$_tpl_cache_file" 2>/dev/null || true
+    done
+    _tpl_cache_fingerprint=$(getprop ro.build.fingerprint 2>/dev/null)
+    _tpl_cache_hash=$(sha256sum "$_tpl_cache_stock" 2>/dev/null | awk '{print $1}')
+    _tpl_cache_meta=$(thermal_policy_profile_cache_meta "$_tpl_cache_device") || return 1
+    printf 'fingerprint=%s\nsha256=%s\n' "$_tpl_cache_fingerprint" "$_tpl_cache_hash" \
+        > "$_tpl_cache_meta.tmp.$$" \
+        && chmod 600 "$_tpl_cache_meta.tmp.$$" \
+        && mv -f "$_tpl_cache_meta.tmp.$$" "$_tpl_cache_meta"
+}
+
 thermal_policy_source_hash() {
     [ -f "$THERMAL_SOURCE_FILE" ] || { printf '%s' none; return 0; }
     sha256sum "$THERMAL_SOURCE_FILE" 2>/dev/null | awk '{print $1}'
@@ -231,12 +298,125 @@ thermal_policy_transaction_pending() {
     [ -s "$THERMAL_TX_META" ]
 }
 
+thermal_policy_transaction_cache_reset() {
+    THERMAL_TX_CACHE_FILE=""
+    THERMAL_TX_CACHE_LOADED=0
+    THERMAL_TX_CACHE_ID=""
+    THERMAL_TX_CACHE_PHASE=""
+    THERMAL_TX_CACHE_BOOT_ID=""
+    THERMAL_TX_CACHE_POLICY=""
+    THERMAL_TX_CACHE_OFFSET=""
+    THERMAL_TX_CACHE_PRESENT=""
+    THERMAL_TX_CACHE_HASH=""
+    THERMAL_TX_CACHE_CONTEXT=""
+    THERMAL_TX_CACHE_BASE_VALID=""
+    THERMAL_TX_CACHE_DESIRED_POLICY=""
+    THERMAL_TX_CACHE_DESIRED_OFFSET=""
+    THERMAL_TX_CACHE_DESIRED_HASH=""
+}
+
+thermal_policy_transaction_load() {
+    [ "$THERMAL_TX_CACHE_FILE" = "$THERMAL_TX_META" ] \
+        && [ "$THERMAL_TX_CACHE_LOADED" = 1 ] && return 0
+    thermal_policy_transaction_cache_reset
+    THERMAL_TX_CACHE_FILE="$THERMAL_TX_META"
+    [ -r "$THERMAL_TX_META" ] || {
+        THERMAL_TX_CACHE_LOADED=1
+        return 0
+    }
+    _tpl_tx_cr=$(printf '\r')
+    while IFS='=' read -r _tpl_tx_key _tpl_tx_value || [ -n "$_tpl_tx_key" ]; do
+        _tpl_tx_value=${_tpl_tx_value%$_tpl_tx_cr}
+        case "$_tpl_tx_key" in
+            id) THERMAL_TX_CACHE_ID="$_tpl_tx_value" ;;
+            phase) THERMAL_TX_CACHE_PHASE="$_tpl_tx_value" ;;
+            boot_id) THERMAL_TX_CACHE_BOOT_ID="$_tpl_tx_value" ;;
+            policy) THERMAL_TX_CACHE_POLICY="$_tpl_tx_value" ;;
+            offset) THERMAL_TX_CACHE_OFFSET="$_tpl_tx_value" ;;
+            present) THERMAL_TX_CACHE_PRESENT="$_tpl_tx_value" ;;
+            hash) THERMAL_TX_CACHE_HASH="$_tpl_tx_value" ;;
+            context) THERMAL_TX_CACHE_CONTEXT="$_tpl_tx_value" ;;
+            base_valid) THERMAL_TX_CACHE_BASE_VALID="$_tpl_tx_value" ;;
+            desired_policy) THERMAL_TX_CACHE_DESIRED_POLICY="$_tpl_tx_value" ;;
+            desired_offset) THERMAL_TX_CACHE_DESIRED_OFFSET="$_tpl_tx_value" ;;
+            desired_hash) THERMAL_TX_CACHE_DESIRED_HASH="$_tpl_tx_value" ;;
+        esac
+    done < "$THERMAL_TX_META"
+    THERMAL_TX_CACHE_LOADED=1
+}
+
 thermal_policy_transaction_value() {
-    sed -n "s/^$1=//p" "$THERMAL_TX_META" 2>/dev/null | head -n 1 | tr -d '\r'
+    thermal_policy_transaction_load
+    case "$1" in
+        id) printf '%s' "$THERMAL_TX_CACHE_ID" ;;
+        phase) printf '%s' "$THERMAL_TX_CACHE_PHASE" ;;
+        boot_id) printf '%s' "$THERMAL_TX_CACHE_BOOT_ID" ;;
+        policy) printf '%s' "$THERMAL_TX_CACHE_POLICY" ;;
+        offset) printf '%s' "$THERMAL_TX_CACHE_OFFSET" ;;
+        present) printf '%s' "$THERMAL_TX_CACHE_PRESENT" ;;
+        hash) printf '%s' "$THERMAL_TX_CACHE_HASH" ;;
+        context) printf '%s' "$THERMAL_TX_CACHE_CONTEXT" ;;
+        base_valid) printf '%s' "$THERMAL_TX_CACHE_BASE_VALID" ;;
+        desired_policy) printf '%s' "$THERMAL_TX_CACHE_DESIRED_POLICY" ;;
+        desired_offset) printf '%s' "$THERMAL_TX_CACHE_DESIRED_OFFSET" ;;
+        desired_hash) printf '%s' "$THERMAL_TX_CACHE_DESIRED_HASH" ;;
+        *) printf '' ;;
+    esac
 }
 
 thermal_policy_transaction_clear() {
     rm -f "$THERMAL_TX_META" "$THERMAL_TX_SOURCE" 2>/dev/null || return 1
     rmdir "$THERMAL_TX_ROOT" 2>/dev/null || true
+    thermal_policy_transaction_cache_reset
     [ ! -e "$THERMAL_TX_META" ] && [ ! -e "$THERMAL_TX_SOURCE" ]
+}
+
+# Resolve the active content backend without sourcing the full UECap profile.
+# This is a read-only capability probe used by CGI requests. It follows the
+# same metamodule marker/config rules as uecap_hybrid_mount_active, while
+# keeping the request path free of a second contract parser or boot cache.
+thermal_policy_detect_mount_backend() {
+    THERMAL_MOUNT_BACKEND=none
+    THERMAL_METAMODULE_ACTIVE=0
+    _tpm_root=unknown
+    if [ "${APATCH:-}" = true ] || [ -n "${APATCH_VER_CODE:-}" ] || [ -d /data/adb/ap ]; then
+        _tpm_root=apatch
+    elif [ "${KSU:-}" = true ] || [ -n "${KSU_VER_CODE:-}" ] || [ -d /data/adb/ksu ]; then
+        _tpm_root=kernelsu
+    fi
+    [ "$_tpm_root" = apatch ] || [ "$_tpm_root" = kernelsu ] || return 0
+
+    _tpm_link="${PIXEL9PRO_METAMODULE_LINK:-/data/adb/metamodule}"
+    [ -L "$_tpm_link" ] || return 0
+    _tpm_target=$(readlink -f "$_tpm_link" 2>/dev/null) || return 0
+    [ -n "$_tpm_target" ] && [ -d "$_tpm_target" ] || return 0
+    _tpm_meta=0
+    _tpm_id=
+    _tpm_name=
+    _tpm_cr=$(printf '\r')
+    while IFS='=' read -r _tpm_key _tpm_value || [ -n "$_tpm_key" ]; do
+        _tpm_value=${_tpm_value%"$_tpm_cr"}
+        case "$_tpm_key" in
+            metamodule)
+                case "$_tpm_value" in 1|true) _tpm_meta=1 ;; esac ;;
+            id) _tpm_id="$_tpm_value" ;;
+            name) _tpm_name="$_tpm_value" ;;
+        esac
+    done < "$_tpm_target/module.prop"
+    [ "$_tpm_meta" -eq 1 ] || return 0
+    [ ! -e "$_tpm_target/skip_mount" ] || return 0
+    [ ! -e "$_tpm_target/disable" ] && [ ! -e "$_tpm_target/remove" ] || return 0
+    THERMAL_METAMODULE_ACTIVE=1
+    THERMAL_MOUNT_BACKEND=metamodule_content
+    _tpm_hybrid=0
+    [ -r "${PIXEL9PRO_UECAP_HYBRID_CONFIG:-/data/adb/hybrid-mount/config.toml}" ] || return 0
+    case "$_tpm_id:$_tpm_name" in
+        hybrid_mount:*|hybrid-mount:*|*:Hybrid\ Mount*) _tpm_hybrid=1 ;;
+        *) [ -x "$_tpm_target/hybrid-mount" ] && _tpm_hybrid=1 ;;
+    esac
+    if [ "$_tpm_hybrid" -eq 1 ]; then
+        THERMAL_MOUNT_BACKEND=hybrid_mount
+    else
+        THERMAL_MOUNT_BACKEND=metamodule_content
+    fi
 }

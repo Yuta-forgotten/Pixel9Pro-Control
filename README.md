@@ -49,7 +49,11 @@ WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，普通�
 
 温控档位提交后进入模块私有 `.thermal_tx` journal。同一 boot 且 backend 返回
 `cancel_supported=true` 时，“放弃本次修改”会携带 `pending_id` 原子恢复旧 source、policy
-和 offset；跨 boot 或 readback degraded 状态不会显示撤销按钮。待重启期间禁止再次选择其他档位，避免覆盖同一 source。
+和 offset；跨 boot 或 readback degraded 状态不会显示撤销按钮。WebUI 会先显示正在保存的目标档位；POST 提交后直接返回已提交的 staged contract，避免重复全量状态扫描，CGI 复用同一 boot 的 mount backend cache，并在单个请求内一次解析 thermal journal；审计写入不再阻塞响应，但实际 current state 仍以后端 journal 确认结果为准，失败会自动恢复旧显示。待重启期间禁止再次选择其他档位，避免覆盖同一 source。
+安装阶段会从当前设备的 fingerprint/hash 校验 stock 一次并预生成四个 custom profile，运行时只复制经过同一 provenance 校验的 profile；缓存失效时才回退到生成器。
+Journal 在同一模块文件系统上优先保存 source hard-link，跨文件系统或链接被拒绝时自动回退原子 copy，不改变 SELinux 或挂载所有权。
+
+WebUI 的所有 API 请求经过统一 Request Hub：GET 在途请求按 endpoint 合并，最多三个请求并发；交互 mutation 到达时会取消可中断的低优先级读取并立即占用通信槽，POST/mutation 按资源 scope 顺序执行，组件取消会从等待队列移除。组件仍各自处理数据和错误，但不再各自创建全局通信并发策略；页面隐藏只取消读取，不取消已提交 mutation。Thermal journal 解析兼容没有末尾换行的原子 metadata。温控撤销先关闭本地提示并在后台完成 source readback，失败时重新打开提示；审计事件异步写入，不阻塞用户响应。
 
 ### ZRAM / 内存优化
 

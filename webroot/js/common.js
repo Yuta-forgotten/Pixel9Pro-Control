@@ -2,6 +2,18 @@
 'use strict';
 (() => {
 const authState = { webuiToken: '' };
+const requestHub = {
+  active: 0,
+  maxConcurrent: 3,
+  queue: [],
+  pendingGets: new Map(),
+  mutationScopes: new Set(),
+  activeJobs: new Set(),
+  nextId: 0,
+  completed: 0,
+  rejected: 0
+};
+const featureTasks = new Map();
 const shellState = {
   currentTab: 'home',
   deviceModel: '',
@@ -105,27 +117,30 @@ function prefetchWebuiToken() {
     .catch(() => {});
 }
 
-async function apiFetch(path, opts = {}) {
+async function rawApiFetch(path, opts = {}) {
   const controller = opts.controller || new AbortController();
   const timeoutMs = opts.timeoutMs || 8000;
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   const headers = { ...(opts.headers || {}) };
   const method = (opts.method || 'GET').toUpperCase();
-  if (method !== 'GET') {
-    if (!(await ensureWebuiToken())) throw new Error('missing WebUI token');
-    headers['X-PIXEL9PRO-TOKEN'] = authState.webuiToken;
-  } else if (authState.webuiToken) {
-    headers['X-PIXEL9PRO-TOKEN'] = authState.webuiToken;
-  }
-  const request = { cache: 'no-store', ...opts, headers, signal: controller.signal };
-  delete request.timeoutMs;
-  delete request.controller;
   let response;
   try {
+    if (method !== 'GET') {
+      if (!(await ensureWebuiToken())) throw new Error('missing WebUI token');
+      headers['X-PIXEL9PRO-TOKEN'] = authState.webuiToken;
+    } else if (authState.webuiToken) {
+      headers['X-PIXEL9PRO-TOKEN'] = authState.webuiToken;
+    }
+    const request = { cache: 'no-store', ...opts, headers, signal: controller.signal };
+    delete request.timeoutMs;
+    delete request.controller;
     response = await fetch(path, request);
   } catch (err) {
     if (err && err.name === 'AbortError') {
-      throw new Error(typeof controller.signal.reason === 'string' ? 'request cancelled' : 'request timeout');
+      const reason = controller.signal.reason;
+      const error = new Error(typeof reason === 'string' ? 'request cancelled' : 'request timeout');
+      error.code = typeof reason === 'string' ? reason : 'REQUEST_TIMEOUT';
+      throw error;
     }
     throw err;
   } finally {
@@ -147,6 +162,140 @@ async function apiFetch(path, opts = {}) {
     throw error;
   }
   return response.json();
+}
+
+function cancelBackgroundRequests() {
+  const queued = requestHub.queue.splice(0);
+  queued.forEach((job) => {
+    if (job.mutation || job.priority >= 90) {
+      requestHub.queue.push(job);
+      return;
+    }
+    requestHub.rejected += 1;
+    if (job.key && requestHub.pendingGets.get(job.key) === job.promise) requestHub.pendingGets.delete(job.key);
+    const error = new Error('request cancelled');
+    error.code = 'REQUEST_SUPERSEDED';
+    job.reject(error);
+  });
+  requestHub.activeJobs.forEach((job) => {
+    if (!job.mutation && job.priority < 90 && job.supersedeAllowed) {
+      job.controller.abort('REQUEST_SUPERSEDED');
+    }
+  });
+}
+
+function requestHubKey(path, opts, method) {
+  if (method !== 'GET' || opts.dedupe === false || opts.controller) return '';
+  return String(opts.dedupeKey || path);
+}
+
+function pumpRequestHub() {
+  while (requestHub.active < requestHub.maxConcurrent && requestHub.queue.length) {
+    requestHub.queue.sort((left, right) => right.priority - left.priority || left.id - right.id);
+    const jobIndex = requestHub.queue.findIndex((candidate) =>
+      !candidate.mutation || !requestHub.mutationScopes.has(candidate.scope));
+    if (jobIndex < 0) break;
+    const [job] = requestHub.queue.splice(jobIndex, 1);
+    if (job.signal?.aborted) {
+      requestHub.rejected += 1;
+      const error = new Error('request cancelled');
+      error.code = 'REQUEST_CANCELLED';
+      job.reject(error);
+      continue;
+    }
+    requestHub.active += 1;
+    if (job.mutation) requestHub.mutationScopes.add(job.scope);
+    requestHub.activeJobs.add(job);
+    const run = rawApiFetch(job.path, job.options);
+    run.then(job.resolve, job.reject).finally(() => {
+      requestHub.active -= 1;
+      requestHub.completed += 1;
+      requestHub.activeJobs.delete(job);
+      if (job.mutation) requestHub.mutationScopes.delete(job.scope);
+      if (job.key && requestHub.pendingGets.get(job.key) === job.promise) requestHub.pendingGets.delete(job.key);
+      pumpRequestHub();
+    });
+  }
+}
+
+function apiFetch(path, opts = {}) {
+  const method = (opts.method || 'GET').toUpperCase();
+  const key = requestHubKey(path, opts, method);
+  if (key) {
+    const existing = requestHub.pendingGets.get(key);
+    if (existing) return existing;
+  }
+  const options = { ...opts };
+  delete options.priority;
+  delete options.dedupe;
+  delete options.dedupeKey;
+  const priority = Number.isFinite(Number(opts.priority))
+    ? Number(opts.priority)
+    : method === 'GET' ? 10 : 100;
+  const mutation = method !== 'GET';
+  const controller = options.controller || new AbortController();
+  options.controller = controller;
+  let resolveJob;
+  let rejectJob;
+  const promise = new Promise((resolve, reject) => {
+    resolveJob = resolve;
+    rejectJob = reject;
+  });
+  const job = {
+    id: requestHub.nextId++, path, options, priority, key, mutation,
+    scope: String(opts.scope || path),
+    controller,
+    supersedeAllowed: !opts.controller,
+    signal: controller.signal,
+    promise, resolve: resolveJob, reject: rejectJob
+  };
+  if (key) requestHub.pendingGets.set(key, promise);
+  requestHub.queue.push(job);
+  if (job.signal) {
+    job.signal.addEventListener('abort', () => {
+      const index = requestHub.queue.indexOf(job);
+      if (index < 0) return;
+      requestHub.queue.splice(index, 1);
+      requestHub.rejected += 1;
+      if (job.key && requestHub.pendingGets.get(job.key) === promise) requestHub.pendingGets.delete(job.key);
+      const error = new Error('request cancelled');
+      error.code = 'REQUEST_CANCELLED';
+      job.reject(error);
+      pumpRequestHub();
+    }, { once: true });
+  }
+  if (mutation) cancelBackgroundRequests();
+  pumpRequestHub();
+  return promise;
+}
+
+function requestHubState() {
+  return {
+    active: requestHub.active,
+    queued: requestHub.queue.length,
+    deduped: requestHub.pendingGets.size,
+    completed: requestHub.completed,
+    rejected: requestHub.rejected
+  };
+}
+
+function runFeatureTask(key, task) {
+  if (featureTasks.has(key)) return featureTasks.get(key);
+  let promise;
+  try {
+    promise = Promise.resolve(task());
+  } catch (error) {
+    promise = Promise.reject(error);
+  }
+  featureTasks.set(key, promise);
+  promise.finally(() => {
+    if (featureTasks.get(key) === promise) featureTasks.delete(key);
+  }).catch(() => {});
+  return promise;
+}
+
+function isRequestCancelled(error) {
+  return ['REQUEST_CANCELLED', 'REQUEST_SUPERSEDED', 'PAGE_HIDDEN'].includes(error?.code);
 }
 
 function sleep(ms) {
@@ -255,9 +404,7 @@ async function runPollCycle() {
       // Keep the single CGI listener from serving several expensive dumpsys
       // requests at once. A failed job is handled by its feature and does not
       // block the other scheduled jobs.
-      for (const job of jobs) {
-        try { await job.run(); } catch (_) {}
-      }
+      await Promise.allSettled(jobs.map((job) => job.run()));
     }
   } finally {
     shellState.poller.inFlight = false;
@@ -539,6 +686,9 @@ registerFeature('core', {
   markPollFresh,
   noteUserActivity,
   queueNextPoll,
+  requestHubState,
+  runFeatureTask,
+  isRequestCancelled,
   showToast,
   sleep,
   switchTab

@@ -408,7 +408,7 @@ function renderUecapRows(data) {
 
 async function refreshNrSwitch() {
   try {
-    const data = await apiFetch(API.nrSwitch, { timeoutMs: 6000 });
+    const data = await apiFetch(API.nrSwitch, { timeoutMs: 6000, priority: 'normal', scope: 'network.nr.read' });
     state.nrSwitch = data.nr_switch || 'off';
     state.nrContract = {
       screenOffDelayS: Number(data.screen_off_delay_s),
@@ -417,14 +417,17 @@ async function refreshNrSwitch() {
       lteMode: Number(data.lte_mode)
     };
     renderNrSwitchRows(data);
+    return true;
   } catch (err) {
+    if (requireFeature('core').isRequestCancelled?.(err)) return null;
     refs.nrSwitchRows.replaceChildren(); refs.nrSwitchRows.appendChild(errorBlock('获取失败：' + err.message));
+    return false;
   }
 }
 
 async function refreshUecap() {
   try {
-    const data = await apiFetch(API.uecap, { timeoutMs: 6000 });
+    const data = await apiFetch(API.uecap, { timeoutMs: 6000, priority: 'normal', scope: 'network.uecap.read' });
     updateUecapRuntimeGuard(data);
     applyUecapContract(data);
     state.uecapMode = data.requested_mode || state.uecapContract.defaultMode;
@@ -436,8 +439,9 @@ async function refreshUecap() {
       state.uecapVerifyMessage = '';
     }
     renderUecapRows(data);
+    return true;
   } catch (err) {
-    state.uecapContract = null;
+    if (requireFeature('core').isRequestCancelled?.(err)) return null;
     refs.uecapBtnGroup.replaceChildren();
     refs.uecapBtnGroup.hidden = true;
     refs.uecapRows.replaceChildren(); refs.uecapRows.appendChild(errorBlock('获取失败：' + err.message));
@@ -448,18 +452,22 @@ async function refreshUecap() {
       if (result) result.replaceWith(buildInfoRow('配置校验', '读取失败，以上为上次值', 'warn'));
     }
     const notice = document.getElementById('uecap-status-message');
-    if (notice) { notice.hidden = false; notice.textContent = '本次读取失败，状态已过期。请刷新后再确认实际生效情况。'; }
+      if (notice) { notice.hidden = false; notice.textContent = '本次读取失败，状态已过期。请刷新后再确认实际生效情况。'; }
+    return false;
   }
 }
 
 async function refreshStandbyGuard() {
   try {
-    const data = await apiFetch(API.standbyGuard, { timeoutMs: 6000 });
+    const data = await apiFetch(API.standbyGuard, { timeoutMs: 6000, priority: 'normal', scope: 'network.standby.read' });
     renderStandbyGuard(data);
+    return true;
   } catch (err) {
+    if (requireFeature('core').isRequestCancelled?.(err)) return null;
     refs.sim2AutoRows.replaceChildren(); refs.sim2AutoRows.appendChild(errorBlock('获取失败：' + err.message));
     refs.idleIsolateRows.replaceChildren(); refs.idleIsolateRows.appendChild(errorBlock('获取失败：' + err.message));
     refs.standbyDiagRows.replaceChildren(); refs.standbyDiagRows.appendChild(errorBlock('获取失败：' + err.message));
+    return false;
   }
 }
 
@@ -472,7 +480,7 @@ async function setStandbyGuard(update, successText, logText) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(update),
-      timeoutMs: 8000
+      timeoutMs: 8000, priority: 'interactive', scope: 'network.standby'
     });
     if (data.ok) {
       renderStandbyGuard(data);
@@ -481,8 +489,8 @@ async function setStandbyGuard(update, successText, logText) {
     } else {
       showToast(`操作失败：${data.error || '未知'}`);
     }
-  } catch (_) {
-    showToast('请求失败');
+  } catch (err) {
+    if (!requireFeature('core').isRequestCancelled?.(err)) showToast('请求失败');
   } finally {
     state.standbyGuardBusy = false;
     syncStandbyGuardButtons();
@@ -536,7 +544,7 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
     if (lastData) renderUecapRows(lastData);
 
     try {
-      const data = await apiFetch(API.uecap, { timeoutMs: 6000 });
+      const data = await apiFetch(API.uecap, { timeoutMs: 6000, priority: 'normal', scope: 'network.uecap.read' });
       lastData = data;
       state.uecapMode = data.requested_mode || mode;
       state.uecapActiveMode = data.active_mode || 'custom';
@@ -559,6 +567,7 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
         return;
       }
     } catch (err) {
+      if (requireFeature('core').isRequestCancelled?.(err)) return;
       lastErr = err.message || 'request failed';
     }
 
@@ -584,12 +593,12 @@ async function toggleNrSwitch() {
   if (state.nrBusy) return;
   state.nrBusy = true;
   try {
-    const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'toggle' }), timeoutMs: 8000 });
+    const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'toggle' }), timeoutMs: 8000, priority: 'interactive', scope: 'network.nr' });
     if (data.ok) {
       state.nrSwitch = data.nr_switch;
       showToast(data.nr_switch === 'on' ? 'NR 息屏降级已开启' : 'NR 息屏降级已关闭');
       appendLog(data.nr_switch === 'on' ? 'NR 息屏降级: 开启' : 'NR 息屏降级: 关闭', 'ok');
-      refreshNrSwitch();
+      void refreshNrSwitch();
     } else {
       showToast('操作失败');
     }
@@ -625,7 +634,7 @@ async function setUecapMode(mode) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ policy: state.uecapPolicy, mode }),
-      timeoutMs: 12000
+      timeoutMs: 12000, priority: 'interactive', scope: 'network.uecap'
     });
     if (data.ok) {
       state.uecapMode = data.requested_mode || mode;
@@ -722,15 +731,17 @@ function renderBasebandRows(data) {
   rows.forEach((row) => refs.basebandRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 }
 
-async function refreshBaseband() {
+async function refreshBasebandTask() {
   if (!state.basebandInstalled && (!state.basebandState || !state.basebandState.installed)) {
     syncOptionalModuleUi();
-    return;
+    return true;
   }
   try {
-    const data = await apiFetch(API.checkBaseband, { timeoutMs: 6000 });
+      const data = await apiFetch(API.checkBaseband, { timeoutMs: 6000, priority: 'normal', scope: 'network.baseband.read' });
     renderBasebandRows(data);
+    return true;
   } catch (err) {
+    if (requireFeature('core').isRequestCancelled?.(err)) return null;
     const status = Number(err?.status || 0);
     const detail = err?.detail || err?.message || 'unknown';
     const reason = status === 404
@@ -741,7 +752,21 @@ async function refreshBaseband() {
     const message = `基带配置读取失败（HTTP ${status || 'unknown'}）：${detail}\n${reason}`;
     refs.basebandRows.replaceChildren(); refs.basebandRows.appendChild(errorBlock(message));
     appendLog(message, 'err');
+    return false;
   }
+}
+
+let basebandLastRefreshAt = 0;
+async function refreshBaseband() {
+  return requireFeature('core').runFeatureTask('network.baseband.refresh', async () => {
+    // common.loadInfo may ask for the baseband receipt immediately after the
+    // network page refresh. Reuse a fresh authoritative read instead of
+    // issuing the same binder/mount inspection twice.
+    if (Date.now() - basebandLastRefreshAt < 3000) return true;
+    const result = await refreshBasebandTask();
+    if (result === true) basebandLastRefreshAt = Date.now();
+    return result;
+  });
 }
 
 function startDeviceClock() {
@@ -826,10 +851,13 @@ function renderNtpCard(data) {
 
 async function refreshNtp() {
   try {
-    const data = await apiFetch(API.ntp, { timeoutMs: 6000 });
+    const data = await apiFetch(API.ntp, { timeoutMs: 6000, priority: 'normal', scope: 'network.ntp.read' });
     renderNtpCard(data);
+    return true;
   } catch (err) {
+    if (requireFeature('core').isRequestCancelled?.(err)) return null;
     refs.ntpServerList.replaceChildren(); refs.ntpServerList.appendChild(errorBlock('获取失败：' + err.message));
+    return false;
   }
 }
 
@@ -841,7 +869,7 @@ async function setNtpServer(server) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ server }),
-      timeoutMs: 10000
+      timeoutMs: 10000, priority: 'interactive', scope: 'network.ntp'
     });
     if (data.ok) {
       const label = state.ntpServers.find((s) => s.id === server)?.name || server;
@@ -852,12 +880,12 @@ async function setNtpServer(server) {
         showToast(`NTP 已切换为 ${label} 并同步`);
         appendLog(`NTP: ${server}`, 'ok');
       }
-      refreshNtp();
+      void refreshNtp();
     } else {
       showToast(`切换失败：${data.error || '未知'}`);
     }
-  } catch (_) {
-    showToast('请求失败');
+  } catch (err) {
+    if (!requireFeature('core').isRequestCancelled?.(err)) showToast('请求失败');
   } finally {
     state.ntpBusy = false;
   }
@@ -872,38 +900,37 @@ async function syncNtp() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'sync' }),
-      timeoutMs: 10000
+      timeoutMs: 10000, priority: 'interactive', scope: 'network.ntp'
     });
     if (data.ok) {
       showToast('时间已同步');
       appendLog(`NTP 同步完成: ${data.device_time}`, 'ok');
-      refreshNtp();
+      void refreshNtp();
     } else {
       showToast('同步失败');
     }
-  } catch (_) {
-    showToast('同步请求失败');
+  } catch (err) {
+    if (!requireFeature('core').isRequestCancelled?.(err)) showToast('同步请求失败');
   } finally {
     refs.ntpSyncLabel.textContent = '立即同步';
     state.ntpBusy = false;
   }
 }
 
-let networkRefreshPromise = null;
-
 registerFeature('network', {
   async refresh() {
-    if (networkRefreshPromise) return networkRefreshPromise;
-    networkRefreshPromise = (async () => {
-      // These endpoints all invoke Android services and share one loopback
-      // httpd. Serialize the read-only refresh to avoid queueing five binder/
-      // dumpsys requests behind one another during manual refresh.
-      for (const task of [refreshNrSwitch, refreshUecap, refreshBaseband, refreshNtp, refreshStandbyGuard]) {
-        try { await task(); } catch (_) {}
-      }
-    })();
-    try { return await networkRefreshPromise; }
-    finally { networkRefreshPromise = null; }
+    return requireFeature('core').runFeatureTask('network.refresh', async () => {
+      // The shared Request Hub limits actual CGI concurrency. Keep independent
+      // network cards independent so one slow binder read does not block all UI
+      // state; each feature still owns its own rendering/error boundary.
+      const settled = await Promise.allSettled([
+        refreshNrSwitch(), refreshUecap(), refreshBaseband(),
+        refreshNtp(), refreshStandbyGuard()
+      ]);
+      const results = settled.map((item) => item.status === 'fulfilled' ? item.value : false);
+      if (results.some((result) => result === false)) return false;
+      return results.every((result) => result === null) ? null : true;
+    });
   },
   stopDeviceClock,
   syncDeviceClockForTab,

@@ -187,10 +187,10 @@ function renderSwapCard(data) {
 
 
 async function refreshSwap() {
-  if (state.swapLoading) return;
-  state.swapLoading = true;
-  try {
-    const data = await apiFetch(API.swap, { timeoutMs: 6000 });
+  return requireFeature('core').runFeatureTask('memory.swap.refresh', async () => {
+    state.swapLoading = true;
+    try {
+      const data = await apiFetch(API.swap, { timeoutMs: 6000, priority: 'normal', scope: 'memory.swap.read' });
     state.swapMode = data.mode || 'custom';
     state.featureVm = ['system', 'optimized', 'disabled'].includes(data.feature_vm) ? data.feature_vm : 'system';
     state.swapData = data;
@@ -217,11 +217,14 @@ async function refreshSwap() {
     refs.rtZramUsage.textContent = `${data.zram_disksize > 0 ? ((data.zram_orig_bytes / data.zram_disksize) * 100).toFixed(0) : '0'}% (${fmtBytes(data.zram_orig_bytes)} / ${(data.zram_disksize / 1073741824).toFixed(1)}GB)`;
     refs.rtRatio.textContent = data.zram_orig_bytes > 0 ? `${((data.zram_compr_bytes / data.zram_orig_bytes) * 100).toFixed(1)}% → 实占 ${fmtBytes(data.zram_mem_used_bytes)}` : '—';
     syncHeroDesc();
-  } catch (err) {
-    refs.swapRows.replaceChildren(); refs.swapRows.appendChild(errorBlock('获取失败：' + err.message));
-  } finally {
-    state.swapLoading = false;
-  }
+      return true;
+    } catch (err) {
+      state.swapLoading = false;
+      if (requireFeature('core').isRequestCancelled?.(err)) return null;
+      refs.swapRows.replaceChildren(); refs.swapRows.appendChild(errorBlock('获取失败：' + err.message));
+      return false;
+    } finally { state.swapLoading = false; }
+  });
 }
 
 
@@ -502,15 +505,19 @@ function renderBgRestrict(data) {
 }
 
 async function refreshBgRestrict() {
-  try {
-    const data = await apiFetch(API.bgRestrict, { timeoutMs: 8000 });
+  return requireFeature('core').runFeatureTask('memory.bgRestrict.refresh', async () => {
+    try {
+      const data = await apiFetch(API.bgRestrict, { timeoutMs: 8000, priority: 'normal', scope: 'memory.bgRestrict.read' });
     renderBgRestrict(data);
-  } catch (err) {
-    state.bgContract = null;
-    syncBgRestrictControls();
-    refs.bgRestrictRows.replaceChildren();
-    refs.bgRestrictRows.appendChild(errorBlock('获取失败：' + err.message));
-  }
+      return true;
+    } catch (err) {
+      if (requireFeature('core').isRequestCancelled?.(err)) return null;
+      syncBgRestrictControls();
+      refs.bgRestrictRows.replaceChildren();
+      refs.bgRestrictRows.appendChild(errorBlock('获取失败：' + err.message));
+      return false;
+    }
+  });
 }
 
 async function forceRefreshBgRestrict() {
@@ -519,17 +526,16 @@ async function forceRefreshBgRestrict() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'refresh' }),
-      timeoutMs: 10000
+      timeoutMs: 10000, priority: 'interactive', scope: 'memory.bgRestrict'
     });
     if (data.ok) {
       renderBgRestrict(data);
       showToast('已重新应用后台策略');
     } else {
-      const fallback = await apiFetch(API.bgRestrict, { timeoutMs: 8000 });
+      const fallback = await apiFetch(API.bgRestrict, { timeoutMs: 8000, priority: 'normal', scope: 'memory.bgRestrict.read' });
       renderBgRestrict(fallback);
     }
   } catch (err) {
-    state.bgContract = null;
     syncBgRestrictControls();
     refs.bgRestrictRows.replaceChildren();
     refs.bgRestrictRows.appendChild(errorBlock('获取失败：' + err.message));
@@ -547,7 +553,7 @@ async function bgRestrictAction(body, successText) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      timeoutMs: 10000
+      timeoutMs: 10000, priority: 'interactive', scope: 'memory.bgRestrict'
     });
     if (data.ok) {
       nextData = data;
@@ -609,14 +615,14 @@ async function toggleSwapMode() {
   const newMode = state.featureVm === 'optimized' ? 'stock' : 'optimized';
   appendLog(newMode === 'optimized' ? '正在应用模块 VM 优化…' : '正在恢复系统默认 VM 参数…', 'dim');
   try {
-    const data = await apiFetch(API.swap, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: newMode }), timeoutMs: 8000 });
+    const data = await apiFetch(API.swap, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: newMode }), timeoutMs: 8000, priority: 'interactive', scope: 'memory.swap' });
     state.swapMode = data.mode || newMode;
     state.featureVm = data.feature_vm || (newMode === 'optimized' ? 'optimized' : 'system');
     state.swapData = data;
     showToast(newMode === 'optimized' ? '已应用模块优化 VM 参数' : '已恢复系统默认 VM 参数，后续开机不再写 VM/ZRAM');
     appendLog(newMode === 'optimized' ? 'VM 模块优化已应用' : 'VM 参数已立即恢复系统默认，后续开机 no-write', 'ok');
     renderSwapCard(data);
-    refreshSwap();
+    void refreshSwap();
   } catch (err) {
     showToast(`请求失败：${err?.message || '未知错误'}`);
     appendLog(`VM 设置失败：${err?.message || '未知错误'}`, 'err');
@@ -635,7 +641,7 @@ async function applySwapCustom() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: 'custom', ...values }),
-      timeoutMs: 8000
+      timeoutMs: 8000, priority: 'interactive', scope: 'memory.swap'
     });
     state.swapMode = data.mode || 'custom';
     state.featureVm = data.feature_vm || 'optimized';
@@ -644,7 +650,7 @@ async function applySwapCustom() {
     appendLog('Swap 自定义参数已应用', 'ok');
     renderSwapCard(data);
     closeSwapTuneModal();
-    refreshSwap();
+    void refreshSwap();
   } catch (err) {
     showToast(`请求失败：${err.message || '未知错误'}`);
     appendLog(`Swap 自定义参数失败：${err.message || '未知错误'}`, 'err');
@@ -665,10 +671,10 @@ async function applyZramSizeRequest() {
   }
   appendLog(`正在提交 ZRAM 容量请求：${value}`, 'dim');
   try {
-    const data = await apiFetch(API.swap, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'zram_size', size_bytes: value }), timeoutMs: 8000 });
+    const data = await apiFetch(API.swap, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'zram_size', size_bytes: value }), timeoutMs: 8000, priority: 'interactive', scope: 'memory.swap' });
     showToast(data.message || 'ZRAM 容量将在重启后由 mmd 应用');
     appendLog(`ZRAM 容量请求已保存：${value}（重启生效）`, 'ok');
-    refreshSwap();
+    void refreshSwap();
   } catch (err) {
     showToast(`ZRAM 容量请求失败：${err.message || '未知错误'}`);
     appendLog(`ZRAM 容量请求失败：${err.message || '未知错误'}`, 'err');

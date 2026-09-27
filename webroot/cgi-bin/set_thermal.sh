@@ -15,11 +15,7 @@ THERMAL_POLICY_LIB="$MODDIR/scripts/thermal_policy_lib.sh"
 
 THERMAL_MOUNT_BACKEND=none
 THERMAL_METAMODULE_ACTIVE=0
-if [ -r "$MODDIR/uecap_profile.sh" ] && . "$MODDIR/uecap_profile.sh" 2>/dev/null \
-    && uecap_active_metamodule; then
-    THERMAL_METAMODULE_ACTIVE=1
-    THERMAL_MOUNT_BACKEND="${UECAP_BACKEND:-metamodule_content}"
-fi
+thermal_policy_detect_mount_backend
 
 DEVICE=$(cat "$MODDIR/.device_variant" 2>/dev/null | tr -d ' \r\n\t')
 case "$DEVICE" in caiman|komodo) ;; *) json_error '500 Internal Server Error' 'invalid device variant' ;; esac
@@ -33,6 +29,57 @@ parse_pending_id() { printf '%s\n' "$1" | sed -n 's/.*"pending_id"[[:space:]]*:[
 
 thermal_emit_contract() { thermal_print_ui_contract_json; }
 
+# The POST commit path already owns the thermal lock and has just written the
+# staged journal. Re-reading every receipt/hash field through thermal_emit_state
+# adds several dozen shell pipelines to the user-visible response. Emit the
+# authoritative staged contract from the values committed in this request; a
+# later GET still performs the full readback path.
+thermal_emit_staged_state() {
+    _tes_policy="$1"
+    _tes_offset="$2"
+    _tes_source_hash="$3"
+    _tes_effective_hash="$4"
+    _tes_source_context="$5"
+    _tes_effective_context="$6"
+    _tes_pending_id="$7"
+    printf '"policy":"%s","offset":%s,"mount_backend":"%s","metamodule_active":%s,' \
+        "$_tes_policy" "$_tes_offset" "$THERMAL_MOUNT_BACKEND" \
+        "$([ "$THERMAL_METAMODULE_ACTIVE" -eq 1 ] && printf true || printf false)"
+    printf '"reinstall_required":%s,"repair_required":false,"pending":true,"pending_id":"%s","cancel_supported":true,' \
+        "$([ "$THERMAL_MOUNT_BACKEND" = metamodule_content ] && printf true || printf false)" \
+        "$_tes_pending_id"
+    printf '"reboot_required":true,"effective_state":"pending_reboot",'
+    printf '"source_hash":"%s","effective_hash":"%s",' \
+        "$_tes_source_hash" "$_tes_effective_hash"
+    printf '"source_context":"%s","effective_context":"%s","thermal_contract":' \
+        "$_tes_source_context" "$_tes_effective_context"
+    thermal_emit_contract
+}
+
+# Cancellation already restored the previous source and policy under the
+# mutation lock. Return that committed state directly; the next GET performs
+# the authoritative effective-path/hash readback in the background instead of
+# making the button wait through a second full thermal scan.
+thermal_emit_cancelled_state() {
+    _tec_policy="$1"
+    _tec_offset="$2"
+    _tec_source_hash="$3"
+    _tec_source_context="$4"
+    _tec_effective_hash=$(thermal_policy_effective_hash)
+    _tec_effective_context=$(thermal_policy_effective_context)
+    printf '"policy":"%s","offset":%s,"mount_backend":"%s","metamodule_active":%s,' \
+        "$_tec_policy" "$_tec_offset" "$THERMAL_MOUNT_BACKEND" \
+        "$([ "$THERMAL_METAMODULE_ACTIVE" -eq 1 ] && printf true || printf false)"
+    printf '"reinstall_required":%s,"repair_required":false,"pending":false,"pending_id":"","cancel_supported":false,' \
+        "$([ "$THERMAL_MOUNT_BACKEND" = metamodule_content ] && printf true || printf false)"
+    printf '"reboot_required":false,"effective_state":"restored_pending_readback",'
+    printf '"source_hash":"%s","effective_hash":"%s",' \
+        "$_tec_source_hash" "$_tec_effective_hash"
+    printf '"source_context":"%s","effective_context":"%s","thermal_contract":' \
+        "$_tec_source_context" "$_tec_effective_context"
+    thermal_emit_contract
+}
+
 thermal_emit_state() {
     _ts_policy=$(thermal_policy_read)
     _ts_offset=$(thermal_policy_offset_read)
@@ -41,9 +88,10 @@ thermal_emit_state() {
     _ts_effective_hash=$(thermal_policy_effective_hash)
     _ts_source_context=$(thermal_policy_source_context)
     _ts_effective_context=$(thermal_policy_effective_context)
+    thermal_policy_transaction_load
     _ts_effective_state=degraded
     if thermal_policy_transaction_pending; then
-        _ts_tx_boot=$(thermal_policy_transaction_value boot_id)
+        _ts_tx_boot="$THERMAL_TX_CACHE_BOOT_ID"
         _ts_current_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')
         if [ -n "$_ts_tx_boot" ] && [ "$_ts_tx_boot" = "$_ts_current_boot" ]; then
             _ts_effective_state=pending_reboot
@@ -63,10 +111,10 @@ thermal_emit_state() {
     _ts_cancel_supported=false
     if thermal_policy_transaction_pending; then
         _ts_pending=true
-        _ts_pending_id=$(thermal_policy_transaction_value id)
-        _ts_tx_phase=$(thermal_policy_transaction_value phase)
-        _ts_tx_boot=$(thermal_policy_transaction_value boot_id)
-        _ts_base_valid=$(thermal_policy_transaction_value base_valid)
+        _ts_pending_id="$THERMAL_TX_CACHE_ID"
+        _ts_tx_phase="$THERMAL_TX_CACHE_PHASE"
+        _ts_tx_boot="$THERMAL_TX_CACHE_BOOT_ID"
+        _ts_base_valid="$THERMAL_TX_CACHE_BASE_VALID"
         _ts_current_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')
         [ "$_ts_tx_phase" = staged ] && [ "$_ts_base_valid" = 1 ] && [ -n "$_ts_tx_boot" ] \
             && [ "$_ts_tx_boot" = "$_ts_current_boot" ] \
@@ -104,7 +152,13 @@ thermal_tx_snapshot() {
         _tx_old_hash=$(sha256sum "$THERMAL_SOURCE_FILE" 2>/dev/null | awk '{print $1}')
         _tx_old_context=$(thermal_policy_source_context)
         [ -n "$_tx_old_hash" ] || return 1
-        cp -f "$THERMAL_SOURCE_FILE" "$THERMAL_TX_SOURCE.tmp.$$" || return 1
+        # The journal and regular source live in the same module filesystem on
+        # APatch/Hybrid Mount. Preserve the old inode with a hard-link so a
+        # staged rename does not copy the payload; fall back to a copy when a
+        # backend uses a filesystem that rejects links.
+        if ! ln "$THERMAL_SOURCE_FILE" "$THERMAL_TX_SOURCE.tmp.$$" 2>/dev/null; then
+            cp -f "$THERMAL_SOURCE_FILE" "$THERMAL_TX_SOURCE.tmp.$$" || return 1
+        fi
         mv -f "$THERMAL_TX_SOURCE.tmp.$$" "$THERMAL_TX_SOURCE" || return 1
     fi
     if [ "$_tx_old_policy" = custom ] && [ "$_tx_old_present" -ne 1 ]; then _tx_base_valid=0; fi
@@ -117,9 +171,10 @@ thermal_tx_snapshot() {
 
 thermal_tx_restore() {
     [ -s "$THERMAL_TX_META" ] || return 1
-    _tx_present=$(thermal_policy_transaction_value present)
-    _tx_policy=$(thermal_policy_transaction_value policy)
-    _tx_offset=$(thermal_policy_transaction_value offset)
+    thermal_policy_transaction_load
+    _tx_present="$THERMAL_TX_CACHE_PRESENT"
+    _tx_policy="$THERMAL_TX_CACHE_POLICY"
+    _tx_offset="$THERMAL_TX_CACHE_OFFSET"
     thermal_policy_is_valid "$_tx_policy" || return 1
     if [ "$_tx_policy" = custom ]; then
         thermal_is_valid_offset "$_tx_offset" || return 1
@@ -127,17 +182,21 @@ thermal_tx_restore() {
     if [ "$_tx_present" = 1 ]; then
         [ -f "$THERMAL_TX_SOURCE" ] || return 1
         mkdir -p "${THERMAL_SOURCE_FILE%/*}" || return 1
-        cp -f "$THERMAL_TX_SOURCE" "$THERMAL_SOURCE_FILE.tmp.$$" || return 1
-        _tx_context=$(thermal_policy_transaction_value context)
-        [ -n "$_tx_context" ] && [ "$_tx_context" != none ] \
-            && chcon "$_tx_context" "$THERMAL_SOURCE_FILE.tmp.$$" 2>/dev/null || true
-        mv -f "$THERMAL_SOURCE_FILE.tmp.$$" "$THERMAL_SOURCE_FILE" || return 1
+        _tx_restore_tmp="$THERMAL_SOURCE_FILE.tmp.$$"
+        rm -f "$_tx_restore_tmp" 2>/dev/null
+        if ! ln "$THERMAL_TX_SOURCE" "$_tx_restore_tmp" 2>/dev/null; then
+            cp -f "$THERMAL_TX_SOURCE" "$_tx_restore_tmp" || return 1
+            _tx_context="$THERMAL_TX_CACHE_CONTEXT"
+            [ -n "$_tx_context" ] && [ "$_tx_context" != none ] \
+                && chcon "$_tx_context" "$_tx_restore_tmp" 2>/dev/null || true
+        fi
+        mv -f "$_tx_restore_tmp" "$THERMAL_SOURCE_FILE" || return 1
     else
         rm -f "$THERMAL_SOURCE_FILE" || return 1
     fi
     cgi_atomic_write "$THERMAL_POLICY_FILE" "$_tx_policy" \
         && cgi_atomic_write "$THERMAL_OFFSET_FILE" "$_tx_offset" \
-        && { [ "$_tx_present" != 1 ] || [ "$(sha256sum "$THERMAL_SOURCE_FILE" 2>/dev/null | awk '{print $1}')" = "$(thermal_policy_transaction_value hash)" ]; } \
+        && { [ "$_tx_present" != 1 ] || [ "$(sha256sum "$THERMAL_SOURCE_FILE" 2>/dev/null | awk '{print $1}')" = "$THERMAL_TX_CACHE_HASH" ]; } \
         && [ "$(thermal_policy_read)" = "$_tx_policy" ] \
         && thermal_policy_transaction_clear
 }
@@ -157,11 +216,12 @@ read_json_body 512
 _action=$(parse_action "$JSON_BODY")
 
 if [ "$_action" = cancel_pending ]; then
+    thermal_policy_transaction_load
     _requested_id=$(parse_pending_id "$JSON_BODY")
-    _current_id=$(thermal_policy_transaction_value id)
-    _tx_phase=$(thermal_policy_transaction_value phase)
-    _tx_boot=$(thermal_policy_transaction_value boot_id)
-    _tx_base_valid=$(thermal_policy_transaction_value base_valid)
+    _current_id="$THERMAL_TX_CACHE_ID"
+    _tx_phase="$THERMAL_TX_CACHE_PHASE"
+    _tx_boot="$THERMAL_TX_CACHE_BOOT_ID"
+    _tx_base_valid="$THERMAL_TX_CACHE_BASE_VALID"
     _current_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')
     [ -n "$_current_id" ] && [ "$_requested_id" = "$_current_id" ] \
         || { release_lock; json_error '409 Conflict' 'pending_id 不匹配或不存在'; }
@@ -174,24 +234,29 @@ if [ "$_action" = cancel_pending ]; then
             thermal_policy_transaction_clear >/dev/null 2>&1 || true
             release_lock
             json_error '409 Conflict' '该变更已在本次启动生效，请刷新状态';
+        else
+            release_lock
+            json_error '409 Conflict' '该变更跨越启动周期且当前 readback 未确认，禁止撤销';
         fi
     fi
-    _tx_desired_policy=$(thermal_policy_transaction_value desired_policy)
-    _tx_desired_offset=$(thermal_policy_transaction_value desired_offset)
-    _tx_desired_hash=$(thermal_policy_transaction_value desired_hash)
+    _tx_desired_policy="$THERMAL_TX_CACHE_DESIRED_POLICY"
+    _tx_desired_offset="$THERMAL_TX_CACHE_DESIRED_OFFSET"
+    _tx_desired_hash="$THERMAL_TX_CACHE_DESIRED_HASH"
+    _tx_previous_hash="$THERMAL_TX_CACHE_HASH"
+    _tx_previous_context="$THERMAL_TX_CACHE_CONTEXT"
     [ "$(thermal_policy_read)" = "$_tx_desired_policy" ] \
         && [ "$(thermal_policy_offset_read)" = "$_tx_desired_offset" ] \
         && [ "$(thermal_policy_source_hash)" = "$_tx_desired_hash" ] \
         || { release_lock; json_error '409 Conflict' '当前 source 已变化，请刷新状态后再撤销'; }
     thermal_tx_restore \
         || { release_lock; json_error '500 Internal Server Error' '撤销失败，旧 source 未确认恢复'; }
-    [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] \
-        && audit_log_event thermal cancel success THERMAL_CANCELED 0 >/dev/null 2>&1 || true
     json_headers
     printf '{"ok":true,"canceled":true,'
-    thermal_emit_state
+    thermal_emit_cancelled_state "$_tx_policy" "$_tx_offset" \
+        "$_tx_previous_hash" "$_tx_previous_context"
     printf '}\n'
     release_lock
+    audit_log_event_async thermal cancel success THERMAL_CANCELED 0
     exit 0
 fi
 if [ "$_action" = repair_system ]; then
@@ -203,8 +268,7 @@ if [ "$_action" = repair_system ]; then
             json_error '500 Internal Server Error' 'thermal repair failed'
         }
     release_lock
-    [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] \
-        && audit_log_event thermal repair success THERMAL_REPAIR_SYSTEM 0 >/dev/null 2>&1 || true
+    audit_log_event_async thermal repair success THERMAL_REPAIR_SYSTEM 0
     json_headers
     printf '{"ok":true,"repaired":true,"reboot_required":true,"effective_state":"repair_pending"}\n'
     exit 0
@@ -212,9 +276,10 @@ fi
 [ -z "$_action" ] || { release_lock; json_error '400 Bad Request' 'invalid thermal action'; }
 
 if thermal_policy_transaction_pending; then
-    _pending_id=$(thermal_policy_transaction_value id)
-    _pending_phase=$(thermal_policy_transaction_value phase)
-    _pending_boot=$(thermal_policy_transaction_value boot_id)
+    thermal_policy_transaction_load
+    _pending_id="$THERMAL_TX_CACHE_ID"
+    _pending_phase="$THERMAL_TX_CACHE_PHASE"
+    _pending_boot="$THERMAL_TX_CACHE_BOOT_ID"
     _current_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')
     _pending_cancel=false
     [ "$_pending_phase" = staged ] && [ "$_pending_boot" = "$_current_boot" ] \
@@ -280,14 +345,27 @@ trap 'thermal_cleanup; exit 143' TERM
 
 thermal_tx_snapshot \
     || json_error '500 Internal Server Error' '无法建立可撤销的 thermal journal'
-_tx_base_valid=$(thermal_policy_transaction_value base_valid)
+thermal_policy_transaction_cache_reset
+thermal_policy_transaction_load
+_tx_base_valid="$THERMAL_TX_CACHE_BASE_VALID"
 [ "$_tx_base_valid" = 1 ] \
     || { thermal_policy_transaction_clear >/dev/null 2>&1 || true; release_lock; json_error '409 Conflict' 'repair_required'; }
 if [ "$policy" = custom ]; then
+    # customize.sh accepts the snapshot only after the same generator has
+    # validated it and records its fingerprint/hash provenance. Keep that
+    # provenance check on every request; the selected output is generated once
+    # below and the effective path is verified by the later readback.
     thermal_policy_stock_provenance_valid "$STOCK_JSON" \
         || json_error '409 Conflict' 'THERMAL_STOCK_MISSING_OR_FOREIGN'
-    thermal_generate_config "$STOCK_JSON" "$TS_CANDIDATE" "$offset" \
-        || json_error '422 Unprocessable Entity' 'THERMAL_CONFIG_INVALID'
+    _cached_profile=$(thermal_policy_profile_cache_path "$DEVICE" "$offset" 2>/dev/null || true)
+    if thermal_policy_profile_cache_valid "$DEVICE" "$STOCK_JSON" \
+        && [ -s "$_cached_profile" ]; then
+        cp -f "$_cached_profile" "$TS_CANDIDATE" 2>/dev/null \
+            || json_error '500 Internal Server Error' 'THERMAL_PROFILE_CACHE_COPY_FAILED'
+    else
+        thermal_generate_config "$STOCK_JSON" "$TS_CANDIDATE" "$offset" \
+            || json_error '422 Unprocessable Entity' 'THERMAL_CONFIG_INVALID'
+    fi
     mkdir -p "${THERMAL_SOURCE_FILE%/*}" 2>/dev/null \
         || json_error '500 Internal Server Error' 'cannot create thermal source directory'
     cp "$TS_CANDIDATE" "$TS_SOURCE_TMP" 2>/dev/null \
@@ -308,11 +386,14 @@ _tx_next_hash=$(thermal_policy_source_hash)
 cgi_atomic_write "$THERMAL_TX_META" "$(printf '%s\ndesired_policy=%s\ndesired_offset=%s\ndesired_hash=%s' \
     "$_tx_meta_payload" "$policy" "$offset" "$_tx_next_hash")" \
     || json_error '500 Internal Server Error' 'thermal journal commit failed'
+thermal_policy_transaction_cache_reset
 _tx_committed=1
-_pending_id=$(thermal_policy_transaction_value id)
-[ "$AUDIT_LOG_AVAILABLE" -eq 1 ] \
-    && audit_log_event thermal policy success THERMAL_STAGED 0 >/dev/null 2>&1 || true
+thermal_policy_transaction_load
+_pending_id="$THERMAL_TX_CACHE_ID"
 json_headers
 printf '{"ok":true,"restarted":false,'
-thermal_emit_state
+thermal_emit_staged_state "$policy" "$offset" "$_tx_next_hash" "$_legacy_effective_hash" \
+    "$(thermal_policy_source_context)" "$_legacy_effective_context" "$_pending_id"
 printf '}\n'
+release_lock
+audit_log_event_async thermal policy success THERMAL_STAGED 0
