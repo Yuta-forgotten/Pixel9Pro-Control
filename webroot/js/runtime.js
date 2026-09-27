@@ -183,13 +183,13 @@ const UECAP_VERIFY_TIMEOUT_MS = 15000;
 const PROFILE_MUTATION_TIMEOUT_MS = 15000;
 const WEBUI_IDLE_MS = 45000;
 const POLL_MIN_DELAY_MS = 900;
-const TEMP_CHART_REFRESH_MS = 10000;
+const TEMP_CHART_REFRESH_MS = 15000;
 const ENERGY_DETAIL_REFRESH_MS = 10000;
 const ENERGY_SYSTEM_REFRESH_FALLBACK_MS = 60000;
 const ENERGY_SYSTEM_REFRESH_MARGIN_MS = 2000;
 const POLL_INTERVALS = {
   cpu: { home: 5000, perf: 4000, relaxedHome: 12000, relaxedPerf: 9000 },
-  thermal: { home: 12000, thermal: 10000, relaxedHome: 24000, relaxedThermal: 20000 },
+  thermal: { home: 15000, thermal: 12000, relaxedHome: 30000, relaxedThermal: 24000 },
   optim: { home: 45000, optim: 30000, relaxedHome: 120000, relaxedOptim: 90000 },
   slow: { home: 90000, optim: 75000, relaxedHome: 180000, relaxedOptim: 150000 },
 };

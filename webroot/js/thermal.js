@@ -10,6 +10,7 @@ const state = {
   lastSkinTempC: null,
   thermalApplyBusy: false,
   thermalCancelBusy: false,
+  thermalContractRequest: null,
   thermalContractRetryTimer: null,
   thermalContractRetryAttempts: 0,
   repairRequired: false,
@@ -183,7 +184,10 @@ function isThermalZoneValid(zone) {
 
 async function readThermalZones({ fresh = false, clear = false } = {}) {
   const path = clear ? API.thermalClear : fresh ? API.thermalFresh : API.thermal;
-  const options = { timeoutMs: fresh || clear ? 8000 : 3500 };
+  // A normal read can legitimately rebuild the cache after the 60-second
+  // worker tick. Keep enough time for one dumpsys without letting a stuck CGI
+  // hold the UI indefinitely; manual clear/fresh reads get a larger bound.
+  const options = { timeoutMs: fresh || clear ? 12000 : 7000 };
   if (clear) {
     options.method = 'POST';
     options.headers = { 'Content-Type': 'application/json' };
@@ -345,39 +349,47 @@ function ensureSensorRefs(container, key, zones, className) {
 }
 
 async function loadThermalPreset() {
-  try {
-    const data = await apiFetch(API.thermalSet);
-    updateThermalRuntimeGuard(data);
-    applyThermalContract(data);
-    state.thermalContractRetryAttempts = 0;
-    if (state.thermalContractRetryTimer) {
-      clearTimeout(state.thermalContractRetryTimer);
-      state.thermalContractRetryTimer = null;
-    }
-    state.currentPolicy = state.contract.policies.includes(data.policy)
-      ? data.policy
-      : state.contract.defaultPolicy;
-    state.currentOffset = state.contract.offsets.includes(Number(data.offset))
-      ? Number(data.offset)
-      : state.contract.defaultOffset;
-    updatePendingState(data);
-    renderThermalCards();
-  } catch (_) {
-    // A transient WebUI/CGI failure must not erase an already valid contract.
-    // Retry a bounded number of times so a slow post-boot service does not
-    // leave the thermal cards permanently blank until a full page reload.
-    if (!state.contract && state.thermalContractRetryAttempts < 5) {
-      state.thermalContractRetryAttempts += 1;
-      if (!state.thermalContractRetryTimer) {
-        state.thermalContractRetryTimer = window.setTimeout(() => {
-          state.thermalContractRetryTimer = null;
-          void loadThermalPreset();
-        }, 1500 * state.thermalContractRetryAttempts);
+  if (state.thermalContractRequest) return state.thermalContractRequest;
+  state.thermalContractRequest = (async () => {
+    try {
+      const data = await apiFetch(API.thermalSet);
+      updateThermalRuntimeGuard(data);
+      applyThermalContract(data);
+      state.thermalContractRetryAttempts = 0;
+      if (state.thermalContractRetryTimer) {
+        clearTimeout(state.thermalContractRetryTimer);
+        state.thermalContractRetryTimer = null;
+      }
+      state.currentPolicy = state.contract.policies.includes(data.policy)
+        ? data.policy
+        : state.contract.defaultPolicy;
+      state.currentOffset = state.contract.offsets.includes(Number(data.offset))
+        ? Number(data.offset)
+        : state.contract.defaultOffset;
+      updatePendingState(data);
+      renderThermalCards();
+    } catch (_) {
+      // A transient WebUI/CGI failure must not erase an already valid contract.
+      // Retry a bounded number of times so a slow post-boot service does not
+      // leave the thermal cards permanently blank until a full page reload.
+      if (!state.contract && state.thermalContractRetryAttempts < 5) {
+        state.thermalContractRetryAttempts += 1;
+        if (!state.thermalContractRetryTimer) {
+          state.thermalContractRetryTimer = window.setTimeout(() => {
+            state.thermalContractRetryTimer = null;
+            void loadThermalPreset();
+          }, 1500 * state.thermalContractRetryAttempts);
+        }
       }
     }
+    syncThermalUi();
+    syncHeroDesc();
+  })();
+  try {
+    return await state.thermalContractRequest;
+  } finally {
+    state.thermalContractRequest = null;
   }
-  syncThermalUi();
-  syncHeroDesc();
 }
 
 async function refreshThermal() {

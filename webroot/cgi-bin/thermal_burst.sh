@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # GET returns the foreground thermal-capture window. POST atomically starts or
-# stops the 5-second sampling hint consumed by service.sh.
+# stops the low-power sampling hint consumed by service.sh.
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
 
 BURST_FILE="$MODDIR/.thermal_burst_until"

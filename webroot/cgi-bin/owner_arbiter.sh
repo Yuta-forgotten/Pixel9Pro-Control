@@ -34,6 +34,21 @@ display_state_read >/dev/null 2>&1 || true
 _display_state="$DISPLAY_STATE"
 _display_source="$DISPLAY_STATE_SOURCE"
 _screen=$(display_state_legacy_screen)
+_handoff=$(cat "$MODDIR/.game_handoff_policy" 2>/dev/null | tr -d ' \n\r\t')
+_lease_state=$(cat "$FAS_ROOT/.owner_state" 2>/dev/null | tr -d '\r\n')
+_lease_active=0
+case "$_lease_state" in *fas-rs:game:*) _lease_active=1 ;; esac
+if [ "$_screen" != on ]; then
+    json_status_headers '409 Conflict'
+    printf '{"ok":false,"error":"屏幕未亮，owner arbiter 已暂停","screen":"%s","screen_source":"%s"}\n' \
+        "$(json_escape "$_display_state")" "$(json_escape "$_display_source")"
+    exit 0
+fi
+if [ "$_handoff" != fas_rs ] && [ "$_lease_active" -ne 1 ]; then
+    json_status_headers '409 Conflict'
+    printf '{"ok":false,"error":"未开启游戏移交且没有有效 lease，owner arbiter 不运行"}\n'
+    exit 0
+fi
 
 _out=$(OWNER_ARBITER_FAS_ROOT="$FAS_ROOT" \
     sh "$MODDIR/scripts/owner_arbiter.sh" apply-tick "$MODDIR" "$_screen" 2>&1)

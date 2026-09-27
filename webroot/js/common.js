@@ -9,6 +9,7 @@ const shellState = {
   poller: {
     timer: null,
     running: false,
+    inFlight: false,
     lastInteractionAt: 0,
     lastRun: { cpu: 0, thermal: 0, optim: 0, slow: 0 }
   },
@@ -215,37 +216,53 @@ function queueNextPoll(delayMs = POLL_MIN_DELAY_MS) {
 }
 
 async function runPollCycle() {
-  if (!shellState.poller.running || !isWebUiActive()) return;
+  if (!shellState.poller.running || !isWebUiActive() || shellState.poller.inFlight) return;
   const now = Date.now();
-  const jobs = [];
   const app = requireFeature('app');
+  if (app.isFullRefreshActive?.()) {
+    queueNextPoll(3000);
+    return;
+  }
+  shellState.poller.inFlight = true;
+  const jobs = [];
   const profile = requireFeature('profile');
   const thermal = requireFeature('thermal');
   const memory = requireFeature('memory');
   const network = requireFeature('network');
+  try {
+    if (app.shouldPollCpu() && !profile.isRefreshing() && (now - shellState.poller.lastRun.cpu) >= getPollInterval('cpu')) {
+      jobs.push({ key: 'cpu', run: () => profile.refresh() });
+    }
+    if (app.shouldPollThermal() && !thermal.isRefreshing() && (now - shellState.poller.lastRun.thermal) >= getPollInterval('thermal')) {
+      jobs.push({ key: 'thermal', run: () => thermal.refresh() });
+    }
+    if (app.shouldPollOptim() && !memory.isRefreshing() && (now - shellState.poller.lastRun.optim) >= getPollInterval('optim')) {
+      jobs.push({ key: 'optim', run: () => memory.refresh() });
+    }
+    if (app.shouldPollSlow() && (now - shellState.poller.lastRun.slow) >= getPollInterval('slow')) {
+      jobs.push({
+        key: 'slow',
+        run: async () => {
+          await network.refresh();
+          await memory.refreshRestrictions();
+          await loadInfo();
+        }
+      });
+    }
 
-  if (app.shouldPollCpu() && !profile.isRefreshing() && (now - shellState.poller.lastRun.cpu) >= getPollInterval('cpu')) {
-    jobs.push({ key: 'cpu', run: () => profile.refresh() });
+    if (jobs.length) {
+      markPollFresh(jobs.map((job) => job.key), now);
+      // Keep the single CGI listener from serving several expensive dumpsys
+      // requests at once. A failed job is handled by its feature and does not
+      // block the other scheduled jobs.
+      for (const job of jobs) {
+        try { await job.run(); } catch (_) {}
+      }
+    }
+  } finally {
+    shellState.poller.inFlight = false;
+    queueNextPoll(computeNextPollDelay());
   }
-  if (app.shouldPollThermal() && !thermal.isRefreshing() && (now - shellState.poller.lastRun.thermal) >= getPollInterval('thermal')) {
-    jobs.push({ key: 'thermal', run: () => thermal.refresh() });
-  }
-  if (app.shouldPollOptim() && !memory.isRefreshing() && (now - shellState.poller.lastRun.optim) >= getPollInterval('optim')) {
-    jobs.push({ key: 'optim', run: () => memory.refresh() });
-  }
-  if (app.shouldPollSlow() && (now - shellState.poller.lastRun.slow) >= getPollInterval('slow')) {
-    jobs.push({
-      key: 'slow',
-      run: () => Promise.allSettled([network.refresh(), memory.refreshRestrictions(), loadInfo()])
-    });
-  }
-
-  if (jobs.length) {
-    markPollFresh(jobs.map((job) => job.key), now);
-    await Promise.allSettled(jobs.map((job) => job.run()));
-  }
-
-  queueNextPoll(computeNextPollDelay());
 }
 
 let _topbarRafPending = false;
@@ -413,7 +430,7 @@ function fmtBytes(bytes) {
   return `${(value / 1073741824).toFixed(2)}GB`;
 }
 
-async function loadInfo() {
+async function loadInfoInternal() {
   try {
     const data = await apiFetch(API.info);
     const deviceModel = data.model || '—';
@@ -465,6 +482,14 @@ async function loadInfo() {
   } catch (_) {}
 }
 
+let loadInfoPromise = null;
+async function loadInfo() {
+  if (loadInfoPromise) return loadInfoPromise;
+  loadInfoPromise = loadInfoInternal();
+  try { return await loadInfoPromise; }
+  finally { loadInfoPromise = null; }
+}
+
 registerFeature('auth', {
   initialize() {
     loadWebuiTokenFromSession();
@@ -487,6 +512,7 @@ registerFeature('shell', {
   setForegroundPaused(value) { shellState.foregroundPaused = Boolean(value); },
   setLastInteractionAt(value) { shellState.poller.lastInteractionAt = value; },
   isPolling: () => shellState.poller.running,
+  isPollCycleBusy: () => shellState.poller.inFlight,
   startPolling() {
     if (shellState.poller.running) return;
     shellState.poller.running = true;

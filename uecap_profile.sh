@@ -754,6 +754,10 @@ uecap_last_switch() {
 }
 
 uecap_json_escape() {
+    case "$1" in
+        *[\\\"]*) ;;
+        *) printf '%s' "$1"; return 0 ;;
+    esac
     printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\r//g;s/\n/\\n/g'
 }
 
@@ -1042,6 +1046,7 @@ uecap_refresh_observed_state() {
     UECAP_NSA_STATUS="not_applicable"
     UECAP_NSA_REASON="no_confirmed_nsa_cell"
     _uecap_observed_target_hash=$(uecap_hash "$UECAP_TARGET")
+    UECAP_OBSERVED_TARGET_HASH="$_uecap_observed_target_hash"
     _uecap_observed_source=""
     _uecap_observed_source_hash=""
 
@@ -1608,7 +1613,7 @@ uecap_print_status_json() {
     _uecap_status_manual=$(uecap_current_manual_mode)
     _uecap_status_reason=$(uecap_current_reason)
     _uecap_status_active=$(uecap_detect_active_mode)
-    _uecap_status_target_hash=$(uecap_hash "$UECAP_TARGET")
+    _uecap_status_target_hash="${UECAP_OBSERVED_TARGET_HASH:-$(uecap_hash "$UECAP_TARGET")}"
     _uecap_status_special_hash=$(uecap_hash "$UECAP_SPECIAL")
     _uecap_status_balanced_hash=$(uecap_hash "$UECAP_BALANCED")
     _uecap_status_universal_hash=$(uecap_hash "$UECAP_UNIVERSAL")

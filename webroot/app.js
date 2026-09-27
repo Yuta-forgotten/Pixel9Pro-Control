@@ -19,22 +19,43 @@ const appFeatures = Object.freeze({
 const $ = appFeatures.ui.getElement;
 const openDetail = appFeatures.ui.openDetail;
 const showToast = appFeatures.core.showToast;
+let fullRefreshPromise = null;
+let tabRefreshPromise = null;
 
 async function doFullRefresh() {
-  showToast('正在刷新…', 1000);
-  await Promise.all([
-    appFeatures.profile.refresh(),
-    appFeatures.thermal.refresh(),
-    appFeatures.memory.refresh()
-  ]);
-  await Promise.allSettled([
-    appFeatures.network.refresh(),
-    appFeatures.memory.refreshRestrictions(),
-    appFeatures.shell.loadInfo()
-  ]);
-  appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow']);
-  appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay());
-  showToast('已刷新');
+  if (fullRefreshPromise) return fullRefreshPromise;
+  fullRefreshPromise = (async () => {
+    const refreshButton = $('refresh-all-btn');
+    if (refreshButton) refreshButton.disabled = true;
+    showToast('正在刷新…', 1000);
+    if (tabRefreshPromise) await tabRefreshPromise.catch(() => {});
+    const failures = [];
+    const run = async (name, task) => {
+      try {
+        await task();
+      } catch (error) {
+        failures.push(`${name}: ${error?.message || error}`);
+        appFeatures.core.appendLog(`${name}刷新失败：${error?.message || error}`, 'err');
+      }
+    };
+    // BusyBox httpd is intentionally kept single-listener and several of
+    // these endpoints execute dumpsys. Serialize the manual path so one slow
+    // thermal read cannot starve every other refresh request.
+    await run('CPU', () => appFeatures.profile.refresh());
+    await run('温控', () => appFeatures.thermal.refresh());
+    await run('内存', () => appFeatures.memory.refresh());
+    await run('网络', () => appFeatures.network.refresh());
+    await run('后台限制', () => appFeatures.memory.refreshRestrictions());
+    await run('系统信息', () => appFeatures.shell.loadInfo());
+    appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow']);
+    appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay());
+    showToast(failures.length ? '已刷新，部分模块超时或失败' : '已刷新');
+  })().finally(() => {
+    const refreshButton = $('refresh-all-btn');
+    if (refreshButton) refreshButton.disabled = false;
+    fullRefreshPromise = null;
+  });
+  return fullRefreshPromise;
 }
 
 function shouldPollCpu() {
@@ -58,41 +79,38 @@ function shouldPollSlow() {
 }
 
 function refreshCurrentTabData() {
-  if (!appFeatures.core.isWebUiActive()) return;
+  if (!appFeatures.core.isWebUiActive()) return Promise.resolve();
+  if (tabRefreshPromise) return tabRefreshPromise;
   const now = Date.now();
   const tab = appFeatures.shell.getCurrentTab();
-  if (tab === 'home') {
-    appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow'], now);
-    appFeatures.profile.refresh();
-    appFeatures.thermal.refresh();
-    appFeatures.memory.refresh();
-    appFeatures.network.refresh();
-    appFeatures.shell.loadInfo();
-    appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay(now));
-    return;
-  }
-  if (tab === 'tune') {
-    appFeatures.core.markPollFresh(['cpu', 'thermal'], now);
-    appFeatures.profile.refresh();
-    appFeatures.thermal.refresh();
-    appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay(now));
-    return;
-  }
-  if (tab === 'network') {
-    appFeatures.core.markPollFresh(['slow'], now);
-    appFeatures.network.refresh();
-    appFeatures.shell.loadInfo();
-    appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay(now));
-    return;
-  }
-  if (tab === 'system') {
-    appFeatures.core.markPollFresh(['optim', 'slow'], now);
-    appFeatures.memory.refresh();
-    appFeatures.memory.refreshRestrictions();
-    appFeatures.network.refresh();
-    appFeatures.shell.loadInfo();
-    appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay(now));
-  }
+  tabRefreshPromise = (async () => {
+    if (tab === 'home') {
+      appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow'], now);
+      await appFeatures.profile.refresh();
+      await appFeatures.thermal.refresh();
+      await appFeatures.memory.refresh();
+      await appFeatures.network.refresh();
+      await appFeatures.shell.loadInfo();
+    } else if (tab === 'tune') {
+      appFeatures.core.markPollFresh(['cpu', 'thermal'], now);
+      await appFeatures.profile.refresh();
+      await appFeatures.thermal.refresh();
+    } else if (tab === 'network') {
+      appFeatures.core.markPollFresh(['slow'], now);
+      await appFeatures.network.refresh();
+      await appFeatures.shell.loadInfo();
+    } else if (tab === 'system') {
+      appFeatures.core.markPollFresh(['optim', 'slow'], now);
+      await appFeatures.memory.refresh();
+      await appFeatures.memory.refreshRestrictions();
+      await appFeatures.network.refresh();
+      await appFeatures.shell.loadInfo();
+    }
+  })().catch(() => {}).finally(() => {
+    tabRefreshPromise = null;
+    appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay());
+  });
+  return tabRefreshPromise;
 }
 
 function startPolling() {
@@ -272,11 +290,9 @@ function bindStaticEvents() {
 
 async function refreshDeferredInitData() {
   appFeatures.core.markPollFresh(['optim', 'slow']);
-  await Promise.allSettled([
-    appFeatures.memory.refresh(),
-    appFeatures.memory.refreshRestrictions(),
-    appFeatures.network.refresh()
-  ]);
+  await appFeatures.memory.refresh();
+  await appFeatures.memory.refreshRestrictions();
+  await appFeatures.network.refresh();
   appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay());
 }
 
@@ -294,7 +310,8 @@ async function init() {
   appFeatures.shell.setLastInteractionAt(bootAt);
   appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow'], bootAt);
   await appFeatures.shell.loadInfo();
-  await Promise.all([appFeatures.profile.load(), appFeatures.thermal.load()]);
+  await appFeatures.profile.load();
+  await appFeatures.thermal.load();
   await appFeatures.profile.refresh();
   await appFeatures.thermal.refresh();
   appFeatures.core.markPollFresh(['cpu', 'thermal']);
@@ -307,6 +324,7 @@ async function init() {
 registerFeature('app', {
   fullRefresh: doFullRefresh,
   refreshCurrentTabData,
+  isFullRefreshActive: () => Boolean(fullRefreshPromise),
   shouldPollCpu,
   shouldPollThermal,
   shouldPollOptim,

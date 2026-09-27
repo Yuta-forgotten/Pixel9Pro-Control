@@ -31,18 +31,19 @@ _tw_prev_uptime=0
 _tw_prev_screen=unknown
 _tw_prev_charge_status=unknown
 _tw_interval_on=60
-_tw_interval_off=600
+_tw_interval_off=900
 
 telemetry_worker_update() {
+    telemetry_state_load "$TELEMETRY_STATE" || true
     _tw_status="$1"
     _tw_end="$2"
     _tw_reason="$3"
-    _tw_stop=$(telemetry_state_value "$TELEMETRY_STATE" stop_requested 0)
-    _tw_start_ts=$(telemetry_state_value "$TELEMETRY_STATE" start_ts 0)
-    _tw_pid=$(telemetry_state_value "$TELEMETRY_STATE" pid "$$")
-    _tw_pid_start=$(telemetry_state_value "$TELEMETRY_STATE" pid_start_ticks "")
-    _tw_duration_state=$(telemetry_state_value "$TELEMETRY_STATE" duration_sec "$_tw_duration")
-    _tw_max_state=$(telemetry_state_value "$TELEMETRY_STATE" max_bytes "$_tw_max_bytes")
+    _tw_stop="${TL_STATE_STOP_REQUESTED:-0}"
+    _tw_start_ts="${TL_STATE_START_TS:-0}"
+    _tw_pid="${TL_STATE_PID:-$$}"
+    _tw_pid_start="${TL_STATE_PID_START:-}"
+    _tw_duration_state="${TL_STATE_DURATION_SEC:-$_tw_duration}"
+    _tw_max_state="${TL_STATE_MAX_BYTES:-$_tw_max_bytes}"
     telemetry_state_write "$_tw_id" "$_tw_status" "$_tw_start_ts" "$_tw_end" \
         "$_tw_duration_state" "$_tw_max_state" "$_tw_pid" "$_tw_pid_start" \
         "$_tw_reason" "$_tw_samples" "$_tw_bytes" "$_tw_last_sample" \
@@ -56,14 +57,16 @@ telemetry_worker_finish() {
     [ "$_tw_finalized" -eq 1 ] && return 0
     _tw_finalized=1
     _tw_now=$(telemetry_now)
-    telemetry_capture_batterystats "$_tw_dir" end >/dev/null 2>&1 || true
+    telemetry_read_screen
+    [ "$TL_SCREEN" = on ] && telemetry_capture_batterystats "$_tw_dir" end >/dev/null 2>&1 || true
     telemetry_worker_update "$1" "$_tw_now" "$2" || true
 }
 
 telemetry_worker_signal() {
-    _tw_current=$(telemetry_state_value "$TELEMETRY_STATE" session_id "")
+    telemetry_state_load "$TELEMETRY_STATE" || true
+    _tw_current="${TL_STATE_SESSION_ID:-}"
     [ "$_tw_current" = "$_tw_id" ] || { _tw_finalized=1; exit 0; }
-    _tw_status=$(telemetry_state_value "$TELEMETRY_STATE" status running)
+    _tw_status="${TL_STATE_STATUS:-running}"
     case "$_tw_status" in
         stopping) telemetry_worker_finish stopped user_stop ;;
         running) telemetry_worker_finish stopped signal ;;
@@ -73,10 +76,15 @@ telemetry_worker_signal() {
 }
 trap 'telemetry_worker_signal' INT TERM HUP
 
-_tw_current=$(telemetry_state_value "$TELEMETRY_STATE" session_id "")
+telemetry_state_load "$TELEMETRY_STATE" || exit 3
+_tw_current="${TL_STATE_SESSION_ID:-}"
 [ "$_tw_current" = "$_tw_id" ] || exit 3
-_tw_status=$(telemetry_state_value "$TELEMETRY_STATE" status pending)
-[ "$_tw_status" = pending ] && sleep 1 && _tw_status=$(telemetry_state_value "$TELEMETRY_STATE" status pending)
+_tw_status="${TL_STATE_STATUS:-pending}"
+if [ "$_tw_status" = pending ]; then
+    sleep 1
+    telemetry_state_load "$TELEMETRY_STATE" || exit 3
+    _tw_status="${TL_STATE_STATUS:-pending}"
+fi
 [ "$_tw_status" = running ] || exit 3
 
 _tw_csv=$(telemetry_sample_file "$_tw_dir")
@@ -87,21 +95,23 @@ _tw_jsonl=$(telemetry_jsonl_file "$_tw_dir")
 } > "$_tw_csv" 2>/dev/null || exit 4
 : > "$_tw_jsonl" 2>/dev/null || exit 4
 chmod 600 "$_tw_csv" "$_tw_jsonl" 2>/dev/null
-telemetry_capture_batterystats "$_tw_dir" start >/dev/null 2>&1 || true
+telemetry_read_screen
+[ "$TL_SCREEN" = on ] && telemetry_capture_batterystats "$_tw_dir" start >/dev/null 2>&1 || true
 telemetry_worker_update running 0 started || exit 4
 
 while :; do
-    _tw_current=$(telemetry_state_value "$TELEMETRY_STATE" session_id "")
+    telemetry_state_load "$TELEMETRY_STATE" || { _tw_finalized=1; exit 0; }
+    _tw_current="${TL_STATE_SESSION_ID:-}"
     [ "$_tw_current" = "$_tw_id" ] || { _tw_finalized=1; exit 0; }
-    _tw_state=$(telemetry_state_value "$TELEMETRY_STATE" status running)
-    _tw_stop=$(telemetry_state_value "$TELEMETRY_STATE" stop_requested 0)
+    _tw_state="${TL_STATE_STATUS:-running}"
+    _tw_stop="${TL_STATE_STOP_REQUESTED:-0}"
     case "$_tw_state:$_tw_stop" in
         stopping:*|*:1) telemetry_worker_finish stopped user_stop; break ;;
         failed:*|completed:*) _tw_finalized=1; exit 0 ;;
     esac
 
     _tw_now=$(telemetry_now)
-    _tw_start_ts=$(telemetry_state_value "$TELEMETRY_STATE" start_ts "$_tw_now")
+    _tw_start_ts="${TL_STATE_START_TS:-$_tw_now}"
     case "$_tw_start_ts" in ''|*[!0-9]*) _tw_start_ts="$_tw_now" ;; esac
     if [ "$_tw_duration" -gt 0 ] 2>/dev/null && [ $((_tw_now - _tw_start_ts)) -ge "$_tw_duration" ] 2>/dev/null; then
         telemetry_worker_finish completed duration_elapsed

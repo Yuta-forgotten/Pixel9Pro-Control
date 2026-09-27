@@ -835,112 +835,34 @@ else
 fi
 ensure_profile_history_baseline
 
-# Owner arbiter needs a faster wake->game reaction than the main standby
-# worker can provide after it enters the 600s deep-standby sleep.  Keep this
-# loop cheap while screen-off and only run top-app/window IPC when display is on.
+# Owner arbiter is intentionally owned by the unified foreground worker. This
+# removes a second screen-state loop and guarantees that no owner/top-app IPC
+# runs during screen-off standby.
 sbm_load_state
 if [ "$SBM_PHASE" = "success" ] \
     && { [ "$SBM_EFFECTIVE_MODE" = "pixel" ] || [ "$SBM_EFFECTIVE_MODE" = "ugt" ]; }; then
-(
-    # Periodic observation never waits behind a user or boot transaction. A
-    # later tick recomputes foreground and owner state from scratch.
-    SO_TRANSITION_LOCK_MAX_ATTEMPTS=1
-    SO_TRANSITION_LOCK_RETRY_SLEEP_S=0
-    export SO_TRANSITION_LOCK_MAX_ATTEMPTS SO_TRANSITION_LOCK_RETRY_SLEEP_S
-    _owner_arbiter_fast_on="${OWNER_ARBITER_FAST_ON:-$OWNER_ARBITER_DEFAULT_SCREEN_ON_POLL_S}"
-    _owner_arbiter_fast_off="${OWNER_ARBITER_FAST_OFF:-$OWNER_ARBITER_DEFAULT_SCREEN_OFF_POLL_S}"
-    _owner_arbiter_off_grace_s="${OWNER_ARBITER_OFF_GRACE_S:-$OWNER_ARBITER_DEFAULT_SCREEN_OFF_GRACE_S}"
-    _owner_arbiter_off_pause_s="${OWNER_ARBITER_OFF_PAUSE_S:-$OWNER_ARBITER_DEFAULT_SCREEN_OFF_PAUSE_S}"
-    _owner_arbiter_pause_poll_s="${OWNER_ARBITER_PAUSE_POLL_S:-$OWNER_ARBITER_DEFAULT_PAUSE_POLL_S}"
-    case "$_owner_arbiter_fast_on" in ''|*[!0-9]*) _owner_arbiter_fast_on=5 ;; esac
-    case "$_owner_arbiter_fast_off" in ''|*[!0-9]*) _owner_arbiter_fast_off=15 ;; esac
-    case "$_owner_arbiter_off_grace_s" in ''|*[!0-9]*) _owner_arbiter_off_grace_s=360 ;; esac
-    case "$_owner_arbiter_off_pause_s" in ''|*[!0-9]*) _owner_arbiter_off_pause_s=3600 ;; esac
-    case "$_owner_arbiter_pause_poll_s" in ''|*[!0-9]*) _owner_arbiter_pause_poll_s=30 ;; esac
-    [ "$_owner_arbiter_fast_on" -lt 3 ] 2>/dev/null && _owner_arbiter_fast_on=3
-    [ "$_owner_arbiter_fast_off" -lt 10 ] 2>/dev/null && _owner_arbiter_fast_off=10
-    [ "$_owner_arbiter_off_grace_s" -lt 60 ] 2>/dev/null && _owner_arbiter_off_grace_s=60
-    [ "$_owner_arbiter_off_pause_s" -lt 600 ] 2>/dev/null && _owner_arbiter_off_pause_s=600
-    [ "$_owner_arbiter_pause_poll_s" -lt 10 ] 2>/dev/null && _owner_arbiter_pause_poll_s=10
-    _owner_arbiter_screen_off_since=0
-    _owner_arbiter_long_paused=0
-
-    while true; do
-        _owner_arbiter_now=$(date +%s 2>/dev/null || echo 0)
-        display_state_read >/dev/null 2>&1 || true
-        _oa_screen=$(display_state_legacy_screen)
-
-        if [ "$_oa_screen" = "on" ] && [ -f "$MODDIR/scripts/owner_arbiter.sh" ]; then
-            _owner_arbiter_screen_off_since=0
-            _owner_arbiter_long_paused=0
-            sh "$MODDIR/scripts/owner_arbiter.sh" tick "$MODDIR" "$_oa_screen" 2>/dev/null
-            sleep "$_owner_arbiter_fast_on"
-        else
-            if [ "$_owner_arbiter_screen_off_since" -eq 0 ] 2>/dev/null; then
-                _owner_arbiter_screen_off_since="$_owner_arbiter_now"
-            fi
-            _owner_arbiter_off_elapsed=$((_owner_arbiter_now - _owner_arbiter_screen_off_since))
-            if [ "$_owner_arbiter_off_elapsed" -ge "$_owner_arbiter_off_grace_s" ] 2>/dev/null; then
-                if [ "$_owner_arbiter_long_paused" -ne 1 ] 2>/dev/null; then
-                    log -t pixel9pro_ctrl "Owner arbiter paused after ${_owner_arbiter_off_elapsed}s screen-off"
-                    _owner_arbiter_long_paused=1
-                fi
-                _owner_arbiter_pause_until=$((_owner_arbiter_now + _owner_arbiter_off_pause_s))
-                while true; do
-                    display_state_read >/dev/null 2>&1 || true
-                    [ "$DISPLAY_STATE_INTERACTIVE" = "yes" ] && break
-                    _owner_arbiter_now=$(date +%s 2>/dev/null || echo 0)
-                    [ "$_owner_arbiter_now" -ge "$_owner_arbiter_pause_until" ] 2>/dev/null && break
-                    sleep "$_owner_arbiter_pause_poll_s"
-                done
-                continue
-            fi
-            sleep "$_owner_arbiter_fast_off"
-        fi
-    done
-) &
-log -t pixel9pro_ctrl "Owner arbiter worker started for verified ${SBM_EFFECTIVE_MODE} baseline"
+log -t pixel9pro_ctrl "Owner arbiter folded into screen-on worker for verified ${SBM_EFFECTIVE_MODE} baseline"
 else
-    log -t pixel9pro_ctrl "Owner arbiter worker disabled: scheduler boot state=${SBM_PHASE:-unknown}/${SBM_EFFECTIVE_MODE:-unknown}"
+    log -t pixel9pro_ctrl "Owner arbiter disabled: scheduler boot state=${SBM_PHASE:-unknown}/${SBM_EFFECTIVE_MODE:-unknown}"
 fi
 
-# Fixed-interval scheduler health worker. The health action is scheduler-node
-# read-only. Android framework/Scene/PowerHAL may write back volatile CPU
-# controls after a successful profile transaction; record that drift and wait
-# for an explicit profile/owner transaction instead of replaying parameters from
-# a background loop. This is the critical "apply once, verify once, observe"
-# boundary for daily use. If the optional CPU contract is unavailable, do not
-# start a loop with an empty sleep interval: the worker is disabled until the
-# contract is present on the next module start.
+# Scheduler health is folded into the foreground worker below. It is a
+# read-only observation and must not keep a 900-second sleeper alive while
+# the display is off; the first interactive cycle after wake performs it.
 if [ "$CPU_PROFILE_AVAILABLE" -eq 1 ]; then
-    _cpu_profile_health_interval_s="$CPU_PROFILE_HEALTH_INTERVAL_S"
-    case "$_cpu_profile_health_interval_s" in
-        ''|*[!0-9]*) _cpu_profile_health_interval_s=300 ;;
-    esac
-    [ "$_cpu_profile_health_interval_s" -ge 60 ] 2>/dev/null || _cpu_profile_health_interval_s=60
-    (
-        while true; do
-            sleep "$_cpu_profile_health_interval_s"
-            sh "$MODDIR/scripts/scheduler_reconcile.sh" health "$MODDIR" >/dev/null 2>&1
-            _scheduler_health_rc=$?
-            if [ "$_scheduler_health_rc" -eq 5 ]; then
-                log -t pixel9pro_ctrl "Scheduler health observed profile drift; no automatic repair (system writeback boundary)"
-            fi
-        done
-    ) &
-    log -t pixel9pro_ctrl "Scheduler read-only health worker started (${_cpu_profile_health_interval_s}s)"
+    log -t pixel9pro_ctrl "Scheduler health worker is screen-on only"
 else
-    log -t pixel9pro_ctrl "Scheduler read-only health worker disabled: CPU profile contract unavailable"
+    log -t pixel9pro_ctrl "Scheduler health observation disabled: CPU profile contract unavailable"
 fi
 
 # ──────────────────────────────────────────────────────────
 # 4. 统一后台工作循环 (Doze 友好)
 #    屏幕状态优先读 DRM sysfs，仅在节点异常时回退一次 display/power IPC
-#    亮屏 15s / 息屏首次 60s (NR防抖) / 息屏后续 600s / 突发 5s
+#    亮屏 15s / 息屏首次 60s (NR防抖) / 息屏后续 900s / 突发低功耗采样
 #    若已降到 LTE, 改为较短复查周期，避免亮屏后长期停留 LTE
 #    WiFi multicast: 仅在屏幕状态变化时切换，不轮询
 #    NR 降级: 集成防抖，仅在开启时生效
-#    温度历史: 亮屏 60s、息屏 600s；息屏样本显式标记 screen_off_paused，WebUI 前台突发窗口缩短为 5s
+#    温度历史: 亮屏 60s、息屏 900s；息屏样本显式标记 screen_off_sample，WebUI 前台突发窗口使用可调低功耗间隔
 #    UECap: manual profile is applied only during boot or an explicit WebUI action
 # ──────────────────────────────────────────────────────────
 NR_SWITCH_FILE="$MODDIR/.nr_screen_switch"
@@ -955,7 +877,12 @@ HISTORY_META="$MODDIR/.history.meta"
 HISTORY_SOURCE=service_worker
 HISTORY_SESSION_ID="service_${SERVICE_BOOT_ID}"
 HISTORY_INTERVAL_ON=60
-HISTORY_INTERVAL_OFF=600
+HISTORY_INTERVAL_OFF=900
+THERMAL_BURST_INTERVAL="${THERMAL_BURST_INTERVAL_S:-10}"
+case "$THERMAL_BURST_INTERVAL" in
+    ''|*[!0-9]*) THERMAL_BURST_INTERVAL=10 ;;
+esac
+[ "$THERMAL_BURST_INTERVAL" -ge 5 ] 2>/dev/null || THERMAL_BURST_INTERVAL=5
 
 [ -f "$NR_SWITCH_FILE" ] || runtime_write_value "$NR_SWITCH_FILE" "$NR_SCREEN_SWITCH_DEFAULT" >/dev/null 2>&1 \
     || log -t pixel9pro_ctrl "WARNING: failed to initialize NR switch state"
@@ -1012,7 +939,7 @@ HISTORY_INTERVAL_OFF=600
         _sleep_remaining="$1"
         _sleep_recheck="$UNIFIED_SCREEN_WAKE_RECHECK_S"
         case "$_sleep_remaining" in ''|*[!0-9]*|0) return 0 ;; esac
-        case "$_sleep_recheck" in ''|*[!0-9]*|0) _sleep_recheck=30 ;; esac
+        case "$_sleep_recheck" in ''|*[!0-9]*|0) _sleep_recheck=900 ;; esac
 
         if [ "${_screen:-off}" = "on" ] || [ "$_sleep_remaining" -le "$_sleep_recheck" ] 2>/dev/null; then
             sleep "$_sleep_remaining"
@@ -1399,6 +1326,13 @@ HISTORY_INTERVAL_OFF=600
     _active_profile=$(profile_state_read_profile "$PROFILE_FILE" 'default')
     _cycle_count=0
     _idle_isolate_prev=""
+    _power_rank_dispatch_at=0
+    _power_rank_interval_s="${POWER_RANK_COLLECT_INTERVAL_S:-900}"
+    case "$_power_rank_interval_s" in
+        ''|*[!0-9]*) _power_rank_interval_s=900 ;;
+    esac
+    [ "$_power_rank_interval_s" -ge 300 ] 2>/dev/null || _power_rank_interval_s=300
+    _health_last_run=0
 
     while true; do
         _now=$(date +%s 2>/dev/null || echo 0)
@@ -1449,6 +1383,35 @@ HISTORY_INTERVAL_OFF=600
             _just_off=1
         elif [ "$_screen" = "on" ] && [ "$_prev_screen" = "off" ]; then
             _just_off=0
+        fi
+
+        # Health and owner arbitration are screen-on observations. The first
+        # cycle after wake performs an immediate read; steady foreground work
+        # repeats only at the low 300-second health cadence. The off recorder
+        # never performs top-app or scheduler binder queries.
+        if [ "$_screen" = "on" ]; then
+            _health_due=0
+            [ "$_health_last_run" -eq 0 ] 2>/dev/null && _health_due=1
+            [ $((_now - _health_last_run)) -ge 300 ] 2>/dev/null && _health_due=1
+            [ "$_prev_screen" = "off" ] && _health_due=1
+            if [ "$_health_due" -eq 1 ] && [ "$CPU_PROFILE_AVAILABLE" -eq 1 ]; then
+                sh "$MODDIR/scripts/scheduler_reconcile.sh" health "$MODDIR" >/dev/null 2>&1
+                _scheduler_health_rc=$?
+                [ "$_scheduler_health_rc" -eq 5 ] \
+                    && log -t pixel9pro_ctrl "Scheduler health observed profile drift; no automatic repair (system writeback boundary)"
+                _health_last_run=$_now
+            fi
+            _arbiter_handoff=$(cat "$GAME_HANDOFF_POLICY_FILE" 2>/dev/null | tr -d ' \n\r\t')
+            _arbiter_lease_state=$(cat "/data/adb/fas_rs/.owner_state" 2>/dev/null | tr -d '\r\n')
+            _arbiter_lease_active=0
+            case "$_arbiter_lease_state" in *fas-rs:game:*) _arbiter_lease_active=1 ;; esac
+            if [ -f "$MODDIR/scripts/owner_arbiter.sh" ] \
+                && { [ "$_arbiter_handoff" = fas_rs ] || [ "$_arbiter_lease_active" -eq 1 ]; }; then
+                SO_TRANSITION_LOCK_MAX_ATTEMPTS=1
+                SO_TRANSITION_LOCK_RETRY_SLEEP_S=0
+                export SO_TRANSITION_LOCK_MAX_ATTEMPTS SO_TRANSITION_LOCK_RETRY_SLEEP_S
+                sh "$MODDIR/scripts/owner_arbiter.sh" tick "$MODDIR" on >/dev/null 2>&1
+            fi
         fi
         _prev_screen="$_screen"
 
@@ -1531,27 +1494,35 @@ HISTORY_INTERVAL_OFF=600
         fi
 
         # History uses the same epoch clock on both sides of a screen transition.
-        # Screen-off lowers sampling to 600s without discarding the interval.
+        # Screen-off is a low-frequency recorder path: one Thermal HAL read per
+        # 900 seconds, with no BatteryStats or top-app collection.
         _burst_until=$(cat "$THERMAL_BURST_FILE" 2>/dev/null | tr -d ' \n\r')
         _burst_active=0
         if [ -n "$_burst_until" ] && [ "$_burst_until" -gt "$_now" ] 2>/dev/null; then
             _burst_active=1
         fi
         # 高频温度记录只允许亮屏。WebUI 进入后台时会清除 burst 标记；
-        # 即使标记因进程切换未及时清除，息屏也绝不进入 5s 采样路径。
+        # 即使标记因进程切换未及时清除，息屏也绝不进入 burst 采样路径。
         _burst_effective=0
         if [ "$_screen" = "on" ] && [ "$_burst_active" -eq 1 ]; then
             _burst_effective=1
         fi
 
         _worker_mode="deep_standby"
+        [ "$_screen" = on ] && _worker_mode=screen_on
+        [ "$_burst_effective" -eq 1 ] && _worker_mode=thermal_burst
         _vs_temp=""
         _thermal_interval=$HISTORY_INTERVAL_OFF
         [ "$_screen" = on ] && _thermal_interval=$HISTORY_INTERVAL_ON
-        [ "$_burst_effective" -eq 1 ] && _thermal_interval=5
+        [ "$_burst_effective" -eq 1 ] && _thermal_interval="$THERMAL_BURST_INTERVAL"
         if [ "$_thermal_last_sample" -eq 0 ] || [ $((_now - _thermal_last_sample)) -ge "$_thermal_interval" ] 2>/dev/null \
-            || { [ "$_screen" = off ] && [ "$_history_prev_screen" != off ]; }; then
+            || { [ "$_screen" = on ] && [ "$_history_prev_screen" != on ]; }; then
             [ "$_screen" = on ] && _worker_mode=screen_on
+            [ "$_burst_effective" -eq 1 ] && _worker_mode=thermal_burst
+            # Thermal HAL dumps remain out of the normal off loop. This branch
+            # is entered only on the 900-second recorder deadline (or a screen
+            # transition), so the off sample still records the actual skin
+            # temperature without becoming a high-frequency poller.
             _json=$(build_thermal_json 2>/dev/null)
             _thermal_valid=0
             _thermal_quality=missing_source
@@ -1565,9 +1536,8 @@ HISTORY_INTERVAL_OFF=600
                 case "$_vs_temp" in ''|*[!0-9]*) _vs_temp="" ;; *) _thermal_valid=1; _thermal_quality=ok ;; esac
             fi
             if [ "$_screen" != on ]; then
-                _vs_temp=""
-                _thermal_valid=0
-                _thermal_quality=screen_off_paused
+                [ "$_thermal_valid" -eq 1 ] && _thermal_quality=screen_off_sample
+                [ "$_thermal_valid" -eq 0 ] && _thermal_quality=screen_off_missing
             fi
             if [ "${_thermal_last_uptime:-0}" -gt 0 ] 2>/dev/null && [ "$_uptime_now" -ge "$_thermal_last_uptime" ] 2>/dev/null \
                 && [ $((_uptime_now - _thermal_last_uptime)) -gt $((_thermal_interval * 2)) ] 2>/dev/null; then
@@ -1721,8 +1691,12 @@ HISTORY_INTERVAL_OFF=600
         _history_prev_screen="$_screen"
         # Attribution snapshots have their own persisted 15-minute throttle.
         # Do not put batterystats collection on the history/UI response path.
-        [ ! -r "$MODDIR/scripts/power_rank_collect.sh" ] \
-            || sh "$MODDIR/scripts/power_rank_collect.sh" >/dev/null 2>&1 &
+        if [ "$_screen" = on ] && [ -r "$MODDIR/scripts/power_rank_collect.sh" ] \
+            && { [ "$_power_rank_dispatch_at" -eq 0 ] 2>/dev/null \
+                || [ $((_now - _power_rank_dispatch_at)) -ge "$_power_rank_interval_s" ] 2>/dev/null; }; then
+            sh "$MODDIR/scripts/power_rank_collect.sh" >/dev/null 2>&1 &
+            _power_rank_dispatch_at=$_now
+        fi
 
         _enforce_stop_after_leave
 
@@ -1735,18 +1709,19 @@ HISTORY_INTERVAL_OFF=600
             fi
         elif [ "$_screen_off_isolate" -eq 1 ]; then
             _just_off=0
-            _next_sleep_secs=600
+            _next_sleep_secs=900
         elif [ "$_just_off" -eq 1 ]; then
             _just_off=0
-            _next_sleep_secs=60
+            _next_sleep_secs=900
         elif [ "$_nr_state" = "lte" ]; then
             _next_sleep_secs=$_NR_LTE_POLL
         elif [ "$_nr_enabled" = "on" ] && [ "$_nr_off_since" -gt 0 ] 2>/dev/null; then
-            _next_sleep_secs=60
+            _next_sleep_secs=900
         else
-            _next_sleep_secs=600
+            _next_sleep_secs=900
         fi
-        if [ "${_bg_stop_next_due:-0}" -gt 0 ] 2>/dev/null && [ "$_bg_stop_next_due" -lt "$_next_sleep_secs" ] 2>/dev/null; then
+        if [ "$_screen" = on ] && [ "${_bg_stop_next_due:-0}" -gt 0 ] 2>/dev/null \
+            && [ "$_bg_stop_next_due" -lt "$_next_sleep_secs" ] 2>/dev/null; then
             _next_sleep_secs="$_bg_stop_next_due"
         fi
         _diag_profile_policy=$(profile_state_read_policy)

@@ -63,7 +63,10 @@ esac
 
 # --- 实时模式 ---
 json_headers
-_cache_max_age=30
+# The service refreshes the foreground cache on a 60-second cadence. Keep a
+# slightly wider read window so ordinary UI polling serves that cache instead
+# of starting another dumpsys thermalservice process between worker ticks.
+_cache_max_age=90
 _now=$(date +%s 2>/dev/null || echo 0)
 _fresh="$_clear"
 case "$QUERY_STRING" in *fresh=1*) _fresh=1 ;; esac

@@ -26,6 +26,10 @@ json_status_headers() {
 }
 
 json_escape() {
+    case "$1" in
+        *[\\\"]*) ;;
+        *) printf '%s' "$1"; return 0 ;;
+    esac
     printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\r//g;s/\n/\\n/g'
 }
 

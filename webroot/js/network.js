@@ -146,7 +146,7 @@ function renderStandbyGuard(data) {
   refs.idleIsolateRows.replaceChildren();
   [
     { label: '功能状态', value: isolateOn ? '已开启' : '已关闭', cls: isolateOn ? 'warn' : 'off' },
-    { label: '息屏行为', value: isolateOn ? '仅保留 600s 最小唤醒路径，其余全部暂停' : '常规待机 worker 正常运行', cls: isolateOn ? 'warn' : 'good' },
+    { label: '息屏行为', value: isolateOn ? '仅保留 900s 低频 recorder，其余全部暂停' : '常规待机 worker 正常运行', cls: isolateOn ? 'warn' : 'good' },
     { label: '使用建议', value: isolateOn ? '仅用于一晚隔离测试，验证后请关闭' : '日常使用保持关闭', cls: 'off' },
   ].forEach((row) => refs.idleIsolateRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
@@ -163,8 +163,8 @@ function renderStandbyGuard(data) {
       { label: '当前屏幕', value: state.standbyDiag.screen === 'on' ? '亮屏' : state.standbyDiag.screen === 'off' ? '息屏' : '未知', cls: state.standbyDiag.screen === 'on' ? 'good' : state.standbyDiag.screen === 'off' ? 'off' : 'warn' },
       { label: '当前工作', value: standbyWorkerModeLabel(state.standbyDiag.workerMode), cls: standbyWorkerModeClass(state.standbyDiag.workerMode) },
       { label: '下次检查约', value: state.standbyDiag.nextSleepSecs ? formatDuration(Number(state.standbyDiag.nextSleepSecs)) : '—', cls: 'off' },
-      { label: '温度采样', value: state.standbyDiag.screen === 'on' ? '亮屏约每 15 秒' : '息屏暂停', cls: state.standbyDiag.screen === 'on' ? 'good' : 'off' },
-      { label: '功耗采样', value: state.standbyDiag.screen === 'on' ? '亮屏约每 60 秒' : '息屏约每 10 分钟', cls: 'off' },
+      { label: '温度采样', value: state.standbyDiag.screen === 'on' ? '亮屏约每 60 秒' : '息屏约每 15 分钟一次', cls: state.standbyDiag.screen === 'on' ? 'good' : 'off' },
+      { label: '功耗采样', value: state.standbyDiag.screen === 'on' ? '亮屏约每 60 秒' : '息屏约每 15 分钟，禁用 BatteryStats', cls: 'off' },
       { label: 'NR 状态', value: nrLabel, cls: state.standbyDiag.nrState === 'lte' ? 'warn' : 'off' },
       { label: '调度状态', value: profileLabel, cls: 'off' },
       { label: '检查次数', value: state.standbyDiag.cycleCount || '0', cls: 'off' },
@@ -889,15 +889,21 @@ async function syncNtp() {
   }
 }
 
+let networkRefreshPromise = null;
+
 registerFeature('network', {
   async refresh() {
-    await Promise.allSettled([
-      refreshNrSwitch(),
-      refreshUecap(),
-      refreshBaseband(),
-      refreshNtp(),
-      refreshStandbyGuard()
-    ]);
+    if (networkRefreshPromise) return networkRefreshPromise;
+    networkRefreshPromise = (async () => {
+      // These endpoints all invoke Android services and share one loopback
+      // httpd. Serialize the read-only refresh to avoid queueing five binder/
+      // dumpsys requests behind one another during manual refresh.
+      for (const task of [refreshNrSwitch, refreshUecap, refreshBaseband, refreshNtp, refreshStandbyGuard]) {
+        try { await task(); } catch (_) {}
+      }
+    })();
+    try { return await networkRefreshPromise; }
+    finally { networkRefreshPromise = null; }
   },
   stopDeviceClock,
   syncDeviceClockForTab,

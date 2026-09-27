@@ -93,6 +93,17 @@ display_state_read() {
         _ds_drm=${_ds_drm%%[!A-Za-z]*}
     fi
 
+    # DRM sysfs is the cheap, SELinux-safe first gate. A disabled connector
+    # cannot be interactive, so avoid a binder call during deep standby. An
+    # enabled connector may still be AOD/doze; only then ask deviceidle for
+    # the interactive bit and fall back to dumpsys power if it is unavailable.
+    case "$_ds_drm" in
+        disabled)
+            display_state_classify false Asleep disabled
+            return $?
+            ;;
+    esac
+
     if [ -x "$DISPLAY_STATE_CMD_BIN" ]; then
         _ds_screen=$("$DISPLAY_STATE_CMD_BIN" deviceidle get screen 2>/dev/null)
         _ds_screen=${_ds_screen%%[!A-Za-z]*}

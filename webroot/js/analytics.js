@@ -90,7 +90,18 @@
         catch (err) { showToast(`记录导出失败：${err.message || err}`); appendLog(String(err), 'err'); }
         button.disabled = false;
       },
-      onRefresh: async (button) => { button.disabled = true; state.rankRefreshRequested = true; state.detailsDue = true; await load(true, true); button.disabled = false; },
+      onRefresh: async (button) => {
+        button.disabled = true;
+        state.rankRefreshRequested = true;
+        state.detailsDue = true;
+        try {
+          await load(true, true);
+        } finally {
+          // A timeout or an aborted range switch must never leave the manual
+          // refresh control latched until the page is reloaded.
+          button.disabled = false;
+        }
+      },
       onExport: (button) => exportRange(button)
     });
     return state.view;
@@ -249,7 +260,7 @@
     }
     schedule();
   }
-  function schedule(delay = state.source === 'thermal' ? 10000 : 30000) {
+  function schedule(delay = state.source === 'thermal' ? TEMP_CHART_REFRESH_MS : 30000) {
     if (state.timer) clearTimeout(state.timer); state.timer = null;
     if (!state.open || !isActive()) return;
     state.timer = window.setTimeout(() => { state.timer = null; load(true); }, delay);

@@ -22,6 +22,7 @@ BASEBAND_STATUS_PROP_VERSION_CODE=""
 BASEBAND_STATUS_PROP_DESCRIPTION=""
 BASEBAND_STATUS_RECEIPT=""
 BASEBAND_STATUS_RUNTIME_VERIFIED=false
+BASEBAND_STATUS_SELECTED=0
 
 baseband_status_trim() {
     tr -d ' \r\n\t'
@@ -50,6 +51,7 @@ baseband_status_json_string() {
 }
 
 baseband_status_select_module() {
+    BASEBAND_STATUS_SELECTED=1
     BASEBAND_STATUS_DIR=""
     BASEBAND_STATUS_MODULE_DIR_STATE="missing"
     BASEBAND_STATUS_SOURCE=""
@@ -103,7 +105,10 @@ baseband_status_select_module() {
 }
 
 baseband_status_emit_json() {
-    baseband_status_select_module >/dev/null 2>&1 || {
+    if [ "$BASEBAND_STATUS_SELECTED" -ne 1 ] 2>/dev/null; then
+        baseband_status_select_module >/dev/null 2>&1
+    fi
+    [ -n "$BASEBAND_STATUS_DIR" ] || {
         BASEBAND_STATUS_RUNTIME_VERIFIED=false
         printf '{"installed":false,"enabled":false,"runtime_verified":false,"module_dir":"","module_dir_state":"missing","module_state":"missing","source":"none","root_impl":"unknown","version":"","version_code":"","description":"","runtime_status":"UNVERIFIED","status_schema":0,"mount_observed":"unknown","effective_overlay_verified":"no","source_contract_verified":"no","content_image_verified":"unknown","effective_contract_verified":"no","effective_extra_files_allowed":"yes","migration_state":"missing","source_path":"","effective_path":"","content_image":"missing","source_hash":"unknown","source_contract_hash":"unknown","effective_hash":"unknown","effective_contract_hash":"unknown","content_image_hash":"unknown","content_contract_hash":"unknown","source_tree_hash":"unknown","content_tree_hash":"unknown","clean_reinstall_required":false,"pending_update":false,"pending_update_dir":"","runtime_receipt_freshness":"missing","prior_receipt_freshness":"missing","current_runtime_check_freshness":"missing","boot_id":"unknown","errors":"module_missing","carrier_settings":{"installed":false,"count":0,"carrier_list_sha256":"missing"},"mcfg":{"installed":false,"count":0},"props":{"volte_avail_ovr":"","wfc_avail_ovr":"","vt_avail_ovr":"","apns_conf_sha256":"missing"}}'
         return 0

@@ -45,7 +45,7 @@
 
 偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前置 severity 先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。靠近 SHUTDOWN 时，生成器按 stock `HotHysteresis` 从后向前收窄，并额外保留 `0.1°C` 的严格间隔，保证“前一档阈值 `<` 下一档阈值减下一档 hysteresis”；只检查阈值递增并不足以保证 Pixel Thermal HAL 接受配置。SELinux 只验证 effective `/vendor/etc/thermal_info_config.json` 的 `vendor_configs_file`；模块 source 的 `system_file` label 不再被错误地当成挂载证明。
 
-WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，避免普通刷新被 `dumpsys thermalservice` 慢路径阻塞；当缓存缺失、无 `VIRTUAL-SKIN`、温度越界或连续异常时，自动走 `fresh=1` 重建。历史页按 15/30/60 分钟、12 小时和 1/3/7 天窗口显示 minute/hour 粒度；图表保留中间时间刻度、缺测 gap 和后台 raw/display/valid/invalid 计数。
+WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，普通读取缓存容忍约 90 秒，和亮屏 60 秒 worker 采样对齐，避免重复启动 `dumpsys thermalservice`；当缓存缺失、无 `VIRTUAL-SKIN`、温度越界或连续异常时，自动走 `fresh=1` 重建。历史页按 15/30/60 分钟、12 小时和 1/3/7 天窗口显示 minute/hour 粒度；图表保留中间时间刻度、缺测 gap 和后台 raw/display/valid/invalid 计数。
 
 温控档位提交后进入模块私有 `.thermal_tx` journal。同一 boot 且 backend 返回
 `cancel_supported=true` 时，“放弃本次修改”会携带 `pending_id` 原子恢复旧 source、policy
@@ -78,6 +78,10 @@ WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，避免�
 - 息屏超过 300 秒后将网络模式切换到 LTE
 - 亮屏时恢复保存的 NR 模式
 - 热点开启时跳过切换
+- 息屏 worker 使用 900 秒低频 recorder 窗口；owner arbiter 在息屏完全停止，避免 30 秒轮询阻止 Doze
+- 温度历史亮屏约每 60 秒读取；息屏由低频 recorder 每 900 秒读取一次 Thermal HAL 并保留当时温度，期间不轮询 BatteryStats、Top 进程或 owner arbiter
+- 屏幕状态先读 DRM sysfs；只有 connector 仍 enabled 或 sysfs 不可用时才用 `cmd deviceidle` / `dumpsys power` 兜底。sysfs 的 inotify 事件在不同 Android/SELinux policy 上并不保证，不能作为唯一唤醒源。
+- CGI 保留 Android 固定 `/system/bin/sh` shebang，由 BusyBox `httpd` 按脚本 shebang 执行；硬编码某个 Root 实现下的 BusyBox `ash` 路径会在 APatch/KernelSU/Magisk 间失效并可能触发 SELinux，未作为运行时依赖引入。
 
 ### UE 网络能力 / UECap 切换
 

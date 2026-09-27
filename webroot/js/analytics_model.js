@@ -115,16 +115,17 @@
     }
     deltas.sort((a, b) => a - b);
     // Cap an inferred cadence by the producer contract, so a two-point long
-    // pause cannot define itself as normal. Legacy power can sample every 600s.
-    const maximum = source === 'power' ? 600 : 60;
+    // A long pause cannot define itself as normal. Legacy power may still
+    // contain 600-second samples, while the current off recorder uses 900s.
+    const maximum = source === 'power' ? 900 : 900;
     return Math.min(maximum, deltas.length ? deltas[Math.floor((deltas.length - 1) / 2)] : maximum);
   }
 
   function gapThreshold(previous, source, typical, options) {
-    // telemetry_worker.sh sleeps 60s on-screen and 600s off-screen. History CGI
+    // telemetry_worker.sh sleeps 60s on-screen and 900s off-screen. History CGI
     // returns one actual reading per requested bucket, not a bucket average.
     const bucket = options.granularity === 'hour' ? 3600 : options.granularity === 'minute' ? 60 : 0;
-    const interval = previous?.screen === 'on' ? 60 : previous?.screen === 'off' ? 600 : typical;
+    const interval = previous?.screen === 'on' ? 60 : previous?.screen === 'off' ? 900 : typical;
     // One missing bucket must become an explicit gap. A four-bucket tolerance
     // hid hours of absent data behind a seemingly continuous trace.
     return Math.max(source === 'power' ? 180 : 90, Math.max(bucket, interval) * 2);

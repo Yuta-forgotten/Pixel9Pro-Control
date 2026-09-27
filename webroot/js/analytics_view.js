@@ -93,7 +93,7 @@
     const captureExport = el('button', 'tiny-btn tonal', '导出记录'); captureExport.type = 'button';
     captureExport.addEventListener('click', () => callbacks.onCaptureExport(captureExport));
     captureControls.append(duration, captureBtn, captureExport);
-    capture.append(el('div', 'analytics-section-title', '低功耗记录'), el('div', 'analytics-section-desc', '后台按设备采样策略记录时间戳、功耗、温度、屏幕状态、Top 进程与 ODPM；息屏温度缺测会保留为空。'), captureState, captureControls);
+    capture.append(el('div', 'analytics-section-title', '低功耗记录'), el('div', 'analytics-section-desc', '后台按设备采样策略记录时间戳、功耗、温度与屏幕状态；息屏仅在低频 recorder 唤醒时读取一次温度，不执行 BatteryStats 轮询。'), captureState, captureControls);
     const actions = el('div', 'analytics-export-actions analytics-actions');
     const refresh = el('button', 'tiny-btn tonal', '刷新数据'); refresh.type = 'button';
     refresh.addEventListener('click', () => callbacks.onRefresh?.(refresh)); actions.appendChild(refresh);

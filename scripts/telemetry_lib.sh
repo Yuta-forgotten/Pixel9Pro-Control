@@ -58,6 +58,70 @@ telemetry_state_value() {
     [ -n "$_tl_value" ] && printf '%s' "$_tl_value" || printf '%s' "$_tl_default"
 }
 
+# Read the mutable recorder state once per observation. Callers that need many
+# fields (worker and CGI) should use these variables instead of starting one
+# sed/head pipeline per key.
+telemetry_state_load() {
+    TL_STATE_SESSION_ID=""
+    TL_STATE_STATUS=""
+    TL_STATE_START_TS=0
+    TL_STATE_END_TS=0
+    TL_STATE_DURATION_SEC=0
+    TL_STATE_MAX_BYTES=0
+    TL_STATE_PID=0
+    TL_STATE_PID_START=""
+    TL_STATE_REASON=""
+    TL_STATE_SAMPLES=0
+    TL_STATE_BYTES=0
+    TL_STATE_LAST_SAMPLE_TS=0
+    TL_STATE_QUALITY=unknown
+    TL_STATE_RESET_COUNT=0
+    TL_STATE_STOP_REQUESTED=0
+    TL_STATE_BOOT_ID=""
+    TL_STATE_SOURCE=""
+    TL_STATE_SESSION_DIR=""
+    TL_STATE_VALID_SAMPLES=0
+    TL_STATE_INVALID_SAMPLES=0
+    TL_STATE_GAP_COUNT=0
+    TL_STATE_FIRST_SAMPLE_TS=0
+    TL_STATE_INTERVAL_ON_SEC=60
+    TL_STATE_INTERVAL_OFF_SEC=900
+    TL_STATE_LAST_SCREEN=unknown
+    TL_STATE_LAST_CHARGE_STATUS=unknown
+    [ -r "$1" ] || return 1
+    while IFS='=' read -r _tl_key _tl_value; do
+        case "$_tl_key" in
+            session_id) TL_STATE_SESSION_ID="$_tl_value" ;;
+            status) TL_STATE_STATUS="$_tl_value" ;;
+            start_ts) TL_STATE_START_TS="$_tl_value" ;;
+            end_ts) TL_STATE_END_TS="$_tl_value" ;;
+            duration_sec) TL_STATE_DURATION_SEC="$_tl_value" ;;
+            max_bytes) TL_STATE_MAX_BYTES="$_tl_value" ;;
+            pid) TL_STATE_PID="$_tl_value" ;;
+            pid_start_ticks) TL_STATE_PID_START="$_tl_value" ;;
+            reason) TL_STATE_REASON="$_tl_value" ;;
+            samples) TL_STATE_SAMPLES="$_tl_value" ;;
+            bytes) TL_STATE_BYTES="$_tl_value" ;;
+            last_sample_ts) TL_STATE_LAST_SAMPLE_TS="$_tl_value" ;;
+            quality) TL_STATE_QUALITY="$_tl_value" ;;
+            reset_count) TL_STATE_RESET_COUNT="$_tl_value" ;;
+            stop_requested) TL_STATE_STOP_REQUESTED="$_tl_value" ;;
+            boot_id) TL_STATE_BOOT_ID="$_tl_value" ;;
+            source) TL_STATE_SOURCE="$_tl_value" ;;
+            session_dir) TL_STATE_SESSION_DIR="$_tl_value" ;;
+            valid_samples) TL_STATE_VALID_SAMPLES="$_tl_value" ;;
+            invalid_samples) TL_STATE_INVALID_SAMPLES="$_tl_value" ;;
+            gap_count) TL_STATE_GAP_COUNT="$_tl_value" ;;
+            first_sample_ts) TL_STATE_FIRST_SAMPLE_TS="$_tl_value" ;;
+            interval_on_sec) TL_STATE_INTERVAL_ON_SEC="$_tl_value" ;;
+            interval_off_sec) TL_STATE_INTERVAL_OFF_SEC="$_tl_value" ;;
+            last_screen) TL_STATE_LAST_SCREEN="$_tl_value" ;;
+            last_charge_status) TL_STATE_LAST_CHARGE_STATUS="$_tl_value" ;;
+        esac
+    done < "$1"
+    return 0
+}
+
 telemetry_state_write() {
     _tl_session_id="$1"
     _tl_status="$2"
@@ -85,7 +149,8 @@ telemetry_state_write() {
     _tl_interval_off="${24:-}"
     _tl_last_screen="${25:-}"
     _tl_last_charge_status="${26:-}"
-    _tl_existing_id=$(telemetry_state_value "$TELEMETRY_STATE" session_id "")
+    telemetry_state_load "$TELEMETRY_STATE" || true
+    _tl_existing_id="${TL_STATE_SESSION_ID:-}"
     if [ "$_tl_status" = pending ] && [ "$_tl_existing_id" != "$_tl_session_id" ]; then
         _tl_boot_id=$(telemetry_boot_id)
         _tl_source=telemetry_worker
@@ -96,16 +161,16 @@ telemetry_state_write() {
         _tl_last_screen=unknown
         _tl_last_charge_status=unknown
     fi
-    [ -n "$_tl_boot_id" ] || _tl_boot_id=$(telemetry_state_value "$TELEMETRY_STATE" boot_id "$(telemetry_boot_id)")
-    [ -n "$_tl_source" ] || _tl_source=$(telemetry_state_value "$TELEMETRY_STATE" source telemetry_worker)
-    [ -n "$_tl_valid_samples" ] || _tl_valid_samples=$(telemetry_state_value "$TELEMETRY_STATE" valid_samples 0)
-    [ -n "$_tl_invalid_samples" ] || _tl_invalid_samples=$(telemetry_state_value "$TELEMETRY_STATE" invalid_samples 0)
-    [ -n "$_tl_gap_count" ] || _tl_gap_count=$(telemetry_state_value "$TELEMETRY_STATE" gap_count 0)
-    [ -n "$_tl_first_sample" ] || _tl_first_sample=$(telemetry_state_value "$TELEMETRY_STATE" first_sample_ts 0)
-    [ -n "$_tl_interval_on" ] || _tl_interval_on=$(telemetry_state_value "$TELEMETRY_STATE" interval_on_sec 60)
-    [ -n "$_tl_interval_off" ] || _tl_interval_off=$(telemetry_state_value "$TELEMETRY_STATE" interval_off_sec 600)
-    [ -n "$_tl_last_screen" ] || _tl_last_screen=$(telemetry_state_value "$TELEMETRY_STATE" last_screen unknown)
-    [ -n "$_tl_last_charge_status" ] || _tl_last_charge_status=$(telemetry_state_value "$TELEMETRY_STATE" last_charge_status unknown)
+    [ -n "$_tl_boot_id" ] || _tl_boot_id="${TL_STATE_BOOT_ID:-$(telemetry_boot_id)}"
+    [ -n "$_tl_source" ] || _tl_source="${TL_STATE_SOURCE:-telemetry_worker}"
+    [ -n "$_tl_valid_samples" ] || _tl_valid_samples="${TL_STATE_VALID_SAMPLES:-0}"
+    [ -n "$_tl_invalid_samples" ] || _tl_invalid_samples="${TL_STATE_INVALID_SAMPLES:-0}"
+    [ -n "$_tl_gap_count" ] || _tl_gap_count="${TL_STATE_GAP_COUNT:-0}"
+    [ -n "$_tl_first_sample" ] || _tl_first_sample="${TL_STATE_FIRST_SAMPLE_TS:-0}"
+    [ -n "$_tl_interval_on" ] || _tl_interval_on="${TL_STATE_INTERVAL_ON_SEC:-60}"
+    [ -n "$_tl_interval_off" ] || _tl_interval_off="${TL_STATE_INTERVAL_OFF_SEC:-900}"
+    [ -n "$_tl_last_screen" ] || _tl_last_screen="${TL_STATE_LAST_SCREEN:-unknown}"
+    [ -n "$_tl_last_charge_status" ] || _tl_last_charge_status="${TL_STATE_LAST_CHARGE_STATUS:-unknown}"
     _tl_tmp="${TELEMETRY_STATE}.tmp.$$"
     mkdir -p "$TELEMETRY_ROOT" "$TELEMETRY_SESSIONS" 2>/dev/null || return 1
     [ ! -d "$TELEMETRY_STATE" ] || return 1
