@@ -378,7 +378,7 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
                .feature_nr .feature_sim2 .feature_vm .feature_power_export \
                .current_profile .profile_policy .profile_manual .profile_auto_reason .profile_history .nr_screen_switch \
                .sim2_auto_manage .idle_isolate_mode \
-               .swap_mode .swap_custom .ntp_server .uecap_mode .uecap_manual_mode \
+               .swap_mode .swap_custom .vm_reboot_required .vm_reboot_boot_id .zram_request_baseline .zram_request_last .zram_request_receipt .zram_restore_pending .vm_policy_ready .ntp_server .uecap_mode .uecap_manual_mode \
                .uecap_policy .uecap_reason .sim2_radio_off \
                .nr_saved_mode .webui_theme \
                .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .cpu_sched_owner .sched_owner_desired .game_handoff_policy .game_handoff_source \
@@ -658,19 +658,17 @@ else
     fi
 fi
 
-# 系统默认/禁用策略必须向 mmd/fs_mgr 提交明确的 stock ZRAM 请求，避免
-# 旧的自定义容量在下一次启动继续生效。只写 Android property 并做读回，
-# 不 resetprop、不 swapoff、不接管当前运行中的 zram0。
+# system/disabled are observe-only. Do not overwrite a Scene/mmd ZRAM
+# request during installation or upgrade; the user retains the system owner.
 _swap_mode_current=$(cat "$MODPATH/.swap_mode" 2>/dev/null | tr -d ' \n\r\t')
 case "$_swap_mode_current" in
-    stock|disabled)
-        if vm_zram_apply_stock_request; then
-            ui_print "  ✓ 系统默认 ZRAM 请求已提交: $(vm_zram_stock_size_bytes) bytes (重启后由 mmd 应用)"
-        else
-            ui_print "  ⚠ 系统默认 ZRAM 请求读回失败; 保留现有状态并由 service 重试"
-        fi
-        ;;
+    stock) installer_write "$MODPATH/.swap_mode" system ;;
+    system|disabled|optimized|custom) ;;
+    *) installer_write "$MODPATH/.swap_mode" system ;;
 esac
+[ -f "$MODPATH/.vm_reboot_required" ] || installer_write "$MODPATH/.vm_reboot_required" false
+[ -f "$MODPATH/.zram_restore_pending" ] || installer_write "$MODPATH/.zram_restore_pending" false
+[ -f "$MODPATH/.vm_policy_ready" ] || installer_write "$MODPATH/.vm_policy_ready" false
 
 if [ "$UECAP_EXTERNAL" -eq 0 ] && [ "$UECAP_DISABLED" -eq 0 ] \
     && { [ "$UECAP_BACKEND" = metamodule_content ] || [ "$UECAP_BACKEND" = hybrid_mount ]; }; then

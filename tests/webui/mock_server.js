@@ -136,23 +136,45 @@ function profileState(extra = {}) {
 }
 
 function swapState() {
-  const optimized = { swappiness: 100, min_free_kbytes: 131072, watermark_scale_factor: 200, vfs_cache_pressure: 60 };
+  const optimized = { swappiness: 100, min_free_kbytes: 65536, watermark_scale_factor: 100, vfs_cache_pressure: 100 };
   const stock = { swappiness: 150, min_free_kbytes: 27386, watermark_scale_factor: 50, vfs_cache_pressure: 100 };
-  const active = runtime.swapMode === 'stock' ? stock : optimized;
+  const active = runtime.swapMode === 'system' || runtime.swapMode === 'stock' ? stock : optimized;
   return {
     ok: true,
     mode: runtime.swapMode,
+    feature_vm: runtime.swapMode === 'custom' || runtime.swapMode === 'optimized'
+      ? 'optimized' : runtime.swapMode === 'disabled' ? 'disabled' : 'system',
+    zram_reboot_required: false,
+    vm_reboot_required: false,
+    vm_policy_ready: true,
+    zram_reconcile: 'none',
+    zram_restore_pending: false,
+    zram_transaction_id: '',
+    zram_transaction_phase: 'none',
+    zram_pending_reason: 'none',
+    zram_size_requested: '',
     zram_algo: 'lz77eh',
     zram_disksize: 8153489408,
     zram_active: true,
+    zram_active_state: 'active',
     zram_swap_kb: 7962388,
     swap_total_kb: 7962388,
+    mmd_enabled_aconfig: 'true',
+    mmd_zram_enabled: 'true',
+    mmd_setup_complete: 'true',
+    mmd_requested_size: '',
+    mmd_requested_algorithm: 'lz77eh',
+    zram_alias_property: 'persist.vendor.zram_swap_size_v2',
+    zram_alias_requested: '',
+    zram_alias_supported: true,
+    zram_alias_reason: 'target_init_rc_alias',
+    zram_alias_readback_ok: true,
     zram_owner: 'mmd',
-    zram_target_supported: false,
+    zram_target_supported: runtime.swapMode === 'optimized' || runtime.swapMode === 'custom',
     zram_orig_bytes: 5368709120,
     zram_compr_bytes: 2147483648,
     zram_mem_used_bytes: 2415919104,
-    zram_target: { algorithm: 'lz77eh', size_bytes: 11945377792, policy: 'mmd_owned_on_supported_builds' },
+    zram_target: { algorithm: 'lz77eh', size_bytes: 0, policy: 'explicit_user_request_only' },
     optimized,
     stock,
     stock_zram_size: 8589934592,

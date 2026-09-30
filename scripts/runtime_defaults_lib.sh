@@ -10,7 +10,9 @@ NR_SCREEN_OFF_DELAY_S=300
 NR_RESTORE_COOLDOWN_S=600
 NR_LTE_RECHECK_S=900
 NR_LTE_MODE=9
-VM_MODE_DEFAULT="stock"
+# system is observe-only: the module must not write VM sysctls or ZRAM
+# owner properties unless the user explicitly selects optimized/custom.
+VM_MODE_DEFAULT="system"
 VM_FEATURE_DEFAULT="system"
 OWNER_ARBITER_DEFAULT_SCREEN_ON_POLL_S=5
 OWNER_ARBITER_DEFAULT_SCREEN_OFF_POLL_S=60

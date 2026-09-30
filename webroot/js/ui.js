@@ -28,12 +28,15 @@ function initRefs() {
   refs.homeThermalContent = $('home-thermal-content');
   refs.homeCpuRows = $('home-cpu-rows');
   refs.rtZramUsage = $('rt-zram-usage');
+  refs.rtZramUsageDetail = $('rt-zram-usage-detail');
   refs.rtRatio = $('rt-ratio');
   refs.rtWebuiMem = $('rt-webui-mem');
   refs.rtMemAvail = $('rt-mem-avail');
+  refs.rtMemAvailDetail = $('rt-mem-avail-detail');
   refs.rtMemTotal = $('rt-mem-total');
   refs.rtSwapFree = $('rt-swap-free');
   refs.rtUptime = $('rt-uptime');
+  refs.rtUptimeDetail = $('rt-uptime-detail');
   refs.infoModel = $('info-model');
   refs.infoAndroid = $('info-android');
   refs.infoKernel = $('info-kernel');
@@ -82,9 +85,12 @@ function initRefs() {
   refs.mkModLbl = $('mk-mod-lbl');
   refs.swapDesc = $('swap-desc');
   refs.swapToggleLabel = $('swap-toggle-label');
+  refs.swapToggleButton = $('swap-toggle-btn');
+  refs.swapTuneButton = $('swap-tune-btn');
   refs.swapRows = $('swap-rows');
   refs.swapTuneModal = $('modal-swap-tune');
   refs.swapZramSizeNumber = $('swap-zram-size-number');
+  refs.swapZramSizeUnit = $('swap-zram-size-unit');
   refs.swapZramSizeApply = $('swap-zram-size-apply-btn');
   refs.swapTuneInputs = {
     swappiness: $('swap-input-swappiness'),

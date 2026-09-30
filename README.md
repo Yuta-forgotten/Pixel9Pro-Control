@@ -59,10 +59,12 @@ WebUI 的所有 API 请求经过统一 Request Hub：GET 在途请求按 endpoin
 ### ZRAM / 内存优化
 
 - 算法：由当前系统 owner 初始化；caiman / `CP41.260814.003.B1` 实机为 `lz77eh`（Emerald Hill 硬件加速）
-- 容量：WebUI 显示设备实际 `disksize`、owner、swap 状态与 `SwapTotal`；APatch 0.13.8 + Hybrid Mount 下由 mmd 独占 ZRAM，Control 不 reset/swapoff/resize，只提交经过读回验证的启动请求；
-- VM 参数：`swappiness=100`、`min_free_kbytes=131072`、`watermark_scale_factor=200`、`vfs_cache_pressure=60`
-- 首次安装默认 `feature_vm=system`，系统默认/禁用档会把 stock 50% RAM 容量和 `lz77eh` 算法写入 `mmd.zram.size`、`persist.vendor.zram_swap_size_v2` 与算法 property，并逐项读回；当前 active swap 不执行 swapoff/reset，若实际容量仍不同则返回 `zram_reboot_required=true`，由 mmd 在下次启动应用。
-- WebUI 的 ZRAM 容量请求只在模块优化档开放，优先写 mmd 官方 property；正在使用的 zram 不执行 reset/resize，返回 `pending_reboot`。
+- 容量：WebUI 同时显示 effective `disksize`、平台管理者、active swap、逻辑/压缩/实际 RAM 成本；APatch 0.13.8 + Hybrid Mount 下由 mmd 独占 ZRAM，Control 的 system/disabled 模式只读观察，绝不覆盖平台请求。
+- VM 参数：模块优化是显式 opt-in，默认候选为 `swappiness=100`、`min_free_kbytes=65536`、`watermark_scale_factor=100`、`vfs_cache_pressure=100`；system 模式不写任何 `/proc/sys/vm/*`。
+- WebUI 的“平台参考”按钮只是可比较的 VM preset，不代表模块能够推断设备当前平台 sysctl；真正的 system 模式以重启后的平台 readback 为准。
+- 首次安装和升级默认 `feature_vm=system`。system/disabled 只保存模块私有意图并记录 owner/effective readback；如果之前启用了模块 VM 策略，切回 system 会报告 `vm_reboot_required`，重启后由平台恢复 VM 基线。
+- WebUI 的 ZRAM 容量请求与 VM 策略分离，只在 optimized 模式下由用户显式提交；active swap 不 reset/swapoff/resize，返回 `pending_reboot`。模块不内置固定容量。
+- 容量输入使用整数 MB 或 RAM 百分比；前端转换为 bytes，后端按 4 KiB 对齐并 readback。设备当前的 raw bytes 只作为后台证据，不作为用户需要记忆的配置单位。
 
 ### 待机与 modem 策略（以 Google 默认机制为主）
 

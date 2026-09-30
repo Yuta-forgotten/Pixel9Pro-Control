@@ -1,23 +1,35 @@
 #!/system/bin/sh
 
 # Pixel 9 Pro VM contract shared by boot service and swap CGI.
-# VM tuning remains module policy; ZRAM is an observation-only view of the
-# Android/APatch mmd owner. Keeping both contracts here prevents status and UI
-# classification from inventing a second ZRAM owner.
+# VM tuning is opt-in module policy; ZRAM remains owned by Android/APatch mmd.
+# The system/disabled policy is observe-only and never submits a ZRAM request.
 
 VM_ZRAM_ALGO="lz77eh"
-VM_ZRAM_SIZE_BYTES="11945377792"
+# There is no module ZRAM size default. A size is an explicit user request.
+VM_ZRAM_SIZE_BYTES="0"
 VM_ZRAM_SIZE_PROPERTY="persist.vendor.zram_swap_size_v2"
 VM_MMD_ZRAM_SIZE_PROPERTY="mmd.zram.size"
+VM_ZRAM_BASELINE_FILE="${VM_ZRAM_BASELINE_FILE:-${MODDIR:-/data/adb/modules/pixel9pro_control}/.zram_request_baseline}"
+VM_ZRAM_LAST_REQUEST_FILE="${VM_ZRAM_LAST_REQUEST_FILE:-${MODDIR:-/data/adb/modules/pixel9pro_control}/.zram_request_last}"
+VM_ZRAM_RECEIPT_FILE="${VM_ZRAM_RECEIPT_FILE:-${MODDIR:-/data/adb/modules/pixel9pro_control}/.zram_request_receipt}"
 VM_ZRAM_SIZE_MIN_BYTES=1073741824
 VM_ZRAM_SIZE_MAX_BYTES=17179869184
-VM_ZRAM_SIZE_STEP_BYTES=268435456
+# Requests are accepted on the kernel ZRAM page boundary; Scene/mmd may use
+# finer values than the old UI slider step.
+VM_ZRAM_SIZE_STEP_BYTES=4096
+VM_ZRAM_MB_MIN=1024
+VM_ZRAM_MB_MAX=16384
+VM_ZRAM_PERCENT_MIN=10
+VM_ZRAM_PERCENT_MAX=100
 
+# Conservative opt-in profile. These values are deliberately close to the
+# platform baseline; system mode never writes them.
 VM_OPT_SWAPPINESS=100
-VM_OPT_MIN_FREE_KBYTES=131072
-VM_OPT_WATERMARK_SCALE=200
-VM_OPT_VFS_CACHE_PRESSURE=60
+VM_OPT_MIN_FREE_KBYTES=65536
+VM_OPT_WATERMARK_SCALE=100
+VM_OPT_VFS_CACHE_PRESSURE=100
 
+# Optional manual comparison preset; system mode never writes these values.
 VM_STOCK_SWAPPINESS=150
 VM_STOCK_MIN_FREE_KBYTES=27386
 VM_STOCK_WATERMARK_SCALE=50
@@ -35,6 +47,21 @@ VM_VFS_CACHE_PRESSURE_MAX=200
 VM_DIRTY_WRITEBACK_CENTISECS=3000
 VM_DIRTY_RATIO=50
 VM_DIRTY_BACKGROUND_RATIO=20
+VM_ZRAM_RECONCILE_RESULT=none
+VM_ZRAM_RESTORE_PENDING=false
+VM_ZRAM_TXID=""
+
+vm_zram_current_boot_id() {
+    cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t'
+}
+
+vm_zram_new_txid() {
+    _vm_tx_boot=$(vm_zram_current_boot_id)
+    _vm_tx_now=$(date +%s 2>/dev/null | tr -d ' \n\r\t')
+    [ -n "$_vm_tx_boot" ] || _vm_tx_boot=unknown
+    [ -n "$_vm_tx_now" ] || _vm_tx_now=0
+    printf '%s-%s-%s' "$_vm_tx_boot" "$$" "$_vm_tx_now"
+}
 
 vm_is_uint_range() {
     _vm_value="$1"
@@ -149,22 +176,43 @@ vm_contract_json() {
         "$VM_MIN_FREE_KBYTES_MIN" "$VM_MIN_FREE_KBYTES_MAX" \
         "$VM_WATERMARK_SCALE_MIN" "$VM_WATERMARK_SCALE_MAX" \
         "$VM_VFS_CACHE_PRESSURE_MIN" "$VM_VFS_CACHE_PRESSURE_MAX"
-    printf '"zram_target":{"algorithm":"%s","size_bytes":%s,"property":"%s","mmd_property":"%s","policy":"mmd_owner_online_if_inactive"},' \
+    printf '"zram_target":{"algorithm":"%s","size_bytes":%s,"property":"%s","mmd_property":"%s","policy":"explicit_user_request_only"},' \
         "$VM_ZRAM_ALGO" "$VM_ZRAM_SIZE_BYTES" "$VM_ZRAM_SIZE_PROPERTY" "$VM_MMD_ZRAM_SIZE_PROPERTY"
-    printf '"zram_size_limits":{"min_bytes":%s,"max_bytes":%s,"step_bytes":%s}' "$VM_ZRAM_SIZE_MIN_BYTES" "$VM_ZRAM_SIZE_MAX_BYTES" "$VM_ZRAM_SIZE_STEP_BYTES"
+    printf '"zram_size_limits":{"min_bytes":%s,"max_bytes":%s,"step_bytes":%s},' "$VM_ZRAM_SIZE_MIN_BYTES" "$VM_ZRAM_SIZE_MAX_BYTES" "$VM_ZRAM_SIZE_STEP_BYTES"
+    printf '"zram_input_limits":{"default_unit":"mb","mb":{"min":%s,"max":%s,"step":1},"percent":{"min":%s,"max":%s,"step":1}}' \
+        "$VM_ZRAM_MB_MIN" "$VM_ZRAM_MB_MAX" "$VM_ZRAM_PERCENT_MIN" "$VM_ZRAM_PERCENT_MAX"
+}
+
+vm_zram_normalize_capacity() {
+    _vm_capacity="$1"
+    _vm_capacity_unit="$2"
+    case "$_vm_capacity_unit" in
+        mb|mib)
+            _vm_multiplier=1000000
+            [ "$_vm_capacity_unit" = mib ] && _vm_multiplier=1048576
+            awk -v value="$_vm_capacity" -v min="$VM_ZRAM_MB_MIN" -v max="$VM_ZRAM_MB_MAX" -v multiplier="$_vm_multiplier" \
+                'BEGIN { if (value !~ /^[0-9]+([.][0-9]{1,2})?$/ || value < min || value > max) exit 1; bytes=value * multiplier; printf "%.0f", int((bytes + 4095) / 4096) * 4096 }' \
+                </dev/null || return 1 ;;
+        percent)
+            vm_is_uint_range "$_vm_capacity" "$VM_ZRAM_PERCENT_MIN" "$VM_ZRAM_PERCENT_MAX" || return 1
+            printf '%s%%' "$_vm_capacity" ;;
+        *) return 1 ;;
+    esac
 }
 
 vm_zram_size_is_valid() {
     case "$1" in
         ''|*[!0-9%]*) return 1 ;;
         *%) _vm_pct=${1%%%}; [ -n "$_vm_pct" ] && [ "$_vm_pct" -ge 10 ] 2>/dev/null && [ "$_vm_pct" -le 100 ] 2>/dev/null ;;
-        *) [ "$1" -ge "$VM_ZRAM_SIZE_MIN_BYTES" ] 2>/dev/null && [ "$1" -le "$VM_ZRAM_SIZE_MAX_BYTES" ] 2>/dev/null ;;
+        *) awk -v bytes="$1" -v min="$VM_ZRAM_SIZE_MIN_BYTES" -v max="$VM_ZRAM_SIZE_MAX_BYTES" \
+            'BEGIN { exit (bytes >= min && bytes <= max && bytes % 4096 == 0 ? 0 : 1) }' \
+            </dev/null 2>/dev/null ;;
     esac
 }
 
 vm_zram_size_to_bytes() {
     case "$1" in
-        *%) _vm_pct=${1%%%}; awk -v pct="$_vm_pct" '/^MemTotal:/{printf "%.0f", $2 * 1024 * pct / 100; exit}' /proc/meminfo 2>/dev/null ;;
+        *%) _vm_pct=${1%%%}; awk -v pct="$_vm_pct" '/^MemTotal:/{bytes=$2 * 1024 * pct / 100; printf "%.0f", int(bytes / 4096) * 4096; exit}' /proc/meminfo 2>/dev/null ;;
         *) printf '%s' "$1" ;;
     esac
 }
@@ -173,19 +221,11 @@ vm_zram_stock_size_bytes() {
     # fstab's 50p request is rounded by mmd to the zram page boundary.  Use
     # the same 4 KiB ceiling so a successful reboot is not reported pending
     # merely because MemTotal*50% lands on a half-page.
-    awk '/^MemTotal:/{bytes=$2 * 512; printf "%.0f", int((bytes + 4095) / 4096) * 4096; exit}' /proc/meminfo 2>/dev/null
+    awk '/^MemTotal:/{bytes=$2 * 512; printf "%.0f", int(bytes / 4096) * 4096; exit}' /proc/meminfo 2>/dev/null
 }
 
 vm_zram_property_value() {
     getprop "$1" 2>/dev/null | tr -d ' \n\r\t'
-}
-
-vm_zram_set_property_verified() {
-    [ -n "$1" ] || return 1
-    [ -n "$2" ] || return 1
-    [ "$(vm_zram_property_value "$1")" = "$2" ] && return 0
-    setprop "$1" "$2" 2>/dev/null || return 1
-    [ "$(vm_zram_property_value "$1")" = "$2" ]
 }
 
 vm_zram_restore_property() {
@@ -195,37 +235,191 @@ vm_zram_restore_property() {
     [ "$(vm_zram_property_value "$1")" = "${2:-}" ]
 }
 
-vm_zram_apply_stock_request() {
-    # mmd/fs_mgr remain the sole kernel ZRAM owners.  The module only updates
-    # the documented boot request and proves both property writes by readback.
-    # Never delete a property: an empty/deleted request can make init choose an
-    # invalid vendor path during the next early-boot transaction.
-    _vm_stock_size=$(vm_zram_stock_size_bytes)
-    vm_zram_size_is_valid "$_vm_stock_size" || return 1
-    if [ "$(vm_zram_read_requested_size)" = "$_vm_stock_size" ] \
-        && [ "$(vm_zram_read_algorithm)" = "$VM_ZRAM_ALGO" ]; then
+vm_zram_state_field() {
+    sed -n "s/^$1=//p" "$2" 2>/dev/null | tail -1 | tr -d ' \n\r\t'
+}
+
+vm_zram_atomic_state_write() {
+    _vm_state_path="$1"
+    _vm_state_value="$2"
+    _vm_state_tmp="${_vm_state_path}.tmp.$$"
+    printf '%s\n' "$_vm_state_value" > "$_vm_state_tmp" 2>/dev/null \
+        && mv "$_vm_state_tmp" "$_vm_state_path" 2>/dev/null \
+        && [ "$(cat "$_vm_state_path" 2>/dev/null)" = "$_vm_state_value" ]
+}
+
+vm_zram_record_receipt() {
+    _vm_receipt_txid="$1"
+    _vm_receipt_phase="$2"
+    _vm_receipt_reason="$3"
+    [ -n "$_vm_receipt_txid" ] || return 1
+    [ -n "$_vm_receipt_phase" ] || return 1
+    vm_zram_atomic_state_write "$VM_ZRAM_RECEIPT_FILE" "schema=1
+txid=$_vm_receipt_txid
+phase=$_vm_receipt_phase
+reason=$_vm_receipt_reason
+boot_id=$(vm_zram_current_boot_id)"
+}
+
+vm_zram_clear_journal() {
+    rm -f "$VM_ZRAM_BASELINE_FILE" "$VM_ZRAM_LAST_REQUEST_FILE" 2>/dev/null
+}
+
+vm_zram_capture_request_baseline() {
+    # A baseline without its matching last-request journal is an interrupted
+    # transaction.  Do not reuse it for a new request: that would restore an
+    # unrelated, stale owner value when the user later selects system mode.
+    _vm_base_boot=$(vm_zram_state_field boot_id "$VM_ZRAM_BASELINE_FILE")
+    _vm_last_boot=$(vm_zram_state_field boot_id "$VM_ZRAM_LAST_REQUEST_FILE")
+    _vm_base_tx=$(vm_zram_state_field txid "$VM_ZRAM_BASELINE_FILE")
+    _vm_last_tx=$(vm_zram_state_field txid "$VM_ZRAM_LAST_REQUEST_FILE")
+    _vm_current_boot=$(vm_zram_current_boot_id)
+    if [ -s "$VM_ZRAM_BASELINE_FILE" ] && [ -s "$VM_ZRAM_LAST_REQUEST_FILE" ] \
+        && [ -n "$_vm_base_tx" ] && [ "$_vm_base_tx" = "$_vm_last_tx" ] \
+        && [ -n "$_vm_current_boot" ] && [ "$_vm_base_boot" = "$_vm_current_boot" ] \
+        && [ "$_vm_last_boot" = "$_vm_current_boot" ]; then
+        VM_ZRAM_TXID="$_vm_base_tx"
         return 0
     fi
-    _vm_old_mmd_size=$(vm_zram_property_value "$VM_MMD_ZRAM_SIZE_PROPERTY")
-    _vm_old_vendor_size=$(vm_zram_property_value "$VM_ZRAM_SIZE_PROPERTY")
-    _vm_old_vendor_algo=$(vm_zram_property_value persist.vendor.zram_comp_algorithm)
-    _vm_algo_ok=0
-    [ "$(vm_zram_read_algorithm)" = "$VM_ZRAM_ALGO" ] && _vm_algo_ok=1
-    if vm_zram_set_property_verified "$VM_MMD_ZRAM_SIZE_PROPERTY" "$_vm_stock_size" \
-        && vm_zram_set_property_verified "$VM_ZRAM_SIZE_PROPERTY" "$_vm_stock_size" \
-        && { [ "$_vm_algo_ok" -eq 1 ] || vm_zram_set_property_verified persist.vendor.zram_comp_algorithm "$VM_ZRAM_ALGO"; }; then
-        [ "$(vm_zram_read_requested_size)" = "$_vm_stock_size" ] || {
-            vm_zram_restore_property "$VM_MMD_ZRAM_SIZE_PROPERTY" "$_vm_old_mmd_size" >/dev/null 2>&1 || true
-            vm_zram_restore_property "$VM_ZRAM_SIZE_PROPERTY" "$_vm_old_vendor_size" >/dev/null 2>&1 || true
-            vm_zram_restore_property persist.vendor.zram_comp_algorithm "$_vm_old_vendor_algo" >/dev/null 2>&1 || true
-            return 1
-        }
+    rm -f "$VM_ZRAM_BASELINE_FILE" "$VM_ZRAM_LAST_REQUEST_FILE" 2>/dev/null || true
+    rm -f "$VM_ZRAM_RECEIPT_FILE" 2>/dev/null || true
+    VM_ZRAM_TXID=$(vm_zram_new_txid)
+    vm_zram_atomic_state_write "$VM_ZRAM_BASELINE_FILE" "schema=1
+txid=$VM_ZRAM_TXID
+phase=baseline
+boot_id=$(vm_zram_current_boot_id)
+mmd_size=$(vm_zram_property_value "$VM_MMD_ZRAM_SIZE_PROPERTY")
+vendor_size=$(vm_zram_property_value "$VM_ZRAM_SIZE_PROPERTY")
+vendor_algo=$(vm_zram_property_value persist.vendor.zram_comp_algorithm)"
+}
+
+vm_zram_record_last_request() {
+    _vm_requested_size="$1"
+    _vm_request_phase="${2:-requested}"
+    [ -n "$_vm_requested_size" ] || return 1
+    [ -n "$VM_ZRAM_TXID" ] || VM_ZRAM_TXID=$(vm_zram_state_field txid "$VM_ZRAM_BASELINE_FILE")
+    [ -n "$VM_ZRAM_TXID" ] || return 1
+    vm_zram_atomic_state_write "$VM_ZRAM_LAST_REQUEST_FILE" "schema=1
+txid=$VM_ZRAM_TXID
+phase=$_vm_request_phase
+boot_id=$(vm_zram_current_boot_id)
+mmd_size=$_vm_requested_size
+vendor_size=$_vm_requested_size
+vendor_algo=$(vm_zram_property_value persist.vendor.zram_comp_algorithm)"
+}
+
+vm_zram_commit_effective_request() {
+    _vm_effective_tx=$(vm_zram_state_field txid "$VM_ZRAM_LAST_REQUEST_FILE")
+    [ -n "$_vm_effective_tx" ] || return 1
+    vm_zram_record_receipt "$_vm_effective_tx" effective online \
+        || return 1
+    vm_zram_clear_journal || return 1
+    VM_ZRAM_RECONCILE_RESULT=effective
+}
+
+vm_zram_transaction_pending() {
+    _vm_base_boot=$(vm_zram_state_field boot_id "$VM_ZRAM_BASELINE_FILE")
+    _vm_last_boot=$(vm_zram_state_field boot_id "$VM_ZRAM_LAST_REQUEST_FILE")
+    _vm_base_tx=$(vm_zram_state_field txid "$VM_ZRAM_BASELINE_FILE")
+    _vm_last_tx=$(vm_zram_state_field txid "$VM_ZRAM_LAST_REQUEST_FILE")
+    _vm_base_phase=$(vm_zram_state_field phase "$VM_ZRAM_BASELINE_FILE")
+    _vm_last_phase=$(vm_zram_state_field phase "$VM_ZRAM_LAST_REQUEST_FILE")
+    _vm_current_boot=$(vm_zram_current_boot_id)
+    if [ -s "$VM_ZRAM_BASELINE_FILE" ] && [ -s "$VM_ZRAM_LAST_REQUEST_FILE" ] \
+        && [ -n "$_vm_base_tx" ] && [ "$_vm_base_tx" = "$_vm_last_tx" ] \
+        && [ -n "$_vm_current_boot" ] && [ "$_vm_base_boot" = "$_vm_current_boot" ] \
+        && [ "$_vm_last_boot" = "$_vm_current_boot" ] \
+        && [ "$_vm_base_phase" = baseline ] \
+        && { [ "$_vm_last_phase" = staged ] || [ "$_vm_last_phase" = requested ] || [ "$_vm_last_phase" = effective ]; }; then
+        VM_ZRAM_TXID="$_vm_base_tx"
         return 0
     fi
-    vm_zram_restore_property "$VM_MMD_ZRAM_SIZE_PROPERTY" "$_vm_old_mmd_size" >/dev/null 2>&1 || true
-    vm_zram_restore_property "$VM_ZRAM_SIZE_PROPERTY" "$_vm_old_vendor_size" >/dev/null 2>&1 || true
-    vm_zram_restore_property persist.vendor.zram_comp_algorithm "$_vm_old_vendor_algo" >/dev/null 2>&1 || true
+    if [ -e "$VM_ZRAM_BASELINE_FILE" ] || [ -e "$VM_ZRAM_LAST_REQUEST_FILE" ]; then
+        vm_zram_reconcile_module_request >/dev/null 2>&1 || return 2
+    fi
     return 1
+}
+
+vm_zram_reconcile_module_request() {
+    VM_ZRAM_RECONCILE_RESULT=none
+    VM_ZRAM_RESTORE_PENDING=false
+    if [ ! -s "$VM_ZRAM_BASELINE_FILE" ] && [ ! -s "$VM_ZRAM_LAST_REQUEST_FILE" ]; then
+        return 0
+    fi
+    _vm_base_boot=$(vm_zram_state_field boot_id "$VM_ZRAM_BASELINE_FILE")
+    _vm_last_boot=$(vm_zram_state_field boot_id "$VM_ZRAM_LAST_REQUEST_FILE")
+    _vm_base_tx=$(vm_zram_state_field txid "$VM_ZRAM_BASELINE_FILE")
+    _vm_last_tx=$(vm_zram_state_field txid "$VM_ZRAM_LAST_REQUEST_FILE")
+    _vm_base_phase=$(vm_zram_state_field phase "$VM_ZRAM_BASELINE_FILE")
+    _vm_last_phase=$(vm_zram_state_field phase "$VM_ZRAM_LAST_REQUEST_FILE")
+    _vm_current_boot=$(vm_zram_current_boot_id)
+    if [ ! -s "$VM_ZRAM_BASELINE_FILE" ] || [ ! -s "$VM_ZRAM_LAST_REQUEST_FILE" ] \
+        || [ -z "$_vm_base_tx" ] || [ "$_vm_base_tx" != "$_vm_last_tx" ] \
+        || [ -z "$_vm_base_boot" ] || [ "$_vm_base_boot" != "$_vm_last_boot" ] \
+        || [ "$_vm_base_phase" != baseline ] \
+        || { [ "$_vm_last_phase" != staged ] && [ "$_vm_last_phase" != requested ] && [ "$_vm_last_phase" != effective ]; }; then
+        _vm_orphan_tx=${_vm_last_tx:-$_vm_base_tx}
+        [ -n "$_vm_orphan_tx" ] || _vm_orphan_tx=$(vm_zram_new_txid)
+        vm_zram_record_receipt "$_vm_orphan_tx" orphaned journal_invalid \
+            || return 1
+        vm_zram_clear_journal || return 1
+        VM_ZRAM_RECONCILE_RESULT=orphaned
+        return 0
+    fi
+    _vm_last_mmd=$(vm_zram_state_field mmd_size "$VM_ZRAM_LAST_REQUEST_FILE")
+    _vm_last_vendor=$(vm_zram_state_field vendor_size "$VM_ZRAM_LAST_REQUEST_FILE")
+    _vm_last_algo=$(vm_zram_state_field vendor_algo "$VM_ZRAM_LAST_REQUEST_FILE")
+    _vm_current_mmd=$(vm_zram_property_value "$VM_MMD_ZRAM_SIZE_PROPERTY")
+    _vm_current_vendor=$(vm_zram_property_value "$VM_ZRAM_SIZE_PROPERTY")
+    _vm_current_algo=$(vm_zram_property_value persist.vendor.zram_comp_algorithm)
+    if [ "$_vm_last_phase" = staged ]; then
+        _vm_staged_bytes=$(vm_zram_size_to_bytes "$_vm_last_mmd")
+        if [ "$_vm_current_mmd" = "$_vm_last_mmd" ] \
+            && [ "$_vm_current_vendor" = "$_vm_last_vendor" ] \
+            && vm_zram_is_active \
+            && [ "$(vm_zram_read_disksize)" = "$_vm_staged_bytes" ]; then
+            vm_zram_record_receipt "$_vm_last_tx" committed staged_effective \
+                || return 1
+            vm_zram_clear_journal || return 1
+            VM_ZRAM_RECONCILE_RESULT=committed
+            return 0
+        fi
+        vm_zram_record_receipt "$_vm_last_tx" degraded interrupted_staged \
+            || return 1
+        VM_ZRAM_RECONCILE_RESULT=degraded
+        return 2
+    fi
+    if [ "$_vm_current_mmd" = "$_vm_last_mmd" ] \
+        && [ "$_vm_current_vendor" = "$_vm_last_vendor" ] \
+        && [ "$_vm_current_algo" = "$_vm_last_algo" ]; then
+        if [ "$_vm_base_boot" != "$_vm_current_boot" ]; then
+            _vm_request_bytes=$(vm_zram_size_to_bytes "$_vm_last_mmd")
+            if vm_zram_is_active \
+                && [ -n "$_vm_request_bytes" ] \
+                && [ "$(vm_zram_read_disksize)" = "$_vm_request_bytes" ]; then
+                _vm_receipt_phase=committed
+                _vm_receipt_reason=boot_effective
+            else
+                _vm_receipt_phase=degraded
+                _vm_receipt_reason=boot_readback_mismatch
+            fi
+        else
+            _vm_receipt_phase=canceled
+            _vm_receipt_reason=observe_only_preserved
+        fi
+    else
+        _vm_receipt_phase=external_changed
+        _vm_receipt_reason=owner_changed
+    fi
+    vm_zram_record_receipt "$_vm_last_tx" "$_vm_receipt_phase" "$_vm_receipt_reason" \
+        || return 1
+    if [ "$_vm_receipt_phase" = degraded ]; then
+        VM_ZRAM_RECONCILE_RESULT=degraded
+        return 2
+    fi
+    vm_zram_clear_journal || return 1
+    VM_ZRAM_RECONCILE_RESULT="$_vm_receipt_phase"
+    return 0
 }
 
 vm_zram_matches() {
@@ -249,12 +443,26 @@ vm_zram_read_disksize() {
 }
 
 vm_zram_read_swap_kb() {
-    awk '$1 ~ /(^|\/)zram0$/ { print $3; found=1 } END { if (!found) print 0 }' \
-        /proc/swaps 2>/dev/null | tail -1 | tr -d ' \n\r\t'
+    _vm_swap_used=$(awk '$1 ~ /(^|\/)zram0$/ { print $4; found=1 } END { if (!found) print 0 }' \
+        /proc/swaps 2>/dev/null)
+    _vm_swap_rc=$?
+    [ "$_vm_swap_rc" -eq 0 ] || return 1
+    printf '%s' "$_vm_swap_used" | tail -1 | tr -d ' \n\r\t'
 }
 
 vm_zram_is_active() {
-    [ "$(vm_zram_read_swap_kb)" -gt 0 ] 2>/dev/null
+    [ "$(vm_zram_active_state)" = active ]
+}
+
+vm_zram_active_state() {
+    # /proc/swaps' Used column may be zero on an idle but fully enabled zram
+    # device. Presence of the zram0 row is the lifecycle signal. A read error
+    # is distinct from an empty table and must never authorize online setup.
+    _vm_active_probe=$(awk '$1 ~ /(^|\/)zram0$/ { found=1 } END { print found ? "active" : "inactive" }' \
+        /proc/swaps 2>/dev/null)
+    _vm_active_rc=$?
+    [ "$_vm_active_rc" -eq 0 ] || { printf unknown; return 0; }
+    printf '%s' "$_vm_active_probe"
 }
 
 vm_zram_read_swap_total_kb() {
@@ -267,6 +475,21 @@ vm_zram_mmd_ready() {
         && [ "$(getprop mmd.zram.enabled 2>/dev/null | tr -d ' \n\r\t')" = true ]
 }
 
+vm_zram_vendor_alias_supported() {
+    # The property must be consumed by this build's init rc before mmd setup.
+    # Device name alone is not evidence of a persistent alias.
+    grep -Eq '^[[:space:]]*setprop[[:space:]]+mmd[.]zram[.]size[[:space:]]+\$\{persist[.]vendor[.]zram_swap_size_v2(:-[^}]*)?\}' \
+        /vendor/etc/init/hw/init.*.board.rc 2>/dev/null
+}
+
+vm_zram_vendor_alias_reason() {
+    if vm_zram_vendor_alias_supported; then
+        printf 'target_init_rc_alias'
+    else
+        printf 'unproven_board_alias'
+    fi
+}
+
 vm_zram_owner() {
     if vm_zram_mmd_ready; then
         printf mmd
@@ -276,13 +499,20 @@ vm_zram_owner() {
 }
 
 vm_zram_read_requested_algorithm() {
-    _vm_requested_algo=$(vm_zram_property_value persist.vendor.zram_comp_algorithm)
+    if vm_zram_mmd_ready; then
+        _vm_requested_algo=$(vm_zram_property_value mmd.zram.comp_algorithm)
+    else
+        _vm_requested_algo=$(vm_zram_property_value persist.vendor.zram_comp_algorithm)
+    fi
     [ -n "$_vm_requested_algo" ] && printf '%s' "$_vm_requested_algo" || printf unset
 }
 
 vm_zram_read_requested_size() {
-    _vm_requested_size=$(vm_zram_property_value "$VM_MMD_ZRAM_SIZE_PROPERTY")
-    [ -n "$_vm_requested_size" ] || _vm_requested_size=$(vm_zram_property_value "$VM_ZRAM_SIZE_PROPERTY")
+    if vm_zram_mmd_ready; then
+        _vm_requested_size=$(vm_zram_property_value "$VM_MMD_ZRAM_SIZE_PROPERTY")
+    else
+        _vm_requested_size=$(vm_zram_property_value "$VM_ZRAM_SIZE_PROPERTY")
+    fi
     [ -n "$_vm_requested_size" ] && printf '%s' "$_vm_requested_size" || printf unset
 }
 

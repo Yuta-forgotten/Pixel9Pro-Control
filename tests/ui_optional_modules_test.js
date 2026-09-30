@@ -218,9 +218,10 @@ assert(ntpCgi.includes('ntp_config_validate') && service.includes('ntp_config_va
 assert(!app.includes('const SWAP_OPTIMIZED') && !swapCgi.includes('OPT_SWAPPINESS='), 'VM presets must come from vm_profile_lib.sh');
 assert(swapCgi.includes('. "$VM_PROFILE_LIB"') && app.includes('data.zram_target'), 'VM CGI and UI must consume the shared VM contract');
 assert(swapCgi.includes('zram_active') && swapCgi.includes('zram_owner') && app.includes('zram_target_supported'), 'ZRAM UI must consume authoritative runtime/owner fields');
+assert(swapCgi.includes('system|stock') && swapCgi.includes('observe-only') && !customize.includes('vm_zram_apply_stock_request'), 'system/disabled VM policy must not write the external ZRAM owner');
 assert(swapCgi.includes('VM_ZRAM_SIZE_PROPERTY') && swapCgi.includes('pending_reboot') && swapCgi.includes('setprop'), 'ZRAM size request must use the mmd persistent property and reboot boundary');
 assert(app.includes('applyZramSizeRequest') && html.includes('swap-zram-size-apply-btn'), 'ZRAM size request UI must call the backend contract');
-assert(html.includes('swap-zram-request') && html.includes('swap-zram-size-help') && html.includes('type="number"') && app.includes('min_bytes'), 'ZRAM size input must use an accessible bounded disclosure control');
+assert(html.includes('swap-zram-request') && html.includes('swap-zram-size-help') && html.includes('id="swap-zram-size-number" type="number"') && html.includes('id="swap-zram-size-unit"') && html.includes('value="mb"') && html.includes('inputmode="decimal"') && app.includes('zram_input_limits'), 'ZRAM size input must use accessible MB/percentage controls');
 assert(cpuProfile.includes('. "$CPU_PROFILE_LIB"') && ownerArbiter.includes('. "$MODDIR/scripts/cpu_profile_lib.sh"'), 'CPU apply and owner verification must share one profile contract');
 assert(cpuProfile.includes('apply_profile_l2') && cpuProfile.includes('verify_profile_runtime'), 'CPU and L2 must be one verified profile transaction');
 assert(!service.includes('cpu_profile.sh" enforce') && !service.includes('POWER_PROFILE_FILE'), 'service must not retain the legacy 15-second L2 writer or .power_profile SoT');

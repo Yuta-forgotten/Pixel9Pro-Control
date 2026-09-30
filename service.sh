@@ -13,6 +13,9 @@ TOKEN_FILE="$MODDIR/.webui_token"
 THERMAL_CACHE="$MODDIR/.thermal_cache.json"
 LOCKDIR_BASE="$MODDIR/.locks"
 ZRAM_STATE_FILE="$MODDIR/.zram_state"
+ZRAM_RESTORE_PENDING_FILE="$MODDIR/.zram_restore_pending"
+VM_POLICY_READY_FILE="$MODDIR/.vm_policy_ready"
+VM_REBOOT_BOOT_FILE="$MODDIR/.vm_reboot_boot_id"
 SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 SCHED_OWNER_DESIRED_FILE="$MODDIR/.sched_owner_desired"
 GAME_HANDOFF_POLICY_FILE="$MODDIR/.game_handoff_policy"
@@ -75,6 +78,9 @@ log -t pixel9pro_ctrl "service entry moddir=$MODDIR pid=$$"
 [ -r "$MODDIR/scripts/runtime_defaults_lib.sh" ] \
     && . "$MODDIR/scripts/runtime_defaults_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: runtime defaults contract missing"; exit 1; }
+# The WebUI may start before slow modem work, but VM/ZRAM mutations remain
+# closed until the policy state has been normalized and readied below.
+runtime_write_value "$VM_POLICY_READY_FILE" false >/dev/null 2>&1 || true
 [ -r "$MODDIR/scripts/display_state_lib.sh" ] \
     && . "$MODDIR/scripts/display_state_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: display state contract missing"; exit 1; }
@@ -713,8 +719,16 @@ ip link set wlan0 multicast off 2>/dev/null
 
 # === 内核 I/O 参数优化 ===
 if [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
-    vm_apply_dirty_params \
-        || log -t pixel9pro_ctrl "WARNING: failed to apply one or more VM dirty-page parameters"
+    _service_swap_mode=$(cat "$MODDIR/.swap_mode" 2>/dev/null | tr -d ' \n\r\t')
+    case "$_service_swap_mode" in
+        optimized|custom)
+            vm_apply_dirty_params \
+                || log -t pixel9pro_ctrl "WARNING: failed to apply one or more VM dirty-page parameters"
+            ;;
+        *)
+            log -t pixel9pro_ctrl "VM system/disabled mode: dirty-page parameters observe-only"
+            ;;
+    esac
 fi
 
 # sched_util_clamp_min is applied with the selected CPU profile: balanced and
@@ -737,12 +751,56 @@ SWAP_CUSTOM_FILE="$MODDIR/.swap_custom"
 
 SWAP_MODE=$(cat "$MODDIR/.swap_mode" 2>/dev/null | tr -d ' \n\r')
 case "$SWAP_MODE" in
-    stock)
-        if vm_zram_apply_stock_request \
-            && vm_write_params "$VM_STOCK_SWAPPINESS" "$VM_STOCK_MIN_FREE_KBYTES" "$VM_STOCK_WATERMARK_SCALE" "$VM_STOCK_VFS_CACHE_PRESSURE"; then
-            log -t pixel9pro_ctrl "Swap: restored stock VM params"
+    system|stock|disabled)
+        # Observe-only: leave kernel VM values and mmd/Scene ZRAM requests
+        # untouched. A reboot restores platform VM defaults; Scene remains the
+        # sole interactive ZRAM request owner.
+        vm_zram_reconcile_module_request \
+            || log -t pixel9pro_ctrl "WARNING: failed to reconcile module-owned ZRAM request"
+        case "${VM_ZRAM_RECONCILE_RESULT:-none}" in
+            orphaned|external_changed)
+                runtime_write_value "$ZRAM_RESTORE_PENDING_FILE" false >/dev/null 2>&1 || true
+                ;;
+            *)
+                if [ "${VM_ZRAM_RESTORE_PENDING:-false}" = true ]; then
+                    runtime_write_value "$ZRAM_RESTORE_PENDING_FILE" true >/dev/null 2>&1 || true
+                elif [ "$(cat "$ZRAM_RESTORE_PENDING_FILE" 2>/dev/null | tr -d ' \n\r\t')" = true ]; then
+                    _service_requested_size=$(vm_zram_read_requested_size)
+                    _service_requested_bytes=$(vm_zram_size_to_bytes "$_service_requested_size")
+                    if [ -n "$_service_requested_bytes" ] && [ "$(vm_zram_read_disksize)" = "$_service_requested_bytes" ]; then
+                        runtime_write_value "$ZRAM_RESTORE_PENDING_FILE" false >/dev/null 2>&1 || true
+                    fi
+                fi
+                ;;
+        esac
+        [ "$SWAP_MODE" = stock ] && runtime_write_value "$MODDIR/.swap_mode" system >/dev/null 2>&1 || true
+        [ "$SWAP_MODE" = disabled ] \
+            && runtime_write_value "$MODDIR/.feature_vm" disabled >/dev/null 2>&1 \
+            || runtime_write_value "$MODDIR/.feature_vm" system >/dev/null 2>&1 || true
+        _service_reboot_required=$(cat "$MODDIR/.vm_reboot_required" 2>/dev/null | tr -d ' \n\r\t')
+        _service_reboot_boot=$(cat "$VM_REBOOT_BOOT_FILE" 2>/dev/null | tr -d ' \n\r\t')
+        _service_current_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')
+        case "$_service_reboot_required" in true|false) ;; *) _service_reboot_required=false ;; esac
+        # A pending VM reset is a same-boot transaction.  Clear it only after
+        # a reboot crossed the recorded boot id; never erase a live WebUI
+        # pending state while this service is restoring the current boot.
+        if [ "$_service_reboot_required" = true ] \
+            && [ -n "$_service_reboot_boot" ] \
+            && [ -n "$_service_current_boot" ] \
+            && [ "$_service_reboot_boot" != "$_service_current_boot" ]; then
+            runtime_write_value "$MODDIR/.vm_reboot_required" false >/dev/null 2>&1 || true
+            rm -f "$VM_REBOOT_BOOT_FILE" 2>/dev/null || true
+        fi
+        log -t pixel9pro_ctrl "Swap: system/disabled observe-only; no VM or ZRAM write"
+        ;;
+    optimized)
+        if vm_write_params "$VM_OPT_SWAPPINESS" "$VM_OPT_MIN_FREE_KBYTES" "$VM_OPT_WATERMARK_SCALE" "$VM_OPT_VFS_CACHE_PRESSURE" \
+            && runtime_write_value "$MODDIR/.feature_vm" optimized \
+            && runtime_write_value "$MODDIR/.vm_reboot_required" false; then
+            rm -f "$VM_REBOOT_BOOT_FILE" 2>/dev/null || true
+            log -t pixel9pro_ctrl "Swap: restored optimized VM params; ZRAM remains explicit-request only"
         else
-            log -t pixel9pro_ctrl "WARNING: failed to restore stock VM/ZRAM request"
+            log -t pixel9pro_ctrl "WARNING: failed to restore optimized VM params"
         fi
         ;;
     custom)

@@ -105,10 +105,10 @@
                 <button class="tiny-btn tonal" id="energy-btn" type="button">功耗统计</button>
               </div>
             </div>
-            <div class="summary-grid">
-              <div class="summary-item"><span>可用内存</span><strong id="rt-mem-avail">—</strong></div>
-              <div class="summary-item"><span>ZRAM 占用</span><strong id="rt-zram-usage">—</strong></div>
-              <div class="summary-item"><span>运行时间</span><strong id="rt-uptime">—</strong></div>
+            <div class="summary-grid memory-summary-grid">
+              <div class="summary-item memory-metric-card"><span>可用内存</span><strong id="rt-mem-avail">—</strong><small id="rt-mem-avail-detail">等待读回</small></div>
+              <div class="summary-item memory-metric-card memory-metric-card-zram"><span>ZRAM 逻辑占用</span><strong id="rt-zram-usage">—</strong><small id="rt-zram-usage-detail">等待读回</small></div>
+              <div class="summary-item memory-metric-card"><span>运行时间</span><strong id="rt-uptime">—</strong><small id="rt-uptime-detail">设备启动后</small></div>
             </div>
             <details class="disclosure compact">
               <summary class="disclosure-summary">
@@ -413,7 +413,7 @@
             <div class="panel-copy">
               <div class="kicker">内存优化</div>
               <div class="panel-title">ZRAM / VM 参数</div>
-              <div class="panel-desc" id="swap-desc">正在读取系统 owner、ZRAM 实际容量和 VM 参数。</div>
+              <div class="panel-desc" id="swap-desc">正在读取平台管理状态、ZRAM 实际容量和 VM 参数。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn text-btn" id="swap-detail-btn" type="button" aria-label="查看内存优化说明">说明</button>
@@ -650,33 +650,33 @@
       </button>
     </div>
     <div class="modal-sheet-body">
-        <div class="swap-tune-note">下方四个 VM 参数支持真实即时写入、权威复读和失败回滚，并以 custom 模式随下次开机恢复。ZRAM 容量可通过系统持久属性请求在下次重启由 mmd 应用；当前运行态不会被在线 reset。</div>
-        <details class="swap-zram-request"><summary>ZRAM 容量</summary><div class="swap-zram-size-form"><label for="swap-zram-size-number">容量请求</label><div class="swap-zram-size-row"><input id="swap-zram-size-number" type="number" inputmode="numeric" placeholder="读取中…" aria-describedby="swap-zram-size-help"><span>bytes</span><button class="tiny-btn" id="swap-zram-size-apply-btn" type="button">应用请求</button></div><div id="swap-zram-size-help" class="field-help">inactive zram 且 mmd 支持时尝试在线应用；active swap 会返回重启后生效。</div></div></details>
+        <div class="swap-tune-note">系统默认模式只观察系统 VM 与 ZRAM，不写入 sysctl 或平台请求。启用模块候选后，四个 VM 参数才会即时写入并复读；候选不能消除 Android 的 LOW_MEMORY 回收或杀进程。ZRAM 容量是独立请求，已接入 Swap 时只返回待重启，不会在线 reset。</div>
+        <details class="swap-zram-request"><summary>ZRAM 容量请求（独立于 VM 策略）</summary><div class="swap-zram-size-form"><label for="swap-zram-size-number">容量草稿</label><div class="swap-zram-size-row"><input id="swap-zram-size-number" type="number" inputmode="decimal" min="1024" step="1" placeholder="读取中…" aria-describedby="swap-zram-size-help"><select id="swap-zram-size-unit" aria-label="ZRAM 容量单位"><option value="mb">MB</option><option value="percent">%</option></select><button class="tiny-btn primary" id="swap-zram-size-apply-btn" type="button" aria-busy="false">应用请求</button></div><div id="swap-zram-size-help" class="field-help">模块候选模式支持整数 MB 或 RAM 百分比；提交后由平台按 4KiB 对齐并复读。已接入 Swap 时状态为待重启，不能重复提交未完成事务。</div></div></details>
       <div class="swap-tune-form">
         <label class="swap-field" for="swap-input-swappiness">
-          <span class="swap-field-head"><span>swappiness</span><b id="swap-value-swappiness">100</b></span>
+          <span class="swap-field-head"><span>换页倾向（swappiness）</span><b id="swap-value-swappiness">100</b></span>
           <input class="swap-range" id="swap-input-swappiness" type="range" min="0" max="200" step="5" value="100">
           <input class="swap-number" id="swap-number-swappiness" type="number" min="0" max="200" step="5" inputmode="numeric" value="100" aria-label="swappiness 精确数值">
         </label>
         <label class="swap-field" for="swap-input-minfree">
-          <span class="swap-field-head"><span>min_free_kbytes</span><b><span id="swap-value-minfree">131072</span> KB</b></span>
-          <input class="swap-range" id="swap-input-minfree" type="range" min="16384" max="262144" step="8192" value="131072">
-          <input class="swap-number" id="swap-number-minfree" type="number" min="16384" max="262144" step="8192" inputmode="numeric" value="131072" aria-label="min_free_kbytes 精确数值，KB">
+          <span class="swap-field-head"><span>空闲内存底线（min_free_kbytes）</span><b><span id="swap-value-minfree">65536</span> KB</b></span>
+          <input class="swap-range" id="swap-input-minfree" type="range" min="16384" max="262144" step="8192" value="65536">
+          <input class="swap-number" id="swap-number-minfree" type="number" min="16384" max="262144" step="8192" inputmode="numeric" value="65536" aria-label="min_free_kbytes 精确数值，KB">
         </label>
         <label class="swap-field" for="swap-input-watermark">
-          <span class="swap-field-head"><span>watermark_scale_factor</span><b id="swap-value-watermark">200</b></span>
-          <input class="swap-range" id="swap-input-watermark" type="range" min="10" max="500" step="10" value="200">
-          <input class="swap-number" id="swap-number-watermark" type="number" min="10" max="500" step="10" inputmode="numeric" value="200" aria-label="watermark_scale_factor 精确数值">
+          <span class="swap-field-head"><span>水位间距（watermark_scale_factor）</span><b id="swap-value-watermark">100</b></span>
+          <input class="swap-range" id="swap-input-watermark" type="range" min="10" max="500" step="10" value="100">
+          <input class="swap-number" id="swap-number-watermark" type="number" min="10" max="500" step="10" inputmode="numeric" value="100" aria-label="watermark_scale_factor 精确数值">
         </label>
         <label class="swap-field" for="swap-input-vfs">
-          <span class="swap-field-head"><span>vfs_cache_pressure</span><b id="swap-value-vfs">60</b></span>
-          <input class="swap-range" id="swap-input-vfs" type="range" min="10" max="200" step="5" value="60">
-          <input class="swap-number" id="swap-number-vfs" type="number" min="10" max="200" step="5" inputmode="numeric" value="60" aria-label="vfs_cache_pressure 精确数值">
+          <span class="swap-field-head"><span>文件缓存回收（vfs_cache_pressure）</span><b id="swap-value-vfs">100</b></span>
+          <input class="swap-range" id="swap-input-vfs" type="range" min="10" max="200" step="5" value="100">
+          <input class="swap-number" id="swap-number-vfs" type="number" min="10" max="200" step="5" inputmode="numeric" value="100" aria-label="vfs_cache_pressure 精确数值">
         </label>
       </div>
       <div class="swap-preset-actions">
-        <button class="tiny-btn" id="swap-preset-optimized" type="button">模块默认</button>
-        <button class="tiny-btn" id="swap-preset-stock" type="button">原厂</button>
+        <button class="tiny-btn" id="swap-preset-optimized" type="button">模块候选</button>
+        <button class="tiny-btn" id="swap-preset-stock" type="button">平台参考</button>
       </div>
       <div class="modal-actions">
         <button class="mbtn mbtn-primary" id="swap-custom-apply-btn" type="button">应用当前参数</button>

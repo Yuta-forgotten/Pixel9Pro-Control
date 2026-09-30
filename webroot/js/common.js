@@ -609,7 +609,13 @@ async function loadInfoInternal() {
       return kb >= 1048576 ? `${(kb / 1048576).toFixed(1)}GB` : kb >= 1024 ? `${(kb / 1024).toFixed(0)}MB` : `${kb}KB`;
     };
     if (data.mem_total_kb > 0) refs.rtMemTotal.textContent = fmtKB(data.mem_total_kb);
-    if (data.mem_avail_kb > 0) refs.rtMemAvail.textContent = fmtKB(data.mem_avail_kb);
+    if (data.mem_avail_kb > 0) {
+      refs.rtMemAvail.textContent = fmtKB(data.mem_avail_kb);
+      if (refs.rtMemAvailDetail) {
+        const availablePct = data.mem_total_kb > 0 ? Math.round((data.mem_avail_kb / data.mem_total_kb) * 100) : 0;
+        refs.rtMemAvailDetail.textContent = availablePct > 0 ? `约 ${availablePct}% 可用` : '当前可用量';
+      }
+    }
     if (data.swap_free_kb > 0 || data.swap_total_kb > 0) {
       refs.rtSwapFree.textContent = `${fmtKB(data.swap_free_kb)} / ${fmtKB(data.swap_total_kb)}`;
     }
@@ -617,6 +623,7 @@ async function loadInfoInternal() {
       const h = Math.floor(data.uptime_sec / 3600);
       const m = Math.floor((data.uptime_sec % 3600) / 60);
       refs.rtUptime.textContent = h > 0 ? `${h}小时${m}分` : `${m}分钟`;
+      if (refs.rtUptimeDetail) refs.rtUptimeDetail.textContent = '设备启动后';
     }
     const vc = data.version_code || '';
     if (vc && localStorage.getItem('_modVC') !== vc) {

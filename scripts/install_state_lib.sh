@@ -116,10 +116,11 @@ install_state_sync_legacy() {
     _is_sim2=$(install_state_read "$INSTALL_STATE_ROOT/.sim2_auto_manage" on)
     install_state_value_is_valid feature_sim2 "$_is_sim2" || _is_sim2=on
     install_state_write feature_sim2 "$INSTALL_FEATURE_SIM2_FILE" "$_is_sim2" || return 1
-    case "$(install_state_read "$INSTALL_STATE_ROOT/.swap_mode" "${VM_MODE_DEFAULT:-stock}")" in
-        stock) _is_vm=system ;;
+    case "$(install_state_read "$INSTALL_STATE_ROOT/.swap_mode" "${VM_MODE_DEFAULT:-system}")" in
+        system|stock) _is_vm=system ;;
         disabled) _is_vm=disabled ;;
-        *) _is_vm=optimized ;;
+        optimized|custom) _is_vm=optimized ;;
+        *) _is_vm=system ;;
     esac
     install_state_write feature_vm "$INSTALL_FEATURE_VM_FILE" "$_is_vm" || return 1
     install_state_write feature_power_export "$INSTALL_FEATURE_POWER_EXPORT_FILE" on || return 1
