@@ -21,7 +21,41 @@ mode=$(printf '%s' "$body" | sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([a-zA
 minutes=$(printf '%s' "$body" | sed -n 's/.*"minutes"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
 start_ts=$(printf '%s' "$body" | sed -n 's/.*"start_ts"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
 end_ts=$(printf '%s' "$body" | sed -n 's/.*"end_ts"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+dataset=$(printf '%s' "$body" | sed -n 's/.*"dataset"[[:space:]]*:[[:space:]]*"\([a-zA-Z0-9_]*\)".*/\1/p')
+granularity=$(printf '%s' "$body" | sed -n 's/.*"granularity"[[:space:]]*:[[:space:]]*"\([a-zA-Z0-9_]*\)".*/\1/p')
 [ "$action" = export ] || json_error '400 Bad Request' 'invalid action'
+
+if [ "$mode" = window ]; then
+    case "$dataset" in
+        system|module) ;;
+        *) release_lock; json_error '400 Bad Request' 'invalid dataset' ;;
+    esac
+    case "$start_ts" in ''|*[!0-9]*) release_lock; json_error '400 Bad Request' 'invalid window start_ts' ;; esac
+    case "$end_ts" in ''|*[!0-9]*) release_lock; json_error '400 Bad Request' 'invalid window end_ts' ;; esac
+    [ "$start_ts" -le "$end_ts" ] 2>/dev/null || { release_lock; json_error '400 Bad Request' 'window start is after end'; }
+    [ "$end_ts" -le "$now" ] 2>/dev/null || end_ts="$now"
+    [ "$start_ts" -ge $((end_ts - 604800)) ] 2>/dev/null || { release_lock; json_error '400 Bad Request' 'window exceeds seven days'; }
+    stamp=$(date '+%Y%m%d_%H%M%S' 2>/dev/null || printf '%s' "$now")
+    final_file="$DOWNLOAD_DIR/pixel9pro_history_${stamp}_${dataset}_$$.json"
+    tmp_file="$DOWNLOAD_DIR/.pixel9pro_history_${stamp}_${dataset}_$$.tmp"
+    mkdir -p "$DOWNLOAD_DIR" 2>/dev/null || { release_lock; json_error '500 Internal Server Error' 'cannot create Download directory'; }
+    [ ! -e "$final_file" ] && [ ! -e "$tmp_file" ] || { release_lock; json_error '409 Conflict' 'export path already exists'; }
+    token=$(read_webui_token)
+    if [ "$dataset" = system ]; then
+        _window_response=$(REMOTE_ADDR=127.0.0.1 REQUEST_METHOD=GET QUERY_STRING="start_ts=$start_ts&end_ts=$end_ts&dataset=system" PIXEL9PRO_MODDIR="$MODDIR" sh "$MODDIR/webroot/cgi-bin/system_history.sh" 2>/dev/null)
+    else
+        _window_response=$(REMOTE_ADDR=127.0.0.1 REQUEST_METHOD=GET HTTP_X_PIXEL9PRO_TOKEN="$token" QUERY_STRING="action=history&start_ts=$start_ts&end_ts=$end_ts&granularity=$granularity" PIXEL9PRO_MODDIR="$MODDIR" sh "$MODDIR/webroot/cgi-bin/telemetry.sh" 2>/dev/null)
+    fi
+    printf '%s\n' "$_window_response" | sed '1,/^[[:space:]]*\r\{0,1\}$/d' > "$tmp_file" 2>/dev/null || { rm -f "$tmp_file"; release_lock; json_error '500 Internal Server Error' 'cannot capture history JSON'; }
+    _window_compact=$(tr -d '\r\n' < "$tmp_file" 2>/dev/null)
+    case "$_window_compact" in \{*\}) ;; *) rm -f "$tmp_file"; release_lock; json_error '500 Internal Server Error' 'history response is not JSON' ;; esac
+    mv "$tmp_file" "$final_file" 2>/dev/null || { rm -f "$tmp_file"; release_lock; json_error '500 Internal Server Error' 'cannot commit history export'; }
+    chmod 600 "$final_file" 2>/dev/null || true
+    release_lock
+    json_headers
+    printf '{"ok":true,"path":"%s","dataset":"%s","start_ts":%s,"end_ts":%s}\n' "$(json_escape "$final_file")" "$dataset" "$start_ts" "$end_ts"
+    exit 0
+fi
 
 export_mode=minutes
 case "$mode" in

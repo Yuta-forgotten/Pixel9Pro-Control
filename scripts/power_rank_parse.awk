@@ -1,6 +1,6 @@
 # Parse `dumpsys batterystats --charged --checkin` into a snapshot ledger.
 # Output is tab-delimited and intentionally contains no raw dumpsys text.
-#   meta|start_clock_ms
+#   meta|boot_id|capture_ts|start_clock_ms|screen|doze_state
 #   app|uid|package_or_uid|mAh
 #   component|name|name|mAh
 
@@ -42,7 +42,7 @@ $3 == "l" && $4 == "pwi" && $5 != "uid" && $5 != "" && $6 ~ /^[0-9]+(\.[0-9]+)?$
 }
 
 END {
-    printf "meta\t%s\t%s\t%s\n", safe(boot_id), capture_ts, clock
+    printf "meta\t%s\t%s\t%s\t%s\t%s\n", safe(boot_id), capture_ts, clock, safe(screen), safe(doze)
     for (uid in app) {
         label = package_for[uid]
         if (label == "") label = "uid_" uid

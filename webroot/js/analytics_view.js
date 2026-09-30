@@ -18,11 +18,12 @@
     const view = { callbacks, canvas: null, stats: null, source: 'thermal' };
     const root = el('div', 'analytics-overview');
     const intro = el('div', 'analytics-intro');
-    intro.append(el('div', 'analytics-section-title', '历史趋势'), el('div', 'analytics-section-desc', '选择温度或功耗，按时段查看真实采样与覆盖质量。'));
+    intro.append(el('div', 'analytics-section-title', '历史趋势'), el('div', 'analytics-section-desc', '模块采样与 Android 系统 BatteryStats 分开显示；缺测保留为空，不把两种口径相加。'));
     const source = el('div', 'analytics-range');
     source.setAttribute('role', 'tablist'); source.setAttribute('aria-label', '数据类型');
-    ['thermal', 'power'].forEach((kind) => {
-      const button = el('button', 'analytics-range-btn', kind === 'thermal' ? '温度' : '功耗');
+    ['thermal', 'power', 'system'].forEach((kind) => {
+      const label = kind === 'thermal' ? '温度' : kind === 'system' ? '系统统计耗电' : '模块监测耗电';
+      const button = el('button', 'analytics-range-btn', label);
       button.type = 'button'; button.dataset.analyticsSource = kind; button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(kind === 'thermal')); button.tabIndex = kind === 'thermal' ? 0 : -1;
       button.addEventListener('click', () => callbacks.onSource(kind));
       source.appendChild(button);
@@ -37,6 +38,12 @@
       tabs[next].focus(); tabs[next].click();
     });
     bindTabKeys(source);
+    const sensor = el('div', 'analytics-range analytics-sensor-range');
+    sensor.setAttribute('role', 'tablist'); sensor.setAttribute('aria-label', '温度传感器');
+    [['module', '机身温度'], ['battery', '系统电池温度']].forEach(([id, label]) => {
+      const button = el('button', 'analytics-range-btn', label); button.type = 'button'; button.dataset.analyticsSensor = id; button.setAttribute('role', 'tab'); button.setAttribute('aria-selected', String(id === 'module')); button.tabIndex = id === 'module' ? 0 : -1; button.addEventListener('click', () => callbacks.onThermalSensor?.(id)); sensor.appendChild(button);
+    });
+    bindTabKeys(sensor);
     const range = el('div', 'analytics-range');
     range.setAttribute('role', 'tablist'); range.setAttribute('aria-label', '统计区间');
     model().ranges().forEach((item) => {
@@ -93,22 +100,34 @@
     const captureExport = el('button', 'tiny-btn tonal', '导出记录'); captureExport.type = 'button';
     captureExport.addEventListener('click', () => callbacks.onCaptureExport(captureExport));
     captureControls.append(duration, captureBtn, captureExport);
-    capture.append(el('div', 'analytics-section-title', '低功耗记录'), el('div', 'analytics-section-desc', '后台按设备采样策略记录时间戳、功耗、温度与屏幕状态；息屏仅在低频 recorder 唤醒时读取一次温度，不执行 BatteryStats 轮询。'), captureState, captureControls);
+    capture.append(el('div', 'analytics-section-title', '模块采样会话'), el('div', 'analytics-section-desc', '仅用于模块自己的采样会话；系统统计耗电来自 Android 原生 history buffer，息屏、Doze 和后台缺测会保留为真实间隔。'), captureState, captureControls);
+    const policy = el('section', 'analytics-policy-card');
+    const policyTitle = el('div', 'analytics-section-title', '历史保留策略');
+    const policyDesc = el('div', 'analytics-section-desc', '控制 Android 系统 history 的保留时间、缓存上限与导入周期；模块监测耗电保留独立策略。读取成功后以后台 policy/phase 为准。');
+    const policyFields = el('div', 'analytics-policy-fields');
+    const makeSelect = (label, values, suffix) => { const select = document.createElement('select'); select.setAttribute('aria-label', label); values.forEach((value) => { const option = el('option', '', `${value}${suffix}`); option.value = String(value); select.appendChild(option); }); const field = el('label', 'analytics-custom-field'); field.append(el('span', 'analytics-section-desc', label), select); policyFields.appendChild(field); return select; };
+    const retention = makeSelect('保留天数', [1, 2, 3, 4, 5, 6, 7], ' 天');
+    const cap = makeSelect('容量上限', [4, 8, 12, 16, 24, 32], ' MiB');
+    const onInterval = makeSelect('亮屏间隔', [5, 10, 15, 20, 30, 45, 60], ' 分钟');
+    const offInterval = makeSelect('息屏间隔', [15, 30, 45, 60, 90, 120], ' 分钟');
+    const policyActions = el('div', 'analytics-actions'); const policyButton = el('button', 'tiny-btn tonal', '应用策略'); policyButton.type = 'button'; policyButton.disabled = true; policyButton.addEventListener('click', () => callbacks.onPolicy?.(policyButton, { retention_days: retention.value, max_bytes: Number(cap.value) * 1048576, system_interval_on_sec: Number(onInterval.value) * 60, system_interval_off_sec: Number(offInterval.value) * 60 })); policyActions.appendChild(policyButton);
+    const policyState = el('div', 'analytics-policy-state', '等待读取后台策略'); policy.append(policyTitle, policyDesc, policyFields, policyActions, policyState);
     const actions = el('div', 'analytics-export-actions analytics-actions');
     const refresh = el('button', 'tiny-btn tonal', '刷新数据'); refresh.type = 'button';
     refresh.addEventListener('click', () => callbacks.onRefresh?.(refresh)); actions.appendChild(refresh);
     const exportWindow = el('button', 'tiny-btn tonal', '导出当前区间'); exportWindow.type = 'button';
     exportWindow.addEventListener('click', () => callbacks.onExport(exportWindow)); actions.appendChild(exportWindow);
-    root.append(intro, source, range, custom, stateLine, hero, chartSection, more, capture, actions);
-    view.root = root; view.sourceGroup = source; view.rangeGroup = range; view.custom = custom; view.customDays = days; view.customGranularity = granularity; view.stateLine = stateLine; view.hero = hero;
-    view.heroKicker = heroHead.querySelector('.analytics-hero-kicker'); view.heroValue = heroHead.querySelector('.analytics-hero-value'); view.heroStatus = heroHead.querySelector('.analytics-hero-status'); view.heroBadge = heroHead.querySelector('.analytics-hero-badge'); view.summary = Array.from(summary.children); view.canvas = canvas; view.legend = legend; view.quality = quality; view.moreBody = moreBody; view.captureState = captureState; view.captureBtn = captureBtn; view.captureExport = captureExport; view.duration = duration; view.refresh = refresh; view.exportWindow = exportWindow;
+    root.append(intro, source, sensor, range, custom, stateLine, hero, chartSection, more, capture, policy, actions);
+    view.root = root; view.sourceGroup = source; view.sensorGroup = sensor; view.rangeGroup = range; view.custom = custom; view.customDays = days; view.customGranularity = granularity; view.stateLine = stateLine; view.hero = hero;
+    view.heroKicker = heroHead.querySelector('.analytics-hero-kicker'); view.heroValue = heroHead.querySelector('.analytics-hero-value'); view.heroStatus = heroHead.querySelector('.analytics-hero-status'); view.heroBadge = heroHead.querySelector('.analytics-hero-badge'); view.summary = Array.from(summary.children); view.canvas = canvas; view.legend = legend; view.quality = quality; view.moreBody = moreBody; view.captureState = captureState; view.captureBtn = captureBtn; view.captureExport = captureExport; view.duration = duration; view.refresh = refresh; view.exportWindow = exportWindow; view.policy = { retention, cap, onInterval, offInterval, button: policyButton, state: policyState };
     return view;
   }
 
-  function setActive(view, source, rangeId) {
+  function setActive(view, source, rangeId, thermalSensor = 'module') {
     view.source = source;
     view.stateLine.className = 'analytics-status';
     view.sourceGroup.querySelectorAll('[data-analytics-source]').forEach((node) => { const active = node.dataset.analyticsSource === source; node.classList.toggle('active', active); node.setAttribute('aria-selected', String(active)); node.tabIndex = active ? 0 : -1; });
+    view.sensorGroup.hidden = source !== 'thermal'; view.sensorGroup.querySelectorAll('[data-analytics-sensor]').forEach((node) => { const active = node.dataset.analyticsSensor === thermalSensor; node.classList.toggle('active', active); node.setAttribute('aria-selected', String(active)); node.tabIndex = active ? 0 : -1; });
     view.rangeGroup.querySelectorAll('[data-analytics-range]').forEach((node) => { const active = node.dataset.analyticsRange === String(rangeId); node.classList.toggle('active', active); node.setAttribute('aria-selected', String(active)); node.tabIndex = active ? 0 : -1; });
     view.custom.hidden = String(rangeId) !== 'custom';
   }
@@ -223,7 +242,8 @@
     const values = segments.flat().map((point) => point.value);
     const unit = source === 'thermal' ? '°C' : stats.seriesUnit || 'mAh/h';
     const gapRanges = (stats.gapRanges || []).filter((gap) => Number.isFinite(gap.startTs) && Number.isFinite(gap.endTs) && gap.endTs > gap.startTs);
-    canvas.setAttribute('aria-label', `${source === 'thermal' ? '温度' : '放电'}趋势图，单位 ${unit}；${stats.count || 0} 个有效采样点，有效覆盖 ${model().formatDuration(stats.coverageSec)}，未知 ${model().formatDuration(stats.unknownSec)}${gapRanges.length ? `，${gapRanges.length} 段间断以时间轴虚线标记` : ''}。`);
+    const trendLabel = source === 'thermal' ? '温度' : source === 'system' ? 'Android 系统耗电' : '模块放电';
+    canvas.setAttribute('aria-label', `${trendLabel}趋势图，单位 ${unit}；${stats.count || 0} 个有效采样点，有效覆盖 ${model().formatDuration(stats.coverageSec)}，未知 ${model().formatDuration(stats.unknownSec)}${gapRanges.length ? `，${gapRanges.length} 段间断以时间轴虚线标记` : ''}。`);
     if (!Number.isFinite(stats.startTs) || !Number.isFinite(stats.endTs)) return;
     const spanSec = Math.max(1, stats.endTs - stats.startTs);
     const dayCrossing = new Date(stats.startTs * 1000).toDateString() !== new Date(stats.endTs * 1000).toDateString();
@@ -247,7 +267,7 @@
       }
     } else {
       ctx.textAlign = 'center';
-      ctx.fillText(source === 'thermal' ? '当前区间没有有效温度' : '当前区间没有可计算的放电数据', width / 2, height / 2);
+      ctx.fillText(source === 'thermal' ? '当前区间没有有效温度' : source === 'system' ? '当前区间没有足够系统快照' : '当前区间没有可计算的放电数据', width / 2, height / 2);
     }
     const timeLabel = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const dateLabel = (ts) => new Date(ts * 1000).toLocaleDateString([], { month: '2-digit', day: '2-digit' });
@@ -285,16 +305,17 @@
   }
 
   function update(view, payload) {
-    const { source, rangeId, stats, status, summary, ranking, capture } = payload;
+    const { source, thermalSensor = 'module', rangeId, stats, status, summary, ranking, capture } = payload;
     const refreshDetails = payload.details !== false;
-    setActive(view, source, rangeId); view.stats = stats;
+    setActive(view, source, rangeId, thermalSensor); view.stats = stats;
     view.hero.classList.toggle('warn', source === 'thermal' ? Number(stats?.current) >= 37 : ['partial', 'partial_window', 'reset_or_mismatch', 'insufficient_samples', 'no_coverage'].includes(stats?.backendQuality || stats?.quality));
     view.stateLine.textContent = status || '';
     view.stateLine.hidden = !status;
     const isThermal = source === 'thermal';
-    view.heroKicker.textContent = isThermal ? '最近采样温度' : '有效区间平均放电';
+    const isSystem = source === 'system';
+    view.heroKicker.textContent = isThermal ? (thermalSensor === 'battery' ? '系统电池温度' : '模块机身温度') : isSystem ? '系统统计平均耗电' : '模块监测平均耗电';
     view.heroValue.textContent = isThermal ? (Number.isFinite(stats?.current) ? `${stats.current.toFixed(1)}°C` : '—') : (Number.isFinite(stats?.avgMahPerHour) ? `${stats.avgMahPerHour.toFixed(1)} mAh/h` : Number.isFinite(stats?.avgMw) ? `${stats.avgMw.toFixed(0)} mW` : '—');
-    view.heroStatus.textContent = isThermal ? (stats?.lastSampleTs ? `采样于 ${relativeTime(stats.lastSampleTs)} · 达到阈值 ${model().formatDuration(stats.thresholdSec)}` : '当前区间没有有效温度') : (stats?.quality === 'good' ? '由电荷计差分或硬件电流电压计算' : stats?.quality === 'reset_or_mismatch' ? '电荷计重置或不一致；电荷差分停用，独立电流测量保留' : stats?.quality === 'partial' ? '仅统计有效放电区间；间断和非放电时段不计入平均值' : '有效功耗证据不足，未将电量百分比当成功耗');
+    view.heroStatus.textContent = isThermal ? (stats?.lastSampleTs ? `采样于 ${relativeTime(stats.lastSampleTs)} · 达到阈值 ${model().formatDuration(stats.thresholdSec)}` : '当前区间没有有效温度') : isSystem ? 'Android 原生 battery counter 历史；按真实 power_rates 统计，息屏与 Doze 缺测保留为未知' : (stats?.quality === 'good' ? '由模块电荷计差分或硬件电流电压计算' : stats?.quality === 'reset_or_mismatch' ? '电荷计重置或不一致；电荷差分停用，独立电流测量保留' : stats?.quality === 'partial' ? '仅统计有效区间；间断、息屏与非放电时段不计入平均值' : '有效功耗证据不足，未将电量百分比当成功耗');
     view.heroBadge.textContent = model().rangeFor(rangeId).label;
     const values = isThermal ? [stats?.min, stats?.avg, stats?.max] : [stats?.consumedMah, stats?.avgMahPerHour, stats?.avgMw];
     const labels = isThermal ? ['最低', '平均', '最高'] : ['实际耗电', '平均放电', '平均功率'];
@@ -315,24 +336,42 @@
       view.quality.className = `analytics-status ${['good', 'complete_window', 'usable_window'].includes(qualityState) ? 'good' : ['no_data', 'no_coverage'].includes(qualityState) ? 'err' : 'warn'}`;
       view.quality.hidden = false;
       view.moreBody.append(row('数据范围', stats?.startTs && stats?.endTs ? relativeTime(stats.startTs) + ' — ' + relativeTime(stats.endTs) : '—'), row('后台记录数', stats?.backendSampleCount ?? stats?.sampleCount), row('后台有效记录', stats?.backendValidSamples ?? stats?.validCount ?? stats?.count), row('后台无效记录', stats?.backendInvalidSamples ?? stats?.missingCount), row('有效采样点', stats?.count), row('曲线有效覆盖', model().formatDuration(stats?.coverageSec)), row('曲线未知时长', model().formatDuration(stats?.unknownSec)));
-      if (isThermal) view.moreBody.append(row('温控阈值累计', model().formatDuration(stats?.thresholdSec)));
+      if (isThermal) {
+        view.moreBody.append(row('温控阈值累计', model().formatDuration(stats?.thresholdSec)), row('温度传感器', thermalSensor === 'battery' ? '系统电池温度' : '模块机身温度'));
+      }
       else {
+        if (source === 'system') view.moreBody.append(row('数据口径', 'Android 原生 battery counter（硬件电荷计）与 power_rates；软件 UID 排行另标为模型估算'));
         view.moreBody.append(row('可证明放电', Number.isFinite(stats?.consumedMah) ? stats.consumedMah.toFixed(2) + ' mAh' : '—'), row('有效电荷差分时长', model().formatDuration(stats?.activeSec)), row('有效电流测量时长', model().formatDuration(stats?.measuredSec)), row('非放电时长', model().formatDuration(stats?.nonDischargeSec)), row('数据质量', qualityLabel[stats?.quality] || '未知'));
+        if (source === 'system') {
+          const totals = stats?.screenTotals || {}; const collection = stats?.collection || {}; const battery = stats?.batteryLevel;
+          const onMah = totals.on_mah ?? totals.screen_on_mah; const offMah = totals.off_mah ?? totals.screen_off_mah; const onSec = totals.on_sec ?? totals.screen_on_sec; const offSec = totals.off_sec ?? totals.screen_off_sec;
+          view.moreBody.append(row('亮屏/息屏耗电', `${onMah ?? '—'} / ${offMah ?? '—'} mAh`), row('亮屏/息屏区间', `${onSec ? model().formatDuration(onSec) : '—'} / ${offSec ? model().formatDuration(offSec) : '—'}`), row('屏幕/Doze 区段', stats?.screenSegments?.length ?? '—'), row('电量水平', battery == null ? '—' : `${battery}%`), row('最后采集', collection.last_success_ts ? relativeTime(collection.last_success_ts) : '—'), row('采集阶段', collection.phase || '—'));
+        }
         appendPowerAttribution(view.moreBody, summary, ranking);
+      }
+      const policy = stats?.policy;
+      if (policy && view.policy) {
+        view.policy.button.disabled = false;
+        view.policy.button.disabled = false;
+        if (policy.retention_days != null) view.policy.retention.value = String(policy.retention_days);
+        if (policy.max_bytes != null) view.policy.cap.value = String(Math.max(4, Math.min(32, Math.round(Number(policy.max_bytes) / 1048576))));
+        if (policy.system_interval_on_sec != null) view.policy.onInterval.value = String(Math.max(5, Math.min(60, Math.round(Number(policy.system_interval_on_sec) / 60))));
+        if (policy.system_interval_off_sec != null) view.policy.offInterval.value = String(Math.max(15, Math.min(120, Math.round(Number(policy.system_interval_off_sec) / 60))));
+        view.policy.state.textContent = `${policy.phase || 'effective'} · 保留 ${policy.retention_days ?? '—'} 天 · 上限 ${policy.max_bytes ? Math.round(Number(policy.max_bytes) / 1048576) : '—'} MiB`;
       }
     }
     draw(view, source, stats);
     if (capture) { view.captureState.textContent = capture.session ? `${capture.session.status || '运行中'} · ${capture.session.sample_count || 0} 个采样点` : '未开始记录'; view.captureBtn.textContent = capture.session?.status === 'running' ? '结束记录' : '开始记录'; view.captureExport.disabled = !capture.session || capture.session.status === 'running'; }
   }
 
-  function loading(view, source, rangeId) {
+  function loading(view, source, rangeId, thermalSensor = 'module') {
     // A source/range switch must not leave an old curve under the new heading.
     const stats = source === 'thermal' ? model().temperatureStats([]) : model().powerStats([]);
-    update(view, { source, rangeId, stats, status: '正在读取采样…', summary: null, capture: null });
+    update(view, { source, thermalSensor, rangeId, stats, status: '正在读取采样…', summary: null, capture: null });
     view.legend.textContent = '等待当前区间的真实采样';
   }
-  function empty(view, source, rangeId, message) { setActive(view, source, rangeId); view.stateLine.hidden = false; view.stateLine.textContent = message || '当前时段没有足够采样'; }
-  function error(view, source, rangeId, message) { setActive(view, source, rangeId); view.stateLine.hidden = false; view.stateLine.className = 'analytics-error'; view.stateLine.textContent = message || '读取失败'; }
+  function empty(view, source, rangeId, message, thermalSensor = 'module') { setActive(view, source, rangeId, thermalSensor); view.stateLine.hidden = false; view.stateLine.textContent = message || '当前时段没有足够采样'; }
+  function error(view, source, rangeId, message, thermalSensor = 'module') { setActive(view, source, rangeId, thermalSensor); view.stateLine.hidden = false; view.stateLine.className = 'analytics-error'; view.stateLine.textContent = message || '读取失败'; }
 
   registerFeature('analyticsView', { create, update, loading, empty, error, setCustomValues, promptCustom });
 })();

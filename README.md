@@ -87,7 +87,7 @@ WebUI 的所有 API 请求经过统一 Request Hub：GET 在途请求按 endpoin
 - 亮屏时恢复保存的 NR 模式
 - 热点开启时跳过切换
 - 息屏 worker 使用 900 秒低频 recorder 窗口；owner arbiter 在息屏完全停止，避免 30 秒轮询阻止 Doze
-- 温度历史亮屏约每 60 秒读取；息屏由低频 recorder 每 900 秒读取一次 Thermal HAL 并保留当时温度，期间不轮询 BatteryStats、Top 进程或 owner arbiter
+- 温度历史亮屏约每 60 秒读取；息屏由低频 recorder 每 900 秒读取一次 Thermal HAL 并保留当时温度；系统功耗改为同一低频窗口回读 Android 原生 BatteryStats history，不轮询 Top 进程或 owner arbiter
 - 屏幕状态先读 DRM sysfs；只有 connector 仍 enabled 或 sysfs 不可用时才用 `cmd deviceidle` / `dumpsys power` 兜底。sysfs 的 inotify 事件在不同 Android/SELinux policy 上并不保证，不能作为唯一唤醒源。
 - CGI 保留 Android 固定 `/system/bin/sh` shebang，由 BusyBox `httpd` 按脚本 shebang 执行；硬编码某个 Root 实现下的 BusyBox `ash` 路径会在 APatch/KernelSU/Magisk 间失效并可能触发 SELinux，未作为运行时依赖引入。
 
@@ -137,6 +137,15 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 可选：`ntp.aliyun.com`（默认）、`ntp.myhuaweicloud.com`、`ntp1.xiaomi.com`、`time.android.com`。
 
 ### WebUI 控制台
+
+历史页现在把模块功耗与 Android 系统分开：模块曲线来自电荷计/电流/电压
+ledger，系统曲线来自 Android BatteryStats 原生 history buffer 的七日事件差分，并显示屏幕状态、
+Doze 状态、覆盖率和缺测原因。BatteryStats 是系统模型估算，不等同电表；息屏期间
+若 Doze 延迟或终止 worker，时间轴显示 gap/unknown，不补零，也不把两种 mAh 口径相加。
+系统快照由后台 service 在亮屏和息屏均按至少 900 秒节奏尝试采集；实际持续性必须以
+同一 boot 的设备 readback 为准。
+历史页还可设置系统事件保留 1–7 天、4–32 MiB 存储上限，以及亮屏 5–60 分钟/息屏
+15–120 分钟的系统 history 导入周期；后台返回 effective policy 与采集 receipt 后才更新界面。
 
 端口 6210，`http://127.0.0.1:6210`（仅绑定本机回环地址）。采用 Material 3 设计，提供状态、性能温控、网络和系统四个页面；温度与功耗历史可查看采样覆盖、缺测区间并导出记录。实时功耗摘要与功耗排行分开刷新；排行按选定时间窗、粒度和 ledger revision 缓存，无法证明窗口时显示 unavailable，不把当前 batterystats 总计伪装成历史排行。
 

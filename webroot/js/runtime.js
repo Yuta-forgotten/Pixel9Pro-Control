@@ -24,6 +24,8 @@ const API = {
   energy: '/cgi-bin/energy.sh',
   energyFast: '/cgi-bin/energy.sh?fast=1',
   powerRank: '/cgi-bin/power_rank.sh',
+  systemHistory: '/cgi-bin/system_history.sh',
+  historyPolicy: '/cgi-bin/history_policy.sh',
   historyExport: '/cgi-bin/history_export.sh',
   telemetry: '/cgi-bin/telemetry.sh',
   auditLog: '/cgi-bin/audit_log.sh',

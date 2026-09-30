@@ -1,7 +1,7 @@
 'use strict';
 (() => {
   const state = {
-    open: false, source: 'thermal', rangeId: '30', customDays: 1, customGranularity: 'hour',
+    open: false, source: 'thermal', thermalSensor: 'module', rangeId: '30', customDays: 1, customGranularity: 'hour',
     view: null, cache: new Map(), rankCache: new Map(), requestId: 0, request: null,
     overviewRequest: null, rankRequest: null, rankGeneration: 0, timer: null,
     summary: null, ranking: { status: 'idle' }, rankRefreshRequested: false,
@@ -13,13 +13,19 @@
   const showToast = (...args) => core().showToast(...args);
   const appendLog = (...args) => core().appendLog(...args);
   const isActive = () => core().isWebUiActive() && refs.detailModal?.classList.contains('open') && !refs.detailModal.classList.contains('detail-minimized');
+  const isPowerSource = () => state.source === 'power' || state.source === 'system';
   const model = () => requireFeature('analyticsModel');
   const capture = () => requireFeature('capture');
   const viewFeature = () => requireFeature('analyticsView');
   const endpoint = () => (globalThis.API && API.telemetry) || '/cgi-bin/telemetry.sh';
+  const revisionBase = (value) => {
+    const text = String(value || '').trim();
+    if (!text || text === 'none' || text === 'empty' || text === 'unknown') return '';
+    return text.split(':').slice(0, 3).join(':');
+  };
 
   function key() {
-    return `${state.source}:${state.rangeId}:${state.customDays}:${state.customGranularity}:${effectiveGranularity()}`;
+    return `${state.source}:${state.thermalSensor}:${state.rangeId}:${state.customDays}:${state.customGranularity}:${effectiveGranularity()}`;
   }
   function query(path, params) {
     const search = new URLSearchParams(params);
@@ -28,11 +34,11 @@
   function rangeBounds() {
     if (state.rangeId === 'custom') {
       const endTs = Math.floor(Date.now() / 1000);
-      return { startTs: endTs - state.customDays * 86400, endTs, granularity: state.customGranularity };
+      return { startTs: endTs - state.customDays * 86400, endTs, granularity: state.source === 'system' ? 'raw' : state.customGranularity };
     }
     const minutes = model().rangeFor(state.rangeId).minutes;
     const endTs = Math.floor(Date.now() / 1000);
-    return { startTs: endTs - minutes * 60, endTs, granularity: effectiveGranularity() };
+    return { startTs: endTs - minutes * 60, endTs, granularity: state.source === 'system' ? 'raw' : effectiveGranularity() };
   }
   function effectiveGranularity() {
     if (state.rangeId === 'custom') return state.customGranularity;
@@ -64,7 +70,8 @@
   function ensureView() {
     if (state.view) return state.view;
     state.view = viewFeature().create({
-      onSource: (source) => { state.source = source; if (source !== 'thermal') stopBurst(); load(false); },
+      onSource: (source) => { state.source = source; if (source !== 'thermal' || state.thermalSensor !== 'module') stopBurst(); load(false); },
+      onThermalSensor: (sensor) => { state.thermalSensor = sensor; if (state.source === 'thermal' && sensor === 'module') triggerBurst({ prompt: false }); else stopBurst(); load(false); },
       onRange: (rangeId) => { state.rangeId = rangeId; if (rangeId === 'custom') { viewFeature().setCustomValues(state.view, state.customDays, state.customGranularity); viewFeature().promptCustom(state.view); return; } load(false); },
       onCustom: (days, granularity) => {
         const parsedDays = Math.floor(Number(days));
@@ -103,7 +110,8 @@
           button.disabled = false;
         }
       },
-      onExport: (button) => exportRange(button)
+      onExport: (button) => exportRange(button),
+      onPolicy: (button, policy) => savePolicy(button, policy)
     });
     return state.view;
   }
@@ -113,32 +121,37 @@
     const cached = state.cache.get(key());
     if (!cached) return;
     const refreshDetails = details || state.detailsDue || !state.lastDetailsAt || (Date.now() - state.lastDetailsAt) >= 120000;
-    viewFeature().update(state.view, { source: state.source, rangeId: state.rangeId, stats: cached.stats, status: cached.status, summary: state.summary, ranking: state.ranking, details: refreshDetails, capture: { session } });
+    viewFeature().update(state.view, { source: state.source, thermalSensor: state.thermalSensor, rangeId: state.rangeId, stats: cached.stats, status: cached.status, summary: state.summary, ranking: state.ranking, details: refreshDetails, capture: { session } });
     if (refreshDetails) { state.detailsDue = false; state.lastDetailsAt = Date.now(); }
   }
   function normalizeResponse(data, bounds) {
     const source = state.source;
+    const finiteMeta = (value) => value === null || value === undefined || value === '' || (typeof value !== 'number' && typeof value !== 'string') ? null : Number.isFinite(Number(value)) ? Number(value) : null;
     const windowMeta = data?.window || {};
-    const sourceMeta = data?.meta || data?.sources?.[source] || {};
+    const sourceKey = source === 'system' ? 'power' : source === 'thermal' && state.thermalSensor === 'battery' ? 'thermal' : source;
+    const sourceMeta = data?.sources?.[sourceKey] || data?.meta || {};
     const meta = { ...windowMeta, ...sourceMeta };
-    const options = { ...bounds, granularity: meta.granularity || bounds.granularity, quality: meta.quality || '' };
+    const options = { ...bounds, granularity: meta.granularity || bounds.granularity, quality: meta.quality || '', native: source === 'system', backendGaps: model().explicitGaps(data) };
     const annotate = (stats) => {
-      stats.backendSampleCount = Number.isFinite(Number(meta.raw_samples ?? meta.samples ?? meta.sample_count)) ? Number(meta.raw_samples ?? meta.samples ?? meta.sample_count) : null;
-      stats.backendValidSamples = Number.isFinite(Number(meta.valid_samples)) ? Number(meta.valid_samples) : null;
-      stats.backendInvalidSamples = Number.isFinite(Number(meta.invalid_samples)) ? Number(meta.invalid_samples) : null;
-      stats.backendGapCount = Number.isFinite(Number(meta.gap_count ?? meta.gaps)) ? Number(meta.gap_count ?? meta.gaps) : null;
-      const coverage = Number(meta.coverage_ratio ?? meta.coverage);
-      stats.backendCoverageRatio = Number.isFinite(coverage) ? (coverage > 1 ? coverage / 100 : coverage) : null;
+      stats.backendSampleCount = finiteMeta(meta.raw_samples ?? meta.samples ?? meta.sample_count);
+      stats.backendValidSamples = finiteMeta(meta.valid_samples);
+      stats.backendInvalidSamples = finiteMeta(meta.invalid_samples);
+      stats.backendGapCount = finiteMeta(meta.gap_count) ?? (Array.isArray(meta.gaps) ? meta.gaps.length : null);
+      const coverage = finiteMeta(meta.coverage_ratio ?? meta.coverage);
+      stats.backendCoverageRatio = coverage === null ? null : (coverage > 1 ? coverage / 100 : coverage);
       stats.backendQuality = String(meta.quality || '');
-      stats.dataRevision = String(data?.data_revision ?? data?.history_revision ?? meta.data_revision ?? meta.history_revision ?? '');
+      stats.dataRevision = revisionBase(data?.data_revision ?? data?.history_revision ?? meta.data_revision ?? meta.history_revision ?? '');
+      stats.rankRevision = revisionBase(data?.rank_revision ?? data?.power_rank_revision ?? '');
+      stats.historySource = source === 'system' || state.thermalSensor === 'battery' ? 'android' : 'module';
+      stats.collection = data?.collection || null; stats.policy = data?.policy || null; stats.window = data?.window || null; stats.screenTotals = data?.screen_totals || data?.screenTotals || null; stats.batteryLevel = data?.battery_level || data?.batteryLevel || null;
       return stats;
     };
     if (source === 'thermal') {
-      const points = model().clip(model().normalizeThermal(data), bounds.startTs, bounds.endTs);
+      const points = model().clip(model().normalizeThermal(data).filter((point) => point.sensor === (state.thermalSensor === 'battery' ? 'battery' : 'module')), bounds.startTs, bounds.endTs);
       const stats = model().temperatureStats(points, options);
-      return { stats: annotate(stats), status: stats.count < 2 ? '温度记录不足；亮屏采样才会写入温度历史。' : '' };
+      return { stats: annotate(stats), status: stats.count < 2 ? (state.thermalSensor === 'battery' ? '系统电池温度记录不足；缺测保持为空。' : '模块机身温度记录不足；息屏/待机期间缺测保持为空。') : '' };
     }
-    const points = model().clip(model().normalizePower(data), bounds.startTs, bounds.endTs);
+    const points = model().clip(model().normalizePower(data), bounds.startTs, bounds.endTs, true);
     const stats = model().powerStats(points, options);
     return { stats: annotate(stats), status: stats.count < 2 || !stats.series.length ? '当前区间没有足够的有效放电数据；缺测不会补零。' : '' };
   }
@@ -148,6 +161,9 @@
     if (bounds.endTs !== null && Number.isFinite(Number(bounds.endTs))) params.end_ts = Math.floor(bounds.endTs);
     // The main history sheet represents the entire selected time range. A
     // recent manual capture must not hide service history from the same range.
+    if (state.source === 'system' || (state.source === 'thermal' && state.thermalSensor === 'battery')) {
+      return request(query(API.systemHistory || '/cgi-bin/system_history.sh', { start_ts: params.start_ts, end_ts: params.end_ts, granularity: bounds.granularity, dataset: 'system' }), 12000, 'request');
+    }
     return capture().history({ startTs: params.start_ts, endTs: params.end_ts, granularity: bounds.granularity });
   }
   function rankKey(bounds, stats) {
@@ -155,7 +171,7 @@
     const step = bounds.granularity === 'hour' ? 3600 : bounds.granularity === 'minute' ? 60 : 1;
     const start = Math.floor(Number(bounds.startTs) / step) * step;
     const end = Math.floor(Number(bounds.endTs) / step) * step;
-    return `${windowId}|${start}|${end}|${bounds.granularity || 'raw'}`;
+    return `${state.source}|${windowId}|${start}|${end}|${bounds.granularity || 'raw'}`;
   }
   function rankWindow(bounds, stats) {
     const windowLabel = state.rangeId === 'custom' ? `最近 ${state.customDays} 天` : model().rangeFor(state.rangeId).label;
@@ -163,19 +179,24 @@
     return { label: windowLabel, granularity: bounds.granularity, coveragePct: ratio, validSamples: stats?.backendValidSamples ?? stats?.validCount ?? stats?.count };
   }
   async function fetchEnergySummary(bounds, stats, forceRank = false, contextKey = state.activeKey) {
-    if (state.source !== 'power') return;
-    try {
-      const fast = await request(API.energyFast, 4000, 'overviewRequest');
-      if (!state.open || !isActive() || state.activeKey !== contextKey || state.source !== 'power') return;
-      if (fast) { state.summary = fast; updateView(); }
-    } catch (_) {
-      // The real-time card remains usable when the fast summary is unavailable.
+    if (!isPowerSource()) return;
+    if (state.source === 'power') {
+      try {
+        const fast = await request(API.energyFast, 4000, 'overviewRequest');
+        if (!state.open || !isActive() || state.activeKey !== contextKey || !isPowerSource()) return;
+        if (fast) { state.summary = fast; updateView(); }
+      } catch (_) {
+        // The real-time card remains usable when the fast summary is unavailable.
+      }
     }
     const cacheKey = rankKey(bounds, stats);
     const cached = state.rankCache.get(cacheKey);
     const window = rankWindow(bounds, stats);
-    if (!state.open || !isActive() || state.activeKey !== contextKey || state.source !== 'power') return;
-    if (!forceRank && cached) {
+    if (!state.open || !isActive() || state.activeKey !== contextKey || !isPowerSource()) return;
+    const revisionChanged = state.source === 'system' && cached && stats?.rankRevision && cached.revision && String(stats.rankRevision) !== String(cached.revision);
+    const cacheExpired = cached && cached.updatedAt && Date.now() - cached.updatedAt >= 120000;
+    const retryableUnavailable = cached && ['unavailable', 'error'].includes(cached.status) && (cacheExpired || revisionChanged);
+    if (!forceRank && cached && !revisionChanged && !cacheExpired && !retryableUnavailable) {
       state.ranking = { ...cached, window, updatedAt: cached.updatedAt || Date.now() };
       updateView();
       return;
@@ -186,16 +207,16 @@
     updateView();
     try {
       const full = await request(query(API.powerRank || '/cgi-bin/power_rank.sh', { start_ts: bounds.startTs, end_ts: bounds.endTs, granularity: bounds.granularity }), 16000, 'rankRequest');
-      if (!state.open || !isActive() || generation !== state.rankGeneration || state.source !== 'power' || !full) return;
+      if (!state.open || !isActive() || generation !== state.rankGeneration || !isPowerSource() || !full) return;
       if (full.ok !== true) throw new Error(full.error || full.reason || '后台未返回有效排行');
       const rankCoverage = Number(full.coverage_ratio);
       const rankMeta = { label: `${new Date(bounds.startTs * 1000).toLocaleString()} — ${new Date(bounds.endTs * 1000).toLocaleString()}`, granularity: bounds.granularity, coveragePct: Number.isFinite(rankCoverage) ? (rankCoverage > 1 ? rankCoverage : rankCoverage * 100) : null, validSamples: full.valid_samples ?? null, gapCount: Array.isArray(full.gaps) ? full.gaps.length : null };
-      const result = { status: full.status || 'ready', summary: full, window: rankMeta, cacheKey, updatedAt: Number(full.updated_at) > 0 ? Number(full.updated_at) * 1000 : Date.now(), revision: String(full.data_revision || '') };
+      const result = { status: full.status || 'ready', summary: full, window: rankMeta, cacheKey, updatedAt: Number(full.updated_at) > 0 ? Number(full.updated_at) * 1000 : Date.now(), revision: revisionBase(full.data_revision) };
       state.rankCache.set(cacheKey, result);
       state.ranking = result;
       updateView();
     } catch (err) {
-      if (!state.open || !isActive() || generation !== state.rankGeneration || state.source !== 'power') return;
+      if (!state.open || !isActive() || generation !== state.rankGeneration || !isPowerSource()) return;
       state.ranking = { status: 'error', error: err?.message || String(err), window, cacheKey };
       updateView();
     }
@@ -216,14 +237,15 @@
     // ranking window; this prevents a rolling end timestamp from defeating the
     // ranking cache every ten seconds.
     if (selectionChanged || forceRank || !state.selectedBounds) state.selectedBounds = requestedBounds;
-    const bounds = state.selectedBounds;
+    const historyBounds = requestedBounds;
+    const rankBounds = state.selectedBounds;
     cancelSlot('request', 'new-history'); capture().abort('new-history'); state.requestId += 1; const requestId = state.requestId;
     const requestedRank = forceRank || state.rankRefreshRequested || selectionChanged;
     state.rankRefreshRequested = false;
     if (!force && state.cache.has(cacheKey)) {
       updateView();
-      if (state.source === 'power') {
-        fetchEnergySummary(bounds, state.cache.get(cacheKey).stats, requestedRank, cacheKey);
+      if (isPowerSource()) {
+        fetchEnergySummary(rankBounds, state.cache.get(cacheKey).stats, requestedRank, cacheKey);
         const previousCaptureStatus = state.lastCaptureStatus;
         capture().status().then((captureData) => {
           const currentCaptureStatus = captureData?.session?.status || '';
@@ -236,14 +258,14 @@
       }
       schedule(); return true;
     }
-    if (!state.cache.has(cacheKey)) viewFeature().loading(view, state.source, state.rangeId);
+    if (!state.cache.has(cacheKey)) viewFeature().loading(view, state.source, state.rangeId, state.thermalSensor);
     try {
-      const data = await fetchSource(bounds); if (requestId !== state.requestId || !data) return null;
-      const normalized = normalizeResponse(data, bounds);
+      const data = await fetchSource(historyBounds); if (requestId !== state.requestId || !data) return null;
+      const normalized = normalizeResponse(data, historyBounds);
       state.cache.set(cacheKey, normalized); updateView();
-      if (normalized.stats.count < 2) viewFeature().empty(view, state.source, state.rangeId, normalized.status);
-      if (state.source === 'power') fetchEnergySummary(bounds, normalized.stats, requestedRank, cacheKey);
-      if (state.source === 'power') {
+      if (normalized.stats.count < 2) viewFeature().empty(view, state.source, state.rangeId, normalized.status, state.thermalSensor);
+      if (isPowerSource()) fetchEnergySummary(rankBounds, normalized.stats, requestedRank, cacheKey);
+      if (isPowerSource()) {
         const previousCaptureStatus = state.lastCaptureStatus;
         capture().status().then((captureData) => {
           const currentCaptureStatus = captureData?.session?.status || '';
@@ -258,13 +280,13 @@
     } catch (err) {
       if (requestId !== state.requestId) return null;
       if (isCancelled(err)) return null;
-      viewFeature().error(view, state.source, state.rangeId, `读取失败：${err.message || err}`);
+      viewFeature().error(view, state.source, state.rangeId, `读取失败：${err.message || err}`, state.thermalSensor);
       return false;
     }
     schedule();
     return true;
   }
-  function schedule(delay = state.source === 'thermal' ? TEMP_CHART_REFRESH_MS : 30000) {
+  function schedule(delay = state.source === 'thermal' ? TEMP_CHART_REFRESH_MS : state.source === 'system' ? 60000 : 30000) {
     if (state.timer) clearTimeout(state.timer); state.timer = null;
     if (!state.open || !isActive()) return;
     state.timer = window.setTimeout(() => { state.timer = null; void load(true); }, delay);
@@ -272,15 +294,25 @@
   async function exportRange(button) {
     button.disabled = true;
     try {
-      const session = capture().getSession();
-      if (session?.status === 'running' || session?.status === 'completed' || session?.status === 'stopped') {
-        const data = await capture().export(session.id); showToast(data?.directory ? '记录已导出' : '导出已提交');
-      } else if (state.rangeId !== 'custom') {
-        const data = await apiFetch(API.historyExport, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'export', minutes: model().rangeFor(state.rangeId).minutes }), timeoutMs: 10000, priority: 'interactive', scope: 'analytics.export' });
-        if (data?.ok) { showToast(`已保存 ${data.power_samples || 0} 个功耗点 / ${data.thermal_samples || 0} 个温度点`); appendLog('历史导出已保存（含温度）', 'ok'); }
-      } else showToast('自定义区间请先开始一段记录，再导出完整文件');
+      const bounds = rangeBounds(); const dataset = state.source === 'system' || (state.source === 'thermal' && state.thermalSensor === 'battery') ? 'system' : 'module';
+      const data = await apiFetch(API.historyExport, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'export', mode: 'window', dataset, start_ts: bounds.startTs, end_ts: bounds.endTs, granularity: bounds.granularity }), timeoutMs: 10000, priority: 'interactive', scope: 'analytics.export' });
+      if (data?.ok !== false) { showToast(data?.path ? `已导出当前区间：${data.path}` : '当前区间导出已提交'); appendLog(`历史区间导出完成（${dataset}）`, 'ok'); }
     } catch (err) { showToast(`导出失败：${err.message || err}`); appendLog(String(err), 'err'); }
     button.disabled = false;
+  }
+  async function savePolicy(button, policy) {
+    if (!API.historyPolicy) { showToast('后台未提供历史策略接口'); return; }
+    button.disabled = true;
+    try {
+      const body = { action: 'configure', retention_days: Number(policy.retention_days), max_bytes: Number(policy.max_bytes), system_interval_on_sec: Number(policy.system_interval_on_sec), system_interval_off_sec: Number(policy.system_interval_off_sec) };
+      const result = await apiFetch(API.historyPolicy, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), timeoutMs: 8000, priority: 'interactive', scope: 'analytics.policy' });
+      if (result?.ok === false) throw new Error(result.error || result.reason || '策略未生效');
+      const readback = await apiFetch(API.historyPolicy, { method: 'GET', timeoutMs: 8000, priority: 'interactive', scope: 'analytics.policy.readback' });
+      if (readback?.ok === false || (!readback?.policy && !readback?.phase)) throw new Error(readback?.error || readback?.reason || '后台未返回策略 readback');
+      const applied = readback.policy || readback;
+      const phase = applied.phase || result?.phase || result?.policy?.phase || 'staged';
+      showToast(phase === 'effective' ? '历史策略已生效' : `历史策略已保存（${phase}）`); state.detailsDue = true; await load(true, true);
+    } catch (err) { showToast(`策略保存失败：${err.message || err}`); } finally { button.disabled = false; }
   }
   async function triggerBurst(options = {}) {
     if (!state.open || state.source !== 'thermal') return false;
@@ -297,7 +329,7 @@
     refs.detailMinimizeBtn?.setAttribute('aria-label', '缩小详情');
     requireFeature('ui').pushModalState('detail');
     const previousScroll = refs.detailBody.scrollTop; refs.detailBody.replaceChildren(view.root); refs.detailBody.scrollTop = previousScroll;
-    if (source === 'thermal') triggerBurst({ prompt: false }); else stopBurst(); load(true);
+    if (source === 'thermal' && state.thermalSensor === 'module') triggerBurst({ prompt: false }); else stopBurst(); load(true);
   }
   function stop() { const active = state.open; state.open = false; state.suspended = true; abort('analytics-closed'); if (active) stopBurst(); }
   function suspend(reason) { if (state.suspended) return; state.suspended = true; abort(reason); if (state.open) stopBurst(); }
@@ -306,7 +338,7 @@
   function resume() {
     if (!state.open || !isActive() || (!state.suspended && (state.request || state.overviewRequest || state.rankRequest || state.timer))) return;
     state.suspended = false;
-    if (state.source === 'thermal') triggerBurst({ prompt: false });
+    if (state.source === 'thermal' && state.thermalSensor === 'module') triggerBurst({ prompt: false });
     load(false);
   }
   function init() {

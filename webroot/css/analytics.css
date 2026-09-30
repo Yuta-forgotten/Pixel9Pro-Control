@@ -5,7 +5,8 @@
 .analytics-section-title,.energy-section-title{font-size:1rem;line-height:1.5;font-weight:500;color:var(--text)}
 .analytics-section-desc,.energy-section-desc{font-size:var(--font-support);line-height:1.4286;color:var(--text-2);overflow-wrap:anywhere}
 .analytics-range,.analytics-tabs,.energy-range-tabs,.range-tabs{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,4rem),1fr));gap:4px;padding:4px;border-radius:var(--radius-md);background:var(--surface-2)}
-.analytics-range[aria-label="数据类型"]{grid-template-columns:repeat(2,minmax(0,1fr))}
+.analytics-range[aria-label="数据类型"]{grid-template-columns:repeat(3,minmax(0,1fr))}
+.analytics-sensor-range{grid-template-columns:repeat(2,minmax(0,1fr));margin-top:-4px}
 .analytics-range-btn,.analytics-tab,.energy-range-btn,.range-btn{position:relative;display:flex;align-items:center;justify-content:center;min-width:48px;min-height:48px;padding:10px 6px;border:1px solid transparent;border-radius:var(--radius-sm);background:transparent;color:var(--text-2);font-size:var(--font-support);line-height:1.4286;font-weight:500;text-align:center;overflow-wrap:anywhere;transition:background-color var(--mid) var(--ease),color var(--mid) var(--ease)}
 .analytics-range-btn.active,.analytics-tab.active,[aria-selected="true"].analytics-tab,.energy-range-btn.active,.range-btn.active{background:var(--primary-container);color:var(--on-primary-container);border-color:var(--primary)}
 :where(.analytics-range-btn,.analytics-tab,.energy-range-btn,.range-btn):active{background-image:linear-gradient(color-mix(in srgb,currentColor 10%,transparent),color-mix(in srgb,currentColor 10%,transparent))}
@@ -72,6 +73,9 @@
 .analytics-actions,.analytics-export-actions,.energy-export-actions{display:flex;gap:8px;flex-wrap:wrap}
 .analytics-actions > *,.analytics-export-actions > *,.energy-export-actions .tiny-btn{flex:1 1 8rem}
 .analytics-capture-card{display:grid;gap:12px;padding:16px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface)}
+.analytics-policy-card{display:grid;gap:12px;padding:16px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface)}
+.analytics-policy-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.analytics-policy-state{font-size:var(--font-caption);line-height:1.3334;color:var(--text-2)}
 .analytics-capture-state{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:var(--font-support);line-height:1.4286;color:var(--text-2)}
 .analytics-custom-range{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,12rem),1fr));gap:12px}
 .analytics-custom-range input,.analytics-custom-range select{min-width:0;min-height:48px;padding:10px 12px;border:1px solid var(--outline);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-size:1rem;line-height:1.5}
@@ -95,5 +99,8 @@
 .energy-export-note{margin-block:12px;font-size:var(--font-support);line-height:1.4286;color:var(--text-2)}
 @media (max-width:359px){
   .analytics-range,.analytics-tabs,.energy-range-tabs,.range-tabs{grid-template-columns:repeat(auto-fit,minmax(min(100%,6rem),1fr))}
+  .analytics-range[aria-label="数据类型"]{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .analytics-range[aria-label="数据类型"] .analytics-range-btn{min-width:0;line-height:1.25;white-space:normal}
+  .analytics-policy-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
   .analytics-hero,.history-hero{padding:16px}
 }

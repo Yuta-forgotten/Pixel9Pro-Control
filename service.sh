@@ -25,6 +25,26 @@ STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
 SCHEDULER_INVENTORY_PATH="$MODDIR/.scheduler_inventory"
 SERVICE_LOCK_DIR="$MODDIR/.service_lock"
 SERVICE_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')"
+SYSTEM_HISTORY_CONFIG="${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config"
+
+system_history_config_value() {
+    _shc_key="$1"
+    _shc_default="$2"
+    _shc_value=$(sed -n "s/^${_shc_key}=//p" "$SYSTEM_HISTORY_CONFIG" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+    [ -n "$_shc_value" ] && printf '%s' "$_shc_value" || printf '%s' "$_shc_default"
+}
+
+system_history_dispatch_interval() {
+    _shc_screen="$1"
+    _shc_default=900
+    _shc_key=system_interval_off_sec
+    [ "$_shc_screen" = on ] && { _shc_default=900; _shc_key=system_interval_on_sec; }
+    _shc_value=$(system_history_config_value "$_shc_key" "$_shc_default")
+    case "$_shc_value" in ''|*[!0-9]*) _shc_value="$_shc_default" ;; esac
+    [ "$_shc_value" -ge 300 ] 2>/dev/null || _shc_value=300
+    [ "$_shc_value" -le 7200 ] 2>/dev/null || _shc_value=7200
+    printf '%s' "$_shc_value"
+}
 
 service_uptime() {
     _svc_up=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null)
@@ -812,32 +832,32 @@ case "$SWAP_MODE" in
             && vm_is_uint_range "$_custom_mfk" "$VM_MIN_FREE_KBYTES_MIN" "$VM_MIN_FREE_KBYTES_MAX" \
             && vm_is_uint_range "$_custom_wsf" "$VM_WATERMARK_SCALE_MIN" "$VM_WATERMARK_SCALE_MAX" \
             && vm_is_uint_range "$_custom_vcp" "$VM_VFS_CACHE_PRESSURE_MIN" "$VM_VFS_CACHE_PRESSURE_MAX"; then
-            if vm_write_params "$_custom_sw" "$_custom_mfk" "$_custom_wsf" "$_custom_vcp"; then
+            if vm_write_params "$_custom_sw" "$_custom_mfk" "$_custom_wsf" "$_custom_vcp" \
+                && runtime_write_value "$MODDIR/.feature_vm" optimized \
+                && runtime_write_value "$MODDIR/.vm_reboot_required" false; then
+                rm -f "$VM_REBOOT_BOOT_FILE" 2>/dev/null || true
                 log -t pixel9pro_ctrl "Swap: restored custom VM params"
             else
                 log -t pixel9pro_ctrl "WARNING: failed to restore custom VM params"
             fi
         else
-            if vm_write_params "$VM_OPT_SWAPPINESS" "$VM_OPT_MIN_FREE_KBYTES" "$VM_OPT_WATERMARK_SCALE" "$VM_OPT_VFS_CACHE_PRESSURE"; then
-                if runtime_write_value "$MODDIR/.swap_mode" optimized >/dev/null 2>&1; then
-                    log -t pixel9pro_ctrl "Swap: invalid custom params, restored optimized VM params"
-                else
-                    log -t pixel9pro_ctrl "ERROR: optimized VM params restored but swap-mode state commit failed"
-                fi
-            else
-                log -t pixel9pro_ctrl "WARNING: invalid custom params and optimized fallback failed"
-            fi
+            runtime_write_value "$MODDIR/.swap_mode" system >/dev/null 2>&1 || true
+            runtime_write_value "$MODDIR/.feature_vm" system >/dev/null 2>&1 || true
+            runtime_write_value "$MODDIR/.vm_reboot_required" true >/dev/null 2>&1 || true
+            runtime_write_value "$VM_REBOOT_BOOT_FILE" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')" >/dev/null 2>&1 || true
+            log -t pixel9pro_ctrl "WARNING: invalid custom params; normalized to system observe-only"
         fi
         ;;
     *)
-        if vm_write_params "$VM_OPT_SWAPPINESS" "$VM_OPT_MIN_FREE_KBYTES" "$VM_OPT_WATERMARK_SCALE" "$VM_OPT_VFS_CACHE_PRESSURE"; then
-            runtime_write_value "$MODDIR/.swap_mode" optimized >/dev/null 2>&1 \
-                || log -t pixel9pro_ctrl "WARNING: failed to normalize VM mode state"
-        else
-            log -t pixel9pro_ctrl "WARNING: failed to restore optimized VM params"
-        fi
+        runtime_write_value "$MODDIR/.swap_mode" system >/dev/null 2>&1 || true
+        runtime_write_value "$MODDIR/.feature_vm" system >/dev/null 2>&1 || true
+        runtime_write_value "$MODDIR/.vm_reboot_required" true >/dev/null 2>&1 || true
+        runtime_write_value "$VM_REBOOT_BOOT_FILE" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')" >/dev/null 2>&1 || true
+        log -t pixel9pro_ctrl "Swap: missing/unknown policy normalized to system observe-only"
         ;;
 esac
+runtime_write_value "$VM_POLICY_READY_FILE" true >/dev/null 2>&1 \
+    || log -t pixel9pro_ctrl "WARNING: VM policy readback gate could not be opened"
 else
     log -t pixel9pro_ctrl "WARNING: VM profile library missing, skipped ZRAM/VM restore"
 fi
@@ -1553,8 +1573,10 @@ esac
         fi
 
         # History uses the same epoch clock on both sides of a screen transition.
-        # Screen-off is a low-frequency recorder path: one Thermal HAL read per
-        # 900 seconds, with no BatteryStats or top-app collection.
+        # Screen-off remains a low-frequency recorder path. Android BatteryStats
+        # is collected at the same bounded cadence as ranking snapshots and
+        # carries the observed Doze state; if Doze kills the worker the API
+        # reports a gap instead of fabricating a zero-valued sample.
         _burst_until=$(cat "$THERMAL_BURST_FILE" 2>/dev/null | tr -d ' \n\r')
         _burst_active=0
         if [ -n "$_burst_until" ] && [ "$_burst_until" -gt "$_now" ] 2>/dev/null; then
@@ -1750,10 +1772,11 @@ esac
         _history_prev_screen="$_screen"
         # Attribution snapshots have their own persisted 15-minute throttle.
         # Do not put batterystats collection on the history/UI response path.
-        if [ "$_screen" = on ] && [ -r "$MODDIR/scripts/power_rank_collect.sh" ] \
+        _power_rank_interval_s=$(system_history_dispatch_interval "$_screen")
+        if [ -r "$MODDIR/scripts/power_rank_collect.sh" ] \
             && { [ "$_power_rank_dispatch_at" -eq 0 ] 2>/dev/null \
                 || [ $((_now - _power_rank_dispatch_at)) -ge "$_power_rank_interval_s" ] 2>/dev/null; }; then
-            sh "$MODDIR/scripts/power_rank_collect.sh" >/dev/null 2>&1 &
+            sh "$MODDIR/scripts/power_rank_collect.sh" "$_screen" "${DISPLAY_STATE:-unknown}" >/dev/null 2>&1 &
             _power_rank_dispatch_at=$_now
         fi
 
