@@ -54,16 +54,14 @@
     });
     bindTabKeys(range);
     const custom = el('div', 'analytics-custom-range');
-    const days = document.createElement('select'); days.setAttribute('aria-label', '最近天数');
-    for (let value = 1; value <= 7; value += 1) {
-      const option = el('option', '', String(value) + ' 天'); option.value = String(value); days.appendChild(option);
-    }
+    const days = document.createElement('select'); days.setAttribute('aria-label', '自定义时间窗');
+    [['1800', '30 分钟'], ['7200', '2 小时'], ['28800', '8 小时'], ['86400', '1 天'], ['259200', '3 天'], ['604800', '7 天']].forEach(([value, label]) => { const option = el('option', '', label); option.value = value; days.appendChild(option); });
     const granularity = document.createElement('select'); granularity.setAttribute('aria-label', '采样粒度');
     granularity.append(el('option', '', '按小时'), el('option', '', '按分钟'));
     granularity.options[0].value = 'hour'; granularity.options[1].value = 'minute';
     const apply = el('button', 'tiny-btn tonal', '应用范围'); apply.type = 'button';
     apply.addEventListener('click', () => callbacks.onCustom(days.value, granularity.value));
-    const daysField = el('label', 'analytics-custom-field'); daysField.append(el('span', 'analytics-section-desc', '最近'), days);
+    const daysField = el('label', 'analytics-custom-field'); daysField.append(el('span', 'analytics-section-desc', '时间窗'), days);
     const granularityField = el('label', 'analytics-custom-field'); granularityField.append(el('span', 'analytics-section-desc', '精细度'), granularity);
     custom.append(daysField, granularityField, apply);
     const stateLine = el('div', 'analytics-status'); stateLine.setAttribute('role', 'status');
@@ -125,8 +123,8 @@
     const exportWindow = el('button', 'tiny-btn tonal', '导出当前区间'); exportWindow.type = 'button';
     exportWindow.addEventListener('click', () => callbacks.onExport(exportWindow)); actions.appendChild(exportWindow);
     root.append(intro, source, sensor, range, custom, stateLine, hero, chartSection, more, capture, policy, actions);
-    view.root = root; view.sourceGroup = source; view.sensorGroup = sensor; view.rangeGroup = range; view.custom = custom; view.customDays = days; view.customGranularity = granularity; view.stateLine = stateLine; view.hero = hero;
-    view.heroKicker = heroHead.querySelector('.analytics-hero-kicker'); view.heroValue = heroHead.querySelector('.analytics-hero-value'); view.heroStatus = heroHead.querySelector('.analytics-hero-status'); view.heroBadge = heroHead.querySelector('.analytics-hero-badge'); view.summary = Array.from(summary.children); view.canvas = canvas; view.tooltip = tooltip; view.legend = legend; view.quality = quality; view.moreBody = moreBody; view.captureState = captureState; view.captureBtn = captureBtn; view.captureExport = captureExport; view.duration = duration; view.refresh = refresh; view.exportWindow = exportWindow; view.policy = { enabled, retention, cap, onInterval, offInterval, button: policyButton, state: policyState, dirty: false };
+    view.root = root; view.sourceGroup = source; view.sensorGroup = sensor; view.rangeGroup = range; view.custom = custom; view.customWindow = days; view.customGranularity = granularity; view.stateLine = stateLine; view.hero = hero;
+    view.heroKicker = heroHead.querySelector('.analytics-hero-kicker'); view.heroValue = heroHead.querySelector('.analytics-hero-value'); view.heroStatus = heroHead.querySelector('.analytics-hero-status'); view.heroBadge = heroHead.querySelector('.analytics-hero-badge'); view.summary = Array.from(summary.children); view.canvas = canvas; view.tooltip = tooltip; view.legend = legend; view.moreBody = moreBody; view.captureState = captureState; view.captureBtn = captureBtn; view.captureExport = captureExport; view.duration = duration; view.refresh = refresh; view.exportWindow = exportWindow; view.policy = { enabled, retention, cap, onInterval, offInterval, button: policyButton, state: policyState, dirty: false };
     const showPoint = (point, source) => {
       if (!point) { tooltip.hidden = true; return; }
       const date = new Date(point.ts * 1000);
@@ -154,8 +152,9 @@
     view.custom.hidden = String(rangeId) !== 'custom';
   }
 
-  function setCustomValues(view, days, granularity) {
-    view.customDays.value = String(Math.min(7, Math.max(1, Number(days) || 1)));
+  function setCustomValues(view, durationSec, granularity) {
+    const value = Number(durationSec) || 86400;
+    view.customWindow.value = String(Math.min(604800, Math.max(1800, value)));
     view.customGranularity.value = granularity === 'minute' ? 'minute' : 'hour';
   }
 

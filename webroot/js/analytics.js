@@ -1,7 +1,7 @@
 'use strict';
 (() => {
   const state = {
-    open: false, source: 'thermal', thermalSensor: 'module', rangeId: '30', customDays: 1, customGranularity: 'hour',
+    open: false, source: 'thermal', thermalSensor: 'module', rangeId: '30', customSeconds: 86400, customDays: 1, customGranularity: 'hour',
     view: null, cache: new Map(), rankCache: new Map(), requestId: 0, request: null,
     overviewRequest: null, rankRequest: null, rankGeneration: 0, timer: null,
     summary: null, ranking: { status: 'idle' }, rankRefreshRequested: false, policy: null,
@@ -25,7 +25,7 @@
   };
 
   function key() {
-    return `${state.source}:${state.thermalSensor}:${state.rangeId}:${state.customDays}:${state.customGranularity}:${effectiveGranularity()}`;
+    return `${state.source}:${state.thermalSensor}:${state.rangeId}:${state.customSeconds}:${state.customGranularity}:${effectiveGranularity()}`;
   }
   function query(path, params) {
     const search = new URLSearchParams(params);
@@ -34,7 +34,7 @@
   function rangeBounds() {
     if (state.rangeId === 'custom') {
       const endTs = Math.floor(Date.now() / 1000);
-      return { startTs: endTs - state.customDays * 86400, endTs, granularity: state.source === 'system' ? 'raw' : state.customGranularity };
+      return { startTs: endTs - state.customSeconds, endTs, granularity: state.source === 'system' ? 'raw' : state.customGranularity };
     }
     const minutes = model().rangeFor(state.rangeId).minutes;
     const endTs = Math.floor(Date.now() / 1000);
@@ -97,11 +97,11 @@
     state.view = viewFeature().create({
       onSource: (source) => { state.source = source; if (source !== 'thermal' || state.thermalSensor !== 'module') stopBurst(); load(false); },
       onThermalSensor: (sensor) => { state.thermalSensor = sensor; if (state.source === 'thermal' && sensor === 'module') triggerBurst({ prompt: false }); else stopBurst(); load(false); },
-      onRange: (rangeId) => { state.rangeId = rangeId; if (rangeId === 'custom') { viewFeature().setCustomValues(state.view, state.customDays, state.customGranularity); viewFeature().promptCustom(state.view); return; } load(false); },
+      onRange: (rangeId) => { state.rangeId = rangeId; if (rangeId === 'custom') { viewFeature().setCustomValues(state.view, state.customSeconds, state.customGranularity); viewFeature().promptCustom(state.view); return; } load(false); },
       onCustom: (days, granularity) => {
-        const parsedDays = Math.floor(Number(days));
-        if (!Number.isFinite(parsedDays) || parsedDays < 1 || parsedDays > 7 || !['hour', 'minute'].includes(granularity)) { showToast('自定义范围请选择 1–7 天，并选择小时或分钟粒度'); return; }
-        state.customDays = parsedDays; state.customGranularity = granularity; state.rangeId = 'custom'; load(false);
+        const parsedSeconds = Math.floor(Number(days));
+        if (!Number.isFinite(parsedSeconds) || parsedSeconds < 1800 || parsedSeconds > 604800 || !['hour', 'minute'].includes(granularity)) { showToast('自定义范围请选择 30 分钟至 7 天，并选择小时或分钟粒度'); return; }
+        state.customSeconds = parsedSeconds; state.customDays = Math.max(1, Math.ceil(parsedSeconds / 86400)); state.customGranularity = granularity; state.rangeId = 'custom'; load(false);
       },
       onCapture: async (button, duration) => {
         if (!policyEnabled()) { showToast('后台记录已关闭，请先在“后台记录与存储”中开启'); return; }
@@ -195,14 +195,14 @@
     return capture().history({ startTs: params.start_ts, endTs: params.end_ts, granularity: bounds.granularity });
   }
   function rankKey(bounds, stats) {
-    const windowId = state.rangeId === 'custom' ? `custom-${state.customDays}d` : `range-${state.rangeId}`;
+    const windowId = state.rangeId === 'custom' ? `custom-${state.customSeconds}s` : `range-${state.rangeId}`;
     const step = bounds.granularity === 'hour' ? 3600 : bounds.granularity === 'minute' ? 60 : 1;
     const start = Math.floor(Number(bounds.startTs) / step) * step;
     const end = Math.floor(Number(bounds.endTs) / step) * step;
     return `${state.source}|${windowId}|${start}|${end}|${bounds.granularity || 'raw'}`;
   }
   function rankWindow(bounds, stats) {
-    const windowLabel = state.rangeId === 'custom' ? `最近 ${state.customDays} 天` : model().rangeFor(state.rangeId).label;
+    const windowLabel = state.rangeId === 'custom' ? `最近 ${model().formatDuration(state.customSeconds)}` : model().rangeFor(state.rangeId).label;
     const ratio = Number.isFinite(Number(stats?.backendCoverageRatio)) ? Number(stats.backendCoverageRatio) * 100 : stats?.coveragePct;
     return { label: windowLabel, granularity: bounds.granularity, coveragePct: ratio, validSamples: stats?.backendValidSamples ?? stats?.validCount ?? stats?.count };
   }
