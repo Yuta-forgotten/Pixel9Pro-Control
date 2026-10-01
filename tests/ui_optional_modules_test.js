@@ -141,9 +141,8 @@ assert([...uecapPayloadSource.matchAll(/^\s*(_[A-Za-z0-9_]+)=/gm)].every((match)
 assert(!/\b_p_full\b/.test(uecapOutsidePayloadSource), 'UECap manifest scratch must not escape its resolver');
 const uecapDependencies = [...uecapProfile.matchAll(/^\s*\.\s+"\$MODDIR\/([^"\r\n]+)"/gm)].map((match) => match[1]);
 assert((uecapProfile.match(/^\s*(?:\.|source)\s+/gm) || []).length === uecapDependencies.length
-  && uecapDependencies.length === 2 && new Set(uecapDependencies).size === 2
-  && uecapDependencies.includes('scripts/slot_transaction_lib.sh')
-  && uecapDependencies.includes('scripts/audit_log_lib.sh'), 'UECap must use only its declared slot and audit dependencies');
+  && uecapDependencies.length === 1
+  && uecapDependencies[0] === 'scripts/audit_log_lib.sh', 'UECap must use only its declared audit dependency');
 for (const dependency of uecapDependencies) {
   const dependencySource = fs.readFileSync(path.join(root, dependency), 'utf8');
   assert(!/\b_p_full\b/.test(dependencySource), `UECap manifest scratch collides with ${dependency}`);
@@ -169,24 +168,38 @@ assert(thermalCustomOffsets.includes(Number(shellLiteral(thermalLib, 'THERMAL_DE
 assert(thermalCgi.includes('THERMAL_PROFILE_LIB="$MODDIR/scripts/thermal_profile.sh"')
   && thermalCgi.includes('[ -r "$THERMAL_PROFILE_LIB" ] && . "$THERMAL_PROFILE_LIB"')
   && thermalCgi.includes('thermal profile library not found'), 'thermal CGI must require the shared thermal profile library');
-assert(thermalCgi.includes('parse_thermal_offset'), 'thermal CGI must strictly parse the JSON offset body');
-assert(!thermalCgi.includes('sed \'s/.*"offset"'), 'thermal CGI must not use greedy offset extraction');
-assert(thermalCgi.includes('vendor.thermal.config') && thermalCgi.includes('thermal_info_config_lpm.json'), 'thermal CGI must follow the HAL-selected config');
+assert(thermalCgi.includes('parse_thermal_json()')
+  && thermalCgi.includes('parse_thermal_json "$JSON_BODY" || json_error')
+  && thermalCgi.indexOf('parse_thermal_json "$JSON_BODY" || json_error') < thermalCgi.indexOf('_action=$(thermal_json_field action)')
+  && thermalCgi.includes('offset=$(thermal_json_field offset)')
+  && !thermalCgi.includes('parse_offset()'), 'thermal CGI must validate the whole typed JSON request before dispatch');
+assert(!/sed[^\n]*"offset"/.test(thermalCgi), 'thermal CGI must not use greedy offset extraction');
+const selectedThermalConfig = shellFunction(thermalPolicyLib, 'thermal_policy_selected_config');
+assert(selectedThermalConfig.includes('getprop vendor.thermal.config')
+  && selectedThermalConfig.includes('printf \'%s\' thermal_info_config.json')
+  && thermalCgi.includes('thermal_policy_validate_selected_config')
+  && thermalCgi.includes('selected_thermal_config_unsupported'), 'thermal CGI must follow and validate the HAL-selected config through its shared owner');
 assert(customize.includes('vendor.thermal.config') && customize.includes('不支持的 Thermal HAL 配置'), 'installer must fail closed for unknown HAL config');
 assert(customize.includes('LPM 是顶层增量配置') || customize.includes('LPM is a top-level overlay'), 'installer must preserve LPM include semantics');
-const thermalConfigStart = thermalCgi.indexOf('case "$selected_config" in');
-const thermalConfigEnd = thermalCgi.indexOf('\nesac', thermalConfigStart);
-assert(thermalConfigStart >= 0 && thermalConfigEnd > thermalConfigStart, 'thermal CGI must validate the selected HAL config');
-const thermalConfigBranch = thermalCgi.slice(thermalConfigStart, thermalConfigEnd);
+const thermalConfigBranch = shellFunction(thermalPolicyLib, 'thermal_policy_validate_selected_config');
 assert(thermalConfigBranch.includes('thermal_info_config_lpm.json)')
-  && thermalConfigBranch.includes('[ -r "/vendor/etc/$selected_config" ]')
-  && thermalConfigBranch.includes("*) json_error '409 Conflict'")
-  && thermalCgi.includes('OUT_JSON="$THERMAL_OVERLAY_FILE"')
-  && thermalCgi.includes('thermal_policy_capture_stock /vendor/etc/thermal_info_config.json "$STOCK_JSON"')
+  && thermalConfigBranch.includes('[ -r "/vendor/etc/$_tpl_config" ]')
+  && thermalConfigBranch.includes("grep -q 'thermal_info_config.json'")
+  && thermalConfigBranch.includes('*) return 1')
+  && thermalCgi.includes('thermal_policy_stock_provenance_valid "$STOCK_JSON"')
+  && thermalCgi.includes('thermal_policy_profile_cache_valid "$DEVICE" "$STOCK_JSON"')
   && thermalCgi.includes('thermal_generate_config "$STOCK_JSON" "$TS_CANDIDATE" "$offset"')
-  && thermalPolicyLib.includes('THERMAL_OVERLAY_FILE="$THERMAL_POLICY_ROOT/system/vendor/etc/thermal_info_config.json"'), 'LPM custom thermal must verify the selected delta and rebuild only the included base from validated stock');
+  && thermalCgi.includes('mv "$TS_SOURCE_TMP" "$THERMAL_SOURCE_FILE"')
+  && thermalPolicyLib.includes('THERMAL_SOURCE_FILE="$THERMAL_POLICY_ROOT/system/vendor/etc/thermal_info_config.json"')
+  && thermalPolicyLib.includes('THERMAL_OVERLAY_FILE="$THERMAL_SOURCE_FILE"'), 'LPM custom thermal must verify the selected delta and stage only the included base from validated device stock');
 assert(customize.includes('timeout 30') && customize.includes('保留当前默认值'), 'installer volume prompts must have a bounded timeout');
-assert(thermalCgi.includes('thermal_hal_effective_matches') && thermalCgi.includes('pending_reboot'), 'thermal CGI must distinguish service restart from HAL effective state');
+const thermalStateEmitter = shellFunction(thermalCgi, 'thermal_emit_state');
+assert(thermalStateEmitter.includes('thermal_policy_transaction_pending')
+  && thermalStateEmitter.includes('THERMAL_TX_CACHE_BOOT_ID')
+  && thermalStateEmitter.includes('pending_reboot')
+  && thermalStateEmitter.includes('elif thermal_policy_readback_check "$_ts_policy"; then')
+  && thermalCgi.includes('"restarted":false')
+  && thermalCgi.includes('thermal_emit_staged_state "$policy" "$offset"'), 'thermal CGI must distinguish staged desired state from same-boot effective readback');
 assert(app.includes('thermalContractRetryAttempts') && app.includes('thermalContractRetryTimer'), 'thermal UI must retry a transient contract read without a permanent blank card list');
 assert(!app.includes('state.contract = null;'), 'thermal UI must not erase a previously valid contract on a transient read failure');
 const info = fs.readFileSync(path.join(root, 'webroot', 'cgi-bin', 'info.sh'), 'utf8');
@@ -235,10 +248,14 @@ assert(schedulerBootLib.includes('module "$_sbm_apd_action"') && schedulerBootLi
 assert(schedulerReconcile.includes('SBM_MAX_WRITE_ATTEMPTS') && schedulerReconcile.includes('sr_verify_profile_stable'), 'scheduler reconcile must bound writes and verify stability');
 assert(schedulerGuard.includes('retry_budget_exhausted') && schedulerGuard.includes('STG_TERMINAL=yes'), 'scheduler transition guard must latch a final retry result');
 assert(schedulerGuard.includes('STG_TERMINAL_FILE') && schedulerGuard.includes('stg_commit_terminal_bounded'), 'scheduler transition guard must preserve terminal success/failure through a fallback channel');
-assert(service.includes('scheduler_reconcile.sh" health')
-  && service.includes('CPU_PROFILE_HEALTH_INTERVAL_S')
+const foregroundBlocks = [...service.matchAll(/^        if \[ "\$_screen" = "on" \]; then[\s\S]*?^        fi$/gm)].map((match) => match[0]);
+assert((service.match(/scheduler_reconcile\.sh" health/g) || []).length === 1
+  && foregroundBlocks.some((block) => block.includes('scheduler_reconcile.sh" health')
+    && block.includes('CPU_PROFILE_HEALTH_INTERVAL_S')
+    && block.includes('[ "$CPU_PROFILE_AVAILABLE" -eq 1 ]')
+    && block.includes('[ "$_prev_screen" = "off" ] && _health_due=1'))
   && service.includes('CPU profile contract unavailable')
-  && !service.includes('SBM_HEALTH_INTERVAL_S'), 'service must run the independent low-frequency read-only health worker from the CPU contract');
+  && !service.includes('SBM_HEALTH_INTERVAL_S'), 'service must observe scheduler health only while screen-on at the shared low-frequency cadence');
 assert(app.includes('refs.schedulerHealthRow.hidden = false'), 'scheduler health UI must not be coupled to optional UGT visibility');
 assert(app.includes('检查延后 · 调度切换中') && app.includes('检查延后 · 外部调度接管中'), 'deferred scheduler health must explain transition and external-owner states');
 assert(schedulerOwnerLib.includes('SO_TRANSITION_LOCK_INIT_GRACE_S') && schedulerOwnerLib.includes('so_reclaim_transition_lock()'), 'owner lock contract must distinguish initialization grace from bounded stale reclaim');

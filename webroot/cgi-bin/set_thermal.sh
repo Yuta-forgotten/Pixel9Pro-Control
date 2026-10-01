@@ -22,10 +22,46 @@ case "$DEVICE" in caiman|komodo) ;; *) json_error '500 Internal Server Error' 'i
 STOCK_JSON=$(thermal_policy_snapshot_path "$DEVICE") \
     || json_error '500 Internal Server Error' 'cannot resolve thermal stock snapshot'
 
-parse_policy() { printf '%s\n' "$1" | sed -n 's/.*"policy"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p'; }
-parse_offset() { printf '%s\n' "$1" | sed -n 's/.*"offset"[[:space:]]*:[[:space:]]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p'; }
-parse_action() { printf '%s\n' "$1" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p'; }
-parse_pending_id() { printf '%s\n' "$1" | sed -n 's/.*"pending_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'; }
+parse_thermal_json() {
+    # This endpoint accepts only a flat, typed request. Validate the complete
+    # body before any mutation; a numeric prefix must never become an offset.
+    THERMAL_JSON_FIELDS=$(printf '%s' "$1" | awk '
+    function ws() { sub(/^[ \t\r\n]+/, "", s) }
+    function fail() { invalid=1; exit 1 }
+    { s=s $0 "\n" }
+    END {
+        if (invalid) exit 1
+        ws(); if (substr(s,1,1)!="{") fail()
+        s=substr(s,2); ws()
+        while (substr(s,1,1)!="}") {
+            if (!match(s,/^"[a-z_]+"/)) fail()
+            key=substr(s,2,RLENGTH-2); s=substr(s,RLENGTH+1); ws()
+            if (seen[key]++ || substr(s,1,1)!=":") fail()
+            if (key !~ /^(policy|offset|action|pending_id)$/) fail()
+            s=substr(s,2); ws()
+            if (key=="offset") {
+                if (!match(s,/^-?(0|[1-9][0-9]*)/)) fail()
+                value=substr(s,1,RLENGTH); s=substr(s,RLENGTH+1)
+            } else {
+                if (!match(s,/^"[A-Za-z0-9_.-]+"/)) fail()
+                value=substr(s,2,RLENGTH-2); s=substr(s,RLENGTH+1)
+            }
+            fields=fields key "\t" value "\n"; ws()
+            if (substr(s,1,1)=="}") break
+            if (substr(s,1,1)!=",") fail()
+            s=substr(s,2); ws(); if (substr(s,1,1)=="}") fail()
+        }
+        s=substr(s,2); ws(); if (s!="") fail()
+        if (!seen["policy"] && !seen["offset"] && !seen["action"]) fail()
+        if (seen["action"] && (seen["policy"] || seen["offset"])) fail()
+        if (seen["pending_id"] && !seen["action"]) fail()
+        printf "%s", fields
+    }') || return 1
+}
+
+thermal_json_field() {
+    printf '%s\n' "$THERMAL_JSON_FIELDS" | awk -F '\t' -v key="$1" '$1==key { print $2; exit }'
+}
 
 thermal_emit_contract() { thermal_print_ui_contract_json; }
 
@@ -214,11 +250,12 @@ require_json_post
 require_token
 acquire_lock thermal
 read_json_body 512
-_action=$(parse_action "$JSON_BODY")
+parse_thermal_json "$JSON_BODY" || json_error '400 Bad Request' 'invalid thermal JSON request'
+_action=$(thermal_json_field action)
 
 if [ "$_action" = cancel_pending ]; then
     thermal_policy_transaction_load
-    _requested_id=$(parse_pending_id "$JSON_BODY")
+    _requested_id=$(thermal_json_field pending_id)
     _current_id="$THERMAL_TX_CACHE_ID"
     _tx_phase="$THERMAL_TX_CACHE_PHASE"
     _tx_boot="$THERMAL_TX_CACHE_BOOT_ID"
@@ -276,6 +313,20 @@ if [ "$_action" = repair_system ]; then
 fi
 [ -z "$_action" ] || { release_lock; json_error '400 Bad Request' 'invalid thermal action'; }
 
+policy=$(thermal_json_field policy)
+offset=$(thermal_json_field offset)
+[ -n "$policy" ] || { [ -n "$offset" ] && policy=custom; }
+thermal_policy_is_valid "$policy" || json_error '400 Bad Request' 'invalid thermal policy'
+if [ "$policy" = custom ]; then
+    thermal_is_valid_offset "$offset" || json_error '400 Bad Request' 'invalid thermal offset'
+    [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ] \
+        || json_error '409 Conflict' 'mount_backend_unavailable'
+    thermal_policy_validate_selected_config \
+        || json_error '409 Conflict' 'selected_thermal_config_unsupported'
+else
+    offset=0
+fi
+
 if thermal_policy_transaction_pending; then
     thermal_policy_transaction_load
     _pending_id="$THERMAL_TX_CACHE_ID"
@@ -307,20 +358,6 @@ if [ "$_legacy_effective_context" = "$THERMAL_SOURCE_CONTEXT" ] \
     elif [ "$_legacy_policy" = system ] && [ "$_legacy_source_hash" != none ]; then
         thermal_policy_remove_overlay >/dev/null 2>&1 || true
     fi
-fi
-
-policy=$(parse_policy "$JSON_BODY")
-offset=$(parse_offset "$JSON_BODY")
-[ -n "$policy" ] || { [ -n "$offset" ] && policy=custom; }
-thermal_policy_is_valid "$policy" || json_error '400 Bad Request' 'invalid thermal policy'
-if [ "$policy" = custom ]; then
-    thermal_is_valid_offset "$offset" || json_error '400 Bad Request' 'invalid thermal offset'
-    [ "$THERMAL_MOUNT_BACKEND" = hybrid_mount ] \
-        || json_error '409 Conflict' 'mount_backend_unavailable'
-    thermal_policy_validate_selected_config \
-        || json_error '409 Conflict' 'selected_thermal_config_unsupported'
-else
-    offset=0
 fi
 
 if [ "$THERMAL_MOUNT_BACKEND" = metamodule_content ]; then
