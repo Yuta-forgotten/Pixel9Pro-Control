@@ -107,6 +107,10 @@ case "${REQUEST_METHOD:-GET}" in
         valid_uint_range "$module_on" 60 3600 || { release_lock; json_error '400 Bad Request' 'module_interval_on_sec must be 60..3600'; }
         valid_uint_range "$module_off" 900 7200 || { release_lock; json_error '400 Bad Request' 'module_interval_off_sec must be 900..7200'; }
         case "$enabled" in true|1) enabled=1 ;; false|0) enabled=0 ;; *) release_lock; json_error '400 Bad Request' 'analytics_enabled must be boolean' ;; esac
+        if [ "$enabled" -eq 1 ] 2>/dev/null && [ "$(sed -n 's/^status=//p' "$MODDIR/.telemetry/state" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')" = running ]; then
+            release_lock
+            json_error '409 Conflict' 'foreground_session_active'
+        fi
         if [ "$enabled" -eq 1 ] 2>/dev/null && [ "$(cat "$MODDIR/.idle_isolate_mode" 2>/dev/null | tr -d ' \r\n\t')" = on ]; then
             release_lock
             json_error '409 Conflict' 'foreground_only_active'

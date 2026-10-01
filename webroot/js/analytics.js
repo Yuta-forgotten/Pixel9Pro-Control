@@ -104,7 +104,7 @@
         state.customSeconds = parsedSeconds; state.customDays = Math.max(1, Math.ceil(parsedSeconds / 86400)); state.customGranularity = granularity; state.rangeId = 'custom'; load(false);
       },
       onCapture: async (button, duration) => {
-        if (!policyEnabled()) { showToast('后台记录已关闭，请先在“后台记录与存储”中开启'); return; }
+        if (policyEnabled()) { showToast('后台记录正在运行；请先开启前台模式，再启动临时诊断'); return; }
         button.disabled = true;
         try {
           const active = capture().getSession();

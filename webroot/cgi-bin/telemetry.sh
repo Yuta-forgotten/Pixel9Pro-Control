@@ -226,12 +226,12 @@ emit_service_array() {
 
 emit_history() {
     history_bounds
-    if [ "$TELEMETRY_FEATURE_ENABLED" != on ]; then
+    read_session_fields
+    if [ "$TELEMETRY_FEATURE_ENABLED" != on ] && [ "${_tg_requested_valid:-0}" -eq 0 ]; then
         json_headers
         printf '{"ok":true,"schema":%s,"status":"disabled","quality":"disabled","reason":"feature_disabled","source":"service_history","window":{"start_ts":%s,"end_ts":%s,"coverage_ratio":0,"samples":0,"valid_samples":0,"invalid_samples":0,"gap_count":0,"quality":"disabled"},"power":[],"thermal":[]}\n' "$TELEMETRY_SCHEMA" "$(telemetry_num "$TG_START_FILTER")" "$(telemetry_num "$TG_END_FILTER")"
         return 0
     fi
-    read_session_fields
     [ "${_tg_requested_valid:-0}" -eq 1 ] && [ -z "$TG_DIR" ] \
         && json_error '404 Not Found' 'telemetry session not found'
     # History without an explicit session_id is the persistent service ledger.
@@ -405,7 +405,7 @@ export_session() {
 
 handle_start() {
     acquire_lock telemetry
-    [ "$TELEMETRY_FEATURE_ENABLED" = on ] || { release_lock; json_error '409 Conflict' 'feature_disabled'; }
+    [ "$TELEMETRY_FEATURE_ENABLED" != on ] || { release_lock; json_error '409 Conflict' 'background_observation_active'; }
     read_session_fields
     if [ "$TG_STATUS" = running ] || [ "$TG_STATUS" = stopping ]; then
         telemetry_pid_alive "$TG_PID" "$TG_PID_START" && json_error '409 Conflict' 'telemetry session already running'

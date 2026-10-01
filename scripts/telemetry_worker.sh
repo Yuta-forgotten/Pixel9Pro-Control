@@ -58,8 +58,7 @@ telemetry_worker_finish() {
     _tw_finalized=1
     _tw_now=$(telemetry_now)
     telemetry_read_screen
-    [ "$(telemetry_feature_enabled)" = on ] && [ "$TL_SCREEN" = on ] \
-        && telemetry_capture_batterystats "$_tw_dir" end >/dev/null 2>&1 || true
+    [ "$TL_SCREEN" = on ] && telemetry_capture_batterystats "$_tw_dir" end >/dev/null 2>&1 || true
     telemetry_worker_update "$1" "$_tw_now" "$2" || true
 }
 
@@ -97,15 +96,10 @@ _tw_jsonl=$(telemetry_jsonl_file "$_tw_dir")
 : > "$_tw_jsonl" 2>/dev/null || exit 4
 chmod 600 "$_tw_csv" "$_tw_jsonl" 2>/dev/null
 telemetry_read_screen
-[ "$(telemetry_feature_enabled)" = on ] && [ "$TL_SCREEN" = on ] \
-    && telemetry_capture_batterystats "$_tw_dir" start >/dev/null 2>&1 || true
+[ "$TL_SCREEN" = on ] && telemetry_capture_batterystats "$_tw_dir" start >/dev/null 2>&1 || true
 telemetry_worker_update running 0 started || exit 4
 
 while :; do
-    if [ "$(telemetry_feature_enabled)" != on ]; then
-        telemetry_worker_finish stopped feature_disabled
-        break
-    fi
     telemetry_state_load "$TELEMETRY_STATE" || { _tw_finalized=1; exit 0; }
     _tw_current="${TL_STATE_SESSION_ID:-}"
     [ "$_tw_current" = "$_tw_id" ] || { _tw_finalized=1; exit 0; }
