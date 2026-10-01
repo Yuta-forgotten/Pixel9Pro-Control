@@ -10,6 +10,14 @@ TELEMETRY_SESSIONS="$TELEMETRY_ROOT/sessions"
 TELEMETRY_DEFAULT_MAX_BYTES=4194304
 TELEMETRY_MAX_BYTES_LIMIT=16777216
 
+telemetry_feature_enabled() {
+    _tl_config="${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config"
+    case "$(sed -n 's/^analytics_enabled=//p' "$_tl_config" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')" in
+        0|false|off|no) printf off ;;
+        *) printf on ;;
+    esac
+}
+
 telemetry_now() {
     _tl_now=$(date +%s 2>/dev/null || printf '0')
     case "$_tl_now" in ''|*[!0-9]*) _tl_now=0 ;; esac
@@ -304,7 +312,7 @@ telemetry_read_thermal() {
     TL_SOC=$(telemetry_extract_temp soc_therm)
     TL_CHARGING=$(telemetry_extract_temp charging_therm)
     TL_SPEAKER=$(telemetry_extract_temp btmspkr_therm)
-    TL_THERMAL_STATUS=$(dumpsys thermalservice 2>/dev/null \
+    TL_THERMAL_STATUS=$(timeout -k 2 15 dumpsys thermalservice 2>/dev/null \
         | sed -n 's/.*Thermal Status:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1 | tr -d ' \r\n')
     case "$TL_THERMAL_STATUS" in ''|*[!0-9]*) TL_THERMAL_STATUS="" ;; esac
 }
@@ -324,7 +332,7 @@ telemetry_capture_batterystats() {
     case "$_tl_name" in start|end) ;; *) return 1 ;; esac
     # Keep only aggregate/UID estimate lines; raw dumpsys/logcat and command
     # arguments never enter a telemetry export.
-    dumpsys batterystats 2>/dev/null | awk '
+    timeout -k 2 15 dumpsys batterystats 2>/dev/null | awk '
         /Estimated power use/ || /^  UID / || /Screen off discharge:/ || /Screen on discharge:/ { print }
     ' | head -n 80 > "$_tl_dir/batterystats_${_tl_name}.txt" 2>/dev/null
     [ -f "$_tl_dir/batterystats_${_tl_name}.txt" ] || return 1

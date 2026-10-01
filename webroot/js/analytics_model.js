@@ -1,10 +1,9 @@
 'use strict';
 (() => {
   const RANGES = Object.freeze([
-    { id: '15', minutes: 15, label: '15 分钟', shortLabel: '15 分' },
     { id: '30', minutes: 30, label: '30 分钟', shortLabel: '30 分' },
-    { id: '60', minutes: 60, label: '60 分钟', shortLabel: '60 分' },
-    { id: '720', minutes: 720, label: '12 小时', shortLabel: '12 小时' },
+    { id: '120', minutes: 120, label: '2 小时', shortLabel: '2 小时' },
+    { id: '480', minutes: 480, label: '8 小时', shortLabel: '8 小时' },
     { id: '1440', minutes: 1440, label: '1 天', shortLabel: '1 天' },
     { id: '4320', minutes: 4320, label: '3 天', shortLabel: '3 天' },
     { id: '10080', minutes: 10080, label: '7 天', shortLabel: '7 天' },

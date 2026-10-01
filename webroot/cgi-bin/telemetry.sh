@@ -109,10 +109,10 @@ emit_status() {
         read_session_fields
     fi
     if [ -z "$TG_ID" ]; then
-        printf '{"ok":true,"schema":%s,"session":null}\n' "$TELEMETRY_SCHEMA"
+        printf '{"ok":true,"schema":%s,"feature_enabled":%s,"session":null}\n' "$TELEMETRY_SCHEMA" "$(json_bool "$TELEMETRY_FEATURE_ENABLED")"
         return 0
     fi
-    printf '{"ok":true,"schema":%s,"session":' "$TELEMETRY_SCHEMA"
+    printf '{"ok":true,"schema":%s,"feature_enabled":%s,"session":' "$TELEMETRY_SCHEMA" "$(json_bool "$TELEMETRY_FEATURE_ENABLED")"
     emit_session_json
     printf '}\n'
 }
@@ -226,6 +226,11 @@ emit_service_array() {
 
 emit_history() {
     history_bounds
+    if [ "$TELEMETRY_FEATURE_ENABLED" != on ]; then
+        json_headers
+        printf '{"ok":true,"schema":%s,"status":"disabled","quality":"disabled","reason":"feature_disabled","source":"service_history","window":{"start_ts":%s,"end_ts":%s,"coverage_ratio":0,"samples":0,"valid_samples":0,"invalid_samples":0,"gap_count":0,"quality":"disabled"},"power":[],"thermal":[]}\n' "$TELEMETRY_SCHEMA" "$(telemetry_num "$TG_START_FILTER")" "$(telemetry_num "$TG_END_FILTER")"
+        return 0
+    fi
     read_session_fields
     [ "${_tg_requested_valid:-0}" -eq 1 ] && [ -z "$TG_DIR" ] \
         && json_error '404 Not Found' 'telemetry session not found'
@@ -267,7 +272,7 @@ emit_history() {
         _tg_stats=$(awk -F, '
             $1 ~ /^[0-9]+$/ { n++; if ($27 == 1) valid++; if ($27 == 0) invalid++; if ($22 ~ /^[0-9]+$/ && $22 > 0) gaps++ }
             END { printf "%d|%d|%d|%d", n,valid,invalid,gaps }
-        ' "$_tg_file" 2>/dev/null)
+        ' "$_tg_csv" 2>/dev/null)
         _tg_samples=${_tg_stats%%|*}; _tg_rest=${_tg_stats#*|}
         _tg_valid=${_tg_rest%%|*}; _tg_rest=${_tg_rest#*|}
         _tg_invalid=${_tg_rest%%|*}; _tg_gaps=${_tg_rest#*|}
@@ -334,12 +339,12 @@ write_session_json() {
     _tg_stats=$(awk -F, '
         $1 ~ /^[0-9]+$/ { n++; if ($27 == 1) valid++; if ($27 == 0) invalid++; if ($22 ~ /^[0-9]+$/ && $22 > 0) gaps++ }
         END { printf "%d|%d|%d|%d", n,valid,invalid,gaps }
-    ' "$_tg_dir/samples.csv" 2>/dev/null)
+    ' "$_tg_csv" 2>/dev/null)
     _tg_samples=${_tg_stats%%|*}; _tg_rest=${_tg_stats#*|}
     _tg_valid=${_tg_rest%%|*}; _tg_rest=${_tg_rest#*|}
     _tg_invalid=${_tg_rest%%|*}; _tg_gaps=${_tg_rest#*|}
     case "$_tg_samples:$_tg_valid:$_tg_invalid:$_tg_gaps" in *[!0-9:]*) _tg_samples=0; _tg_valid=0; _tg_invalid=0; _tg_gaps=0 ;; esac
-    _tg_th_stats=$(awk -F, '{ n++; if ($26 == 1) valid++; if ($26 == 0) invalid++; if ($22 ~ /^[0-9]+$/ && $22 > 0) gaps++ } END { printf "%d|%d|%d|%d", n,valid,invalid,gaps }' "$_tg_dir/samples.csv" 2>/dev/null)
+    _tg_th_stats=$(awk -F, '{ n++; if ($26 == 1) valid++; if ($26 == 0) invalid++; if ($22 ~ /^[0-9]+$/ && $22 > 0) gaps++ } END { printf "%d|%d|%d|%d", n,valid,invalid,gaps }' "$_tg_csv" 2>/dev/null)
     _tg_th_samples=${_tg_th_stats%%|*}; _tg_rest=${_tg_th_stats#*|}
     _tg_th_valid=${_tg_rest%%|*}; _tg_rest=${_tg_rest#*|}
     _tg_th_invalid=${_tg_rest%%|*}; _tg_th_gaps=${_tg_rest#*|}
@@ -400,6 +405,7 @@ export_session() {
 
 handle_start() {
     acquire_lock telemetry
+    [ "$TELEMETRY_FEATURE_ENABLED" = on ] || { release_lock; json_error '409 Conflict' 'feature_disabled'; }
     read_session_fields
     if [ "$TG_STATUS" = running ] || [ "$TG_STATUS" = stopping ]; then
         telemetry_pid_alive "$TG_PID" "$TG_PID_START" && json_error '409 Conflict' 'telemetry session already running'
@@ -465,6 +471,7 @@ handle_stop() {
 }
 
 require_token
+TELEMETRY_FEATURE_ENABLED=$(telemetry_feature_enabled)
 case "$REQUEST_METHOD:${QUERY_STRING:-}" in
     GET:*action=status*|GET:) emit_status ;;
     GET:*action=history*) emit_history ;;

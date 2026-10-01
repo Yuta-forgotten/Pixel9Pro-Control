@@ -7,6 +7,13 @@ MODDIR="$PIXEL9PRO_MODDIR"
 STATE_ROOT="${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}"
 . "$MODDIR/webroot/cgi-bin/_common.sh"
 require_loopback
+_history_enabled=$(sed -n 's/^analytics_enabled=//p' "${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+case "$_history_enabled" in 0|false|off|no)
+    json_headers
+    printf '{"ok":true,"schema":2,"status":"disabled","quality":"disabled","reason":"feature_disabled","source":"android_batterystats","coverage_sec":0,"coverage_ratio":0,"valid_samples":0,"raw_samples":0,"gap_count":0,"gaps":[],"power":[]}\n'
+    exit 0
+    ;;
+esac
 _events_ready=0
 for _event_file in "$STATE_ROOT/system_history/events"/*; do
     if [ -s "$_event_file" ] && grep -q 'events=[1-9][0-9]*' "$_event_file" 2>/dev/null; then

@@ -4,7 +4,7 @@
     open: false, source: 'thermal', thermalSensor: 'module', rangeId: '30', customDays: 1, customGranularity: 'hour',
     view: null, cache: new Map(), rankCache: new Map(), requestId: 0, request: null,
     overviewRequest: null, rankRequest: null, rankGeneration: 0, timer: null,
-    summary: null, ranking: { status: 'idle' }, rankRefreshRequested: false,
+    summary: null, ranking: { status: 'idle' }, rankRefreshRequested: false, policy: null,
     historyFingerprint: '', activeKey: '', selectedBounds: null, lastCaptureStatus: '', detailsDue: true, lastDetailsAt: 0, observer: null, suspended: false
   };
   const core = () => requireFeature('core');
@@ -42,7 +42,32 @@
   }
   function effectiveGranularity() {
     if (state.rangeId === 'custom') return state.customGranularity;
-    return model().rangeFor(state.rangeId).minutes <= 60 ? 'minute' : 'hour';
+    return model().rangeFor(state.rangeId).minutes <= 480 ? 'minute' : 'hour';
+  }
+  function policyEnabled() {
+    if (!state.policy) return false;
+    const value = state.policy?.analytics_enabled;
+    return value !== false && value !== 0 && value !== 'false' && value !== '0';
+  }
+  function disabledStats() {
+    const stats = state.source === 'thermal' ? model().temperatureStats([]) : model().powerStats([]);
+    stats.policy = state.policy;
+    return stats;
+  }
+  async function loadPolicy() {
+    if (!API.historyPolicy) return null;
+    try {
+      const data = await apiFetch(API.historyPolicy, { method: 'GET', timeoutMs: 8000, priority: 'interactive', scope: 'analytics.policy.read' });
+      if (data?.ok === false) throw new Error(data.error || data.reason || '后台策略读取失败');
+      state.policy = data.policy || data;
+      if (!policyEnabled()) abort('analytics-disabled');
+      updateView(true);
+      return state.policy;
+    } catch (err) {
+      state.policy = null;
+      showToast(`后台记录策略读取失败：${err.message || err}`);
+      return null;
+    }
   }
   function cancelSlot(slot, reason) {
     const controller = state[slot];
@@ -79,6 +104,7 @@
         state.customDays = parsedDays; state.customGranularity = granularity; state.rangeId = 'custom'; load(false);
       },
       onCapture: async (button, duration) => {
+        if (!policyEnabled()) { showToast('后台记录已关闭，请先在“后台记录与存储”中开启'); return; }
         button.disabled = true;
         try {
           const active = capture().getSession();
@@ -140,6 +166,8 @@
       const coverage = finiteMeta(meta.coverage_ratio ?? meta.coverage);
       stats.backendCoverageRatio = coverage === null ? null : (coverage > 1 ? coverage / 100 : coverage);
       stats.backendQuality = String(meta.quality || '');
+      stats.backendStatus = String(data?.status || '');
+      stats.backendReason = String(data?.reason || meta.reason || '');
       stats.dataRevision = revisionBase(data?.data_revision ?? data?.history_revision ?? meta.data_revision ?? meta.history_revision ?? '');
       stats.rankRevision = revisionBase(data?.rank_revision ?? data?.power_rank_revision ?? '');
       stats.historySource = source === 'system' || state.thermalSensor === 'battery' ? 'android' : 'module';
@@ -149,11 +177,11 @@
     if (source === 'thermal') {
       const points = model().clip(model().normalizeThermal(data).filter((point) => point.sensor === (state.thermalSensor === 'battery' ? 'battery' : 'module')), bounds.startTs, bounds.endTs);
       const stats = model().temperatureStats(points, options);
-      return { stats: annotate(stats), status: stats.count < 2 ? (state.thermalSensor === 'battery' ? '系统电池温度记录不足；缺测保持为空。' : '模块机身温度记录不足；息屏/待机期间缺测保持为空。') : '' };
+      return { stats: annotate(stats), status: data?.status === 'disabled' ? '后台历史记录已关闭；温控控制仍可继续工作。' : stats.count < 2 ? (state.thermalSensor === 'battery' ? '系统电池温度记录不足；缺测保持为空。' : '模块机身温度记录不足；息屏/待机期间缺测保持为空。') : '' };
     }
     const points = model().clip(model().normalizePower(data), bounds.startTs, bounds.endTs, true);
     const stats = model().powerStats(points, options);
-    return { stats: annotate(stats), status: stats.count < 2 || !stats.series.length ? '当前区间没有足够的有效放电数据；缺测不会补零。' : '' };
+    return { stats: annotate(stats), status: data?.status === 'disabled' ? '后台历史记录已关闭；重新打开后才会生成系统归因。' : stats.count < 2 || !stats.series.length ? '当前区间没有足够的有效放电数据；缺测不会补零。' : '' };
   }
   async function fetchSource(bounds) {
     const params = { action: 'history' };
@@ -179,7 +207,7 @@
     return { label: windowLabel, granularity: bounds.granularity, coveragePct: ratio, validSamples: stats?.backendValidSamples ?? stats?.validCount ?? stats?.count };
   }
   async function fetchEnergySummary(bounds, stats, forceRank = false, contextKey = state.activeKey) {
-    if (!isPowerSource()) return;
+    if (!policyEnabled()) return;
     if (state.source === 'power') {
       try {
         const fast = await request(API.energyFast, 4000, 'overviewRequest');
@@ -192,7 +220,7 @@
     const cacheKey = rankKey(bounds, stats);
     const cached = state.rankCache.get(cacheKey);
     const window = rankWindow(bounds, stats);
-    if (!state.open || !isActive() || state.activeKey !== contextKey || !isPowerSource()) return;
+    if (!state.open || !isActive() || state.activeKey !== contextKey) return;
     const revisionChanged = state.source === 'system' && cached && stats?.rankRevision && cached.revision && String(stats.rankRevision) !== String(cached.revision);
     const cacheExpired = cached && cached.updatedAt && Date.now() - cached.updatedAt >= 120000;
     const retryableUnavailable = cached && ['unavailable', 'error'].includes(cached.status) && (cacheExpired || revisionChanged);
@@ -207,22 +235,31 @@
     updateView();
     try {
       const full = await request(query(API.powerRank || '/cgi-bin/power_rank.sh', { start_ts: bounds.startTs, end_ts: bounds.endTs, granularity: bounds.granularity }), 16000, 'rankRequest');
-      if (!state.open || !isActive() || generation !== state.rankGeneration || !isPowerSource() || !full) return;
+      if (!state.open || !isActive() || generation !== state.rankGeneration || !full) return;
       if (full.ok !== true) throw new Error(full.error || full.reason || '后台未返回有效排行');
       const rankCoverage = Number(full.coverage_ratio);
-      const rankMeta = { label: `${new Date(bounds.startTs * 1000).toLocaleString()} — ${new Date(bounds.endTs * 1000).toLocaleString()}`, granularity: bounds.granularity, coveragePct: Number.isFinite(rankCoverage) ? (rankCoverage > 1 ? rankCoverage : rankCoverage * 100) : null, validSamples: full.valid_samples ?? null, gapCount: Array.isArray(full.gaps) ? full.gaps.length : null };
+      const rankMeta = { label: `${new Date(bounds.startTs * 1000).toLocaleString()} — ${new Date(bounds.endTs * 1000).toLocaleString()}`, granularity: bounds.granularity, coveragePct: Number.isFinite(rankCoverage) ? (rankCoverage > 1 ? rankCoverage : rankCoverage * 100) : null, validSamples: full.valid_samples ?? null, gapCount: Array.isArray(full.gaps) ? full.gaps.length : null, reason: full.reason || '', attributionState: full.attribution_state || '', windowProven: full.window_proven !== false };
       const result = { status: full.status || 'ready', summary: full, window: rankMeta, cacheKey, updatedAt: Number(full.updated_at) > 0 ? Number(full.updated_at) * 1000 : Date.now(), revision: revisionBase(full.data_revision) };
       state.rankCache.set(cacheKey, result);
       state.ranking = result;
       updateView();
     } catch (err) {
-      if (!state.open || !isActive() || generation !== state.rankGeneration || !isPowerSource()) return;
+      if (!state.open || !isActive() || generation !== state.rankGeneration) return;
       state.ranking = { status: 'error', error: err?.message || String(err), window, cacheKey };
       updateView();
     }
   }
   async function load(force = false, forceRank = false) {
     if (!state.open || !isActive()) return null;
+    if (!policyEnabled()) {
+      abort('analytics-disabled');
+      state.summary = null;
+      state.ranking = { status: 'unavailable', summary: { reason: 'feature_disabled' } };
+      const cacheKey = key();
+      state.cache.set(cacheKey, { stats: disabledStats(), status: '后台历史记录已关闭；仅保留策略读取、导出和重新开启入口。' });
+      updateView(true);
+      return false;
+    }
     const view = ensureView(); const cacheKey = key(); const requestedBounds = rangeBounds();
     const selectionChanged = state.activeKey !== cacheKey;
     if (selectionChanged) {
@@ -244,9 +281,10 @@
     state.rankRefreshRequested = false;
     if (!force && state.cache.has(cacheKey)) {
       updateView();
-      if (isPowerSource()) {
+      {
         fetchEnergySummary(rankBounds, state.cache.get(cacheKey).stats, requestedRank, cacheKey);
         const previousCaptureStatus = state.lastCaptureStatus;
+        if (!policyEnabled()) return true;
         capture().status().then((captureData) => {
           const currentCaptureStatus = captureData?.session?.status || '';
           state.lastCaptureStatus = currentCaptureStatus;
@@ -264,8 +302,8 @@
       const normalized = normalizeResponse(data, historyBounds);
       state.cache.set(cacheKey, normalized); updateView();
       if (normalized.stats.count < 2) viewFeature().empty(view, state.source, state.rangeId, normalized.status, state.thermalSensor);
-      if (isPowerSource()) fetchEnergySummary(rankBounds, normalized.stats, requestedRank, cacheKey);
-      if (isPowerSource()) {
+      fetchEnergySummary(rankBounds, normalized.stats, requestedRank, cacheKey);
+      if (policyEnabled() && isPowerSource()) {
         const previousCaptureStatus = state.lastCaptureStatus;
         capture().status().then((captureData) => {
           const currentCaptureStatus = captureData?.session?.status || '';
@@ -276,7 +314,7 @@
           } else updateView();
         }).catch(() => {});
       }
-      if (state.source === 'thermal') capture().status().catch(() => {}).then(() => updateView());
+      if (policyEnabled() && state.source === 'thermal') capture().status().catch(() => {}).then(() => updateView());
     } catch (err) {
       if (requestId !== state.requestId) return null;
       if (isCancelled(err)) return null;
@@ -304,18 +342,19 @@
     if (!API.historyPolicy) { showToast('后台未提供历史策略接口'); return; }
     button.disabled = true;
     try {
-      const body = { action: 'configure', retention_days: Number(policy.retention_days), max_bytes: Number(policy.max_bytes), system_interval_on_sec: Number(policy.system_interval_on_sec), system_interval_off_sec: Number(policy.system_interval_off_sec) };
+      const body = { action: 'configure', analytics_enabled: policy.analytics_enabled === true, retention_days: Number(policy.retention_days), max_bytes: Number(policy.max_bytes), module_interval_on_sec: 60, module_interval_off_sec: Math.max(900, Number(policy.module_interval_off_sec) || 900), system_interval_on_sec: Math.max(300, Number(policy.system_interval_on_sec)), system_interval_off_sec: Math.max(900, Number(policy.system_interval_off_sec) || 900) };
       const result = await apiFetch(API.historyPolicy, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), timeoutMs: 8000, priority: 'interactive', scope: 'analytics.policy' });
       if (result?.ok === false) throw new Error(result.error || result.reason || '策略未生效');
       const readback = await apiFetch(API.historyPolicy, { method: 'GET', timeoutMs: 8000, priority: 'interactive', scope: 'analytics.policy.readback' });
       if (readback?.ok === false || (!readback?.policy && !readback?.phase)) throw new Error(readback?.error || readback?.reason || '后台未返回策略 readback');
       const applied = readback.policy || readback;
       const phase = applied.phase || result?.phase || result?.policy?.phase || 'staged';
-      showToast(phase === 'effective' ? '历史策略已生效' : `历史策略已保存（${phase}）`); state.detailsDue = true; await load(true, true);
+      state.policy = applied; if (state.view?.policy) state.view.policy.dirty = false;
+      showToast(phase === 'effective' ? '后台记录设置已生效' : `后台记录设置已保存（${phase}）`); state.detailsDue = true; if (policyEnabled()) await load(true, true); else { abort('analytics-disabled'); updateView(true); }
     } catch (err) { showToast(`策略保存失败：${err.message || err}`); } finally { button.disabled = false; }
   }
   async function triggerBurst(options = {}) {
-    if (!state.open || state.source !== 'thermal') return false;
+    if (!state.open || state.source !== 'thermal' || !policyEnabled()) return false;
     if (!requireFeature('auth').hasToken()) return false;
     try { await apiFetch(API.thermalBurst, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'start', duration_sec: 300 }), timeoutMs: 4000, priority: 'interactive', scope: 'analytics.burst' }); return true; } catch (err) { return isCancelled(err) ? null : false; }
   }
@@ -329,7 +368,12 @@
     refs.detailMinimizeBtn?.setAttribute('aria-label', '缩小详情');
     requireFeature('ui').pushModalState('detail');
     const previousScroll = refs.detailBody.scrollTop; refs.detailBody.replaceChildren(view.root); refs.detailBody.scrollTop = previousScroll;
-    if (source === 'thermal' && state.thermalSensor === 'module') triggerBurst({ prompt: false }); else stopBurst(); load(true);
+    stopBurst();
+    loadPolicy().then(() => {
+      if (!state.open) return;
+      if (policyEnabled() && source === 'thermal' && state.thermalSensor === 'module') triggerBurst({ prompt: false });
+      load(true);
+    });
   }
   function stop() { const active = state.open; state.open = false; state.suspended = true; abort('analytics-closed'); if (active) stopBurst(); }
   function suspend(reason) { if (state.suspended) return; state.suspended = true; abort(reason); if (state.open) stopBurst(); }

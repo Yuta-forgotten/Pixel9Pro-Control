@@ -58,7 +58,8 @@ telemetry_worker_finish() {
     _tw_finalized=1
     _tw_now=$(telemetry_now)
     telemetry_read_screen
-    [ "$TL_SCREEN" = on ] && telemetry_capture_batterystats "$_tw_dir" end >/dev/null 2>&1 || true
+    [ "$(telemetry_feature_enabled)" = on ] && [ "$TL_SCREEN" = on ] \
+        && telemetry_capture_batterystats "$_tw_dir" end >/dev/null 2>&1 || true
     telemetry_worker_update "$1" "$_tw_now" "$2" || true
 }
 
@@ -96,10 +97,15 @@ _tw_jsonl=$(telemetry_jsonl_file "$_tw_dir")
 : > "$_tw_jsonl" 2>/dev/null || exit 4
 chmod 600 "$_tw_csv" "$_tw_jsonl" 2>/dev/null
 telemetry_read_screen
-[ "$TL_SCREEN" = on ] && telemetry_capture_batterystats "$_tw_dir" start >/dev/null 2>&1 || true
+[ "$(telemetry_feature_enabled)" = on ] && [ "$TL_SCREEN" = on ] \
+    && telemetry_capture_batterystats "$_tw_dir" start >/dev/null 2>&1 || true
 telemetry_worker_update running 0 started || exit 4
 
 while :; do
+    if [ "$(telemetry_feature_enabled)" != on ]; then
+        telemetry_worker_finish stopped feature_disabled
+        break
+    fi
     telemetry_state_load "$TELEMETRY_STATE" || { _tw_finalized=1; exit 0; }
     _tw_current="${TL_STATE_SESSION_ID:-}"
     [ "$_tw_current" = "$_tw_id" ] || { _tw_finalized=1; exit 0; }
@@ -120,14 +126,25 @@ while :; do
 
     telemetry_read_screen
     telemetry_read_battery
-    telemetry_read_thermal
-    telemetry_read_odpm
-    telemetry_collect_top
+    # Screen-off telemetry is a low-frequency sysfs recorder. Do not call
+    # Thermal HAL, BatteryStats, ODPM or top-app/process enumeration from the
+    # Doze/AOD path; those Binder and proc walks can race suspend preparation.
+    TL_SKIN=""; TL_BATTERY=""; TL_SOC=""; TL_CHARGING=""; TL_SPEAKER=""
+    TL_THERMAL_STATUS=""; TL_ODPM_MODEM=""; TL_ODPM_RFFE=""; TL_TOP=""
+    if [ "$TL_SCREEN" = on ]; then
+        telemetry_read_thermal
+        telemetry_read_odpm
+        telemetry_collect_top
+    fi
 
     _tw_sample_quality=ok
     _tw_valid=1
     _tw_gap_sec=0
     _tw_quality_field=ok
+    [ "$TL_SCREEN" = on ] || {
+        _tw_sample_quality=screen_off_sample
+        _tw_quality_field=screen_off_sample
+    }
     _tw_uptime=$(telemetry_uptime)
     _tw_expected_interval=$_tw_interval_off
     [ "$TL_SCREEN" = on ] && _tw_expected_interval=$_tw_interval_on
@@ -249,7 +266,7 @@ while :; do
     fi
     telemetry_worker_update running 0 sample || { telemetry_worker_finish failed state_write; break; }
 
-    _tw_interval=600
+    _tw_interval=900
     [ "$_tw_screen" = on ] && _tw_interval=60
     sleep "$_tw_interval"
 done

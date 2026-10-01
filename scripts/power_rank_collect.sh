@@ -6,6 +6,7 @@
 MODDIR="${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}"
 ROOT="$MODDIR/.power_rank"
 SNAPSHOTS="$ROOT/snapshots"
+LEDGER="$ROOT/ledger.tsv"
 LOCK="$ROOT/collect.lock"
 LAST="$ROOT/last_collect_ts"
 PARSER="$MODDIR/scripts/power_rank_parse.awk"
@@ -19,6 +20,26 @@ screen_state="${1:-unknown}"
 doze_state="${2:-unknown}"
 case "$screen_state" in on|off|unknown) ;; *) screen_state=unknown ;; esac
 case "$doze_state" in interactive|doze|off|unknown) ;; *) doze_state=unknown ;; esac
+
+# The history/rank feature is opt-out. A disabled feature must return before
+# creating a lock, touching the collector throttle, or invoking Binder.
+_feature_enabled=$(sed -n 's/^analytics_enabled=//p' "$HISTORY_CONFIG" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+case "$_feature_enabled" in 0|false|off|no) exit 0 ;; esac
+
+# BatteryStats dump is a synchronous Binder operation. It is never allowed to
+# start from Doze/AOD, and it is bounded so a screen transition cannot leave a
+# collector holding framework work while suspend is preparing.
+[ "$screen_state" = on ] && [ "$doze_state" = interactive ] || exit 0
+[ -r "$MODDIR/scripts/display_state_lib.sh" ] || exit 3
+. "$MODDIR/scripts/display_state_lib.sh" 2>/dev/null || exit 3
+display_state_read >/dev/null 2>&1 || exit 0
+[ "$(display_state_legacy_screen 2>/dev/null)" = on ] \
+    && [ "${DISPLAY_STATE_INTERACTIVE:-no}" = yes ] || exit 0
+
+COLLECT_TIMEOUT="${POWER_RANK_DUMPSYS_TIMEOUT_S:-8}"
+case "$COLLECT_TIMEOUT" in ''|*[!0-9]*) COLLECT_TIMEOUT=8 ;; esac
+[ "$COLLECT_TIMEOUT" -ge 5 ] 2>/dev/null || COLLECT_TIMEOUT=5
+[ "$COLLECT_TIMEOUT" -le 15 ] 2>/dev/null || COLLECT_TIMEOUT=15
 INTERVAL=900
 RETENTION=604800
 MAX_BYTES=33554432
@@ -59,14 +80,26 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     _lock_now=$(date +%s 2>/dev/null || printf 0)
     _lock_mtime=$(stat -c %Y "$LOCK" 2>/dev/null || printf 0)
     case "$_lock_now:$_lock_mtime" in *[!0-9:]*) _lock_now=0; _lock_mtime=0 ;; esac
-    if [ "$_lock_mtime" -gt 0 ] && [ $((_lock_now - _lock_mtime)) -gt $((INTERVAL * 2 + 120)) ] 2>/dev/null; then
+    _lock_pid=$(cat "$LOCK/pid" 2>/dev/null | tr -d ' \r\n\t')
+    _lock_start=$(cat "$LOCK/start_ticks" 2>/dev/null | tr -d ' \r\n\t')
+    _lock_boot=$(cat "$LOCK/boot_id" 2>/dev/null | tr -d ' \r\n\t')
+    _lock_live=0
+    [ -n "$_lock_pid" ] && kill -0 "$_lock_pid" 2>/dev/null && _lock_live=1
+    if [ "$_lock_boot" != "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n\t')" ]; then _lock_live=0; fi
+    if [ "$_lock_live" -eq 0 ] || { [ "$_lock_mtime" -gt 0 ] && [ $((_lock_now - _lock_mtime)) -gt $((INTERVAL * 2 + 120)) ] 2>/dev/null; }; then
+        rm -f "$LOCK/pid" "$LOCK/start_ticks" "$LOCK/boot_id" 2>/dev/null
         rmdir "$LOCK" 2>/dev/null || true
         mkdir "$LOCK" 2>/dev/null || exit 0
     else
         exit 0
     fi
 fi
-cleanup() { rmdir "$LOCK" 2>/dev/null || rm -rf "$LOCK" 2>/dev/null; }
+_collector_boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n\t')
+_collector_start_ticks=$(sed 's/^.*) //' "/proc/$$/stat" 2>/dev/null | awk '{print $20}')
+printf '%s\n' "$$" > "$LOCK/pid" 2>/dev/null || exit 4
+printf '%s\n' "$_collector_start_ticks" > "$LOCK/start_ticks" 2>/dev/null || exit 4
+printf '%s\n' "$_collector_boot_id" > "$LOCK/boot_id" 2>/dev/null || exit 4
+cleanup() { rm -f "$LOCK/pid" "$LOCK/start_ticks" "$LOCK/boot_id" 2>/dev/null; rmdir "$LOCK" 2>/dev/null; }
 trap 'collector_rc=$?; [ "$collector_rc" -eq 0 ] || { [ -n "${now:-}" ] && write_history_receipt failed 0; }; cleanup; exit "$collector_rc"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -79,6 +112,29 @@ write_history_receipt() {
         printf 'schema=1\nlast_attempt_ts=%s\nlast_success_ts=%s\nlast_result=%s\n' "$now" "$_hr_success_ts" "$_hr_result"
         printf 'screen=%s\ndoze=%s\nretention_days=%s\nmax_bytes=%s\ninterval_sec=%s\n' "$screen_state" "$doze_state" "$retention_days" "$MAX_BYTES" "$INTERVAL"
     } > "$_hr_tmp" 2>/dev/null && mv "$_hr_tmp" "$HISTORY_RECEIPT" 2>/dev/null || rm -f "$_hr_tmp" 2>/dev/null
+}
+
+rebuild_ledger() {
+    _ledger_tmp="${LEDGER}.tmp.$$"
+    : > "$_ledger_tmp" 2>/dev/null || return 1
+    _ledger_count=0
+    for _ledger_file in "$SNAPSHOTS"/*; do
+        [ -f "$_ledger_file" ] || continue
+        cat "$_ledger_file" >> "$_ledger_tmp" 2>/dev/null || {
+            rm -f "$_ledger_tmp" 2>/dev/null
+            return 1
+        }
+        _ledger_count=$((_ledger_count + 1))
+    done
+    [ "$_ledger_count" -gt 0 ] 2>/dev/null || {
+        rm -f "$_ledger_tmp" 2>/dev/null
+        return 0
+    }
+    mv "$_ledger_tmp" "$LEDGER" 2>/dev/null || {
+        rm -f "$_ledger_tmp" 2>/dev/null
+        return 1
+    }
+    return 0
 }
 
 now=$(date +%s 2>/dev/null || printf 0)
@@ -100,7 +156,7 @@ trap 'exit 143' TERM
 
 # --charged is the supported cumulative BatteryStats view. A failed or
 # incomplete dump is never turned into a zero snapshot.
-dumpsys batterystats --charged --checkin > "$raw" 2>/dev/null || exit 7
+timeout -k 2 "$COLLECT_TIMEOUT" dumpsys batterystats --charged --checkin > "$raw" 2>/dev/null || exit 7
 [ -s "$raw" ] || exit 8
 awk -v boot_id="$boot_id" -v capture_ts="$now" -v screen="$screen_state" -v doze="$doze_state" -f "$PARSER" "$raw" > "$parsed" 2>/dev/null || exit 9
 
@@ -113,12 +169,16 @@ final="$SNAPSHOTS/${now}_${boot_id}"
 [ ! -e "$final" ] || exit 0
 mv "$parsed" "$final" 2>/dev/null || exit 12
 printf '%s\n' "$now" > "$LAST" 2>/dev/null || exit 13
+rebuild_ledger || exit 15
 
 # Android BatteryStats owns the durable history buffer. Capture it separately
 # from the charged attribution snapshot; a failed history dump never creates a
 # synthetic sample and does not invalidate the attribution snapshot above.
 history_result=history_failed
-if dumpsys batterystats --checkin --history > "$history_raw" 2>/dev/null \
+display_state_read >/dev/null 2>&1 || exit 14
+[ "$(display_state_legacy_screen 2>/dev/null)" = on ] \
+    && [ "${DISPLAY_STATE_INTERACTIVE:-no}" = yes ] || exit 0
+if timeout -k 2 "$COLLECT_TIMEOUT" dumpsys batterystats --checkin --history > "$history_raw" 2>/dev/null \
     && [ -s "$history_raw" ] \
     && awk -f "$HISTORY_PARSER" "$history_raw" > "$history_parsed" 2>/dev/null \
     && grep -q '^meta[[:space:]]' "$history_parsed" 2>/dev/null; then
@@ -189,4 +249,8 @@ for file in "$HISTORY_ROOT/cache"/*; do
     rm -f "$file" 2>/dev/null
     history_bytes=$((history_bytes - file_bytes))
 done
+if ! rebuild_ledger; then
+    write_history_receipt ledger_rebuild_failed 0
+    exit 15
+fi
 exit 0

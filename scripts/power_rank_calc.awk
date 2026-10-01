@@ -1,16 +1,22 @@
-# Reduce sorted snapshot ledgers to window-local cumulative deltas.
-# Input records: meta<TAB>boot<TAB>capture<TAB>start_clock, app, component.
-# Output records are a small stable protocol consumed by power_rank.sh.
+# Reduce ordered snapshot ledgers to exact window-local cumulative deltas.
+# A cumulative counter is only attributable when both endpoint snapshots are
+# inside the requested window and have the same boot and BatteryStats clock.
+# A pre-window baseline is reported as reference metadata, never prorated into
+# the selected total.
 
 BEGIN {
     FS = "\t"
     OFS = "\t"
-    have = 0
     snapshot_count = 0
     valid_intervals = 0
     coverage = 0
     updated = 0
     identity_gaps = 0
+    observed_start = 0
+    observed_end = 0
+    reference_start = 0
+    reference_end = 0
+    reference_seen = 0
 }
 
 function clear_current(  key) {
@@ -31,11 +37,21 @@ function quote_field(value,  out) {
     return substr(out, 1, 160)
 }
 
-function pair_delta(  key, delta, dt, in_window, same_identity, reason) {
+function pair_delta(  key, delta, dt, in_window, reason) {
     if (!have_prev) return
     dt = cur_ts - prev_ts
-    in_window = (prev_ts >= start_ts && cur_ts <= end_ts && cur_ts > prev_ts)
+    in_window = (prev_ts <= end_ts && cur_ts >= start_ts && cur_ts > prev_ts)
     if (!in_window) return
+    # A pair crossing the selected start is a reference-only baseline. Its
+    # cumulative delta spans unknown time outside the requested window and
+    # must never be divided by elapsed time or added to selected totals.
+    if (prev_ts < start_ts) {
+        reference_seen = 1
+        reference_start = prev_ts
+        reference_end = cur_ts
+        return
+    }
+    if (cur_ts > end_ts) return
     if (prev_boot != cur_boot || prev_clock != cur_clock) {
         identity_gaps++
         gap_n++; gap_start[gap_n] = prev_ts; gap_end[gap_n] = cur_ts; gap_reason[gap_n] = "identity_changed"
@@ -80,14 +96,22 @@ $1 == "meta" {
         clear_current()
         cur_boot = $2; cur_ts = $3 + 0; cur_clock = $4
         have_current = 1
-        if (cur_ts >= start_ts && cur_ts <= end_ts) snapshot_count++
+        if (cur_ts >= start_ts && cur_ts <= end_ts) {
+            snapshot_count++
+            if (!observed_start || cur_ts < observed_start) observed_start = cur_ts
+            if (cur_ts > observed_end) observed_end = cur_ts
+        }
         if (cur_ts > updated) updated = cur_ts
         next
     }
     clear_current()
     cur_boot = $2; cur_ts = $3 + 0; cur_clock = $4
     have_current = 1
-    if (cur_ts >= start_ts && cur_ts <= end_ts) snapshot_count++
+    if (cur_ts >= start_ts && cur_ts <= end_ts) {
+        snapshot_count++
+        observed_start = cur_ts
+        observed_end = cur_ts
+    }
     if (cur_ts > updated) updated = cur_ts
     next
 }
@@ -111,7 +135,7 @@ END {
     if (valid) reason = identity_gaps ? "gaps_or_counter_reset" : "ok"
     else if (valid_intervals > 0) reason = "no_power_items"
     else reason = "need_two_same_identity_snapshots"
-    printf "meta\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\n", status, quality, reason, coverage, valid_intervals, snapshot_count, updated, updated
+    printf "meta\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", status, quality, reason, coverage, valid_intervals, snapshot_count, updated, updated, observed_start, observed_end, reference_seen, reference_start, reference_end
     for (i = 1; i <= gap_n; i++) printf "gap\t%d\t%d\t%s\n", gap_start[i], gap_end[i], gap_reason[i]
     for (key in app_total) if (app_total[key] > 0) printf "app\t%s\t%s\t%.6f\n", key, app_label[key], app_total[key]
     for (key in component_total) if (component_total[key] > 0) printf "component\t%s\t%s\t%.6f\n", key, component_label[key], component_total[key]
