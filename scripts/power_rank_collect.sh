@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # Capture one immutable Android BatteryStats snapshot.
-# The service may call this on every worker cycle, including screen-off; the
-# script self-throttles and records the display/Doze state supplied by caller.
+# Interactive service cycles export Android's retained standby history. The
+# script also enforces the screen gate and throttles independently of callers.
 
 MODDIR="${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}"
 ROOT="$MODDIR/.power_rank"
@@ -19,6 +19,10 @@ screen_state="${1:-unknown}"
 doze_state="${2:-unknown}"
 case "$screen_state" in on|off|unknown) ;; *) screen_state=unknown ;; esac
 case "$doze_state" in interactive|doze|off|unknown) ;; *) doze_state=unknown ;; esac
+
+# Automatic exports are interactive-only. Android retains the standby history
+# itself; off, AOD and an unknown state must not start heavy Binder queries.
+[ "$screen_state" = on ] && [ "$doze_state" != doze ] && [ "$doze_state" != off ] || exit 0
 INTERVAL=900
 RETENTION=604800
 MAX_BYTES=33554432
@@ -100,7 +104,7 @@ trap 'exit 143' TERM
 
 # --charged is the supported cumulative BatteryStats view. A failed or
 # incomplete dump is never turned into a zero snapshot.
-dumpsys batterystats --charged --checkin > "$raw" 2>/dev/null || exit 7
+timeout -k 2 15 dumpsys -t 10 batterystats --charged --checkin > "$raw" 2>/dev/null || exit 7
 [ -s "$raw" ] || exit 8
 awk -v boot_id="$boot_id" -v capture_ts="$now" -v screen="$screen_state" -v doze="$doze_state" -f "$PARSER" "$raw" > "$parsed" 2>/dev/null || exit 9
 
@@ -118,7 +122,7 @@ printf '%s\n' "$now" > "$LAST" 2>/dev/null || exit 13
 # from the charged attribution snapshot; a failed history dump never creates a
 # synthetic sample and does not invalidate the attribution snapshot above.
 history_result=history_failed
-if dumpsys batterystats --checkin --history > "$history_raw" 2>/dev/null \
+if timeout -k 2 15 dumpsys -t 10 batterystats --checkin --history > "$history_raw" 2>/dev/null \
     && [ -s "$history_raw" ] \
     && awk -f "$HISTORY_PARSER" "$history_raw" > "$history_parsed" 2>/dev/null \
     && grep -q '^meta[[:space:]]' "$history_parsed" 2>/dev/null; then

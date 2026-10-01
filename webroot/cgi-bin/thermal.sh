@@ -73,12 +73,19 @@ case "$QUERY_STRING" in *fresh=1*) _fresh=1 ;; esac
 
 cache_has_valid_skin() {
     _file="$1"
-    awk '
-        /"zone":"VIRTUAL-SKIN"/ {
-            line = $0
-            if (match(line, /"temp":[-0-9]+/)) {
-                temp = substr(line, RSTART + 7, RLENGTH - 7) + 0
-                if (temp >= 10000 && temp <= 85000) ok = 1
+    # The builder emits flat zone objects; bind the temperature to its object
+    # rather than relying on HAL/sysfs sensor ordering in the array.
+    awk -F '[{}]' '
+        {
+            for (i = 1; i <= NF; i++) {
+                object = $i
+                if (object !~ /"zone"[[:space:]]*:[[:space:]]*"VIRTUAL-SKIN"/) continue
+                if (match(object, /"temp"[[:space:]]*:[[:space:]]*-?[0-9]+[[:space:]]*(,|$)/)) {
+                    value = substr(object, RSTART, RLENGTH)
+                    sub(/^"temp"[[:space:]]*:[[:space:]]*/, "", value)
+                    temp = value + 0
+                    if (temp >= 10000 && temp <= 85000) ok = 1
+                }
             }
         }
         END { exit ok ? 0 : 1 }

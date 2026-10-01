@@ -249,8 +249,8 @@ while :; do
     fi
     telemetry_worker_update running 0 sample || { telemetry_worker_finish failed state_write; break; }
 
-    _tw_interval=600
-    [ "$_tw_screen" = on ] && _tw_interval=60
+    _tw_interval=$_tw_interval_off
+    [ "$_tw_screen" = on ] && _tw_interval=$_tw_interval_on
     sleep "$_tw_interval"
 done
 

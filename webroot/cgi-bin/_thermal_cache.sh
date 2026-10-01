@@ -6,6 +6,10 @@
 ##############################################################
 
 build_thermal_json() {
+    _thermal_source="${1:-hal}"
+    THERMAL_BUILD_JSON='[]'
+    THERMAL_BUILD_STATUS=""
+    case "$_thermal_source" in hal|sysfs) ;; *) return 1 ;; esac
     out="["
     sep=""
     seen=""
@@ -22,7 +26,12 @@ build_thermal_json() {
         seen="${seen}|${_tz_name}|"
     }
 
-    _thermal_dump=$(dumpsys thermalservice 2>/dev/null)
+    _thermal_dump=""
+    if [ "$_thermal_source" = hal ]; then
+        _thermal_dump=$(timeout -k 2 15 dumpsys -t 10 thermalservice 2>/dev/null) || _thermal_dump=""
+        THERMAL_BUILD_STATUS=$(printf '%s\n' "$_thermal_dump" \
+            | sed -n 's/.*Thermal Status:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)
+    fi
     _hal_pairs=$(printf '%s\n' "$_thermal_dump" | awk '
         /Current temperatures from HAL:/ { in_current = 1; next }
         /Current cooling devices from HAL:/ { if (in_current) exit }
@@ -43,7 +52,7 @@ build_thermal_json() {
         append_zone "$name" "$_mc"
     done
 
-    WANT="soc_therm charging_therm btmspkr_therm"
+    WANT="VIRTUAL-SKIN soc_therm charging_therm btmspkr_therm"
     for zone_dir in /sys/class/thermal/thermal_zone*; do
         [ -f "$zone_dir/type" ] || continue
         type=$(cat "$zone_dir/type" 2>/dev/null)
@@ -51,7 +60,7 @@ build_thermal_json() {
         found=0
         for t in $WANT; do [ "$type" = "$t" ] && found=1 && break; done
         [ $found -eq 0 ] && continue
-        temp=$(cat "$zone_dir/temp" 2>/dev/null || echo 0)
+        temp=$(cat "$zone_dir/temp" 2>/dev/null) || continue
         append_zone "$type" "$temp"
     done
 
@@ -61,5 +70,6 @@ build_thermal_json() {
         append_zone "battery" "$bat_mc"
     fi
 
-    printf '%s]' "$out"
+    THERMAL_BUILD_JSON="${out}]"
+    printf '%s' "$THERMAL_BUILD_JSON"
 }

@@ -288,10 +288,15 @@ telemetry_read_odpm() {
 
 telemetry_read_thermal() {
     TL_SKIN=""; TL_BATTERY=""; TL_SOC=""; TL_CHARGING=""; TL_SPEAKER=""
+    TL_THERMAL_STATUS=""
     _tl_cache="${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_thermal_cache.sh"
     if [ -r "$_tl_cache" ]; then
         . "$_tl_cache" 2>/dev/null
-        TL_JSON=$(build_thermal_json 2>/dev/null)
+        _tl_thermal_source=sysfs
+        [ "${TL_SCREEN:-unknown}" = on ] && _tl_thermal_source=hal
+        build_thermal_json "$_tl_thermal_source" >/dev/null 2>&1
+        TL_JSON="$THERMAL_BUILD_JSON"
+        TL_THERMAL_STATUS="$THERMAL_BUILD_STATUS"
     else
         TL_JSON='[]'
     fi
@@ -304,8 +309,6 @@ telemetry_read_thermal() {
     TL_SOC=$(telemetry_extract_temp soc_therm)
     TL_CHARGING=$(telemetry_extract_temp charging_therm)
     TL_SPEAKER=$(telemetry_extract_temp btmspkr_therm)
-    TL_THERMAL_STATUS=$(dumpsys thermalservice 2>/dev/null \
-        | sed -n 's/.*Thermal Status:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1 | tr -d ' \r\n')
     case "$TL_THERMAL_STATUS" in ''|*[!0-9]*) TL_THERMAL_STATUS="" ;; esac
 }
 
@@ -322,11 +325,21 @@ telemetry_capture_batterystats() {
     _tl_dir="$1"
     _tl_name="$2"
     case "$_tl_name" in start|end) ;; *) return 1 ;; esac
+    [ "${TL_SCREEN:-unknown}" = on ] || return 1
     # Keep only aggregate/UID estimate lines; raw dumpsys/logcat and command
-    # arguments never enter a telemetry export.
-    dumpsys batterystats 2>/dev/null | awk '
+    # arguments never enter a telemetry export. Check the dump before filtering:
+    # a successful pipeline tail must not hide a failed or timed-out Binder call.
+    _tl_dump=$(timeout -k 2 15 dumpsys -t 10 batterystats 2>/dev/null) || { _tl_dump=""; return 1; }
+    _tl_snapshot_tmp="$_tl_dir/.batterystats_${_tl_name}.$$"
+    printf '%s\n' "$_tl_dump" | awk '
         /Estimated power use/ || /^  UID / || /Screen off discharge:/ || /Screen on discharge:/ { print }
-    ' | head -n 80 > "$_tl_dir/batterystats_${_tl_name}.txt" 2>/dev/null
-    [ -f "$_tl_dir/batterystats_${_tl_name}.txt" ] || return 1
-    chmod 600 "$_tl_dir/batterystats_${_tl_name}.txt" 2>/dev/null
+    ' | head -n 80 > "$_tl_snapshot_tmp" 2>/dev/null || { _tl_dump=""; rm -f "$_tl_snapshot_tmp"; return 1; }
+    _tl_dump=""
+    if [ ! -s "$_tl_snapshot_tmp" ] \
+        || ! chmod 600 "$_tl_snapshot_tmp" 2>/dev/null \
+        || ! mv "$_tl_snapshot_tmp" "$_tl_dir/batterystats_${_tl_name}.txt" 2>/dev/null; then
+        rm -f "$_tl_snapshot_tmp" 2>/dev/null
+        return 1
+    fi
+    return 0
 }

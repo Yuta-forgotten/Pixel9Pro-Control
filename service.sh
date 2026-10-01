@@ -510,8 +510,11 @@ ensure_profile_history_baseline() {
         *) _p_is_charging=0 ;;
     esac
     . "$MODDIR/webroot/cgi-bin/_thermal_cache.sh" 2>/dev/null
+    _sev=""
     if command -v build_thermal_json >/dev/null 2>&1; then
-        _ph_json=$(build_thermal_json 2>/dev/null)
+        build_thermal_json hal >/dev/null 2>&1
+        _ph_json="$THERMAL_BUILD_JSON"
+        _sev="$THERMAL_BUILD_STATUS"
         if [ -n "$_ph_json" ] && [ "$_ph_json" != "[]" ]; then
             if ! runtime_write_value "$THERMAL_CACHE" "$_ph_json"; then
                 log -t pixel9pro_ctrl "WARNING: failed to refresh thermal cache baseline"
@@ -522,8 +525,7 @@ ensure_profile_history_baseline() {
     case "$_vs_temp" in
         ''|*[!0-9]*) _vs_temp=0 ;;
     esac
-    _sev=$(dumpsys thermalservice 2>/dev/null | grep "Thermal Status:" | head -1 | sed 's/.*Thermal Status:[[:space:]]*//' | tr -d ' \n\r')
-    case "$_sev" in ''|*[!0-9]*) _sev=0 ;; esac
+    case "$_sev" in ''|*[!0-9]*) _sev=-1 ;; esac
     append_profile_history "$(profile_state_read_profile "$PROFILE_FILE" 'balanced')" "service_start"
     _now="$_ph_saved_now"
 }
@@ -1471,7 +1473,7 @@ esac
         if [ "$_screen" = "on" ]; then
             _health_due=0
             [ "$_health_last_run" -eq 0 ] 2>/dev/null && _health_due=1
-            [ $((_now - _health_last_run)) -ge 300 ] 2>/dev/null && _health_due=1
+            [ $((_now - _health_last_run)) -ge "$CPU_PROFILE_HEALTH_INTERVAL_S" ] 2>/dev/null && _health_due=1
             [ "$_prev_screen" = "off" ] && _health_due=1
             if [ "$_health_due" -eq 1 ] && [ "$CPU_PROFILE_AVAILABLE" -eq 1 ]; then
                 sh "$MODDIR/scripts/scheduler_reconcile.sh" health "$MODDIR" >/dev/null 2>&1
@@ -1573,10 +1575,9 @@ esac
         fi
 
         # History uses the same epoch clock on both sides of a screen transition.
-        # Screen-off remains a low-frequency recorder path. Android BatteryStats
-        # is collected at the same bounded cadence as ranking snapshots and
-        # carries the observed Doze state; if Doze kills the worker the API
-        # reports a gap instead of fabricating a zero-valued sample.
+        # Screen-off records only sysfs values. Android owns the durable
+        # BatteryStats history, which is exported on the next interactive cycle.
+        # Missing HAL-only values remain missing rather than a stale/zero sample.
         _burst_until=$(cat "$THERMAL_BURST_FILE" 2>/dev/null | tr -d ' \n\r')
         _burst_active=0
         if [ -n "$_burst_until" ] && [ "$_burst_until" -gt "$_now" ] 2>/dev/null; then
@@ -1600,11 +1601,9 @@ esac
             || { [ "$_screen" = on ] && [ "$_history_prev_screen" != on ]; }; then
             [ "$_screen" = on ] && _worker_mode=screen_on
             [ "$_burst_effective" -eq 1 ] && _worker_mode=thermal_burst
-            # Thermal HAL dumps remain out of the normal off loop. This branch
-            # is entered only on the 900-second recorder deadline (or a screen
-            # transition), so the off sample still records the actual skin
-            # temperature without becoming a high-frequency poller.
-            _json=$(build_thermal_json 2>/dev/null)
+            _thermal_source=sysfs
+            [ "$_screen" = on ] && _thermal_source=hal
+            _json=$(build_thermal_json "$_thermal_source" 2>/dev/null)
             _thermal_valid=0
             _thermal_quality=missing_source
             _thermal_gap=0
@@ -1682,8 +1681,9 @@ esac
                     # 因此拆成两道闸: severity>=MODERATE 立即收口; VIRTUAL-SKIN 体感热只慢切换。
                     _auto_hot_since=0
                     _auto_cool_since=0
-                    _sev=$(dumpsys thermalservice 2>/dev/null | grep "Thermal Status:" | head -1 | sed 's/.*Thermal Status:[[:space:]]*//' | tr -d ' \n\r')
-                    case "$_sev" in ''|*[!0-9]*) _sev=0 ;; esac
+                    _charging_thermal_dump=$(timeout -k 2 15 dumpsys -t 10 thermalservice 2>/dev/null) || _charging_thermal_dump=""
+                    _sev=$(printf '%s\n' "$_charging_thermal_dump" | grep "Thermal Status:" | head -1 | sed 's/.*Thermal Status:[[:space:]]*//' | tr -d ' \n\r')
+                    case "$_sev" in ''|*[!0-9]*) _sev=-1 ;; esac
                     if [ "$_sev" -ge "$CPU_PROFILE_AUTO_CHARGING_THERMAL_STATUS_MIN" ] 2>/dev/null; then
                         _auto_charge_cool_since=0
                         _target_profile="battery"
@@ -1770,10 +1770,10 @@ esac
             _write_history_meta "$_now"
         fi
         _history_prev_screen="$_screen"
-        # Attribution snapshots have their own persisted 15-minute throttle.
-        # Do not put batterystats collection on the history/UI response path.
+        # Export the native history only while interactive. Its buffer includes
+        # the intervening standby window without periodic screen-off Binder work.
         _power_rank_interval_s=$(system_history_dispatch_interval "$_screen")
-        if [ -r "$MODDIR/scripts/power_rank_collect.sh" ] \
+        if [ "$_screen" = on ] && [ -r "$MODDIR/scripts/power_rank_collect.sh" ] \
             && { [ "$_power_rank_dispatch_at" -eq 0 ] 2>/dev/null \
                 || [ $((_now - _power_rank_dispatch_at)) -ge "$_power_rank_interval_s" ] 2>/dev/null; }; then
             sh "$MODDIR/scripts/power_rank_collect.sh" "$_screen" "${DISPLAY_STATE:-unknown}" >/dev/null 2>&1 &
