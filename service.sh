@@ -1496,6 +1496,14 @@ esac
         _history_changed=0
         _history_write_error=none
         _cycle_count=$((_cycle_count + 1))
+        _analytics_enabled=$(system_history_enabled)
+        if [ "$_analytics_enabled" != on ]; then
+            # Foreground-only mode is a true observation pause. The sleeper
+            # checks only the module-owned config on wake; it does not read
+            # display, thermal, battery, modem, or process state.
+            sleep 900
+            continue
+        fi
         _active_profile=$(profile_state_read_profile "$PROFILE_FILE" "$_active_profile")
         _sched_owner=$(read_valid_sched_owner)
         sbm_load_state
@@ -1515,7 +1523,6 @@ esac
         if [ "$_screen" != "on" ] || [ "${DISPLAY_STATE_INTERACTIVE:-no}" != "yes" ]; then
             _stop_power_rank_collector
         fi
-        _analytics_enabled=$(system_history_enabled)
         _idle_isolate=$(read_onoff_file "$IDLE_ISOLATE_FILE" "$IDLE_ISOLATE_DEFAULT")
         _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" "$SIM2_AUTO_DEFAULT")
         _screen_off_isolate=0

@@ -26,6 +26,21 @@ config_enabled() {
     esac
 }
 
+stop_module_observers() {
+    _hpp_rank_lock="${MODDIR}/.power_rank/collect.lock"
+    _hpp_pid=$(cat "$_hpp_rank_lock/pid" 2>/dev/null | tr -d ' \r\n\t')
+    case "$_hpp_pid" in ''|*[!0-9]*) _hpp_pid=0 ;; esac
+    if [ "$_hpp_pid" -gt 0 ] 2>/dev/null && kill -0 "$_hpp_pid" 2>/dev/null; then
+        kill -TERM "$_hpp_pid" 2>/dev/null || true
+        sleep 1
+        kill -KILL "$_hpp_pid" 2>/dev/null || true
+    fi
+    _hpp_state="${MODDIR}/.telemetry/state"
+    _hpp_pid=$(sed -n 's/^pid=//p' "$_hpp_state" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+    case "$_hpp_pid" in ''|*[!0-9]*) _hpp_pid=0 ;; esac
+    [ "$_hpp_pid" -gt 0 ] 2>/dev/null && kill -TERM "$_hpp_pid" 2>/dev/null || true
+}
+
 valid_uint_range() {
     case "$1" in ''|*[!0-9]*) return 1 ;; esac
     [ "$1" -ge "$2" ] 2>/dev/null && [ "$1" -le "$3" ] 2>/dev/null
@@ -92,11 +107,16 @@ case "${REQUEST_METHOD:-GET}" in
         valid_uint_range "$module_on" 60 3600 || { release_lock; json_error '400 Bad Request' 'module_interval_on_sec must be 60..3600'; }
         valid_uint_range "$module_off" 900 7200 || { release_lock; json_error '400 Bad Request' 'module_interval_off_sec must be 900..7200'; }
         case "$enabled" in true|1) enabled=1 ;; false|0) enabled=0 ;; *) release_lock; json_error '400 Bad Request' 'analytics_enabled must be boolean' ;; esac
+        if [ "$enabled" -eq 1 ] 2>/dev/null && [ "$(cat "$MODDIR/.idle_isolate_mode" 2>/dev/null | tr -d ' \r\n\t')" = on ]; then
+            release_lock
+            json_error '409 Conflict' 'foreground_only_active'
+        fi
         mkdir -p "$ROOT" 2>/dev/null || { release_lock; json_error '500 Internal Server Error' 'cannot create history state'; }
         policy_value=$(printf 'analytics_enabled=%s\nretention_days=%s\nmax_bytes=%s\nmodule_interval_on_sec=%s\nmodule_interval_off_sec=%s\nsystem_interval_on_sec=%s\nsystem_interval_off_sec=%s\n' "$enabled" "$retention" "$max_bytes" "$module_on" "$module_off" "$interval_on" "$interval_off")
         cgi_atomic_write "$CONFIG" "$policy_value" \
             || { release_lock; json_error '500 Internal Server Error' 'cannot save history policy'; }
         chmod 600 "$CONFIG" 2>/dev/null || true
+        [ "$enabled" -eq 0 ] 2>/dev/null && stop_module_observers
         release_lock
         json_headers
         emit_policy

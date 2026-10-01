@@ -124,6 +124,11 @@ function renderStandbyGuard(data) {
     profilePolicy: data.diag_profile_policy || 'unknown',
     activeProfile: data.diag_active_profile || 'unknown',
     cycleCount: data.diag_cycle_count || '0',
+    sleepMode: data.sleep_mode || 'unknown',
+    sleepFailedDev: data.sleep_last_failed_dev || '',
+    sleepFailedErrno: data.sleep_last_failed_errno || '',
+    sleepFailedStep: data.sleep_last_failed_step || '',
+    sleepErrorHuman: data.sleep_error_human || '当前没有可归类的 suspend 失败原因；请结合同一 boot 的 kernel log 复核。',
   };
 
   const sim2On = state.sim2AutoManage === 'on';
@@ -142,12 +147,12 @@ function renderStandbyGuard(data) {
   refs.idleIsolateToggleLabel.textContent = isolateOn ? '关闭' : '开启';
   refs.idleIsolateDesc.textContent = isolateOn
     ? '已开启：息屏优化已暂停，仅保留最低限度的状态检查。'
-    : '暂停模块的息屏优化，用于判断待机异常是否由模块引起。';
+     : '前台模式：停止后台历史、排行、telemetry 和周期分析，只在打开页面或执行操作时读取。';
   refs.idleIsolateRows.replaceChildren();
   [
     { label: '功能状态', value: isolateOn ? '已开启' : '已关闭', cls: isolateOn ? 'warn' : 'off' },
-    { label: '息屏行为', value: isolateOn ? '仅保留 900s 低频 recorder，其余全部暂停' : '常规待机 worker 正常运行', cls: isolateOn ? 'warn' : 'good' },
-    { label: '使用建议', value: isolateOn ? '仅用于一晚隔离测试，验证后请关闭' : '日常使用保持关闭', cls: 'off' },
+     { label: '后台行为', value: isolateOn ? '前台模式：后台采样、归因、telemetry 和周期分析全部停止' : '常规后台观测与低频记录', cls: isolateOn ? 'warn' : 'good' },
+     { label: '使用建议', value: isolateOn ? '适合过夜或待机排障；需要后台历史时再关闭前台模式' : '日常使用保持后台记录开启', cls: 'off' },
   ].forEach((row) => refs.idleIsolateRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   refs.standbyDiagRows.replaceChildren();
@@ -170,6 +175,11 @@ function renderStandbyGuard(data) {
       { label: '检查次数', value: state.standbyDiag.cycleCount || '0', cls: 'off' },
     ].forEach((row) => refs.standbyDiagRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
   }
+  [
+    { label: '内核休眠模式', value: state.standbyDiag.sleepMode || 'unknown', cls: 'off' },
+    { label: '最近失败设备', value: state.standbyDiag.sleepFailedDev || '暂无读数', cls: state.standbyDiag.sleepFailedDev ? 'warn' : 'off' },
+    { label: '最近失败原因', value: state.standbyDiag.sleepErrorHuman, cls: state.standbyDiag.sleepFailedDev ? 'warn' : 'off' },
+  ].forEach((row) => refs.standbyDiagRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   syncStandbyGuardButtons();
 }
@@ -510,8 +520,8 @@ async function toggleIdleIsolateMode() {
   const next = state.idleIsolateMode === 'on' ? 'off' : 'on';
   await setStandbyGuard(
     { idle_isolate_mode: next },
-    next === 'on' ? '待机隔离模式已开启' : '待机隔离模式已关闭',
-    next === 'on' ? '待机隔离模式: 开启' : '待机隔离模式: 关闭'
+     next === 'on' ? '前台模式已开启：后台观测已停止' : '后台观测已恢复',
+     next === 'on' ? '前台模式: 开启' : '后台观测: 开启'
   );
 }
 

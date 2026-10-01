@@ -10,6 +10,9 @@ SIM2_AUTO_FILE="$MODDIR/.sim2_auto_manage"
 IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
 SIM2_RADIO_STATE_FILE="$MODDIR/.sim2_radio_off"
+STATE_ROOT="${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}"
+HISTORY_CONFIG="$STATE_ROOT/system_history_config"
+ANALYTICS_PREV_FILE="$MODDIR/.analytics_enabled_before_isolate"
 DEFAULTS_LIB="$MODDIR/scripts/runtime_defaults_lib.sh"
 
 [ -r "$DEFAULTS_LIB" ] && . "$DEFAULTS_LIB" \
@@ -28,9 +31,58 @@ read_state_value() {
     printf '%s' "$_sg_value"
 }
 
+analytics_enabled_value() {
+    case "$(sed -n 's/^analytics_enabled=//p' "$HISTORY_CONFIG" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')" in
+        0|false|off|no) printf false ;;
+        *) printf true ;;
+    esac
+}
+
+sleep_error_human() {
+    case "$1:$2" in
+        *19470000.drmdecon:-16*) printf '显示设备在 AOD/atomic commit 尚未完成 hibernation，内核暂缓 suspend。' ;;
+        *wlan*:*|*dhdpcie*:*|*cp2ap_wakeup*:*) printf 'Wi-Fi/网络唤醒源仍有活动，系统进入 suspend 后被网络事件唤醒。' ;;
+        *s5100*:*|*rmnet*:*|*cpif*:*) printf '基带/蜂窝 modem 唤醒源仍有活动，suspend 回调暂未完成。' ;;
+        *:-16*) printf '设备仍处于活动提交或唤醒状态，suspend 回调返回 EBUSY。' ;;
+        *) printf '当前没有可归类的 suspend 失败原因；请结合同一 boot 的 kernel log 复核。' ;;
+    esac
+}
+
+analytics_config_write_enabled() {
+    _sg_enabled="$1"
+    _sg_old=$(cat "$HISTORY_CONFIG" 2>/dev/null || true)
+    _sg_new=$(printf '%s\n' "$_sg_old" | sed '/^analytics_enabled=/d')
+    _sg_new=$(printf 'analytics_enabled=%s\n%s\n' "$_sg_enabled" "$_sg_new")
+    mkdir -p "$STATE_ROOT" 2>/dev/null || return 1
+    cgi_atomic_write "$HISTORY_CONFIG" "$_sg_new"
+}
+
+stop_module_observers() {
+    _sg_rank_lock="$MODDIR/.power_rank/collect.lock"
+    _sg_rank_pid=$(cat "$_sg_rank_lock/pid" 2>/dev/null | tr -d ' \r\n\t')
+    case "$_sg_rank_pid" in ''|*[!0-9]*) _sg_rank_pid=0 ;; esac
+    if [ "$_sg_rank_pid" -gt 0 ] 2>/dev/null && kill -0 "$_sg_rank_pid" 2>/dev/null; then
+        kill -TERM "$_sg_rank_pid" 2>/dev/null || true
+        sleep 1
+        kill -KILL "$_sg_rank_pid" 2>/dev/null || true
+    fi
+    _sg_telemetry_state="$MODDIR/.telemetry/state"
+    _sg_telemetry_pid=$(sed -n 's/^pid=//p' "$_sg_telemetry_state" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+    case "$_sg_telemetry_pid" in ''|*[!0-9]*) _sg_telemetry_pid=0 ;; esac
+    if [ "$_sg_telemetry_pid" -gt 0 ] 2>/dev/null && kill -0 "$_sg_telemetry_pid" 2>/dev/null; then
+        kill -TERM "$_sg_telemetry_pid" 2>/dev/null || true
+    fi
+}
+
 emit_state() {
     _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" "$SIM2_AUTO_DEFAULT")
     _idle_isolate_mode=$(read_onoff_file "$IDLE_ISOLATE_FILE" "$IDLE_ISOLATE_DEFAULT")
+    _analytics_enabled=$(analytics_enabled_value)
+    _sleep_mode=$(cat /sys/power/mem_sleep 2>/dev/null | tr -d '\r\n')
+    _sleep_failed_dev=$(cat /sys/power/suspend_stats/last_failed_dev 2>/dev/null | tr -d ' \r\n')
+    _sleep_failed_errno=$(cat /sys/power/suspend_stats/last_failed_errno 2>/dev/null | tr -d ' \r\n')
+    _sleep_failed_step=$(cat /sys/power/suspend_stats/last_failed_step 2>/dev/null | tr -d ' \r\n')
+    _sleep_error=$(sleep_error_human "$_sleep_failed_dev" "$_sleep_failed_errno")
 
     diag_updated_at=""
     diag_screen="unknown"
@@ -56,8 +108,9 @@ emit_state() {
         diag_cycle_count=$(read_state_value "$STANDBY_DIAG_FILE" cycle_count "0")
     fi
 
-    printf '"sim2_auto_manage":"%s","idle_isolate_mode":"%s","diag_updated_at":"%s","diag_screen":"%s","diag_worker_mode":"%s","diag_next_sleep_secs":"%s","diag_burst_active":"%s","diag_nr_switch":"%s","diag_nr_state":"%s","diag_profile_policy":"%s","diag_active_profile":"%s","diag_cycle_count":"%s"' \
-        "$_sim2_auto" "$_idle_isolate_mode" \
+    printf '"sim2_auto_manage":"%s","idle_isolate_mode":"%s","analytics_enabled":%s,"background_mode":"%s","sleep_mode":"%s","sleep_last_failed_dev":"%s","sleep_last_failed_errno":"%s","sleep_last_failed_step":"%s","sleep_error_human":"%s","diag_updated_at":"%s","diag_screen":"%s","diag_worker_mode":"%s","diag_next_sleep_secs":"%s","diag_burst_active":"%s","diag_nr_switch":"%s","diag_nr_state":"%s","diag_profile_policy":"%s","diag_active_profile":"%s","diag_cycle_count":"%s"' \
+        "$_sim2_auto" "$_idle_isolate_mode" "$_analytics_enabled" "$([ "$_analytics_enabled" = true ] && printf normal || printf foreground_only)" \
+        "$(json_escape "$_sleep_mode")" "$(json_escape "$_sleep_failed_dev")" "$(json_escape "$_sleep_failed_errno")" "$(json_escape "$_sleep_failed_step")" "$(json_escape "$_sleep_error")" \
         "$(json_escape "$diag_updated_at")" "$(json_escape "$diag_screen")" "$(json_escape "$diag_worker_mode")" \
         "$(json_escape "$diag_next_sleep_secs")" "$(json_escape "$diag_burst_active")" "$(json_escape "$diag_nr_switch")" \
         "$(json_escape "$diag_nr_state")" "$(json_escape "$diag_profile_policy")" "$(json_escape "$diag_active_profile")" \
@@ -114,11 +167,32 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
     [ -e "$IDLE_ISOLATE_FILE" ] && _isolate_existed=1
     _sim2_old=$(cat "$SIM2_AUTO_FILE" 2>/dev/null)
     _isolate_old=$(cat "$IDLE_ISOLATE_FILE" 2>/dev/null)
+    _analytics_old=$(sed -n 's/^analytics_enabled=//p' "$HISTORY_CONFIG" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+    _analytics_prev_existed=0
+    [ -e "$ANALYTICS_PREV_FILE" ] && _analytics_prev_existed=1
+    _analytics_prev_old=$(cat "$ANALYTICS_PREV_FILE" 2>/dev/null)
+
+    if [ "$new_isolate" = on ]; then
+        [ -n "$_analytics_old" ] || _analytics_old=1
+        cgi_atomic_write "$ANALYTICS_PREV_FILE" "$_analytics_old" \
+            && analytics_config_write_enabled 0 \
+            || json_error '500 Internal Server Error' 'failed to enter foreground-only standby mode'
+        stop_module_observers
+    elif [ "$new_isolate" = off ]; then
+        _analytics_restore="$_analytics_prev_old"
+        [ -n "$_analytics_restore" ] || _analytics_restore=1
+        analytics_config_write_enabled "$_analytics_restore" \
+            || json_error '500 Internal Server Error' 'failed to restore background analytics mode'
+        cgi_restore_file "$ANALYTICS_PREV_FILE" "$_analytics_prev_existed" "$_analytics_prev_old" \
+            >/dev/null 2>&1 || true
+    fi
 
     if { [ -z "$new_sim2" ] || cgi_atomic_write "$SIM2_AUTO_FILE" "$new_sim2"; } \
         && { [ -z "$new_isolate" ] || cgi_atomic_write "$IDLE_ISOLATE_FILE" "$new_isolate"; }; then
         :
     else
+        analytics_config_write_enabled "${_analytics_old:-1}" >/dev/null 2>&1 || true
+        cgi_restore_file "$ANALYTICS_PREV_FILE" "$_analytics_prev_existed" "$_analytics_prev_old" >/dev/null 2>&1 || true
         if restore_standby_files; then
             json_error '500 Internal Server Error' 'failed to persist standby setting; previous state restored'
         fi
