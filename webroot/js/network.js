@@ -128,6 +128,8 @@ function renderStandbyGuard(data) {
     sleepFailedDev: data.sleep_last_failed_dev || '',
     sleepFailedErrno: data.sleep_last_failed_errno || '',
     sleepFailedStep: data.sleep_last_failed_step || '',
+    sleepErrorCode: data.sleep_error_code || 'SUSPEND_REASON_UNKNOWN',
+    sleepErrorSeverity: data.sleep_error_severity || 'info',
     sleepErrorHuman: data.sleep_error_human || '当前没有可归类的 suspend 失败原因；请结合同一 boot 的 kernel log 复核。',
   };
 
@@ -178,6 +180,7 @@ function renderStandbyGuard(data) {
   [
     { label: '内核休眠模式', value: state.standbyDiag.sleepMode || 'unknown', cls: 'off' },
     { label: '最近失败设备', value: state.standbyDiag.sleepFailedDev || '暂无读数', cls: state.standbyDiag.sleepFailedDev ? 'warn' : 'off' },
+    { label: '错误分类', value: state.standbyDiag.sleepErrorCode, cls: state.standbyDiag.sleepErrorSeverity === 'warning' ? 'warn' : 'off' },
     { label: '最近失败原因', value: state.standbyDiag.sleepErrorHuman, cls: state.standbyDiag.sleepFailedDev ? 'warn' : 'off' },
   ].forEach((row) => refs.standbyDiagRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 

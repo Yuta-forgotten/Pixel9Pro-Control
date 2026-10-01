@@ -48,6 +48,16 @@ sleep_error_human() {
     esac
 }
 
+sleep_error_code() {
+    case "$1:$2" in
+        *19470000.drmdecon:-16*) printf DISPLAY_HIBERNATION_BUSY ;;
+        *wlan*:*|*dhdpcie*:*|*cp2ap_wakeup*:*) printf NETWORK_WAKEUP ;;
+        *s5100*:*|*rmnet*:*|*cpif*:*) printf MODEM_WAKEUP ;;
+        *:-16*) printf DEVICE_SUSPEND_EBUSY ;;
+        *) printf SUSPEND_REASON_UNKNOWN ;;
+    esac
+}
+
 analytics_config_write_enabled() {
     _sg_enabled="$1"
     _sg_old=$(cat "$HISTORY_CONFIG" 2>/dev/null || true)
@@ -83,6 +93,9 @@ emit_state() {
     _sleep_failed_errno=$(cat /sys/power/suspend_stats/last_failed_errno 2>/dev/null | tr -d ' \r\n')
     _sleep_failed_step=$(cat /sys/power/suspend_stats/last_failed_step 2>/dev/null | tr -d ' \r\n')
     _sleep_error=$(sleep_error_human "$_sleep_failed_dev" "$_sleep_failed_errno")
+    _sleep_error_code=$(sleep_error_code "$_sleep_failed_dev" "$_sleep_failed_errno")
+    _sleep_error_severity=info
+    [ -n "$_sleep_failed_dev" ] && _sleep_error_severity=warning
 
     diag_updated_at=""
     diag_screen="unknown"
@@ -108,9 +121,9 @@ emit_state() {
         diag_cycle_count=$(read_state_value "$STANDBY_DIAG_FILE" cycle_count "0")
     fi
 
-    printf '"sim2_auto_manage":"%s","idle_isolate_mode":"%s","analytics_enabled":%s,"background_mode":"%s","sleep_mode":"%s","sleep_last_failed_dev":"%s","sleep_last_failed_errno":"%s","sleep_last_failed_step":"%s","sleep_error_human":"%s","diag_updated_at":"%s","diag_screen":"%s","diag_worker_mode":"%s","diag_next_sleep_secs":"%s","diag_burst_active":"%s","diag_nr_switch":"%s","diag_nr_state":"%s","diag_profile_policy":"%s","diag_active_profile":"%s","diag_cycle_count":"%s"' \
+    printf '"sim2_auto_manage":"%s","idle_isolate_mode":"%s","analytics_enabled":%s,"background_mode":"%s","sleep_mode":"%s","sleep_last_failed_dev":"%s","sleep_last_failed_errno":"%s","sleep_last_failed_step":"%s","sleep_error_code":"%s","sleep_error_severity":"%s","sleep_error_human":"%s","diag_updated_at":"%s","diag_screen":"%s","diag_worker_mode":"%s","diag_next_sleep_secs":"%s","diag_burst_active":"%s","diag_nr_switch":"%s","diag_nr_state":"%s","diag_profile_policy":"%s","diag_active_profile":"%s","diag_cycle_count":"%s"' \
         "$_sim2_auto" "$_idle_isolate_mode" "$_analytics_enabled" "$([ "$_analytics_enabled" = true ] && printf normal || printf foreground_only)" \
-        "$(json_escape "$_sleep_mode")" "$(json_escape "$_sleep_failed_dev")" "$(json_escape "$_sleep_failed_errno")" "$(json_escape "$_sleep_failed_step")" "$(json_escape "$_sleep_error")" \
+        "$(json_escape "$_sleep_mode")" "$(json_escape "$_sleep_failed_dev")" "$(json_escape "$_sleep_failed_errno")" "$(json_escape "$_sleep_failed_step")" "$_sleep_error_code" "$_sleep_error_severity" "$(json_escape "$_sleep_error")" \
         "$(json_escape "$diag_updated_at")" "$(json_escape "$diag_screen")" "$(json_escape "$diag_worker_mode")" \
         "$(json_escape "$diag_next_sleep_secs")" "$(json_escape "$diag_burst_active")" "$(json_escape "$diag_nr_switch")" \
         "$(json_escape "$diag_nr_state")" "$(json_escape "$diag_profile_policy")" "$(json_escape "$diag_active_profile")" \
