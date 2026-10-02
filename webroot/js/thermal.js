@@ -489,8 +489,9 @@ async function applyThermalSelection(policy, offset) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'repair_system' }), timeoutMs: 8000, priority: 'interactive', scope: 'thermal.mutation'
       });
+      const readback = await loadThermalPreset();
+      if (!readback || state.repairRequired) throw new Error('温控基线修复已提交，但 GET readback 仍显示需要修复');
       showToast('温控基线已修复，重启后复读生效。', 4200);
-      await loadThermalPreset();
     } catch (err) {
       showToast(`修复失败：${err?.message || '请重新安装模块'}`, 4200);
     }
@@ -530,6 +531,10 @@ async function applyThermalSelection(policy, offset) {
   try {
     const data = await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next), timeoutMs: 8000, priority: 'interactive', scope: 'thermal.mutation' });
     if (data.ok && applyThermalState(data)) {
+      const readbackOk = await loadThermalPreset();
+      if (!readbackOk || state.currentPolicy !== policy || (policy === 'custom' && state.currentOffset !== Number(offset))) {
+        throw new Error('温控设置已提交，但 GET readback 未确认目标策略');
+      }
       state.selectionPending = null;
       updatePendingState(data, { open: false });
       syncThermalUi();
@@ -572,7 +577,7 @@ async function applyThermalSelection(policy, offset) {
     if (refs.rebootModal.classList.contains('open')) {
       requireFeature('ui').closeRebootModal('', { force: true, silent: true });
     }
-    showToast('请求失败，检查服务是否运行');
+    showToast(`请求失败：${err?.message || '服务未返回有效响应'}`);
     appendLog(String(err), 'err');
   } finally {
     state.selectionPending = null;

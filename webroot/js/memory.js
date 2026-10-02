@@ -772,7 +772,9 @@ async function forceRefreshBgRestrict() {
       timeoutMs: 10000, priority: 'interactive', scope: 'memory.bgRestrict'
     });
     if (data.ok) {
-      renderBgRestrict(data);
+      const readback = await apiFetch(API.bgRestrict, { timeoutMs: 8000, priority: 'interactive', scope: 'memory.bgRestrict.readback' });
+      if (readback?.ok === false) throw new Error(readback.error || '后台限制状态回读失败');
+      renderBgRestrict(readback);
       showToast('已重新应用后台策略');
     } else {
       const fallback = await apiFetch(API.bgRestrict, { timeoutMs: 8000, priority: 'normal', scope: 'memory.bgRestrict.read' });
@@ -799,7 +801,8 @@ async function bgRestrictAction(body, successText) {
       timeoutMs: 10000, priority: 'interactive', scope: 'memory.bgRestrict'
     });
     if (data.ok) {
-      nextData = data;
+      nextData = await apiFetch(API.bgRestrict, { timeoutMs: 8000, priority: 'interactive', scope: 'memory.bgRestrict.readback' });
+      if (nextData?.ok === false) throw new Error(nextData.error || '后台限制状态回读失败');
       ok = true;
       showToast(successText);
     } else {
@@ -925,7 +928,7 @@ async function applySwapCustom() {
     });
     if (mutation?.ok === false) throw new Error(mutation.error || 'VM mutation 未确认');
     appendLog('自定义 VM 参数已提交，等待 GET readback', 'dim');
-    void confirmCustomVmReadback(values);
+    await confirmCustomVmReadback(values);
   } catch (err) {
     showToast(`请求失败：${err.message || '未知错误'}`);
     appendLog(`Swap 自定义参数失败：${err.message || '未知错误'}`, 'err');
@@ -941,12 +944,14 @@ async function confirmCustomVmReadback(values) {
     if (!refreshed || !vmReadbackMatches(data, 'custom', values)) {
       showToast('参数已提交，但 GET readback 尚未确认');
       appendLog('自定义 VM 参数等待 readback，未宣称已生效', 'warn');
-      return;
+      return false;
     }
     showToast('自定义 VM 参数已读回确认');
     appendLog('自定义 VM 参数已读回确认', 'ok');
+    return true;
   } catch (err) {
     appendLog(`自定义 VM readback 失败：${err?.message || '未知错误'}`, 'warn');
+    return false;
   }
 }
 
@@ -987,7 +992,7 @@ async function applyZramSizeRequest() {
     if (!data || data.ok === false) throw new Error(data?.error || 'backend mutation 未确认');
     showToast('容量请求已提交，正在读取确认…');
     appendLog(`ZRAM 容量请求已提交，等待 GET readback：${value} ${unit === 'percent' ? '%' : 'MB'}`, 'dim');
-    void confirmZramReadback(backendValue, value, unit);
+    await confirmZramReadback(backendValue, value, unit);
   } catch (err) {
     showToast(`ZRAM 容量请求失败：${err.message || '未知错误'}`);
     appendLog(`ZRAM 容量请求失败：${err.message || '未知错误'}`, 'err');
@@ -1004,13 +1009,15 @@ async function confirmZramReadback(requested, displayValue, unit) {
     if (!refreshed || !zramRequestReadbackMatches(readback, requested)) {
       showToast('容量请求已提交，但 GET readback 尚未确认');
       appendLog('ZRAM 容量请求等待 readback，未宣称已生效', 'warn');
-      return;
+      return false;
     }
     const pending = readback.zram_reboot_required === true || readback.zram_restore_pending === true;
     showToast(pending ? 'ZRAM 请求已读回，等待重启' : 'ZRAM 请求已读回，当前有效容量已对齐');
     appendLog(`ZRAM 容量请求已读回：${displayValue} ${unit === 'percent' ? '%' : 'MB'}${pending ? '（待重启）' : '（当前有效）'}`, 'ok');
+    return true;
   } catch (err) {
     appendLog(`ZRAM readback 失败：${err?.message || '未知错误'}`, 'warn');
+    return false;
   }
 }
 

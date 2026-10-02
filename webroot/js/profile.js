@@ -786,6 +786,12 @@ function refreshFullProfileState() {
     .catch((err) => isCancelled(err) ? null : false);
 }
 
+async function confirmProfileMutation(expected) {
+  const refreshed = await refreshFullProfileState();
+  if (!refreshed) return false;
+  return typeof expected === 'function' ? expected() : true;
+}
+
 async function loadSavedProfile() {
   try {
     const revision = profileMutationStateRevision;
@@ -931,6 +937,7 @@ async function applyProfile(profile) {
     const data = await apiFetch(API.profile, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile }), timeoutMs: PROFILE_MUTATION_TIMEOUT_MS, priority: 'interactive', scope: 'profile.mutation' });
     if (data.ok) {
       applyProfileMutationState(data);
+      if (!await confirmProfileMutation(() => state.currentProfile === profile)) throw new Error('profile 已提交，但 GET readback 未确认目标档位');
       const forcedManual = prevPolicy === 'auto' && data.policy === 'manual';
       showToast(forcedManual ? `已切回手动：${PROFILES[profile].name}` : `切换至：${PROFILES[profile].name}`);
       appendLog(forcedManual ? `自动已退出，手动切到 ${PROFILES[profile].name}` : `${PROFILES[profile].name} 已应用`, 'ok');
@@ -940,13 +947,12 @@ async function applyProfile(profile) {
       appendLog(data.error || '切换失败', 'err');
     }
   } catch (err) {
-    showToast('请求失败，检查服务是否运行');
+    showToast(`请求失败：${err?.message || '服务未返回有效响应'}`);
     appendLog(String(err), 'err');
   } finally {
     card.classList.remove('loading');
     state.profileApplyBusy = false;
     syncProfileUi();
-    void refreshFullProfileState();
   }
 }
 
@@ -963,6 +969,7 @@ async function setSchedulerMode(mode) {
     });
     if (data.ok) {
       applyProfileMutationState(data);
+      if (!await confirmProfileMutation(() => state.schedulerMode === mode)) throw new Error('调度模式已提交，但 GET readback 未确认');
       const label = '本模块性能调度已关闭';
       showToast(data.reboot_required ? `${label}，重启后完成切换` : label);
       appendLog(`${label} · ${data.cleanup_result || 'state_committed'}`, data.reboot_required ? 'warn' : 'ok');
@@ -975,7 +982,6 @@ async function setSchedulerMode(mode) {
   } finally {
     state.profileApplyBusy = false;
     syncProfileUi();
-    void refreshFullProfileState();
   }
 }
 
@@ -1006,6 +1012,7 @@ async function setProfilePolicy(policy) {
     });
     if (data.ok) {
       applyProfileMutationState(data);
+      if (!await confirmProfileMutation(() => state.profilePolicy === policy)) throw new Error('调度策略已提交，但 GET readback 未确认');
       showToast(policy === 'auto' ? '已启用自动调度' : `已切回手动：${PROFILES[state.currentProfile].name}`);
       appendLog(policy === 'auto'
         ? `自动调度已启用：${describeAutoReason(state.autoReason)}`
@@ -1016,12 +1023,11 @@ async function setProfilePolicy(policy) {
       appendLog(data.error || '切换失败', 'err');
     }
   } catch (err) {
-    showToast('请求失败，检查服务是否运行');
+    showToast(`请求失败：${err?.message || '服务未返回有效响应'}`);
     appendLog(String(err), 'err');
   } finally {
     state.profilePolicyBusy = false;
     syncProfileUi();
-    void refreshFullProfileState();
   }
 }
 
@@ -1060,7 +1066,7 @@ async function toggleSchedOwner() {
       appendLog(`启动模式未提交：${detail}`, 'err');
     }
   } catch (err) {
-    showToast('请求失败，检查服务是否运行');
+    showToast(`请求失败：${err?.message || '服务未返回有效响应'}`);
     appendLog(String(err), 'err');
   } finally {
     state.schedOwnerBusy = false;
@@ -1089,7 +1095,7 @@ async function cancelSchedulerChange() {
       appendLog(data.error || '取消待重启切换失败', 'err');
     }
   } catch (err) {
-    showToast('请求失败，检查服务是否运行');
+    showToast(`请求失败：${err?.message || '服务未返回有效响应'}`);
     appendLog(String(err), 'err');
   } finally {
     state.schedOwnerBusy = false;
@@ -1117,7 +1123,7 @@ async function retrySchedulerValidation() {
       appendLog(`调度终态失败：${data.scheduler_boot?.result || data.error || 'unknown'}`, 'err');
     }
   } catch (err) {
-    showToast('请求失败，检查服务是否运行');
+    showToast(`请求失败：${err?.message || '服务未返回有效响应'}`);
     appendLog(String(err), 'err');
   } finally {
     state.schedulerRetryBusy = false;
@@ -1146,6 +1152,7 @@ async function toggleGameHandoff() {
       showToast('接管偏好已保存，等待调度状态同步');
       appendLog(data.pending_reason || '共享调度事务正在执行，后台将继续同步', 'warn');
     } else if (data.ok) {
+      if (!await confirmProfileMutation(() => state.gameHandoffPolicy === nextPolicy)) throw new Error('游戏接管偏好已提交，但 GET readback 未确认');
       showToast(nextPolicy === 'fas_rs' ? 'fas-rs 游戏接管已启用' : 'fas-rs 游戏接管已关闭');
       appendLog(nextPolicy === 'fas_rs'
         ? 'fas-rs 保持常驻待机；命中游戏并建立有效 lease 后临时接管'
@@ -1157,12 +1164,11 @@ async function toggleGameHandoff() {
       appendLog(detail, 'err');
     }
   } catch (err) {
-    showToast('请求失败，检查服务是否运行');
+    showToast(`请求失败：${err?.message || '服务未返回有效响应'}`);
     appendLog(String(err), 'err');
   } finally {
     state.gameHandoffBusy = false;
     syncProfileUi();
-    void refreshFullProfileState();
   }
 }
 
@@ -1189,7 +1195,7 @@ async function triggerOwnerArbiter() {
       appendLog(data.error || '外部调度状态检查失败', 'err');
     }
   } catch (err) {
-    showToast('请求失败，检查 WebUI 服务');
+    showToast(`请求失败：${err?.message || 'WebUI 服务未返回有效响应'}`);
     appendLog(String(err), 'err');
   } finally {
     state.ownerArbiterBusy = false;

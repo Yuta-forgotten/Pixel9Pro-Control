@@ -615,9 +615,14 @@ async function toggleNrSwitch() {
     const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'toggle' }), timeoutMs: 8000, priority: 'interactive', scope: 'network.nr' });
     if (data.ok) {
       state.nrSwitch = data.nr_switch;
-      showToast(data.nr_switch === 'on' ? 'NR 息屏降级已开启' : 'NR 息屏降级已关闭');
-      appendLog(data.nr_switch === 'on' ? 'NR 息屏降级: 开启' : 'NR 息屏降级: 关闭', 'ok');
-      void refreshNrSwitch();
+      const readback = await refreshNrSwitch();
+      if (!readback || state.nrSwitch !== data.nr_switch) {
+        showToast('NR 设置已提交，但状态回读未确认');
+        appendLog('NR 息屏降级提交后状态回读未确认', 'warn');
+      } else {
+        showToast(data.nr_switch === 'on' ? 'NR 息屏降级已开启' : 'NR 息屏降级已关闭');
+        appendLog(data.nr_switch === 'on' ? 'NR 息屏降级: 开启' : 'NR 息屏降级: 关闭', 'ok');
+      }
     } else {
       showToast('操作失败');
     }
@@ -896,14 +901,17 @@ async function setNtpServer(server) {
     });
     if (data.ok) {
       const label = state.ntpServers.find((s) => s.id === server)?.name || server;
-      if (data.refreshed === false) {
+      const readback = await refreshNtp();
+      if (!readback || state.ntpServer !== server) {
+        showToast(`NTP 已提交，但 ${label} 状态回读未确认`);
+        appendLog(`NTP: ${server}（状态回读未确认）`, 'warn');
+      } else if (data.refreshed === false) {
         showToast(`NTP 已切换为 ${label}，即时同步未完成`);
         appendLog(`NTP: ${server}（即时同步未完成）`, 'warn');
       } else {
         showToast(`NTP 已切换为 ${label} 并同步`);
         appendLog(`NTP: ${server}`, 'ok');
       }
-      void refreshNtp();
     } else {
       showToast(`切换失败：${data.error || '未知'}`);
     }
@@ -930,9 +938,14 @@ async function syncNtp() {
       timeoutMs: 10000, priority: 'interactive', scope: 'network.ntp'
     });
     if (data.ok) {
-      showToast('时间已同步');
-      appendLog(`NTP 同步完成: ${data.device_time}`, 'ok');
-      void refreshNtp();
+      const readback = await refreshNtp();
+      if (!readback) {
+        showToast('时间同步已提交，但状态回读未确认');
+        appendLog('NTP 同步提交后状态回读未确认', 'warn');
+      } else {
+        showToast('时间已同步');
+        appendLog(`NTP 同步完成: ${data.device_time}`, 'ok');
+      }
     } else {
       showToast('同步失败');
     }
