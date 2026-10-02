@@ -379,7 +379,11 @@
       if (!state.open) return;
       state.initialLoadPending = false;
       if (policyEnabled() && source === 'thermal' && state.thermalSensor === 'module') triggerBurst({ prompt: false });
-      load(true);
+      return load(true);
+    }).catch((err) => {
+      if (!state.open) return;
+      state.initialLoadPending = false;
+      viewFeature().error(view, source, state.rangeId, `初始化读取失败：${err?.message || err}`, state.thermalSensor);
     });
   }
   function stop() { const active = state.open; state.open = false; state.suspended = true; state.initialLoadPending = false; abort('analytics-closed'); if (active) stopBurst(); }
