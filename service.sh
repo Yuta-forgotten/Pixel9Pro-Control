@@ -1488,6 +1488,19 @@ esac
         _power_rank_pid=$!
     }
 
+    _refresh_module_intervals() {
+        _configured_module_on=$(system_history_config_value module_interval_on_sec 60)
+        _configured_module_off=$(system_history_config_value module_interval_off_sec 900)
+        case "$_configured_module_on" in ''|*[!0-9]*) _configured_module_on=60 ;; esac
+        case "$_configured_module_off" in ''|*[!0-9]*) _configured_module_off=900 ;; esac
+        if [ "$_configured_module_on" -ge 60 ] 2>/dev/null && [ "$_configured_module_on" -le 3600 ] 2>/dev/null; then
+            _POWER_SAMPLE_INTERVAL_ON="$_configured_module_on"
+        fi
+        if [ "$_configured_module_off" -ge 900 ] 2>/dev/null && [ "$_configured_module_off" -le 7200 ] 2>/dev/null; then
+            _POWER_SAMPLE_INTERVAL_OFF="$_configured_module_off"
+        fi
+    }
+
     _health_last_run=0
 
     while true; do
@@ -1498,12 +1511,16 @@ esac
         _cycle_count=$((_cycle_count + 1))
         _analytics_enabled=$(system_history_enabled)
         if [ "$_analytics_enabled" != on ]; then
+            _stop_power_rank_collector
             # Foreground-only mode is a true observation pause. The sleeper
             # checks only the module-owned config on wake; it does not read
             # display, thermal, battery, modem, or process state.
             sleep 900
             continue
         fi
+        # Policy writes are live. Reload module cadence before deciding the
+        # next sample instead of waiting for a service restart.
+        _refresh_module_intervals
         _active_profile=$(profile_state_read_profile "$PROFILE_FILE" "$_active_profile")
         _sched_owner=$(read_valid_sched_owner)
         sbm_load_state

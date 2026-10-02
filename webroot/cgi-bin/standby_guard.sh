@@ -156,7 +156,10 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
 elif [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
     require_token
-    acquire_lock "standby_guard"
+    # The idle-isolate toggle also updates system_history_config.  Reuse the
+    # history policy lock so a policy POST and a standby toggle cannot do
+    # last-writer-wins updates to the same backend-owned file.
+    acquire_lock "system_history_policy"
     read_json_body 512
     body="$JSON_BODY"
 

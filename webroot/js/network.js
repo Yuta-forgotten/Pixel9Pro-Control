@@ -90,11 +90,11 @@ function syncStandbyGuardButtons() {
 }
 
 function standbyWorkerModeLabel(mode) {
-  if (mode === 'screen_on') return '亮屏全量';
-  if (mode === 'thermal_burst') return '温度突发';
-  if (mode === 'deep_standby') return '深待机';
-  if (mode === 'idle_isolate') return '待机隔离';
-  return '未知';
+  if (mode === 'screen_on') return '亮屏：周期记录';
+  if (mode === 'thermal_burst') return '前台：临时温度采样';
+  if (mode === 'deep_standby') return '息屏：低频记录';
+  if (mode === 'idle_isolate') return '后台观测已暂停';
+  return '未读取';
 }
 
 function standbyWorkerModeClass(mode) {
@@ -146,15 +146,14 @@ function renderStandbyGuard(data) {
   ].forEach((row) => refs.sim2AutoRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   const isolateOn = state.idleIsolateMode === 'on';
-  refs.idleIsolateToggleLabel.textContent = isolateOn ? '关闭' : '开启';
+  refs.idleIsolateToggleLabel.textContent = isolateOn ? '恢复后台观测' : '暂停后台观测';
   refs.idleIsolateDesc.textContent = isolateOn
-    ? '已开启：息屏优化已暂停，仅保留最低限度的状态检查。'
-     : '后台观测暂停：停止后台历史、排行、telemetry 和周期分析，只在打开页面或执行操作时读取。';
+    ? '当前：后台观测已暂停。后台历史、排行、telemetry 和周期分析均停止；仅前台页面或显式操作读取。'
+    : '当前：后台观测已开启。按低频策略记录历史并运行分析；前台读取仍可用。';
   refs.idleIsolateRows.replaceChildren();
   [
-    { label: '功能状态', value: isolateOn ? '已开启' : '已关闭', cls: isolateOn ? 'warn' : 'off' },
-     { label: '后台行为', value: isolateOn ? '后台观测暂停：后台采样、归因、telemetry 和周期分析全部停止' : '常规后台观测与低频记录', cls: isolateOn ? 'warn' : 'good' },
-     { label: '使用建议', value: isolateOn ? '适合待机排障；需要后台历史时再恢复后台观测' : '日常使用保持后台观测开启', cls: 'off' },
+    { label: '当前状态', value: isolateOn ? '已暂停后台观测' : '后台观测已开启', cls: isolateOn ? 'warn' : 'good' },
+    { label: '后台行为', value: isolateOn ? '停止后台历史、排行、telemetry 和周期分析；仅保留前台读取' : '按低频策略记录历史并运行分析；息屏期间不做高频读取', cls: isolateOn ? 'warn' : 'good' },
   ].forEach((row) => refs.idleIsolateRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   refs.standbyDiagRows.replaceChildren();
@@ -496,14 +495,21 @@ async function setStandbyGuard(update, successText, logText) {
       timeoutMs: 8000, priority: 'interactive', scope: 'network.standby'
     });
     if (data.ok) {
-      renderStandbyGuard(data);
+      const readback = await apiFetch(API.standbyGuard, { timeoutMs: 6000, priority: 'interactive', scope: 'network.standby.readback' });
+      const mismatch = Object.keys(update).find((key) => String(readback?.[key] ?? '') !== String(update[key]));
+      if (readback?.ok === false || mismatch) throw new Error(mismatch ? `状态回读不一致：${mismatch}` : (readback?.error || '状态回读失败'));
+      renderStandbyGuard(readback);
       showToast(successText);
       appendLog(logText, 'ok');
     } else {
       showToast(`操作失败：${data.error || '未知'}`);
     }
   } catch (err) {
-    if (!requireFeature('core').isRequestCancelled?.(err)) showToast('请求失败');
+    if (!requireFeature('core').isRequestCancelled?.(err)) {
+      const message = err?.message || String(err);
+      showToast(`操作失败：${message}`);
+      appendLog(`后台观测设置失败：${message}`, 'err');
+    }
   } finally {
     state.standbyGuardBusy = false;
     syncStandbyGuardButtons();
@@ -615,8 +621,10 @@ async function toggleNrSwitch() {
     } else {
       showToast('操作失败');
     }
-  } catch (_) {
-    showToast('请求失败');
+  } catch (err) {
+    const message = err?.message || String(err);
+    if (!requireFeature('core').isRequestCancelled?.(err)) showToast(`请求失败：${message}`);
+    appendLog(`NR 息屏降级请求失败：${message}`, 'err');
   } finally {
     state.nrBusy = false;
   }
@@ -689,8 +697,10 @@ async function setUecapMode(mode) {
       state.uecapVerifyMessage = data.error || '提交失败';
       await refreshUecap();
     }
-  } catch (_) {
-    showToast('请求失败');
+  } catch (err) {
+    const message = err?.message || String(err);
+    if (!requireFeature('core').isRequestCancelled?.(err)) showToast(`请求失败：${message}`);
+    appendLog(`UE 配置请求失败：${message}`, 'err');
     state.uecapBusy = false;
     state.uecapPendingMode = '';
     state.uecapExpectedHash = '';
@@ -898,7 +908,11 @@ async function setNtpServer(server) {
       showToast(`切换失败：${data.error || '未知'}`);
     }
   } catch (err) {
-    if (!requireFeature('core').isRequestCancelled?.(err)) showToast('请求失败');
+    if (!requireFeature('core').isRequestCancelled?.(err)) {
+      const message = err?.message || String(err);
+      showToast(`请求失败：${message}`);
+      appendLog(`NTP 切换失败：${message}`, 'err');
+    }
   } finally {
     state.ntpBusy = false;
   }
@@ -923,7 +937,11 @@ async function syncNtp() {
       showToast('同步失败');
     }
   } catch (err) {
-    if (!requireFeature('core').isRequestCancelled?.(err)) showToast('同步请求失败');
+    if (!requireFeature('core').isRequestCancelled?.(err)) {
+      const message = err?.message || String(err);
+      showToast(`同步请求失败：${message}`);
+      appendLog(`NTP 同步失败：${message}`, 'err');
+    }
   } finally {
     refs.ntpSyncLabel.textContent = '立即同步';
     state.ntpBusy = false;

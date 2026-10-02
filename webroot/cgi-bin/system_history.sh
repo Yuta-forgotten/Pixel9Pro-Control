@@ -23,6 +23,23 @@ SNAPSHOTS="$ROOT/snapshots"
 CALC="$MODDIR/scripts/system_history_calc.awk"
 MAX_AGE=604800
 MAX_GAP=1800
+history_config_value() {
+    _hsc_key="$1"; _hsc_default="$2"
+    _hsc_value=$(sed -n "s/^${_hsc_key}=//p" "$STATE_ROOT/system_history_config" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+    [ -n "$_hsc_value" ] && printf '%s' "$_hsc_value" || printf '%s' "$_hsc_default"
+}
+history_config_enabled() {
+    case "$(history_config_value analytics_enabled 1)" in 0|false|off|no) printf false ;; *) printf true ;; esac
+}
+history_receipt_value() { sed -n "s/^$1=//p" "$STATE_ROOT/system_history/receipt" 2>/dev/null | head -n 1 | tr -d ' \r\n\t'; }
+history_policy_phase() {
+    _hsc_success=$(history_receipt_value last_success_ts)
+    _hsc_config_ts=$(stat -c %Y "$STATE_ROOT/system_history_config" 2>/dev/null || printf '0')
+    case "$_hsc_success:$_hsc_config_ts" in
+        *[!0-9:]*) printf staged ;;
+        *) [ "$_hsc_success" -ge "$_hsc_config_ts" ] 2>/dev/null && printf effective || printf staged ;;
+    esac
+}
 _fallback_off=$(sed -n 's/^system_interval_off_sec=//p' "$STATE_ROOT/system_history_config" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
 case "$_fallback_off" in ''|*[!0-9]*) _fallback_off=900 ;; esac
 [ "$_fallback_off" -ge 900 ] 2>/dev/null || _fallback_off=900
@@ -43,10 +60,13 @@ valid_epoch "$start_ts" || { json_error '400 Bad Request' 'invalid start_ts'; ex
 [ "$start_ts" -le "$end_ts" ] 2>/dev/null || { json_error '400 Bad Request' 'start_ts is after end_ts'; exit 0; }
 [ "$start_ts" -ge $((end_ts - MAX_AGE)) ] 2>/dev/null || { json_error '400 Bad Request' 'history range exceeds 7 days'; exit 0; }
 
-json_headers
 if [ ! -r "$CALC" ] || [ ! -d "$SNAPSHOTS" ]; then
-    printf '{"ok":true,"schema":1,"status":"unavailable","quality":"unavailable","reason":"collector_not_installed","source":"android_batterystats","start_ts":%s,"end_ts":%s,"coverage_sec":0,"coverage_ratio":0,"valid_samples":0,"raw_samples":0,"gap_count":0,"gaps":[],"updated_at":null,"data_revision":"none","model":"BatteryStats estimated power use","power":[]}\n' \
-        "$(json_num "$start_ts")" "$(json_num "$end_ts")"
+    json_headers
+    _hsc_phase=$(history_policy_phase)
+    _hsc_attempt=$(history_receipt_value last_attempt_ts); _hsc_success=$(history_receipt_value last_success_ts); _hsc_result=$(history_receipt_value last_result)
+    [ -n "$_hsc_attempt" ] || _hsc_attempt=null; [ -n "$_hsc_success" ] || _hsc_success=null; [ -n "$_hsc_result" ] || _hsc_result=never
+    printf '{"ok":true,"schema":1,"status":"unavailable","quality":"unavailable","reason":"collector_not_installed","source":"android_batterystats","policy":{"phase":"%s","analytics_enabled":%s,"retention_days":%s,"max_bytes":%s,"module_interval_on_sec":%s,"module_interval_off_sec":%s,"system_interval_on_sec":%s,"system_interval_off_sec":%s},"collection":{"phase":"%s","last_attempt_ts":%s,"last_success_ts":%s,"last_result":"%s"},"start_ts":%s,"end_ts":%s,"coverage_sec":0,"coverage_ratio":0,"valid_samples":0,"raw_samples":0,"gap_count":0,"gaps":[],"updated_at":null,"data_revision":"none","model":"BatteryStats estimated power use","power":[]}\n' \
+        "$_hsc_phase" "$(history_config_enabled)" "$(history_config_value retention_days 7)" "$(history_config_value max_bytes 33554432)" "$(history_config_value module_interval_on_sec 60)" "$(history_config_value module_interval_off_sec 900)" "$(history_config_value system_interval_on_sec 900)" "$(history_config_value system_interval_off_sec 900)" "$_hsc_phase" "$(json_num "$_hsc_attempt")" "$(json_num "$_hsc_success")" "$(json_escape "$_hsc_result")" "$(json_num "$start_ts")" "$(json_num "$end_ts")"
     exit 0
 fi
 
@@ -54,8 +74,8 @@ tmp="$ROOT/.system_rows.$$"
 sorted="$ROOT/.system_rows_sorted.$$"
 out="$ROOT/.system_history_result.$$"
 trap 'rm -f "$tmp" "$sorted" "$out" 2>/dev/null' EXIT INT TERM HUP
-mkdir -p "$ROOT" 2>/dev/null || { printf '{"ok":false,"error":"cannot create system history state"}\n'; exit 0; }
-: > "$tmp" 2>/dev/null || { printf '{"ok":false,"error":"cannot create system history rows"}\n'; exit 0; }
+mkdir -p "$ROOT" 2>/dev/null || json_error '500 Internal Server Error' 'cannot create system history state'
+: > "$tmp" 2>/dev/null || json_error '500 Internal Server Error' 'cannot create system history rows'
 
 for file in "$SNAPSHOTS"/*; do
     [ -f "$file" ] || continue
@@ -112,8 +132,12 @@ while IFS="$TAB" read -r kind ts boot screen doze total rate interval valid poin
     fi
 done < "$out"
 
-printf '{"ok":true,"schema":1,"status":"%s","quality":"%s","reason":"%s","source":"android_batterystats","model":"BatteryStats estimated power use","start_ts":%s,"end_ts":%s,"coverage_sec":%s,"coverage_ratio":%s,"valid_samples":%s,"raw_samples":%s,"gap_count":%s,"gaps":[%s],"updated_at":%s,"data_revision":"%s:%s:%s","window":{"start_ts":%s,"end_ts":%s,"coverage_ratio":%s,"valid_samples":%s,"raw_samples":%s,"gap_count":%s,"quality":"%s"},"power":[%s]}\n' \
-    "$(json_escape "$_status")" "$(json_escape "$quality")" "$(json_escape "$reason")" \
+_hsc_phase=$(history_policy_phase)
+_hsc_attempt=$(history_receipt_value last_attempt_ts); _hsc_success=$(history_receipt_value last_success_ts); _hsc_result=$(history_receipt_value last_result)
+[ -n "$_hsc_attempt" ] || _hsc_attempt=null; [ -n "$_hsc_success" ] || _hsc_success=null; [ -n "$_hsc_result" ] || _hsc_result=never
+json_headers
+printf '{"ok":true,"schema":1,"status":"%s","quality":"%s","reason":"%s","source":"android_batterystats","model":"BatteryStats estimated power use","policy":{"phase":"%s","analytics_enabled":%s,"retention_days":%s,"max_bytes":%s,"module_interval_on_sec":%s,"module_interval_off_sec":%s,"system_interval_on_sec":%s,"system_interval_off_sec":%s},"collection":{"phase":"%s","last_attempt_ts":%s,"last_success_ts":%s,"last_result":"%s"},"start_ts":%s,"end_ts":%s,"coverage_sec":%s,"coverage_ratio":%s,"valid_samples":%s,"raw_samples":%s,"gap_count":%s,"gaps":[%s],"updated_at":%s,"data_revision":"%s:%s:%s","window":{"start_ts":%s,"end_ts":%s,"coverage_ratio":%s,"valid_samples":%s,"raw_samples":%s,"gap_count":%s,"quality":"%s"},"power":[%s]}\n' \
+    "$(json_escape "$_status")" "$(json_escape "$quality")" "$(json_escape "$reason")" "$_hsc_phase" "$(history_config_enabled)" "$(history_config_value retention_days 7)" "$(history_config_value max_bytes 33554432)" "$(history_config_value module_interval_on_sec 60)" "$(history_config_value module_interval_off_sec 900)" "$(history_config_value system_interval_on_sec 900)" "$(history_config_value system_interval_off_sec 900)" "$_hsc_phase" "$(json_num "$_hsc_attempt")" "$(json_num "$_hsc_success")" "$(json_escape "$_hsc_result")" \
     "$(json_num "$start_ts")" "$(json_num "$end_ts")" "$(json_num "$coverage")" "$coverage_ratio" \
     "$(json_num "$valid_samples")" "$(json_num "$raw_samples")" "$(json_num "$gap_count")" "$gaps" "$(json_num "$updated")" \
     "$(json_escape "$_status")" "$(json_escape "$quality")" "$(json_num "$updated")" \

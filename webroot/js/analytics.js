@@ -5,7 +5,7 @@
     view: null, cache: new Map(), rankCache: new Map(), requestId: 0, request: null,
     overviewRequest: null, rankRequest: null, rankGeneration: 0, timer: null,
     summary: null, ranking: { status: 'idle' }, rankRefreshRequested: false, policy: null,
-    historyFingerprint: '', activeKey: '', selectedBounds: null, lastCaptureStatus: '', detailsDue: true, lastDetailsAt: 0, observer: null, suspended: false
+    historyFingerprint: '', activeKey: '', selectedBounds: null, lastCaptureStatus: '', detailsDue: true, lastDetailsAt: 0, observer: null, suspended: false, initialLoadPending: false
   };
   const core = () => requireFeature('core');
   const apiFetch = (...args) => core().apiFetch(...args);
@@ -59,7 +59,7 @@
     try {
       const data = await apiFetch(API.historyPolicy, { method: 'GET', timeoutMs: 8000, priority: 'interactive', scope: 'analytics.policy.read' });
       if (data?.ok === false) throw new Error(data.error || data.reason || '后台策略读取失败');
-      state.policy = data.policy || data;
+      state.policy = { ...(data.policy || data), phase: data.phase || data.policy?.phase || data.phase };
       updateView(true);
       return state.policy;
     } catch (err) {
@@ -209,6 +209,11 @@
     return { label: windowLabel, granularity: bounds.granularity, coveragePct: ratio, validSamples: stats?.backendValidSamples ?? stats?.validCount ?? stats?.count };
   }
   async function fetchEnergySummary(bounds, stats, forceRank = false, contextKey = state.activeKey) {
+    // Android system history is already the selected source. Its bounds use
+    // `raw`, which is intentionally not a software-attribution ranking input.
+    // Do not send raw granularity to power_rank.sh (that endpoint accepts only
+    // minute/hour) and do not show a false software ranking on this tab.
+    if (state.source === 'system') return;
     if (state.source === 'power') {
       try {
         const fast = await request(API.energyFast, 4000, 'overviewRequest');
@@ -251,7 +256,7 @@
     }
   }
   async function load(force = false, forceRank = false) {
-    if (!state.open || !isActive()) return null;
+    if (!state.open || !isActive() || state.initialLoadPending) return null;
     const view = ensureView(); const cacheKey = key(); const requestedBounds = rangeBounds();
     const selectionChanged = state.activeKey !== cacheKey;
     if (selectionChanged) {
@@ -290,6 +295,7 @@
     if (!state.cache.has(cacheKey)) viewFeature().loading(view, state.source, state.rangeId, state.thermalSensor);
     try {
       const data = await fetchSource(historyBounds); if (requestId !== state.requestId || !data) return null;
+      if (data.ok === false) throw new Error(data.error || data.reason || '历史接口返回失败');
       const normalized = normalizeResponse(data, historyBounds);
       state.cache.set(cacheKey, normalized); updateView();
       if (normalized.stats.count < 2) viewFeature().empty(view, state.source, state.rangeId, normalized.status, state.thermalSensor);
@@ -338,7 +344,7 @@
       if (result?.ok === false) throw new Error(result.error || result.reason || '策略未生效');
       const readback = await apiFetch(API.historyPolicy, { method: 'GET', timeoutMs: 8000, priority: 'interactive', scope: 'analytics.policy.readback' });
       if (readback?.ok === false || (!readback?.policy && !readback?.phase)) throw new Error(readback?.error || readback?.reason || '后台未返回策略 readback');
-      const applied = readback.policy || readback;
+      const applied = { ...(readback.policy || readback), phase: readback.phase || readback.policy?.phase || result?.phase || result?.policy?.phase };
       const phase = applied.phase || result?.phase || result?.policy?.phase || 'staged';
       state.policy = applied; if (state.view?.policy) state.view.policy.dirty = false;
       showToast(phase === 'effective' ? '后台记录设置已生效' : `后台记录设置已保存（${phase}）`); state.detailsDue = true; await load(true, true);
@@ -352,7 +358,7 @@
   function stopBurst() { if (!requireFeature('auth').hasToken()) return; apiFetch(API.thermalBurst, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }), timeoutMs: 2500, keepalive: true, priority: 'background', scope: 'analytics.burst' }).catch(() => {}); }
   function open(source = 'thermal') {
     init();
-    abort('analytics-open'); state.open = true; state.suspended = false; state.source = source; state.summary = null; state.detailsDue = true; const view = ensureView();
+    abort('analytics-open'); state.open = true; state.suspended = false; state.initialLoadPending = true; state.source = source; state.summary = null; state.detailsDue = true; const view = ensureView();
     refs.detailTitle.textContent = source === 'thermal' ? '温度与功耗历史' : '功耗与温度历史';
     refs.detailModal.classList.remove('energy-mode', 'history-mode', 'detail-minimized'); refs.detailModal.classList.add('analytics-mode', 'open');
     refs.detailMinimizeBtn?.setAttribute('aria-expanded', 'true');
@@ -362,16 +368,17 @@
     stopBurst();
     loadPolicy().then(() => {
       if (!state.open) return;
+      state.initialLoadPending = false;
       if (policyEnabled() && source === 'thermal' && state.thermalSensor === 'module') triggerBurst({ prompt: false });
       load(true);
     });
   }
-  function stop() { const active = state.open; state.open = false; state.suspended = true; abort('analytics-closed'); if (active) stopBurst(); }
+  function stop() { const active = state.open; state.open = false; state.suspended = true; state.initialLoadPending = false; abort('analytics-closed'); if (active) stopBurst(); }
   function suspend(reason) { if (state.suspended) return; state.suspended = true; abort(reason); if (state.open) stopBurst(); }
   function pause() { suspend('page-hidden'); }
   function minimize() { suspend('analytics-minimized'); }
   function resume() {
-    if (!state.open || !isActive() || (!state.suspended && (state.request || state.overviewRequest || state.rankRequest || state.timer))) return;
+    if (!state.open || !isActive() || state.initialLoadPending || (!state.suspended && (state.request || state.overviewRequest || state.rankRequest || state.timer))) return;
     state.suspended = false;
     if (state.source === 'thermal' && state.thermalSensor === 'module') triggerBurst({ prompt: false });
     load(false);
@@ -379,7 +386,7 @@
   function init() {
     if (state.observer || !refs.detailModal) return;
     document.addEventListener('webui-theme-changed', () => { if (state.open && isActive()) updateView(); });
-    state.observer = new MutationObserver(() => { if (!state.open) return; if (refs.detailModal.classList.contains('detail-minimized')) minimize(); else if (isActive() && !state.request && !state.overviewRequest && !state.rankRequest && !state.timer) resume(); });
+    state.observer = new MutationObserver(() => { if (!state.open) return; if (refs.detailModal.classList.contains('detail-minimized')) minimize(); else if (!state.initialLoadPending && isActive() && !state.request && !state.overviewRequest && !state.rankRequest && !state.timer) resume(); });
     state.observer.observe(refs.detailModal, { attributes: true, attributeFilter: ['class'] });
   }
   registerFeature('analytics', { init, open, stop, pause, minimize, resume, triggerBurst, schedule, isActive: () => state.open && isActive(), getState: () => ({ ...state, cache: undefined }) });

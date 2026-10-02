@@ -18,6 +18,14 @@ valid_epoch() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; }
 config_value() { _hsc_key="$1"; _hsc_default="$2"; _hsc_value=$(sed -n "s/^${_hsc_key}=//p" "$STATE_ROOT/system_history_config" 2>/dev/null | head -n 1 | tr -d ' \r\n\t'); [ -n "$_hsc_value" ] && printf '%s' "$_hsc_value" || printf '%s' "$_hsc_default"; }
 config_enabled() { case "$(config_value analytics_enabled 1)" in 0|false|off|no) printf false ;; *) printf true ;; esac; }
 receipt_value() { sed -n "s/^$1=//p" "$ROOT/receipt" 2>/dev/null | head -n 1 | tr -d ' \r\n\t'; }
+policy_phase() {
+    _hsc_success=$(receipt_value last_success_ts)
+    _hsc_config_ts=$(stat -c %Y "$STATE_ROOT/system_history_config" 2>/dev/null || printf '0')
+    case "$_hsc_success:$_hsc_config_ts" in
+        *[!0-9:]*) printf staged ;;
+        *) [ "$_hsc_success" -ge "$_hsc_config_ts" ] 2>/dev/null && printf effective || printf staged ;;
+    esac
+}
 
 now=$(date +%s 2>/dev/null || printf '0')
 valid_epoch "$now" || now=0
@@ -33,10 +41,13 @@ valid_epoch "$start_ts" || { json_error '400 Bad Request' 'invalid start_ts'; ex
 [ "$start_ts" -le "$end_ts" ] 2>/dev/null || { json_error '400 Bad Request' 'start_ts is after end_ts'; exit 0; }
 [ "$start_ts" -ge $((end_ts - MAX_AGE)) ] 2>/dev/null || { json_error '400 Bad Request' 'history range exceeds 7 days'; exit 0; }
 
-json_headers
 if [ ! -d "$EVENTS" ]; then
-    printf '{"ok":true,"schema":2,"status":"unavailable","quality":"unavailable","reason":"history_not_collected","source":"android_batterystats_history","model":"BatteryStats estimated power use","policy":{"phase":"effective","analytics_enabled":%s,"retention_days":%s,"max_bytes":%s,"module_interval_on_sec":%s,"module_interval_off_sec":%s,"system_interval_on_sec":%s,"system_interval_off_sec":%s},"collection":{"phase":"effective","last_attempt_ts":null,"last_success_ts":null,"last_result":"never"},"start_ts":%s,"end_ts":%s,"coverage_sec":0,"coverage_ratio":0,"valid_samples":0,"raw_samples":0,"gap_count":0,"gaps":[],"updated_at":null,"window":{"start_ts":%s,"end_ts":%s,"coverage_ratio":0,"quality":"unavailable"},"sources":{"power":{"raw_samples":0,"valid_samples":0,"quality":"unavailable"},"thermal":{"raw_samples":0,"valid_samples":0,"quality":"unavailable"}},"power":[],"power_rates":[],"thermal":[]}\n' \
-        "$(config_enabled)" "$(config_value retention_days 7)" "$(config_value max_bytes 33554432)" "$(config_value module_interval_on_sec 60)" "$(config_value module_interval_off_sec 900)" "$(config_value system_interval_on_sec 900)" "$(config_value system_interval_off_sec 900)" "$(json_num "$start_ts")" "$(json_num "$end_ts")" "$(json_num "$start_ts")" "$(json_num "$end_ts")"
+    json_headers
+    _hsc_phase=$(policy_phase)
+    _hsc_attempt=$(receipt_value last_attempt_ts); _hsc_success=$(receipt_value last_success_ts); _hsc_result=$(receipt_value last_result)
+    [ -n "$_hsc_attempt" ] || _hsc_attempt=null; [ -n "$_hsc_success" ] || _hsc_success=null; [ -n "$_hsc_result" ] || _hsc_result=never
+    printf '{"ok":true,"schema":2,"status":"unavailable","quality":"unavailable","reason":"history_not_collected","source":"android_batterystats_history","model":"BatteryStats estimated power use","policy":{"phase":"%s","analytics_enabled":%s,"retention_days":%s,"max_bytes":%s,"module_interval_on_sec":%s,"module_interval_off_sec":%s,"system_interval_on_sec":%s,"system_interval_off_sec":%s},"collection":{"phase":"%s","last_attempt_ts":%s,"last_success_ts":%s,"last_result":"%s"},"start_ts":%s,"end_ts":%s,"coverage_sec":0,"coverage_ratio":0,"valid_samples":0,"raw_samples":0,"gap_count":0,"gaps":[],"updated_at":null,"window":{"start_ts":%s,"end_ts":%s,"coverage_ratio":0,"quality":"unavailable"},"sources":{"power":{"raw_samples":0,"valid_samples":0,"quality":"unavailable"},"thermal":{"raw_samples":0,"valid_samples":0,"quality":"unavailable"}},"power":[],"power_rates":[],"thermal":[]}\n' \
+        "$_hsc_phase" "$(config_enabled)" "$(config_value retention_days 7)" "$(config_value max_bytes 33554432)" "$(config_value module_interval_on_sec 60)" "$(config_value module_interval_off_sec 900)" "$(config_value system_interval_on_sec 900)" "$(config_value system_interval_off_sec 900)" "$_hsc_phase" "$(json_num "$_hsc_attempt")" "$(json_num "$_hsc_success")" "$(json_escape "$_hsc_result")" "$(json_num "$start_ts")" "$(json_num "$end_ts")" "$(json_num "$start_ts")" "$(json_num "$end_ts")"
     exit 0
 fi
 
@@ -44,7 +55,8 @@ rows="$ROOT/.event_rows.$$"
 sorted="$ROOT/.event_rows_sorted.$$"
 out="$ROOT/.event_calc.$$"
 trap 'rm -f "$rows" "$sorted" "$out" 2>/dev/null' EXIT INT TERM HUP
-: > "$rows" 2>/dev/null || { printf '{"ok":false,"error":"cannot create system history rows"}\n'; exit 0; }
+: > "$rows" 2>/dev/null || json_error '500 Internal Server Error' 'cannot create system history rows'
+json_headers
 
 latest_file=''
 latest_stamp=0
@@ -58,7 +70,14 @@ for file in "$EVENTS"/*; do
         latest_stamp="$stamp"
     fi
 done
-[ -n "$latest_file" ] || { printf '{"ok":true,"schema":2,"status":"unavailable","quality":"unavailable","reason":"history_not_collected","source":"android_batterystats_history","power":[],"power_rates":[],"thermal":[]}\n'; exit 0; }
+[ -n "$latest_file" ] || {
+    _hsc_phase=$(policy_phase)
+    _hsc_attempt=$(receipt_value last_attempt_ts); _hsc_success=$(receipt_value last_success_ts); _hsc_result=$(receipt_value last_result)
+    [ -n "$_hsc_attempt" ] || _hsc_attempt=null; [ -n "$_hsc_success" ] || _hsc_success=null; [ -n "$_hsc_result" ] || _hsc_result=never
+    printf '{"ok":true,"schema":2,"status":"unavailable","quality":"unavailable","reason":"history_not_collected","source":"android_batterystats_history","policy":{"phase":"%s","analytics_enabled":%s,"retention_days":%s,"max_bytes":%s,"module_interval_on_sec":%s,"module_interval_off_sec":%s,"system_interval_on_sec":%s,"system_interval_off_sec":%s},"collection":{"phase":"%s","last_attempt_ts":%s,"last_success_ts":%s,"last_result":"%s"},"power":[],"power_rates":[],"thermal":[]}\n' \
+        "$_hsc_phase" "$(config_enabled)" "$(config_value retention_days 7)" "$(config_value max_bytes 33554432)" "$(config_value module_interval_on_sec 60)" "$(config_value module_interval_off_sec 900)" "$(config_value system_interval_on_sec 900)" "$(config_value system_interval_off_sec 900)" "$_hsc_phase" "$(json_num "$_hsc_attempt")" "$(json_num "$_hsc_success")" "$(json_escape "$_hsc_result")"
+    exit 0
+}
 name=${latest_file##*/}
 boot_id=${name#*_}
 cache_dir="$ROOT/cache"
@@ -129,14 +148,11 @@ case "$updated" in ''|*[!0-9]*) updated=0 ;; esac
 case "$gap_count" in ''|*[!0-9]*) gap_count=0 ;; esac
 elapsed=$((end_ts-start_ts)); [ "$elapsed" -gt 0 ] 2>/dev/null || elapsed=1
 coverage_ratio=$(awk -v c="$coverage" -v e="$elapsed" 'BEGIN { r=c/e; if(r<0)r=0; if(r>1)r=1; printf "%.3f",r }')
-_policy_phase=staged
-_policy_success=$(receipt_value last_success_ts)
-_policy_config_ts=$(stat -c %Y "$STATE_ROOT/system_history_config" 2>/dev/null || printf '0')
-case "$_policy_success:$_policy_config_ts" in *[!0-9:]*) ;; *) [ "$_policy_success" -ge "$_policy_config_ts" ] 2>/dev/null && _policy_phase=effective ;; esac
+_policy_phase=$(policy_phase)
 policy_json=$(printf '{"phase":"%s","analytics_enabled":%s,"retention_days":%s,"max_bytes":%s,"module_interval_on_sec":%s,"module_interval_off_sec":%s,"system_interval_on_sec":%s,"system_interval_off_sec":%s}' \
     "$_policy_phase" "$(config_enabled)" "$(config_value retention_days 7)" "$(config_value max_bytes 33554432)" "$(config_value module_interval_on_sec 60)" "$(config_value module_interval_off_sec 900)" "$(config_value system_interval_on_sec 900)" "$(config_value system_interval_off_sec 900)")
-collection_json=$(printf '{"phase":"effective","last_attempt_ts":%s,"last_success_ts":%s,"last_result":"%s","screen":"%s","doze":"%s"}' \
-    "$(json_num "$(receipt_value last_attempt_ts)")" "$(json_num "$(receipt_value last_success_ts)")" "$(json_escape "$(receipt_value last_result)")" "$(json_escape "$(receipt_value screen)")" "$(json_escape "$(receipt_value doze)")")
+collection_json=$(printf '{"phase":"%s","last_attempt_ts":%s,"last_success_ts":%s,"last_result":"%s","screen":"%s","doze":"%s"}' \
+    "$_policy_phase" "$(json_num "$(receipt_value last_attempt_ts)")" "$(json_num "$(receipt_value last_success_ts)")" "$(json_escape "$(receipt_value last_result)")" "$(json_escape "$(receipt_value screen)")" "$(json_escape "$(receipt_value doze)")")
 screen_totals=$(awk -F '\t' '$1 == "point" && $15 == 1 { mah=$12*$14/3600; if ($10 == "on") { on_mah+=mah; on_sec+=$14 } else if ($10 == "off") { off_mah+=mah; off_sec+=$14 } } END { printf "{\"on_mah\":%.6f,\"off_mah\":%.6f,\"on_sec\":%d,\"off_sec\":%d}",on_mah+0,off_mah+0,on_sec+0,off_sec+0 }' "$out")
 battery_level=$(awk -F '\t' '$1 == "point" { level=$5 } END { if (level ~ /^[0-9]+$/) print level; else print "null" }' "$out")
 

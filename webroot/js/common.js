@@ -123,7 +123,6 @@ async function rawApiFetch(path, opts = {}) {
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   const headers = { ...(opts.headers || {}) };
   const method = (opts.method || 'GET').toUpperCase();
-  let response;
   try {
     if (method !== 'GET') {
       if (!(await ensureWebuiToken())) throw new Error('missing WebUI token');
@@ -134,9 +133,36 @@ async function rawApiFetch(path, opts = {}) {
     const request = { cache: 'no-store', ...opts, headers, signal: controller.signal };
     delete request.timeoutMs;
     delete request.controller;
-    response = await fetch(path, request);
+    const response = await fetch(path, request);
+    // Keep the same AbortController active while the CGI body is consumed.
+    // BusyBox httpd can send headers before a slow shell/awk pipeline finishes;
+    // clearing the timer at that point would permanently occupy a Request Hub
+    // slot and make unrelated UI requests appear to load forever.
+    const bodyText = await response.text();
+    let payload = null;
+    try { payload = bodyText ? JSON.parse(bodyText) : null; } catch (_) {
+      const formatError = new Error(`接口返回格式错误（HTTP ${response.status}）`);
+      formatError.status = response.status;
+      formatError.detail = bodyText.slice(0, 240);
+      throw formatError;
+    }
+    if (!response.ok) {
+      if (response.status === 403 && method !== 'GET') clearWebuiToken();
+      const detail = payload?.error || payload?.message || (payload ? JSON.stringify(payload) : '接口未返回错误详情');
+      const message = response.status === 403 ? 'WebUI token 无效或已过期' : `HTTP ${response.status}`;
+      const error = new Error(`${message} · ${detail}`);
+      error.status = response.status;
+      error.detail = detail;
+      throw error;
+    }
+    if (payload === null || typeof payload !== 'object') {
+      const formatError = new Error(`接口返回空数据（HTTP ${response.status}）`);
+      formatError.status = response.status;
+      throw formatError;
+    }
+    return payload;
   } catch (err) {
-    if (err && err.name === 'AbortError') {
+    if (err && (err.name === 'AbortError' || controller.signal.aborted)) {
       const reason = controller.signal.reason;
       const error = new Error(typeof reason === 'string' ? 'request cancelled' : 'request timeout');
       error.code = typeof reason === 'string' ? reason : 'REQUEST_TIMEOUT';
@@ -146,22 +172,6 @@ async function rawApiFetch(path, opts = {}) {
   } finally {
     clearTimeout(timeoutId);
   }
-  if (!response.ok) {
-    if (response.status === 403 && method !== 'GET') clearWebuiToken();
-    let detail = '';
-    try {
-      const payload = await response.clone().json();
-      detail = payload?.error || payload?.message || JSON.stringify(payload);
-    } catch (_) {
-      try { detail = (await response.clone().text()).trim(); } catch (_) {}
-    }
-    const message = response.status === 403 ? 'WebUI token 无效或已过期' : `HTTP ${response.status}`;
-    const error = new Error(detail ? `${message} · ${detail}` : message);
-    error.status = response.status;
-    error.detail = detail;
-    throw error;
-  }
-  return response.json();
 }
 
 function cancelBackgroundRequests() {

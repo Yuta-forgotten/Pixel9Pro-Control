@@ -25,10 +25,14 @@ valid_epoch "$end_ts" || { json_error '400 Bad Request' 'invalid end_ts'; exit 0
 valid_epoch "$start_ts" || { json_error '400 Bad Request' 'invalid start_ts'; exit 0; }
 [ "$start_ts" -le "$end_ts" ] 2>/dev/null || { json_error '400 Bad Request' 'start_ts is after end_ts'; exit 0; }
 [ "$start_ts" -ge $((end_ts - MAX_AGE)) ] 2>/dev/null || { json_error '400 Bad Request' 'history range exceeds 7 days'; exit 0; }
-case "$granularity" in ''|minute|hour) ;; *) json_error '400 Bad Request' 'invalid granularity'; exit 0 ;; esac
+case "$granularity" in
+    raw) granularity=hour ;;  # legacy system-history callers used raw
+    ''|minute|hour) ;;
+    *) json_error '400 Bad Request' 'invalid granularity'; exit 0 ;;
+esac
 
-json_headers
 if [ ! -r "$CALC" ] || [ ! -d "$SNAPSHOTS" ]; then
+    json_headers
     printf '{"ok":true,"schema":1,"status":"unavailable","quality":"unavailable","reason":"collector_not_installed","source":"power_rank_snapshot","start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_sec":0,"coverage_ratio":0,"valid_intervals":0,"valid_samples":0,"raw_samples":0,"gap_count":0,"gaps":[],"updated_at":null,"data_revision":"none","cache":{"hit":false},"apps":[],"components":[]}\n' \
         "$(json_num "$start_ts")" "$(json_num "$end_ts")" "$(json_escape "$granularity")"
     exit 0
@@ -37,7 +41,7 @@ fi
 tmp="$ROOT/.rank_query.$$"; files="$ROOT/.rank_files.$$"; ledger_tmp="$ROOT/.rank_ledger.$$"; out="$ROOT/.rank_result.$$"
 ledger="$ROOT/ledger.tsv"
 trap 'rm -f "$tmp" "$files" "$ledger_tmp" "$out" 2>/dev/null' EXIT INT TERM HUP
-mkdir -p "$ROOT" 2>/dev/null || { printf '{"ok":false,"error":"cannot create power rank state"}\n'; exit 0; }
+mkdir -p "$ROOT" 2>/dev/null || json_error '500 Internal Server Error' 'cannot create power rank state'
 
 for file in "$SNAPSHOTS"/*; do
     [ -f "$file" ] || continue
@@ -57,27 +61,24 @@ awk -F '\t' -v start_ts="$start_ts" -v end_ts="$end_ts" '
 count=$(wc -l < "$files" 2>/dev/null | tr -d ' \r\n')
 case "$count" in ''|*[!0-9]*) count=0 ;; esac
 if [ "$count" -lt 2 ] 2>/dev/null; then
+    json_headers
     printf '{"ok":true,"schema":1,"status":"unavailable","quality":"unavailable","reason":"need_two_snapshots","source":"power_rank_snapshot","start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_sec":0,"coverage_ratio":0,"valid_intervals":0,"valid_samples":0,"raw_samples":0,"gap_count":0,"gaps":[],"updated_at":null,"data_revision":"empty","cache":{"hit":false},"apps":[],"components":[]}\n' \
         "$(json_num "$start_ts")" "$(json_num "$end_ts")" "$(json_escape "$granularity")"
     exit 0
 fi
 
-: > "$ledger" 2>/dev/null || { printf '{"ok":false,"error":"cannot create power rank ledger"}\n'; exit 0; }
-if [ ! -s "$ledger" ]; then
-    : > "$ledger_tmp" 2>/dev/null || { printf '{"ok":false,"error":"cannot create power rank ledger","reason":"collector_write_failed"}\n'; exit 0; }
-    while IFS= read -r file; do
-        [ -r "$file" ] || { printf '{"ok":false,"error":"power rank snapshot missing","reason":"collector_read_failed"}\n'; exit 0; }
-        cat "$file" >> "$ledger_tmp" 2>/dev/null || { printf '{"ok":false,"error":"cannot read power rank snapshot","reason":"collector_read_failed"}\n'; exit 0; }
-    done < "$files"
-    ledger="$ledger_tmp"
+: > "$ledger_tmp" 2>/dev/null || json_error '500 Internal Server Error' 'cannot create power rank ledger'
+while IFS= read -r file; do
+    [ -r "$file" ] || json_error '500 Internal Server Error' 'power rank snapshot missing'
+    cat "$file" >> "$ledger_tmp" 2>/dev/null || json_error '500 Internal Server Error' 'cannot read power rank snapshot'
+done < "$files"
+ledger="$ledger_tmp"
+_rank_max_gap=$(awk -v on="$(sed -n 's/^system_interval_on_sec=//p' "${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config" 2>/dev/null | head -n 1)" -v off="$(sed -n 's/^system_interval_off_sec=//p' "${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config" 2>/dev/null | head -n 1)" 'BEGIN { if(on<900)on=900; if(off<900)off=900; m=(on>off?on:off)*2+120; if(m<1800)m=1800; print m }')
+if ! awk -F '\t' -v start_ts="$start_ts" -v end_ts="$end_ts" -v max_gap="$_rank_max_gap" \
+    -f "$CALC" "$ledger" > "$out" 2>/dev/null; then
+    json_error '500 Internal Server Error' 'power rank calculation failed: collector_calc_failed'
 fi
-if ! awk -F '\t' -v start_ts="$start_ts" -v end_ts="$end_ts" \
-    -v max_gap="$(awk -v on="$(sed -n 's/^system_interval_on_sec=//p' "${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config" 2>/dev/null | head -n 1)" -v off="$(sed -n 's/^system_interval_off_sec=//p' "${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config" 2>/dev/null | head -n 1)" 'BEGIN { if(on<900)on=900; if(off<900)off=900; m=(on>off?on:off)*2+120; if(m<1800)m=1800; print m }')" \
-    -f "$CALC" "$ledger" > "$out" 2>/dev/null || {
-    printf '{"ok":false,"error":"power rank calculation failed","reason":"collector_calc_failed"}\n'
-    exit 0
-}
-[ -s "$out" ] || { printf '{"ok":false,"error":"power rank calculation returned no data","reason":"collector_calc_empty"}\n'; exit 0; }
+[ -s "$out" ] || json_error '500 Internal Server Error' 'power rank calculation returned no data: collector_calc_empty'
 meta=$(sed -n '/^meta[[:space:]]/p' "$out" 2>/dev/null | tail -n 1)
 TAB=$(printf '\t')
 IFS="$TAB" read -r _ status quality reason coverage valid_intervals snapshots updated revision observed_start observed_end reference_seen reference_start reference_end <<EOF
@@ -119,6 +120,7 @@ while IFS="$TAB" read -r kind key label value; do
     esac
 done < "$out"
 
+json_headers
 printf '{"ok":true,"schema":1,"status":"%s","quality":"%s","reason":"%s","attribution_state":"%s","window_proven":%s,"observed_start_ts":%s,"observed_end_ts":%s,"reference_start_ts":%s,"reference_end_ts":%s,"source":"power_rank_snapshot","start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_sec":%s,"coverage_ratio":%s,"valid_intervals":%s,"valid_samples":%s,"raw_samples":%s,"gap_count":%s,"gaps":[%s],"updated_at":%s,"data_revision":"%s","cache":{"hit":false},"total_mah":null,"apps":[%s],"components":[%s]}\n' \
     "$(json_escape "$status")" "$(json_escape "$quality")" "$(json_escape "$reason")" "$(json_escape "$attribution_state")" "$window_proven" "$(json_num "$observed_start")" "$(json_num "$observed_end")" "$(json_num "$reference_start")" "$(json_num "$reference_end")" \
     "$(json_num "$start_ts")" "$(json_num "$end_ts")" "$(json_escape "$granularity")" "$(json_num "$coverage")" "$coverage_ratio" \

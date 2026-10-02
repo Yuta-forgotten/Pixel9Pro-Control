@@ -97,7 +97,10 @@ case "${REQUEST_METHOD:-GET}" in
         interval_off=$(printf '%s' "$body" | sed -n 's/.*"system_interval_off_sec"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
         module_on=$(printf '%s' "$body" | sed -n 's/.*"module_interval_on_sec"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
         module_off=$(printf '%s' "$body" | sed -n 's/.*"module_interval_off_sec"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
-        enabled=$(printf '%s' "$body" | sed -n 's/.*"analytics_enabled"[[:space:]]*:[[:space:]]*\(true\|false\|1\|0\).*/\1/p')
+        # Keep the boolean parser POSIX/toybox compatible.  BRE alternation
+        # (`\|`) is not available in every Android sed build, which made a
+        # valid JSON body look like a missing boolean and returned HTTP 400.
+        enabled=$(printf '%s' "$body" | sed -n 's/.*"analytics_enabled"[[:space:]]*:[[:space:]]*\([^,}]*\).*/\1/p' | tr -d ' \r\n\t')
         valid_uint_range "$retention" 1 7 || { release_lock; json_error '400 Bad Request' 'retention_days must be 1..7'; }
         valid_uint_range "$max_bytes" 4194304 33554432 || { release_lock; json_error '400 Bad Request' 'max_bytes must be 4..32 MiB'; }
         valid_uint_range "$interval_on" 300 3600 || { release_lock; json_error '400 Bad Request' 'system_interval_on_sec must be 300..3600'; }
