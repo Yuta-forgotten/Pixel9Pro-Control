@@ -34,7 +34,7 @@
 
 ### 温控策略与自定义阈值
 
-默认只有一个零修改选项：**不修改温控（不添加配置）**。该选项不创建 `/vendor/etc/thermal_info_config.json` overlay，也不修改或停止系统 Thermal HAL。只有用户明确选择 custom 时，才从当前设备真实 vendor 配置或已验证的模块私有 stock snapshot 生成下列偏移。Hybrid Mount 只消费模块 regular source；WebUI 修改写入 source 并标记 `pending_reboot`，不在运行期 promotion、bind 或重启 Thermal HAL。
+默认为零修改选项：**不修改温控（不添加配置）**。该选项不创建 `/vendor/etc/thermal_info_config.json` overlay，也不修改或停止系统 Thermal HAL。只有用户明确选择 custom 时，才从当前设备真实 vendor 配置或已验证的模块私有 stock snapshot 生成下列偏移。Hybrid Mount 只消费模块 regular source；WebUI 修改写入 source 并标记 `pending_reboot`，不在运行期 promotion、bind 或重启 Thermal HAL。
 Thermal source 在安装、WebUI staging 和撤销恢复时固定为 `0644`；post-mount 复读同时检查 effective `/vendor` mode、hash 与 `vendor_configs_file` context，避免 Thermal HAL 以 UID 1000 读到私有 `0600` source。
 
 | 档位 | Offset 偏移值 | 最早介入温度 (HINT) | 说明 |
@@ -44,9 +44,9 @@ Thermal source 在安装、WebUI staging 和撤销恢复时固定为 `0644`；po
 | 日常放宽 | +4°C | 41°C | 显式 custom；靠近 SHUTDOWN 时收敛 |
 | 最大放宽 | +6°C | 43°C | 前置 severity 温控 +6°C，最后安全阈值不平移 |
 
-偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前置 severity 先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。靠近 SHUTDOWN 时，生成器按 stock `HotHysteresis` 从后向前收窄，并额外保留 `0.1°C` 的严格间隔，保证“前一档阈值 `<` 下一档阈值减下一档 hysteresis”；只检查阈值递增并不足以保证 Pixel Thermal HAL 接受配置。SELinux 只验证 effective `/vendor/etc/thermal_info_config.json` 的 `vendor_configs_file`；模块 source 的 `system_file` label 不再被错误地当成挂载证明。
+偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前置 severity 先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。靠近 SHUTDOWN 时，生成器按 stock `HotHysteresis` 从后向前收窄，并额外保留 `0.1°C` 的严格间隔，保证“前一档阈值 `<` 下一档阈值减下一档 hysteresis”；只检查阈值递增并不足以保证 Pixel Thermal HAL 接受配置。
 
-WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，普通读取缓存容忍约 90 秒，和亮屏 60 秒 worker 采样对齐，避免重复启动 `dumpsys thermalservice`；当缓存缺失、无 `VIRTUAL-SKIN`、温度越界或连续异常时，自动走 `fresh=1` 重建。历史页按 15/30/60 分钟、12 小时和 1/3/7 天窗口显示 minute/hour 粒度；图表保留中间时间刻度、缺测 gap 和后台 raw/display/valid/invalid 计数。
+WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，普通读取缓存约 90 秒，和亮屏 60 秒 worker 采样对齐，避免重复启动 `dumpsys thermalservice`；当缓存缺失、无 `VIRTUAL-SKIN`、温度越界或连续异常时，自动走 `fresh=1` 重建。历史页按 15/30/60 分钟、12 小时和 1/3/7 天窗口显示 minute/hour 粒度；图表保留中间时间刻度、缺测 gap 和后台 raw/display/valid/invalid 计数。
 
 温控档位提交后进入模块私有 `.thermal_tx` journal。同一 boot 且 backend 返回
 `cancel_supported=true` 时，“放弃本次修改”会携带 `pending_id` 原子恢复旧 source、policy
@@ -64,7 +64,7 @@ WebUI 的所有 API 请求经过统一 Request Hub：GET 在途请求按 endpoin
 - WebUI 的“平台参考”按钮只是可比较的 VM preset，不代表模块能够推断设备当前平台 sysctl；真正的 system 模式以重启后的平台 readback 为准。
 - 首次安装和升级默认 `feature_vm=system`。system/disabled 只保存模块私有意图并记录 owner/effective readback；如果之前启用了模块 VM 策略，切回 system 会报告 `vm_reboot_required`，重启后由平台恢复 VM 基线。
 - WebUI 的 ZRAM 容量请求与 VM 策略分离，只在 optimized 模式下由用户显式提交；active swap 不 reset/swapoff/resize，返回 `pending_reboot`。模块不内置固定容量。
-- 容量输入使用整数 MB 或 RAM 百分比；前端转换为 bytes，后端按 4 KiB 对齐并 readback。设备当前的 raw bytes 只作为后台证据，不作为用户需要记忆的配置单位。
+- 容量输入使用整数 MB 或 RAM 百分比；前端转换为 bytes，后端按 4 KiB 对齐并 readback。
 
 ### 待机与 modem 策略（以 Google 默认机制为主）
 
@@ -127,7 +127,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 - 控制模块 + fas-rs：fas-rs 在 Pixel boot 常驻待机；进入白名单进程后由 lease 进入接管，退出后恢复 Pixel 日常 profile，不通过 PID 存在单独判断 active owner
 - 三者都安装：Pixel 或 UGT 作为日常 baseline；fas-rs 命中游戏时临时成为唯一调度写入者，退出后恢复进入 lease 前的同一 baseline；基带模块独立负责运营商配置增强
 
-**基带模块兼容性**：`pixel9pro_baseband_trial` 当前源码 manifest 只允许 `caiman` / `komodo`，两机共用 CarrierSettings、APN、China MCFG 和 IMS properties，但不携带 UECap payload。Control 的 UECap binarypb 按 SKU 独立 staging：`caiman` 使用 `PLATFORM_9055801516233416490.binarypb` 三档，`komodo` 使用独立的 `PLATFORM_6287228797510365516.binarypb` candidate；不能交叉解析或改名替代。
+**基带模块兼容性**：`pixel9pro_baseband_trial` 只允许 `caiman` / `komodo`，两机共用 CarrierSettings、APN、China MCFG 和 IMS properties，但不携带 UECap payload。Control 的 UECap binarypb 按 SKU 独立 staging：`caiman` 使用 `PLATFORM_9055801516233416490.binarypb` 三档，`komodo` 使用独立的 `PLATFORM_6287228797510365516.binarypb` candidate；不能交叉解析或改名替代。
 
 **基带模块升级规则**：升级的是普通基带模块时，不要求卸载 APatch Manager，也不应由普通模块删除 `/data/adb/modules`、修改 `modules.img` 或自行写入 MetaModule content image。若旧模块的 active source、MetaModule content image、effective overlay、source/content/effective hash 及同一 boot 的 runtime receipt 都能复读确认，可以直接安装新版并在重启后复读；只有这些证据缺失、为空、冲突、跨 boot 或失败时，才进入 clean reinstall：Root Manager 卸载旧的普通基带模块 → 重启 → 安装新版 → 再重启 → 复读 active module、MetaModule content image、effective path、mount 和 runtime receipt。
 
@@ -170,17 +170,17 @@ Doze 状态、覆盖率和缺测原因。BatteryStats 是系统模型估算，�
 
 ## 安装
 
+从 [GitHub Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 下载与设备和 Root 实现匹配的模块包。独立基带模块使用其对应的发行包；Control 不包含基带模块文件。
 
-1. 温控模块使用 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中发布；基带模块 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases#release-v1.1.0-rc3)
-2. KernelSU /Apatch用户需先安装 metamodule（如 `Hybrid Mount`）并重启
-3. APatch / KernelSU / Magisk → 模块 → 从存储安装
-4. **首次安装**：音量键交互向导依次配置温控、CPU 调度、按 SKU 的 UECap、NR、SIM2、VM/ZRAM 和 NTP；最终摘要后再次倒计时确认。默认为温控不添加配置、NR 关闭、VM/ZRAM system no-write，调度能力不完整时强制 off，komodo UECap 保持 stock。`meta-overlayfs` backend 使用 content image（温控变更需卸载重装）；Hybrid Mount backend 使用单一 regular module source（温控变更写 source，重启后复读有效 `/vendor`），两者都不执行运行期动态 bind。
+1. KernelSU/APatch 用户先安装所需的 metamodule（例如 `Hybrid Mount`）并重启；Magisk 用户直接使用模块管理器安装。
+2. 通过 Root 管理器选择模块 ZIP 安装；首次安装时，音量键向导依次配置温控、CPU 调度、UECap、NR、SIM2、VM/ZRAM 和 NTP，并在最终摘要处再次确认。
+3. 默认策略为不写入温控覆盖、关闭 NR 息屏降级、VM/ZRAM 使用 system no-write；调度能力不完整时自动停用写入，`komodo` 的 UECap 默认保持 stock。
+4. `meta-overlayfs` 使用 content image，温控或 UECap 变更可能要求卸载、重启后重新安装；`Hybrid Mount` 使用单一 regular module source，变更写入 source 并在重启后复读有效 `/vendor`。两种 backend 都不执行运行期动态 bind。
 5. **升级安装**：Control 自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；
 若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline。
 若 MetaModule content image 仍有旧 Control 内容，安装器会拒绝覆盖并要求先卸载旧 Control、重启，再安装新包，避免 stale thermal/UECap 文件残留。
-独立普通基带模块按“基带模块升级规则”判断是否升级或 clean reinstall
-6. 重启
-7. 打开 `http://127.0.0.1:6210` 验证
+6. 独立普通基带模块按其当前发行说明判断升级或 clean reinstall，不因 Control 更新自动卸载 Root 管理器。
+7. 重启设备；打开 `http://127.0.0.1:6210`，确认模块版本、effective readback 和 WebUI 状态。
 
 ## 兼容性
 
