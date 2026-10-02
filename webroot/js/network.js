@@ -149,12 +149,12 @@ function renderStandbyGuard(data) {
   refs.idleIsolateToggleLabel.textContent = isolateOn ? '关闭' : '开启';
   refs.idleIsolateDesc.textContent = isolateOn
     ? '已开启：息屏优化已暂停，仅保留最低限度的状态检查。'
-     : '前台模式：停止后台历史、排行、telemetry 和周期分析，只在打开页面或执行操作时读取。';
+     : '后台观测暂停：停止后台历史、排行、telemetry 和周期分析，只在打开页面或执行操作时读取。';
   refs.idleIsolateRows.replaceChildren();
   [
     { label: '功能状态', value: isolateOn ? '已开启' : '已关闭', cls: isolateOn ? 'warn' : 'off' },
-     { label: '后台行为', value: isolateOn ? '前台模式：后台采样、归因、telemetry 和周期分析全部停止' : '常规后台观测与低频记录', cls: isolateOn ? 'warn' : 'good' },
-     { label: '使用建议', value: isolateOn ? '适合过夜或待机排障；需要后台历史时再关闭前台模式' : '日常使用保持后台记录开启', cls: 'off' },
+     { label: '后台行为', value: isolateOn ? '后台观测暂停：后台采样、归因、telemetry 和周期分析全部停止' : '常规后台观测与低频记录', cls: isolateOn ? 'warn' : 'good' },
+     { label: '使用建议', value: isolateOn ? '适合待机排障；需要后台历史时再恢复后台观测' : '日常使用保持后台观测开启', cls: 'off' },
   ].forEach((row) => refs.idleIsolateRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   refs.standbyDiagRows.replaceChildren();
@@ -523,8 +523,8 @@ async function toggleIdleIsolateMode() {
   const next = state.idleIsolateMode === 'on' ? 'off' : 'on';
   await setStandbyGuard(
     { idle_isolate_mode: next },
-     next === 'on' ? '前台模式已开启：后台观测已停止' : '后台观测已恢复',
-     next === 'on' ? '前台模式: 开启' : '后台观测: 开启'
+     next === 'on' ? '后台观测已暂停' : '后台观测已恢复',
+     next === 'on' ? '后台观测: 暂停' : '后台观测: 开启'
   );
 }
 
