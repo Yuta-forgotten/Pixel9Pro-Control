@@ -9,7 +9,7 @@ require_token
 read_json_body 256
 body="$JSON_BODY"
 action=$(printf '%s' "$body" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
-confirm=$(printf '%s' "$body" | sed -n 's/.*"confirm"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p')
+confirm=$(printf '%s' "$body" | sed -n 's/.*"confirm"[[:space:]]*:[[:space:]]*\([^,}]*\).*/\1/p' | tr -d ' \r\n\t')
 [ "$action" = "reboot" ] && [ "$confirm" = "true" ] || json_error '400 Bad Request' 'missing reboot confirmation'
 acquire_lock "reboot"
 json_headers

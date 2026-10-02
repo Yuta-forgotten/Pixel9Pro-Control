@@ -787,9 +787,12 @@ function refreshFullProfileState() {
 }
 
 async function confirmProfileMutation(expected) {
-  const refreshed = await refreshFullProfileState();
-  if (!refreshed) return false;
-  return typeof expected === 'function' ? expected() : true;
+  const data = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: 8000, priority: 'interactive', scope: 'profile.mutation.readback' });
+  if (!data || data.ok === false) return false;
+  applyProfileMutationState(data);
+  const confirmed = typeof expected === 'function' ? expected() : true;
+  if (confirmed) void refreshFullProfileState();
+  return confirmed;
 }
 
 async function loadSavedProfile() {

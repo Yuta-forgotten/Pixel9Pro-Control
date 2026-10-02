@@ -38,9 +38,9 @@ if [ ! -r "$CALC" ] || [ ! -d "$SNAPSHOTS" ]; then
     exit 0
 fi
 
-tmp="$ROOT/.rank_query.$$"; files="$ROOT/.rank_files.$$"; ledger_tmp="$ROOT/.rank_ledger.$$"; out="$ROOT/.rank_result.$$"
+tmp="$ROOT/.rank_query.$$"; files="$ROOT/.rank_files.$$"; ledger_tmp="$ROOT/.rank_ledger.$$"; out="$ROOT/.rank_result.$$"; response_tmp="$ROOT/.rank_response.$$"
 ledger="$ROOT/ledger.tsv"
-trap 'rm -f "$tmp" "$files" "$ledger_tmp" "$out" 2>/dev/null' EXIT INT TERM HUP
+trap 'rm -f "$tmp" "$files" "$ledger_tmp" "$out" "$response_tmp" 2>/dev/null' EXIT INT TERM HUP
 mkdir -p "$ROOT" 2>/dev/null || json_error '500 Internal Server Error' 'cannot create power rank state'
 
 for file in "$SNAPSHOTS"/*; do
@@ -64,6 +64,21 @@ if [ "$count" -lt 2 ] 2>/dev/null; then
     json_headers
     printf '{"ok":true,"schema":1,"status":"unavailable","quality":"unavailable","reason":"need_two_snapshots","source":"power_rank_snapshot","start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_sec":0,"coverage_ratio":0,"valid_intervals":0,"valid_samples":0,"raw_samples":0,"gap_count":0,"gaps":[],"updated_at":null,"data_revision":"empty","cache":{"hit":false},"apps":[],"components":[]}\n' \
         "$(json_num "$start_ts")" "$(json_num "$end_ts")" "$(json_escape "$granularity")"
+    exit 0
+fi
+
+latest_stamp=0
+while IFS= read -r file; do
+    name=${file##*/}; stamp=${name%%_*}
+    case "$stamp" in ''|*[!0-9]*) continue ;; esac
+    [ "$stamp" -gt "$latest_stamp" ] 2>/dev/null && latest_stamp="$stamp"
+done < "$files"
+_rank_policy_revision="$(sed -n 's/^system_interval_on_sec=//p' "${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config" 2>/dev/null | head -n 1)_$(sed -n 's/^system_interval_off_sec=//p' "${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config" 2>/dev/null | head -n 1)"
+case "$_rank_policy_revision" in *[!0-9_]*) _rank_policy_revision=default ;; esac
+mkdir -p "$ROOT/cache" 2>/dev/null || json_error '500 Internal Server Error' 'cannot create power rank cache'
+cache_file="$ROOT/cache/v2_${start_ts}_${end_ts}_${latest_stamp}_${granularity}_${_rank_policy_revision}.json"
+if [ -s "$cache_file" ]; then
+    sed 's/"hit":false/"hit":true/' "$cache_file" 2>/dev/null
     exit 0
 fi
 
@@ -120,8 +135,15 @@ while IFS="$TAB" read -r kind key label value; do
     esac
 done < "$out"
 
+{
 json_headers
 printf '{"ok":true,"schema":1,"status":"%s","quality":"%s","reason":"%s","attribution_state":"%s","window_proven":%s,"observed_start_ts":%s,"observed_end_ts":%s,"reference_start_ts":%s,"reference_end_ts":%s,"source":"power_rank_snapshot","start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_sec":%s,"coverage_ratio":%s,"valid_intervals":%s,"valid_samples":%s,"raw_samples":%s,"gap_count":%s,"gaps":[%s],"updated_at":%s,"data_revision":"%s","cache":{"hit":false},"total_mah":null,"apps":[%s],"components":[%s]}\n' \
     "$(json_escape "$status")" "$(json_escape "$quality")" "$(json_escape "$reason")" "$(json_escape "$attribution_state")" "$window_proven" "$(json_num "$observed_start")" "$(json_num "$observed_end")" "$(json_num "$reference_start")" "$(json_num "$reference_end")" \
     "$(json_num "$start_ts")" "$(json_num "$end_ts")" "$(json_escape "$granularity")" "$(json_num "$coverage")" "$coverage_ratio" \
     "$(json_num "$valid_intervals")" "$(json_num "$valid_intervals")" "$(json_num "$snapshots")" "$gap_count" "$gaps" "$(json_num "$updated")" "$(json_escape "$revision")" "$apps" "$components"
+} > "$response_tmp" 2>/dev/null || json_error '500 Internal Server Error' 'cannot serialize power rank response'
+if mv "$response_tmp" "$cache_file" 2>/dev/null; then
+    cat "$cache_file"
+else
+    cat "$response_tmp" 2>/dev/null
+fi

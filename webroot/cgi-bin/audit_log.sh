@@ -29,9 +29,9 @@ fi
 [ "$REQUEST_METHOD" = GET ] || json_error '405 Method Not Allowed' 'GET or POST only'
 
 _al_limit=40
-_al_query=$(printf '%s' "${QUERY_STRING:-}" | sed -n 's/.*\(^\|&\)limit=\([0-9]*\).*/\2/p' | head -n 1)
+_al_query=$(printf '%s' "${QUERY_STRING:-}" | tr '&' '\n' | sed -n 's/^limit=\([0-9]*\)$/\1/p' | head -n 1)
 if [ -n "$_al_query" ]; then _al_limit="$_al_query"; fi
-_al_all=$(printf '%s' "${QUERY_STRING:-}" | sed -n 's/.*\(^\|&\)all=\(1\|true\).*/\2/p' | head -n 1)
+_al_all=$(printf '%s' "${QUERY_STRING:-}" | tr '&' '\n' | sed -n 's/^all=//p' | head -n 1 | tr -d ' \r\n\t')
 if [ -n "$_al_all" ]; then _al_limit=2000; fi
 case "$_al_limit" in ''|*[!0-9]*) _al_limit=40 ;; esac
 [ "$_al_limit" -ge 1 ] 2>/dev/null || _al_limit=1

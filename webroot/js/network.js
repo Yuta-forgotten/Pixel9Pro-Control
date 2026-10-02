@@ -704,6 +704,20 @@ async function setUecapMode(mode) {
     }
   } catch (err) {
     const message = err?.message || String(err);
+    const payload = err?.payload;
+    if (payload?.applied) {
+      state.uecapMode = payload.requested_mode || mode;
+      state.uecapActiveMode = payload.active_mode || mode;
+      state.uecapVerifyState = 'failed';
+      state.uecapVerifyMessage = payload.error || '配置已切换，但 modem 未完成重载';
+      renderUecapRows(payload);
+      showToast(state.uecapVerifyMessage, 4200);
+      appendLog(`UE 配置已写入但重载失败: ${label}`, 'warn');
+      state.uecapBusy = false;
+      state.uecapPendingMode = '';
+      state.uecapExpectedHash = '';
+      return;
+    }
     if (!requireFeature('core').isRequestCancelled?.(err)) showToast(`请求失败：${message}`);
     appendLog(`UE 配置请求失败：${message}`, 'err');
     state.uecapBusy = false;
