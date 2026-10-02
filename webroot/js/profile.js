@@ -1087,6 +1087,7 @@ async function cancelSchedulerChange() {
     });
     if (data.scheduler_boot) applyProfileMutationState(data);
     if (data.ok) {
+      if (!await confirmProfileMutation(() => state.schedulerBoot.final === 'yes' && state.schedulerBoot.phase !== 'pending_reboot')) throw new Error('取消请求已提交，但调度启动状态 readback 未确认');
       refs.rebootModal.classList.remove('open');
       showToast('已取消待重启切换');
       appendLog('调度启动模式已恢复到本次 boot 的状态', 'ok');
@@ -1116,6 +1117,7 @@ async function retrySchedulerValidation() {
     });
     if (data.scheduler_boot) applyProfileMutationState(data);
     if (data.ok) {
+      if (!await confirmProfileMutation(() => state.schedulerBoot.final === 'yes')) throw new Error('重试请求已提交，但调度终态 readback 未确认');
       showToast('调度控制面验证通过');
       appendLog(`调度终态：${data.scheduler_boot?.result || 'success'}`, 'ok');
     } else {
