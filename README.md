@@ -170,17 +170,15 @@ Doze 状态、覆盖率和缺测原因。BatteryStats 是系统模型估算，�
 
 ## 安装
 
-本次挂载后端设计、APatch/Hybrid Mount 生命周期与官方约束见
-[`DESIGN.md`](DESIGN.md) 及 `E:\Pixel ADB\docs\` 下的研究文档。
 
 1. 温控模块使用 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases) 中发布；基带模块 [Releases](https://github.com/Yuta-forgotten/Pixel9Pro-Control/releases#release-v1.1.0-rc3)
 2. KernelSU /Apatch用户需先安装 metamodule（如 `Hybrid Mount`）并重启
 3. APatch / KernelSU / Magisk → 模块 → 从存储安装
-4. **首次安装**：音量键交互向导依次配置温控、CPU 调度、按 SKU 的 UECap、NR、SIM2、VM/ZRAM 和 NTP；最终摘要后再次倒计时确认。安全默认是温控不添加配置、NR 关闭、VM/ZRAM system no-write，调度能力不完整时强制 off，komodo UECap 保持 stock。`meta-overlayfs` backend 使用 content image（温控变更需卸载重装）；Hybrid Mount backend 使用单一 regular module source（温控变更写 source，重启后复读有效 `/vendor`），两者都不执行运行期动态 bind。
+4. **首次安装**：音量键交互向导依次配置温控、CPU 调度、按 SKU 的 UECap、NR、SIM2、VM/ZRAM 和 NTP；最终摘要后再次倒计时确认。默认为温控不添加配置、NR 关闭、VM/ZRAM system no-write，调度能力不完整时强制 off，komodo UECap 保持 stock。`meta-overlayfs` backend 使用 content image（温控变更需卸载重装）；Hybrid Mount backend 使用单一 regular module source（温控变更写 source，重启后复读有效 `/vendor`），两者都不执行运行期动态 bind。
 5. **升级安装**：Control 自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；
 若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline。
 若 MetaModule content image 仍有旧 Control 内容，安装器会拒绝覆盖并要求先卸载旧 Control、重启，再安装新包，避免 stale thermal/UECap 文件残留。
-独立普通基带模块按“基带模块升级规则”判断是否升级或 clean reinstall，不因 APatch Manager 更新本身强制卸载 Manager
+独立普通基带模块按“基带模块升级规则”判断是否升级或 clean reinstall
 6. 重启
 7. 打开 `http://127.0.0.1:6210` 验证
 
