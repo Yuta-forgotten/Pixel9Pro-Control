@@ -84,12 +84,20 @@ if [ -s "$cache_file" ]; then
     exit 0
 fi
 
-: > "$ledger_tmp" 2>/dev/null || json_error '500 Internal Server Error' 'cannot create power rank ledger'
-while IFS= read -r file; do
-    [ -r "$file" ] || json_error '500 Internal Server Error' 'power rank snapshot missing'
-    cat "$file" >> "$ledger_tmp" 2>/dev/null || json_error '500 Internal Server Error' 'cannot read power rank snapshot'
-done < "$files"
-ledger="$ledger_tmp"
+ledger_ready=0
+if [ -s "$ledger" ]; then
+    ledger_latest=$(awk -F '\t' '$1 == "meta" { latest=$3 } END { print latest + 0 }' "$ledger" 2>/dev/null)
+    case "$ledger_latest" in ''|*[!0-9]*) ledger_latest=0 ;; esac
+    [ "$ledger_latest" -ge "$latest_stamp" ] 2>/dev/null && ledger_ready=1
+fi
+if [ "$ledger_ready" -ne 1 ]; then
+    : > "$ledger_tmp" 2>/dev/null || json_error '500 Internal Server Error' 'cannot create power rank ledger'
+    while IFS= read -r file; do
+        [ -r "$file" ] || json_error '500 Internal Server Error' 'power rank snapshot missing'
+        cat "$file" >> "$ledger_tmp" 2>/dev/null || json_error '500 Internal Server Error' 'cannot read power rank snapshot'
+    done < "$files"
+    ledger="$ledger_tmp"
+fi
 _rank_max_gap=$(awk -v on="$(sed -n 's/^system_interval_on_sec=//p' "${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config" 2>/dev/null | head -n 1)" -v off="$(sed -n 's/^system_interval_off_sec=//p' "${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config" 2>/dev/null | head -n 1)" 'BEGIN { if(on<900)on=900; if(off<900)off=900; m=(on>off?on:off)*2+120; if(m<1800)m=1800; print m }')
 if ! awk -F '\t' -v start_ts="$start_ts" -v end_ts="$end_ts" -v max_gap="$_rank_max_gap" \
     -f "$CALC" "$ledger" > "$out" 2>/dev/null; then
