@@ -62,7 +62,7 @@
     const apply = el('button', 'tiny-btn tonal', '应用范围'); apply.type = 'button';
     apply.addEventListener('click', () => callbacks.onCustom(days.value, granularity.value));
     const daysField = el('label', 'analytics-custom-field'); daysField.append(el('span', 'analytics-section-desc', '时间窗'), days);
-    const granularityField = el('label', 'analytics-custom-field'); granularityField.append(el('span', 'analytics-section-desc', '精细度'), granularity);
+    const granularityField = el('label', 'analytics-custom-field'); granularityField.append(el('span', 'analytics-section-desc', '采样粒度'), granularity);
     custom.append(daysField, granularityField, apply);
     const stateLine = el('div', 'analytics-status'); stateLine.setAttribute('role', 'status');
     const hero = el('section', 'analytics-hero');
@@ -110,8 +110,8 @@
     enabledField.append(enabled, el('span', 'analytics-section-desc', '后台记录（关闭后停止周期采样；前台读取和临时诊断仍可用）'));
     policyFields.appendChild(enabledField);
     const makeSelect = (label, values, suffix) => { const select = document.createElement('select'); select.setAttribute('aria-label', label); values.forEach((value) => { const option = el('option', '', `${value}${suffix}`); option.value = String(value); select.appendChild(option); }); const field = el('label', 'analytics-custom-field'); field.append(el('span', 'analytics-section-desc', label), select); policyFields.appendChild(field); return select; };
-    const retention = makeSelect('保留时间', [1, 3, 7], ' 天');
-    const cap = makeSelect('空间上限', [8, 16, 32], ' MiB');
+    const retention = makeSelect('历史保留', [1, 3, 7], ' 天');
+    const cap = makeSelect('存储上限', [8, 16, 32], ' MiB');
     const onInterval = makeSelect('亮屏系统历史', [5, 15, 30, 60], ' 分钟');
     const offInterval = makeSelect('息屏缺测判定', [15, 30, 60, 120], ' 分钟');
     const policyActions = el('div', 'analytics-actions'); const policyButton = el('button', 'tiny-btn tonal', '应用设置'); policyButton.type = 'button'; policyButton.disabled = true; policyButton.addEventListener('click', () => callbacks.onPolicy?.(policyButton, { analytics_enabled: enabled.checked, retention_days: retention.value, max_bytes: Number(cap.value) * 1048576, module_interval_on_sec: 60, module_interval_off_sec: 900, system_interval_on_sec: Math.max(300, Number(onInterval.value) * 60), system_interval_off_sec: Math.max(900, Number(offInterval.value) * 60) })); policyActions.appendChild(policyButton);
@@ -161,7 +161,7 @@
   function promptCustom(view) {
     setActive(view, view.source, 'custom');
     view.stateLine.hidden = false;
-    view.stateLine.textContent = '选择最近时间窗和采样精细度后应用';
+    view.stateLine.textContent = '选择最近时间窗和采样粒度后应用';
   }
 
   function relativeTime(ts) {

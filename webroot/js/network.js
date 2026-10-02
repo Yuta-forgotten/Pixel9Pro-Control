@@ -55,7 +55,7 @@ function buildNrSwitchDetail() {
   const recheck = Number.isFinite(contract.lteRecheckS) ? contract.lteRecheckS : null;
   const lteMode = Number.isFinite(contract.lteMode) ? contract.lteMode : 'unknown';
   const seconds = (value) => value === null ? '运行参数尚未读取' : `${value} 秒`;
-  return `<b>NR 息屏降级 (Screen-Off LTE Switch)</b><br><br>开启后，息屏超过 <b>${seconds(delay)}</b> 时只把 DSDS slot 0 从 NR-capable mode 切到 LTE mode ${lteMode}；亮屏时恢复已保存的完整 mode，slot 1 保持不变。<br><br><b>防抖机制</b><br>- 息屏延迟：${seconds(delay)}<br>- NR 恢复冷却：${seconds(cooldown)}<br>- LTE 状态复查：${seconds(recheck)}<br>- 当前 mode 无效或恢复值无法持久化时不执行降级<br><br><b>边界</b><br>该功能减少息屏期间维持 NR 射频链路的机会，实际收益取决于信号、驻网、后台流量和运营商网络，不能用固定百分比承诺。开启热点时自动跳过；切换时可能短暂中断蜂窝数据。`;
+  return `<b>NR 息屏降级</b><br><br>息屏超过 <b>${seconds(delay)}</b> 后，将 DSDS slot 0 切换为 LTE mode ${lteMode}；亮屏恢复已保存的 NR mode，slot 1 不变。<br><br><b>时序参数</b><br>息屏延迟：${seconds(delay)}<br>恢复冷却：${seconds(cooldown)}<br>LTE 复查：${seconds(recheck)}<br><br><b>限制</b><br>mode 无效、恢复值无法持久化或热点启用时跳过切换；切换可能短暂中断蜂窝数据。`;
 }
 function renderNrSwitchRows(data) {
   refs.nrSwitchRows.replaceChildren();
@@ -170,7 +170,7 @@ function renderStandbyGuard(data) {
       { label: '当前工作', value: standbyWorkerModeLabel(state.standbyDiag.workerMode), cls: standbyWorkerModeClass(state.standbyDiag.workerMode) },
       { label: '下次检查约', value: state.standbyDiag.nextSleepSecs ? formatDuration(Number(state.standbyDiag.nextSleepSecs)) : '—', cls: 'off' },
       { label: '温度采样', value: state.standbyDiag.screen === 'on' ? '亮屏约每 60 秒' : '息屏约每 15 分钟一次', cls: state.standbyDiag.screen === 'on' ? 'good' : 'off' },
-      { label: '功耗采样', value: state.standbyDiag.screen === 'on' ? '亮屏约每 60 秒' : '息屏约每 15 分钟，禁用 BatteryStats', cls: 'off' },
+      { label: '功耗归因', value: state.standbyDiag.screen === 'on' ? '亮屏按策略采集 BatteryStats' : '息屏不采集 BatteryStats', cls: 'off' },
       { label: 'NR 状态', value: nrLabel, cls: state.standbyDiag.nrState === 'lte' ? 'warn' : 'off' },
       { label: '调度状态', value: profileLabel, cls: 'off' },
       { label: '检查次数', value: state.standbyDiag.cycleCount || '0', cls: 'off' },

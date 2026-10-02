@@ -30,38 +30,38 @@ const popModalIfTop = (...args) => requireFeature('ui').popModalIfTop(...args);
 const syncHeroDesc = () => requireFeature('thermal').syncHeroDesc();
 
 function describeSwappiness(v) {
-  if (v <= 20) return '几乎不主动换出匿名页，ZRAM 基本闲置，仅在物理内存吃紧时才回收。';
-  if (v <= 60) return '偏保守换页，多数匿名页留在物理内存，偏向前台零 swap 抖动。';
-  if (v <= 110) return '平衡换页，配合硬件压缩减少无效 swap-in / swap-out，兼顾后台驻留与前台响应。';
-  if (v <= 160) return '较积极换出匿名页到 ZRAM、尽量保留文件缓存（含原厂 150 取向）。';
-  return '极度倾向换出匿名页，后台驻留能力最强，但热数据换入可能增多。';
+  if (v <= 20) return '低换页倾向；匿名页优先留在物理内存。';
+  if (v <= 60) return '保守换页；仅在内存压力上升时使用 ZRAM。';
+  if (v <= 110) return '平衡换页；兼顾前台响应与后台驻留。';
+  if (v <= 160) return '积极换页；优先保留文件缓存，增加匿名页进入 ZRAM 的机会。';
+  return '高换页倾向；后台驻留优先，页面换入频率可能增加。';
 }
 function describeMinFree(kb) {
-  if (kb <= 32768) return '空闲底线低（接近原厂 ~27MB），可用内存最大，但突发分配更易触发 direct reclaim 卡顿。';
-  if (kb <= 65536) return '空闲底线偏低，可用内存较多，回收启动相对靠后。';
-  if (kb <= 131072) return '中高空闲底线，kswapd 较早唤醒，direct reclaim 与 allocstall 明显减少。';
-  if (kb <= 196608) return '空闲底线高，回收很早介入、突发分配几乎不卡，代价是预留内存增多。';
-  return '空闲底线很高，适合重后台实验；日常使用偏浪费内存。';
+  if (kb <= 32768) return '低空闲内存阈值；可用内存较多，但突发分配更易触发 direct reclaim。';
+  if (kb <= 65536) return '偏低阈值；回收启动较晚，可用内存较多。';
+  if (kb <= 131072) return '中高阈值；提前唤醒 kswapd，降低 direct reclaim 概率。';
+  if (kb <= 196608) return '高阈值；更早启动回收，代价是预留内存增加。';
+  return '极高阈值；优先保证分配余量，实际可用内存减少。';
 }
 function describeWatermark(v) {
-  if (v <= 60) return '水位间距小（接近原厂 50），回收较晚触发，内存利用更满但突发峰值时更易吃紧。';
-  if (v <= 150) return '中等水位间距，回收节奏适中。';
-  if (v <= 300) return 'low/high 水位间距大，后台回收更早介入、单次回收更多，利于压制突发内存峰值，略增后台 CPU。';
-  return '水位间距很大，回收非常积极，churn 与后台 CPU 上升，仅适合重后台场景。';
+  if (v <= 60) return '小水位间距；回收较晚，内存利用率较高。';
+  if (v <= 150) return '中等水位间距；回收节奏居中。';
+  if (v <= 300) return '大水位间距；提前启动回收，降低突发内存压力。';
+  return '极大水位间距；回收更积极，可能增加后台 CPU。';
 }
 function describeVfs(v) {
-  if (v <= 50) return '强烈保留 inode / dentry 缓存，文件路径查询与冷启动最快，但元数据占用内存更多。';
-  if (v <= 80) return '倾向保留较多文件缓存元数据，利于应用启动。';
-  if (v <= 120) return '常规回收力度（接近原厂 100），缓存与内存平衡。';
-  if (v <= 160) return '较积极回收文件缓存元数据，省内存但路径查询 / 启动可能变慢。';
-  return '激进回收 inode / dentry 缓存，最省内存但文件操作明显变慢。';
+  if (v <= 50) return '低回收倾向；保留 inode/dentry 缓存，减少路径查询开销。';
+  if (v <= 80) return '偏低回收倾向；优先保留文件元数据缓存。';
+  if (v <= 120) return '中等回收倾向；缓存占用与回收开销平衡。';
+  if (v <= 160) return '偏高回收倾向；降低缓存占用，增加路径重建开销。';
+  return '高回收倾向；优先释放 inode/dentry 缓存。';
 }
 function swapModeIntro(mode) {
-  if (mode === 'optimized') return '<b>当前方案：模块候选</b><br>一组可选的 VM 参数候选；它不能消除 Android 的 LOW_MEMORY 回收或杀进程。';
-  if (mode === 'system') return '<b>当前方案：系统默认观察</b><br>模块不写 VM 或 ZRAM；平台服务保持当前设置。';
-  if (mode === 'disabled') return '<b>当前方案：模块写入禁用</b><br>模块只读记录状态，不接管 VM 或 ZRAM。';
-  if (mode === 'stock') return '<b>当前方案：系统默认观察</b><br>旧 stock 状态已兼容映射为 system，模块不提交 ZRAM 请求。';
-  return '<b>当前方案：自定义</b><br>以下为你手动设定的 VM 参数；它不能消除 Android 的 LOW_MEMORY 回收或杀进程。';
+  if (mode === 'optimized') return '<b>策略：模块优化</b><br>写入模块候选 VM 参数；ZRAM 容量独立提交。active swap 存在时仅支持待重启生效。';
+  if (mode === 'system') return '<b>策略：系统观察</b><br>仅读取平台 VM/ZRAM 状态，不写入 sysctl、mmd 属性或容量请求。';
+  if (mode === 'disabled') return '<b>策略：模块写入关闭</b><br>停止模块 VM/ZRAM 写入，仅保留状态读取。';
+  if (mode === 'stock') return '<b>策略：系统观察</b><br>旧 stock 状态已映射为 system，不提交模块容量请求。';
+  return '<b>策略：自定义</b><br>写入手动指定的四项 VM 参数；ZRAM 容量独立管理。';
 }
 
 function finiteNumber(value, fallback = 0) {
@@ -232,21 +232,21 @@ function buildSwapDetail(data) {
   const swap = activeSwapState(d);
   const request = zramRequestState(d);
   const algoBlock = isEH
-    ? `<b>ZRAM 算法: ${targetAlgorithm} (Emerald Hill 硬件加速)</b><br>Tensor G4 内置固定功能压缩引擎，适合高频换页场景。`
-    : `<b>ZRAM 算法: ${currentAlgorithm}</b><br>当前算法由平台决定，模块不会在 system 模式强制恢复。`;
+    ? `<b>ZRAM 算法：${targetAlgorithm}（Emerald Hill 硬件加速）</b><br>由平台硬件压缩引擎提供。`
+    : `<b>ZRAM 算法：${currentAlgorithm}</b><br>由平台决定；system 策略不强制修改。`;
   const targetSize = request.targetBytes > 0 ? `，约 ${fmtBytes(request.targetBytes)}` : '';
   const requestBlock = request.supported
-    ? `模块容量请求: ${escapeHtml(request.requested)}${targetSize}（${request.pending ? '待重启（pending_reboot），当前有效容量尚未对齐' : zramReadbackKnown(d) ? '当前有效容量已读回' : '容量读回未知'}）`
-    : '模块容量请求: 未设置（system/disabled 只读平台设置）';
-  const sizeBlock = `<b>当前有效容量（effective disksize）: ${formatEffectiveBytes(disksize)}${ramPct}</b><br>ZRAM 管理者: ${owner}；${swap.text}。<br>物理 ZRAM 内存成本: ${formatEffectiveBytes(memUsedBytes)}。<br>${requestBlock}。`;
+    ? `模块容量请求：${escapeHtml(request.requested)}${targetSize}（${request.pending ? '待重启，当前有效容量未对齐' : zramReadbackKnown(d) ? '当前有效容量已读回' : '有效容量未知'}）`
+    : '模块容量请求：未设置（system/disabled 仅观察平台状态）';
+  const sizeBlock = `<b>当前有效容量（effective disksize）：${formatEffectiveBytes(disksize)}${ramPct}</b><br>管理者：${owner}；${swap.text}。<br>物理 ZRAM 内存成本：${formatEffectiveBytes(memUsedBytes)}。<br>${requestBlock}。`;
   return [
     `<b>VM 策略: ${escapeHtml(vmModeLabel(vmMode))}</b><br>${swapModeIntro(vmMode)}`,
     algoBlock,
     sizeBlock,
-    `<b>换页倾向（swappiness）: ${finiteNumber(d.swappiness)}</b><br>${describeSwappiness(finiteNumber(d.swappiness))}`,
-    `<b>空闲内存底线（min_free_kbytes）: ${finiteNumber(d.min_free_kbytes)}（≈${Math.round(finiteNumber(d.min_free_kbytes) / 1024)}MB）</b><br>${describeMinFree(finiteNumber(d.min_free_kbytes))}`,
-    `<b>水位间距（watermark_scale_factor）: ${wsf}</b><br>${describeWatermark(wsf)}`,
-    `<b>文件缓存回收（vfs_cache_pressure）: ${finiteNumber(d.vfs_cache_pressure)}</b><br>${describeVfs(finiteNumber(d.vfs_cache_pressure))}`
+    `<b>swappiness = ${finiteNumber(d.swappiness)}</b><br>${describeSwappiness(finiteNumber(d.swappiness))}`,
+    `<b>min_free_kbytes = ${finiteNumber(d.min_free_kbytes)}（约 ${Math.round(finiteNumber(d.min_free_kbytes) / 1024)} MB）</b><br>${describeMinFree(finiteNumber(d.min_free_kbytes))}`,
+    `<b>watermark_scale_factor = ${wsf}</b><br>${describeWatermark(wsf)}`,
+    `<b>vfs_cache_pressure = ${finiteNumber(d.vfs_cache_pressure)}</b><br>${describeVfs(finiteNumber(d.vfs_cache_pressure))}`
   ].join('<br><br>');
 }
 function clampSwapValue(key, raw) {
@@ -358,20 +358,20 @@ function renderSwapCard(data) {
     : '无需等待 ZRAM 恢复';
   const transactionPhase = String(data.zram_transaction_phase || 'none');
   const transactionText = {
-    staged: '已暂存请求，等待安全完成（staged）',
-    requested: '等待容量读回（requested）',
-    effective: effectiveReadbackKnown ? '当前 active/容量已读回（effective）' : '事务已记为在线生效，当前容量未读回（effective）',
-    committed: effectiveReadbackKnown ? '跨重启后容量已读回（committed）' : '事务已跨重启记录，当前容量未读回（committed）',
-    canceled: '已取消，保留平台请求（canceled）',
-    external_changed: '平台请求已变化，未覆盖（external_changed）',
-    orphaned: '事务不完整或跨重启无法确认（orphaned）',
-    degraded: '读回凭据不完整（degraded）',
-    historical: '上一 boot 的历史 receipt，仅供参考'
+    staged: '请求已暂存，等待安全完成',
+    requested: '等待容量读回',
+    effective: effectiveReadbackKnown ? '当前 active 与容量已读回' : '已记录在线生效，但当前容量未读回',
+    committed: effectiveReadbackKnown ? '跨重启后容量已读回' : '已跨重启记录，但当前容量未读回',
+    canceled: '已取消，保留平台请求',
+    external_changed: '平台请求已变化，模块未覆盖',
+    orphaned: '事务不完整或跨重启无法确认',
+    degraded: '读回凭据不完整',
+    historical: '上一 boot 的历史记录，仅供参考'
   }[transactionPhase] || '无活动事务';
   const pendingReason = String(data.zram_pending_reason || 'none');
   const pendingReasonText = {
     transaction_active: '容量事务处理中',
-    journal_degraded: '事务凭据降级',
+    journal_degraded: '事务凭据不完整',
     restore_pending_reboot: '恢复请求等待重启',
     effective_size_pending_reboot: '当前容量等待重启对齐'
   }[pendingReason] || (pendingReason === 'none' ? '无' : pendingReason);
@@ -395,11 +395,11 @@ function renderSwapCard(data) {
     { label: '当前有效容量', value: formatEffectiveBytes(disksize), cls: disksize > 0 ? 'good' : 'off' },
     { label: '物理 ZRAM 内存成本', value: formatEffectiveBytes(memUsedBytes), cls: memUsedBytes > 0 ? 'good' : 'off' },
     { label: '模块容量请求', value: policyText, cls: request.pending ? 'warn' : request.supported && request.requested !== '未设置' ? 'good' : 'off' },
-    { label: '容量生效状态', value: zramEffectiveState === 'pending_reboot' ? '待重启（pending_reboot）' : zramEffectiveState === 'effective' && effectiveReadbackKnown ? '当前有效' : '未知，尚未确认', cls: zramEffectiveState === 'pending_reboot' ? 'warn' : zramEffectiveState === 'effective' && effectiveReadbackKnown ? 'good' : 'warn' },
+    { label: '容量生效状态', value: zramEffectiveState === 'pending_reboot' ? '待重启' : zramEffectiveState === 'effective' && effectiveReadbackKnown ? '当前有效' : '未知，尚未确认', cls: zramEffectiveState === 'pending_reboot' ? 'warn' : zramEffectiveState === 'effective' && effectiveReadbackKnown ? 'good' : 'warn' },
     { label: '容量事务', value: `${transactionText} · ${reconcileText}`, cls: transactionPending || ['orphaned', 'degraded'].includes(transactionPhase) ? 'warn' : (effectiveReadbackKnown && (transactionPhase === 'effective' || transactionPhase === 'committed')) ? 'good' : 'off' },
     { label: '待处理原因', value: pendingReasonText, cls: pendingReason === 'none' ? 'off' : 'warn' },
     { label: '容量恢复状态', value: data.zram_restore_pending === true ? '已恢复请求，等待重启对齐' : '无需等待恢复', cls: data.zram_restore_pending === true ? 'warn' : 'good' },
-    { label: 'VM readback', value: vmEffectiveState === 'pending_reboot' || data.vm_reboot_required ? '待重启后恢复平台基线' : vmEffectiveState === 'effective' && vmReadbackKnown(data) ? '四项参数已读回' : '未知，尚未确认', cls: vmEffectiveState === 'pending_reboot' || data.vm_reboot_required ? 'warn' : vmEffectiveState === 'effective' && vmReadbackKnown(data) ? 'good' : 'warn' },
+    { label: 'VM 参数读回', value: vmEffectiveState === 'pending_reboot' || data.vm_reboot_required ? '待重启后恢复平台基线' : vmEffectiveState === 'effective' && vmReadbackKnown(data) ? '四项参数已读回' : '未知，尚未确认', cls: vmEffectiveState === 'pending_reboot' || data.vm_reboot_required ? 'warn' : vmEffectiveState === 'effective' && vmReadbackKnown(data) ? 'good' : 'warn' },
     { label: '换页倾向（swappiness）', value: String(finiteNumber(data.swappiness)), cls: data.swappiness === optimized.swappiness ? 'good' : data.swappiness === stock.swappiness ? 'warn' : 'off' },
     { label: '空闲内存底线（min_free_kbytes）', value: String(finiteNumber(data.min_free_kbytes)), cls: data.min_free_kbytes === optimized.min_free_kbytes ? 'good' : data.min_free_kbytes === stock.min_free_kbytes ? 'warn' : 'off' },
     { label: '水位间距（watermark_scale_factor）', value: String(finiteNumber(data.watermark_scale_factor)), cls: data.watermark_scale_factor === optimized.watermark_scale_factor ? 'good' : data.watermark_scale_factor === stock.watermark_scale_factor ? 'warn' : 'off' },

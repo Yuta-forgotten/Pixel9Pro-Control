@@ -68,7 +68,6 @@
         <div class="section-block">
           <div class="section-intro">
             <div class="section-title">设备概览</div>
-            <div class="section-sub">温度、内存与功耗状态集中显示。</div>
           </div>
 
           <article class="surface-card overview-card">
@@ -185,7 +184,7 @@
         </article>
         <article class="surface-card preference-card scheduler-card">
           <div class="panel-title">调度接管与协调</div>
-          <div class="panel-desc">日常调度与游戏接管保持独立。</div>
+          <div class="panel-desc">日常调度与游戏 lease 分离管理。</div>
           <div class="preference-group" id="external-scheduler-controls">
             <div class="ctrl-row" id="sched-owner-row" data-module-visible="ugt" hidden>
               <div class="ctrl-copy">
@@ -241,7 +240,7 @@
           <div class="section-copy">
             <div class="kicker">性能模式</div>
             <div class="section-title">调度策略</div>
-            <div class="section-sub">选择日常性能取向，或彻底关闭本模块的性能调度写入。</div>
+            <div class="section-sub">选择 CPU 调度档位，或关闭本模块的调度写入。</div>
           </div>
           <div class="profile-list" id="profile-list"></div>
         </div>
@@ -310,7 +309,7 @@
           <div class="section-copy">
             <div class="kicker">温控阈值</div>
             <div class="section-title">档位选择</div>
-          <div class="section-sub">默认沿用系统温控，选择其他档位后才应用调整。</div>
+          <div class="section-sub">系统档位不写入覆盖；自定义档位在重启后由挂载层生效。</div>
           </div>
           <div class="profile-list" id="thermal-list"></div>
         </div>
@@ -323,7 +322,6 @@
       <div class="page-stack">
         <div class="section-intro">
           <div class="section-title">网络设置</div>
-          <div class="section-sub">常用策略直接控制，技术状态按需查看。</div>
         </div>
         <article class="surface-card preference-card">
           <div class="panel-head">
@@ -406,14 +404,13 @@
       <div class="page-stack">
         <div class="section-intro">
           <div class="section-title">系统设置</div>
-          <div class="section-sub">日常功能优先显示，高级诊断集中收纳。</div>
         </div>
         <article class="surface-card preference-card">
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">内存优化</div>
               <div class="panel-title">ZRAM / VM 参数</div>
-              <div class="panel-desc" id="swap-desc">正在读取平台管理状态、ZRAM 实际容量和 VM 参数。</div>
+              <div class="panel-desc" id="swap-desc">读取 VM 参数、ZRAM owner 与 effective capacity。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn text-btn" id="swap-detail-btn" type="button" aria-label="查看内存优化说明">说明</button>
@@ -422,7 +419,7 @@
             </div>
           </div>
           <details class="disclosure compact">
-            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>当前参数</strong><small>ZRAM 与内存回收设置</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
+            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>当前参数</strong><small>VM 参数、容量和 owner readback</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
             <div class="disclosure-body"><div class="data-list" id="swap-rows"><div class="skel" style="height:140px"></div></div></div>
           </details>
         </article>
@@ -456,15 +453,15 @@
               <span class="disclosure-chevron" aria-hidden="true">›</span>
             </summary>
             <div class="disclosure-body support-copy">
-              <p>“休眠”会在应用离开前台后等待 3、5 或 10 分钟，再停止其后台进程并降低后台优先级。重新打开应用时可正常恢复。</p>
-              <p>此功能不限制网络，也不撤销唤醒锁、前台服务或媒体权限。系统或推送重新拉起应用后，限制会在下次离开前台时再次执行。关闭功能或移除应用会恢复接管前的设置。</p>
+              <p>应用离开前台后，按配置延迟停止其后台进程并降低后台优先级；重新进入前台时恢复。</p>
+              <p>该策略不修改网络、唤醒锁、前台服务或媒体权限。关闭策略或移除应用后恢复接管前状态。</p>
             </div>
           </details>
         </article>
 
         <div class="section-intro advanced-intro">
           <div class="section-title">高级工具</div>
-          <div class="section-sub">用于排障与运行状态检查，日常无需操作。</div>
+          <div class="section-sub">待机、后台采样与运行状态诊断。</div>
         </div>
 
         <article class="surface-card preference-card advanced-card">
@@ -525,7 +522,7 @@
             <div class="panel-copy">
               <div class="kicker">外观</div>
               <div class="panel-title">主题与配色</div>
-              <div class="panel-desc">选择显示模式与主题色。主题色只改强调色（按钮 / 选中 / 进度），背景与状态色保持清新中性。</div>
+              <div class="panel-desc">选择显示模式与主题色。主题色仅影响按钮、选中态和进度条，不改变状态语义颜色。</div>
             </div>
           </div>
           <div class="palette-label" style="margin-top:14px">显示模式</div>
@@ -650,8 +647,8 @@
       </button>
     </div>
     <div class="modal-sheet-body">
-        <div class="swap-tune-note">系统默认模式只观察系统 VM 与 ZRAM，不写入 sysctl 或平台请求。启用模块候选后，四个 VM 参数才会即时写入并复读；候选不能消除 Android 的 LOW_MEMORY 回收或杀进程。ZRAM 容量是独立请求，已接入 Swap 时只返回待重启，不会在线 reset。</div>
-        <details class="swap-zram-request"><summary>ZRAM 容量请求（独立于 VM 策略）</summary><div class="swap-zram-size-form"><label for="swap-zram-size-number">容量草稿</label><div class="swap-zram-size-row"><input id="swap-zram-size-number" type="number" inputmode="decimal" min="1024" step="1" placeholder="读取中…" aria-describedby="swap-zram-size-help"><select id="swap-zram-size-unit" aria-label="ZRAM 容量单位"><option value="mb">MB</option><option value="percent">%</option></select><button class="tiny-btn primary" id="swap-zram-size-apply-btn" type="button" aria-busy="false">应用请求</button></div><div id="swap-zram-size-help" class="field-help">模块候选模式支持整数 MB 或 RAM 百分比；提交后由平台按 4KiB 对齐并复读。已接入 Swap 时状态为待重启，不能重复提交未完成事务。</div></div></details>
+        <div class="swap-tune-note">system 策略仅观察 VM/ZRAM；optimized 或 custom 才写入 VM 参数。ZRAM 容量独立提交，active swap 存在时仅返回待重启，不执行在线 reset。</div>
+        <details class="swap-zram-request"><summary>ZRAM 容量请求（独立于 VM 策略）</summary><div class="swap-zram-size-form"><label for="swap-zram-size-number">容量草稿</label><div class="swap-zram-size-row"><input id="swap-zram-size-number" type="number" inputmode="decimal" min="1024" step="1" placeholder="读取中…" aria-describedby="swap-zram-size-help"><select id="swap-zram-size-unit" aria-label="ZRAM 容量单位"><option value="mb">MB</option><option value="percent">%</option></select><button class="tiny-btn primary" id="swap-zram-size-apply-btn" type="button" aria-busy="false">应用请求</button></div><div id="swap-zram-size-help" class="field-help">optimized 策略支持整数 MB 或 RAM 百分比；平台按 4 KiB 对齐后复读。已有容量事务或 active swap 时禁止重复提交。</div></div></details>
       <div class="swap-tune-form">
         <label class="swap-field" for="swap-input-swappiness">
           <span class="swap-field-head"><span>换页倾向（swappiness）</span><b id="swap-value-swappiness">100</b></span>
