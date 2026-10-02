@@ -83,8 +83,10 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     _lock_pid=$(cat "$LOCK/pid" 2>/dev/null | tr -d ' \r\n\t')
     _lock_start=$(cat "$LOCK/start_ticks" 2>/dev/null | tr -d ' \r\n\t')
     _lock_boot=$(cat "$LOCK/boot_id" 2>/dev/null | tr -d ' \r\n\t')
+    _lock_live_start=$(sed 's/^.*) //' "/proc/$_lock_pid/stat" 2>/dev/null | awk '{print $20}')
     _lock_live=0
-    [ -n "$_lock_pid" ] && kill -0 "$_lock_pid" 2>/dev/null && _lock_live=1
+    [ -n "$_lock_pid" ] && [ -n "$_lock_start" ] && [ "$_lock_start" = "$_lock_live_start" ] \
+        && kill -0 "$_lock_pid" 2>/dev/null && _lock_live=1
     if [ "$_lock_boot" != "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n\t')" ]; then _lock_live=0; fi
     if [ "$_lock_live" -eq 0 ] || { [ "$_lock_mtime" -gt 0 ] && [ $((_lock_now - _lock_mtime)) -gt $((INTERVAL * 2 + 120)) ] 2>/dev/null; }; then
         rm -f "$LOCK/pid" "$LOCK/start_ticks" "$LOCK/boot_id" 2>/dev/null

@@ -210,11 +210,15 @@
     return { label: windowLabel, granularity: bounds.granularity, coveragePct: ratio, validSamples: stats?.backendValidSamples ?? stats?.validCount ?? stats?.count };
   }
   async function fetchEnergySummary(bounds, stats, forceRank = false, contextKey = state.activeKey) {
-    // Android system history is already the selected source. Its bounds use
-    // `raw`, which is intentionally not a software-attribution ranking input.
-    // Do not send raw granularity to power_rank.sh (that endpoint accepts only
-    // minute/hour) and do not show a false software ranking on this tab.
-    if (state.source === 'system') return;
+    const elapsedSec = Math.max(0, Number(bounds.endTs) - Number(bounds.startTs));
+    const rankGranularity = bounds.granularity === 'raw'
+      ? (elapsedSec <= 28800 ? 'minute' : 'hour')
+      : bounds.granularity;
+    const rankBounds = { ...bounds, granularity: rankGranularity };
+    if (state.rankRequest) {
+      if (forceRank) state.rankRefreshRequested = true;
+      return;
+    }
     if (state.source === 'power') {
       try {
         const fast = await request(API.energyFast, 4000, 'overviewRequest');
@@ -224,12 +228,12 @@
         // The real-time card remains usable when the fast summary is unavailable.
       }
     }
-    const cacheKey = rankKey(bounds, stats);
+    const cacheKey = rankKey(rankBounds, stats);
     const cached = state.rankCache.get(cacheKey);
-    const window = rankWindow(bounds, stats);
+    const window = rankWindow(rankBounds, stats);
     if (!state.open || !isActive() || state.activeKey !== contextKey) return;
     const revisionChanged = state.source === 'system' && cached && stats?.rankRevision && cached.revision && String(stats.rankRevision) !== String(cached.revision);
-    const cacheExpired = cached && cached.updatedAt && Date.now() - cached.updatedAt >= 120000;
+    const cacheExpired = cached && (!cached.fetchedAt || Date.now() - cached.fetchedAt >= 120000);
     const retryableUnavailable = cached && ['unavailable', 'error'].includes(cached.status) && (cacheExpired || revisionChanged);
     if (!forceRank && cached && !revisionChanged && !cacheExpired && !retryableUnavailable) {
       state.ranking = { ...cached, window, updatedAt: cached.updatedAt || Date.now() };
@@ -239,21 +243,22 @@
     cancelSlot('rankRequest', 'ranking-replaced');
     const generation = ++state.rankGeneration;
     state.ranking = { status: 'loading', window, cacheKey };
-    updateView();
+    updateView(true);
     try {
-      const full = await request(query(API.powerRank || '/cgi-bin/power_rank.sh', { start_ts: bounds.startTs, end_ts: bounds.endTs, granularity: bounds.granularity }), 16000, 'rankRequest');
+      const full = await request(query(API.powerRank || '/cgi-bin/power_rank.sh', { start_ts: rankBounds.startTs, end_ts: rankBounds.endTs, granularity: rankBounds.granularity }), 30000, 'rankRequest');
       if (!state.open || !isActive() || generation !== state.rankGeneration || !full) return;
       if (full.ok !== true) throw new Error(full.error || full.reason || '后台未返回有效排行');
       const rankCoverage = Number(full.coverage_ratio);
-      const rankMeta = { label: `${new Date(bounds.startTs * 1000).toLocaleString()} — ${new Date(bounds.endTs * 1000).toLocaleString()}`, granularity: bounds.granularity, coveragePct: Number.isFinite(rankCoverage) ? (rankCoverage > 1 ? rankCoverage : rankCoverage * 100) : null, validSamples: full.valid_samples ?? null, gapCount: Array.isArray(full.gaps) ? full.gaps.length : null, reason: full.reason || '', attributionState: full.attribution_state || '', windowProven: full.window_proven !== false };
-      const result = { status: full.status || 'ready', summary: full, window: rankMeta, cacheKey, updatedAt: Number(full.updated_at) > 0 ? Number(full.updated_at) * 1000 : Date.now(), revision: revisionBase(full.data_revision) };
+      const observedAt = Number(full.updated_at) > 0 ? Number(full.updated_at) * 1000 : null;
+      const rankMeta = { label: `${new Date(rankBounds.startTs * 1000).toLocaleString()} — ${new Date(rankBounds.endTs * 1000).toLocaleString()}`, granularity: rankBounds.granularity, coveragePct: Number.isFinite(rankCoverage) ? (rankCoverage > 1 ? rankCoverage : rankCoverage * 100) : null, validSamples: full.valid_samples ?? null, gapCount: Array.isArray(full.gaps) ? full.gaps.length : null, reason: full.reason || '', attributionState: full.attribution_state || '', windowProven: full.window_proven !== false, observedAt };
+      const result = { status: full.status || 'ready', summary: full, window: rankMeta, cacheKey, fetchedAt: Date.now(), observedAt, updatedAt: observedAt || Date.now(), revision: revisionBase(full.data_revision) };
       state.rankCache.set(cacheKey, result);
       state.ranking = result;
-      updateView();
+      updateView(true);
     } catch (err) {
       if (!state.open || !isActive() || generation !== state.rankGeneration) return;
       state.ranking = { status: 'error', error: err?.message || String(err), window, cacheKey };
-      updateView();
+      updateView(true);
     }
   }
   async function load(force = false, forceRank = false) {

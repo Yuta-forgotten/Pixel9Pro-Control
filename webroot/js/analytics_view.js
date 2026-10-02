@@ -199,10 +199,10 @@
   function appendPowerAttribution(body, summary, ranking) {
     const disclosure = document.createElement('details'); disclosure.className = 'analytics-disclosure';
     const disclosureSummary = el('summary', 'analytics-disclosure-summary');
-    const disclosureCopy = el('span', 'analytics-disclosure-copy'); disclosureCopy.append(el('strong', '', '软件耗电排行'), el('small', '', '只在展开时读取；显示真实观测区间与归因证据状态'));
+    const disclosureCopy = el('span', 'analytics-disclosure-copy'); disclosureCopy.append(el('strong', '', '软件耗电排行'), el('small', '', '按慢刷新策略读取；显示真实观测区间与归因证据状态'));
     disclosureSummary.append(disclosureCopy, el('span', 'analytics-disclosure-chevron', '›'));
     const content = el('div', 'analytics-disclosure-body'); disclosure.append(disclosureSummary, content); body.appendChild(disclosure); body = content;
-    body.append(el('div', 'analytics-section-desc', '排行按当前时间窗读取同一 boot 的 BatteryStats 累计差分；跨窗口基线会单独标注，证据不足时不会伪造当前窗口耗电。'));
+    body.append(el('div', 'analytics-section-desc', '排行按当前时间窗读取同一 BatteryStats start_clock 会话的累计差分；跨 reboot 只有在累计会话连续时才参与，窗口外基线会单独标注，证据不足时不会伪造当前窗口耗电。'));
     const rankState = ranking || { status: 'idle' };
     if (rankState.status === 'loading') {
       body.appendChild(el('div', 'analytics-loading-card', '正在读取当前窗口的功耗排行…'));
@@ -213,12 +213,17 @@
       return;
     }
     if (rankState.status === 'unavailable') {
-      const reason = rankState.summary?.reason || 'need_two_same_identity_snapshots';
+      const reason = rankState.summary?.reason || 'need_two_selected_snapshots';
       const text = {
         need_two_snapshots: '当前还没有两份可比较的归因快照；保持亮屏使用约 10 分钟后再刷新。',
-        need_two_same_identity_snapshots: '当前时间窗缺少同一 boot 的连续归因快照；跨 boot 或间断数据不会冒充排行。',
+        need_two_selected_snapshots: '当前时间窗少于两份有效归因快照；窗口外的基线不会冒充当前窗口耗电。',
+        need_two_same_identity_snapshots: '当前时间窗缺少两份同一 BatteryStats 会话快照；设备重启只在 start_clock 连续时参与差分。',
         interval_too_long: '最近两份快照间隔过长；下一份亮屏快照完成后再刷新。',
-        feature_disabled: '后台归因采样已关闭；前台仍可读取已有 ledger，开启后台后才会产生新快照。'
+        feature_disabled: '后台归因采样已关闭；前台仍可读取已有 ledger，开启后台后才会产生新快照。',
+        no_power_items: '快照存在，但没有可配对的 UID 或系统功耗项目。',
+        gaps_or_counter_reset: '归因快照存在间断或累计 counter 重置，无法证明完整区间。',
+        collector_not_installed: '归因采集器尚未生成快照。',
+        collector_calc_failed: '归因计算失败，趋势数据仍可用。'
       }[reason] || `当前窗口暂无可证明归因（${reason}）。`;
       body.appendChild(el('div', 'analytics-status warn', text));
       return;

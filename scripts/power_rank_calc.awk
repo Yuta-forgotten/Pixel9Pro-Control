@@ -1,6 +1,8 @@
 # Reduce ordered snapshot ledgers to exact window-local cumulative deltas.
 # A cumulative counter is only attributable when both endpoint snapshots are
-# inside the requested window and have the same boot and BatteryStats clock.
+# inside the requested window and have the same BatteryStats start_clock
+# segment. A reboot is reported as metadata but does not invalidate a
+# persistent charged-counter segment by itself.
 # A pre-window baseline is reported as reference metadata, never prorated into
 # the selected total.
 
@@ -17,6 +19,7 @@ BEGIN {
     reference_start = 0
     reference_end = 0
     reference_seen = 0
+    boot_transitions = 0
 }
 
 function clear_current(  key) {
@@ -52,11 +55,12 @@ function pair_delta(  key, delta, dt, in_window, reason) {
         return
     }
     if (cur_ts > end_ts) return
-    if (prev_boot != cur_boot || prev_clock != cur_clock) {
+    if (prev_clock != cur_clock) {
         identity_gaps++
-        gap_n++; gap_start[gap_n] = prev_ts; gap_end[gap_n] = cur_ts; gap_reason[gap_n] = "identity_changed"
+        gap_n++; gap_start[gap_n] = prev_ts; gap_end[gap_n] = cur_ts; gap_reason[gap_n] = "battery_stats_segment_changed"
         return
     }
+    if (prev_boot != cur_boot) boot_transitions++
     if (dt > max_gap) {
         identity_gaps++
         gap_n++; gap_start[gap_n] = prev_ts; gap_end[gap_n] = cur_ts; gap_reason[gap_n] = "interval_too_long"
@@ -134,8 +138,8 @@ END {
     quality = valid ? (identity_gaps ? "partial" : "complete") : "unavailable"
     if (valid) reason = identity_gaps ? "gaps_or_counter_reset" : "ok"
     else if (valid_intervals > 0) reason = "no_power_items"
-    else reason = "need_two_same_identity_snapshots"
-    printf "meta\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", status, quality, reason, coverage, valid_intervals, snapshot_count, updated, updated, observed_start, observed_end, reference_seen, reference_start, reference_end
+    else reason = "need_two_selected_snapshots"
+    printf "meta\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", status, quality, reason, coverage, valid_intervals, snapshot_count, updated, updated, observed_start, observed_end, reference_seen, reference_start, reference_end, boot_transitions
     for (i = 1; i <= gap_n; i++) printf "gap\t%d\t%d\t%s\n", gap_start[i], gap_end[i], gap_reason[i]
     for (key in app_total) if (app_total[key] > 0) printf "app\t%s\t%s\t%.6f\n", key, app_label[key], app_total[key]
     for (key in component_total) if (component_total[key] > 0) printf "component\t%s\t%s\t%.6f\n", key, component_label[key], component_total[key]

@@ -58,12 +58,14 @@ awk -F '\t' -v start_ts="$start_ts" -v end_ts="$end_ts" '
     $1 <= end_ts { if (baseline != "" && !emitted) { print baseline; emitted=1 } print }
 ' "$tmp" | cut -f2- > "$files"
 
+selected_count=$(awk -F '\t' -v start_ts="$start_ts" -v end_ts="$end_ts" '$1 >= start_ts && $1 <= end_ts { n++ } END { print n + 0 }' "$tmp" 2>/dev/null)
+case "$selected_count" in ''|*[!0-9]*) selected_count=0 ;; esac
 count=$(wc -l < "$files" 2>/dev/null | tr -d ' \r\n')
 case "$count" in ''|*[!0-9]*) count=0 ;; esac
-if [ "$count" -lt 2 ] 2>/dev/null; then
+if [ "$selected_count" -lt 2 ] 2>/dev/null; then
     json_headers
-    printf '{"ok":true,"schema":1,"status":"unavailable","quality":"unavailable","reason":"need_two_snapshots","source":"power_rank_snapshot","start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_sec":0,"coverage_ratio":0,"valid_intervals":0,"valid_samples":0,"raw_samples":0,"gap_count":0,"gaps":[],"updated_at":null,"data_revision":"empty","cache":{"hit":false},"apps":[],"components":[]}\n' \
-        "$(json_num "$start_ts")" "$(json_num "$end_ts")" "$(json_escape "$granularity")"
+    printf '{"ok":true,"schema":1,"status":"unavailable","quality":"unavailable","reason":"need_two_selected_snapshots","source":"power_rank_snapshot","start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_sec":0,"coverage_ratio":0,"valid_intervals":0,"valid_samples":0,"raw_samples":%s,"selected_snapshots":%s,"gap_count":0,"gaps":[],"updated_at":null,"data_revision":"empty","cache":{"hit":false},"apps":[],"components":[]}\n' \
+        "$(json_num "$start_ts")" "$(json_num "$end_ts")" "$(json_escape "$granularity")" "$(json_num "$selected_count")" "$(json_num "$selected_count")"
     exit 0
 fi
 
@@ -96,12 +98,13 @@ fi
 [ -s "$out" ] || json_error '500 Internal Server Error' 'power rank calculation returned no data: collector_calc_empty'
 meta=$(sed -n '/^meta[[:space:]]/p' "$out" 2>/dev/null | tail -n 1)
 TAB=$(printf '\t')
-IFS="$TAB" read -r _ status quality reason coverage valid_intervals snapshots updated revision observed_start observed_end reference_seen reference_start reference_end <<EOF
+IFS="$TAB" read -r _ status quality reason coverage valid_intervals snapshots updated revision observed_start observed_end reference_seen reference_start reference_end boot_transitions <<EOF
 $meta
 EOF
 [ -n "$status" ] || status=unavailable; [ -n "$quality" ] || quality=unavailable
 [ -n "$reason" ] || reason=collector_no_window; [ -n "$coverage" ] || coverage=0
 [ -n "$valid_intervals" ] || valid_intervals=0; [ -n "$updated" ] || updated=0
+[ -n "$boot_transitions" ] || boot_transitions=0
 case "$reference_seen" in
     1) window_proven=false; attribution_state=reference_baseline ;;
     *) window_proven=true; attribution_state=selected_window ;;
@@ -137,10 +140,10 @@ done < "$out"
 
 {
 json_headers
-printf '{"ok":true,"schema":1,"status":"%s","quality":"%s","reason":"%s","attribution_state":"%s","window_proven":%s,"observed_start_ts":%s,"observed_end_ts":%s,"reference_start_ts":%s,"reference_end_ts":%s,"source":"power_rank_snapshot","start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_sec":%s,"coverage_ratio":%s,"valid_intervals":%s,"valid_samples":%s,"raw_samples":%s,"gap_count":%s,"gaps":[%s],"updated_at":%s,"data_revision":"%s","cache":{"hit":false},"total_mah":null,"apps":[%s],"components":[%s]}\n' \
+printf '{"ok":true,"schema":1,"status":"%s","quality":"%s","reason":"%s","attribution_state":"%s","window_proven":%s,"observed_start_ts":%s,"observed_end_ts":%s,"reference_start_ts":%s,"reference_end_ts":%s,"source":"power_rank_snapshot","start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_sec":%s,"coverage_ratio":%s,"valid_intervals":%s,"valid_samples":%s,"raw_samples":%s,"selected_snapshots":%s,"boot_transition_count":%s,"gap_count":%s,"gaps":[%s],"updated_at":%s,"data_revision":"%s","cache":{"hit":false},"total_mah":null,"apps":[%s],"components":[%s]}\n' \
     "$(json_escape "$status")" "$(json_escape "$quality")" "$(json_escape "$reason")" "$(json_escape "$attribution_state")" "$window_proven" "$(json_num "$observed_start")" "$(json_num "$observed_end")" "$(json_num "$reference_start")" "$(json_num "$reference_end")" \
     "$(json_num "$start_ts")" "$(json_num "$end_ts")" "$(json_escape "$granularity")" "$(json_num "$coverage")" "$coverage_ratio" \
-    "$(json_num "$valid_intervals")" "$(json_num "$valid_intervals")" "$(json_num "$snapshots")" "$gap_count" "$gaps" "$(json_num "$updated")" "$(json_escape "$revision")" "$apps" "$components"
+    "$(json_num "$valid_intervals")" "$(json_num "$valid_intervals")" "$(json_num "$snapshots")" "$(json_num "$selected_count")" "$(json_num "$boot_transitions")" "$gap_count" "$gaps" "$(json_num "$updated")" "$(json_escape "$revision")" "$apps" "$components"
 } > "$response_tmp" 2>/dev/null || json_error '500 Internal Server Error' 'cannot serialize power rank response'
 if mv "$response_tmp" "$cache_file" 2>/dev/null; then
     cat "$cache_file"
