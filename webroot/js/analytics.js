@@ -16,6 +16,7 @@
   const isPowerSource = () => state.source === 'power' || state.source === 'system';
   const model = () => requireFeature('analyticsModel');
   const capture = () => requireFeature('capture');
+  const captureBusy = () => capture().isBusy?.() === true;
   const viewFeature = () => requireFeature('analyticsView');
   const endpoint = () => (globalThis.API && API.telemetry) || '/cgi-bin/telemetry.sh';
   const revisionBase = (value) => {
@@ -294,7 +295,12 @@
     }
     if (!state.cache.has(cacheKey)) viewFeature().loading(view, state.source, state.rangeId, state.thermalSensor);
     try {
-      const data = await fetchSource(historyBounds); if (requestId !== state.requestId || !data) return null;
+      const data = await fetchSource(historyBounds);
+      if (requestId !== state.requestId) return null;
+      if (!data) {
+        viewFeature().error(view, state.source, state.rangeId, '读取未返回数据；请刷新当前区间', state.thermalSensor);
+        return false;
+      }
       if (data.ok === false) throw new Error(data.error || data.reason || '历史接口返回失败');
       const normalized = normalizeResponse(data, historyBounds);
       state.cache.set(cacheKey, normalized); updateView();
@@ -314,7 +320,10 @@
       if (state.source === 'thermal') capture().status().catch(() => {}).then(() => updateView());
     } catch (err) {
       if (requestId !== state.requestId) return null;
-      if (isCancelled(err)) return null;
+      if (isCancelled(err)) {
+        viewFeature().error(view, state.source, state.rangeId, '读取已暂停；当前请求已取消，请重新读取', state.thermalSensor);
+        return false;
+      }
       viewFeature().error(view, state.source, state.rangeId, `读取失败：${err.message || err}`, state.thermalSensor);
       return false;
     }
@@ -378,7 +387,7 @@
   function pause() { suspend('page-hidden'); }
   function minimize() { suspend('analytics-minimized'); }
   function resume() {
-    if (!state.open || !isActive() || state.initialLoadPending || (!state.suspended && (state.request || state.overviewRequest || state.rankRequest || state.timer))) return;
+    if (!state.open || !isActive() || state.initialLoadPending || (!state.suspended && (state.request || state.overviewRequest || state.rankRequest || state.timer || captureBusy()))) return;
     state.suspended = false;
     if (state.source === 'thermal' && state.thermalSensor === 'module') triggerBurst({ prompt: false });
     load(false);
@@ -386,7 +395,7 @@
   function init() {
     if (state.observer || !refs.detailModal) return;
     document.addEventListener('webui-theme-changed', () => { if (state.open && isActive()) updateView(); });
-    state.observer = new MutationObserver(() => { if (!state.open) return; if (refs.detailModal.classList.contains('detail-minimized')) minimize(); else if (!state.initialLoadPending && isActive() && !state.request && !state.overviewRequest && !state.rankRequest && !state.timer) resume(); });
+    state.observer = new MutationObserver(() => { if (!state.open) return; if (refs.detailModal.classList.contains('detail-minimized')) minimize(); else if (!state.initialLoadPending && isActive() && !state.request && !state.overviewRequest && !state.rankRequest && !state.timer && !captureBusy()) resume(); });
     state.observer.observe(refs.detailModal, { attributes: true, attributeFilter: ['class'] });
   }
   registerFeature('analytics', { init, open, stop, pause, minimize, resume, triggerBurst, schedule, isActive: () => state.open && isActive(), getState: () => ({ ...state, cache: undefined }) });
