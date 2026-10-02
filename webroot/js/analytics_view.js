@@ -103,7 +103,7 @@
     capture.append(el('div', 'analytics-section-title', '临时诊断记录'), el('div', 'analytics-section-desc', '只用于一次临时诊断会话，不会改变后台历史策略。息屏与 Doze 期间允许真实缺测，不补零、不伪造连续曲线。'), captureState, captureControls);
     const policy = el('section', 'analytics-policy-card');
     const policyTitle = el('div', 'analytics-section-title', '后台记录与存储');
-    const policyDesc = el('div', 'analytics-section-desc', '控制后台低频记录、软件归因与历史空间。关闭后停止周期采样和后台分析；前台读取与独占临时诊断仍可用。温控控制本身不受影响。');
+    const policyDesc = el('div', 'analytics-section-desc', '控制 Android 系统历史、模块低频记录与历史空间。关闭后停止后台采样和周期分析；前台读取与独占临时诊断仍可用。温控控制本身不受影响。');
     const policyFields = el('div', 'analytics-policy-fields');
     const enabledField = el('label', 'analytics-policy-toggle');
     const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = true; enabled.setAttribute('aria-label', '启用后台历史记录');
@@ -112,9 +112,9 @@
     const makeSelect = (label, values, suffix) => { const select = document.createElement('select'); select.setAttribute('aria-label', label); values.forEach((value) => { const option = el('option', '', `${value}${suffix}`); option.value = String(value); select.appendChild(option); }); const field = el('label', 'analytics-custom-field'); field.append(el('span', 'analytics-section-desc', label), select); policyFields.appendChild(field); return select; };
     const retention = makeSelect('保留时间', [1, 3, 7], ' 天');
     const cap = makeSelect('空间上限', [8, 16, 32], ' MiB');
-    const onInterval = makeSelect('亮屏软件归因', [5, 15, 30, 60], ' 分钟');
-    const offInterval = makeSelect('息屏低频记录', [15, 30, 60], ' 分钟');
-    const policyActions = el('div', 'analytics-actions'); const policyButton = el('button', 'tiny-btn tonal', '应用设置'); policyButton.type = 'button'; policyButton.disabled = true; policyButton.addEventListener('click', () => callbacks.onPolicy?.(policyButton, { analytics_enabled: enabled.checked, retention_days: retention.value, max_bytes: Number(cap.value) * 1048576, module_interval_on_sec: 60, module_interval_off_sec: Math.max(900, Number(offInterval.value) * 60), system_interval_on_sec: Math.max(300, Number(onInterval.value) * 60), system_interval_off_sec: Math.max(900, Number(offInterval.value) * 60) })); policyActions.appendChild(policyButton);
+    const onInterval = makeSelect('亮屏系统历史', [5, 15, 30, 60], ' 分钟');
+    const offInterval = makeSelect('息屏系统历史', [15, 30, 60, 120], ' 分钟');
+    const policyActions = el('div', 'analytics-actions'); const policyButton = el('button', 'tiny-btn tonal', '应用设置'); policyButton.type = 'button'; policyButton.disabled = true; policyButton.addEventListener('click', () => callbacks.onPolicy?.(policyButton, { analytics_enabled: enabled.checked, retention_days: retention.value, max_bytes: Number(cap.value) * 1048576, module_interval_on_sec: 60, module_interval_off_sec: 900, system_interval_on_sec: Math.max(300, Number(onInterval.value) * 60), system_interval_off_sec: Math.max(900, Number(offInterval.value) * 60) })); policyActions.appendChild(policyButton);
     [enabled, retention, cap, onInterval, offInterval].forEach((field) => field.addEventListener('change', () => { view.policy && (view.policy.dirty = true); policyButton.disabled = false; }));
     const policyState = el('div', 'analytics-policy-state', '等待读取后台策略'); policy.append(policyTitle, policyDesc, policyFields, policyActions, policyState);
     const actions = el('div', 'analytics-export-actions analytics-actions');
@@ -124,7 +124,7 @@
     exportWindow.addEventListener('click', () => callbacks.onExport(exportWindow)); actions.appendChild(exportWindow);
     root.append(intro, source, sensor, range, custom, stateLine, hero, chartSection, more, capture, policy, actions);
     view.root = root; view.sourceGroup = source; view.sensorGroup = sensor; view.rangeGroup = range; view.custom = custom; view.customWindow = days; view.customGranularity = granularity; view.stateLine = stateLine; view.hero = hero;
-    view.heroKicker = heroHead.querySelector('.analytics-hero-kicker'); view.heroValue = heroHead.querySelector('.analytics-hero-value'); view.heroStatus = heroHead.querySelector('.analytics-hero-status'); view.heroBadge = heroHead.querySelector('.analytics-hero-badge'); view.summary = Array.from(summary.children); view.canvas = canvas; view.tooltip = tooltip; view.legend = legend; view.moreBody = moreBody; view.captureState = captureState; view.captureBtn = captureBtn; view.captureExport = captureExport; view.duration = duration; view.refresh = refresh; view.exportWindow = exportWindow; view.policy = { enabled, retention, cap, onInterval, offInterval, button: policyButton, state: policyState, dirty: false };
+    view.heroKicker = heroHead.querySelector('.analytics-hero-kicker'); view.heroValue = heroHead.querySelector('.analytics-hero-value'); view.heroStatus = heroHead.querySelector('.analytics-hero-status'); view.heroBadge = heroHead.querySelector('.analytics-hero-badge'); view.summary = Array.from(summary.children); view.canvas = canvas; view.tooltip = tooltip; view.legend = legend; view.quality = quality; view.moreBody = moreBody; view.captureState = captureState; view.captureBtn = captureBtn; view.captureExport = captureExport; view.duration = duration; view.refresh = refresh; view.exportWindow = exportWindow; view.policy = { enabled, retention, cap, onInterval, offInterval, button: policyButton, state: policyState, dirty: false };
     const showPoint = (point, source) => {
       if (!point) { tooltip.hidden = true; return; }
       const date = new Date(point.ts * 1000);
@@ -161,7 +161,7 @@
   function promptCustom(view) {
     setActive(view, view.source, 'custom');
     view.stateLine.hidden = false;
-    view.stateLine.textContent = '选择最近天数和采样精细度后应用';
+    view.stateLine.textContent = '选择最近时间窗和采样精细度后应用';
   }
 
   function relativeTime(ts) {
@@ -407,7 +407,7 @@
           if (policy.retention_days != null) view.policy.retention.value = String(policy.retention_days);
           if (policy.max_bytes != null) view.policy.cap.value = String(Math.max(8, Math.min(32, Math.round(Number(policy.max_bytes) / 1048576))));
           if (policy.system_interval_on_sec != null) view.policy.onInterval.value = String(Math.max(5, Math.min(60, Math.round(Number(policy.system_interval_on_sec) / 60))));
-          if (policy.module_interval_off_sec != null) view.policy.offInterval.value = String(Math.max(15, Math.min(60, Math.round(Number(policy.module_interval_off_sec) / 60))));
+          if (policy.system_interval_off_sec != null) view.policy.offInterval.value = String(Math.max(15, Math.min(120, Math.round(Number(policy.system_interval_off_sec) / 60))));
         }
         view.policy.button.disabled = !view.policy.dirty;
         [view.policy.retention, view.policy.cap, view.policy.onInterval, view.policy.offInterval].forEach((field) => { field.disabled = !enabled && !view.policy.dirty; });

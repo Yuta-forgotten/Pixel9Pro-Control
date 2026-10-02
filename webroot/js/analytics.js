@@ -348,7 +348,7 @@
     if (!API.historyPolicy) { showToast('后台未提供历史策略接口'); return; }
     button.disabled = true;
     try {
-      const body = { action: 'configure', analytics_enabled: policy.analytics_enabled === true, retention_days: Number(policy.retention_days), max_bytes: Number(policy.max_bytes), module_interval_on_sec: 60, module_interval_off_sec: Math.max(900, Number(policy.module_interval_off_sec) || 900), system_interval_on_sec: Math.max(300, Number(policy.system_interval_on_sec)), system_interval_off_sec: Math.max(900, Number(policy.system_interval_off_sec) || 900) };
+      const body = { action: 'configure', analytics_enabled: policy.analytics_enabled === true, retention_days: Number(policy.retention_days), max_bytes: Number(policy.max_bytes), module_interval_on_sec: 60, module_interval_off_sec: 900, system_interval_on_sec: Math.max(300, Number(policy.system_interval_on_sec)), system_interval_off_sec: Math.max(900, Number(policy.system_interval_off_sec) || 900) };
       const result = await apiFetch(API.historyPolicy, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), timeoutMs: 8000, priority: 'interactive', scope: 'analytics.policy' });
       if (result?.ok === false) throw new Error(result.error || result.reason || '策略未生效');
       const readback = await apiFetch(API.historyPolicy, { method: 'GET', timeoutMs: 8000, priority: 'interactive', scope: 'analytics.policy.readback' });

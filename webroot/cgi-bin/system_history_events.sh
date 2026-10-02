@@ -82,7 +82,7 @@ name=${latest_file##*/}
 boot_id=${name#*_}
 cache_dir="$ROOT/cache"
 mkdir -p "$cache_dir" 2>/dev/null || true
-_policy_revision="$(config_value retention_days 7)_$(config_value max_bytes 33554432)_$(config_value system_interval_on_sec 900)_$_off_interval"
+_policy_revision="$(config_enabled)_$(config_value retention_days 7)_$(config_value max_bytes 33554432)_$(config_value module_interval_on_sec 60)_$(config_value module_interval_off_sec 900)_$(config_value system_interval_on_sec 900)_$_off_interval"
 cache_file="$cache_dir/v5_${start_ts}_${end_ts}_${latest_stamp}_${_policy_revision}.json"
 cache_count=0
 for _cache_entry in "$cache_dir"/*.json; do
