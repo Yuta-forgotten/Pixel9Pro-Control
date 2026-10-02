@@ -47,8 +47,11 @@ async function doFullRefresh() {
     const deferredResults = await Promise.allSettled(deferredTasks.map(([, task]) => task()));
     const allTasks = tasks.concat(deferredTasks);
     const allResults = results.concat(deferredResults);
-    const failures = allResults.flatMap((result, index) => result.status === 'rejected'
-      ? [`${allTasks[index][0]}: ${result.reason?.message || result.reason}`] : []);
+    const failures = allResults.flatMap((result, index) => {
+      if (result.status === 'rejected') return [`${allTasks[index][0]}: ${result.reason?.message || result.reason}`];
+      if (result.value === false) return [`${allTasks[index][0]}: 接口未完成有效回读`];
+      return [];
+    });
     failures.forEach((message) => appFeatures.core.appendLog(`${message}刷新失败`, 'err'));
     appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow']);
     appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay());
