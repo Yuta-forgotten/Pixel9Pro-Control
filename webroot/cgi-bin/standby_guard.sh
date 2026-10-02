@@ -70,17 +70,28 @@ analytics_config_write_enabled() {
 stop_module_observers() {
     _sg_rank_lock="$MODDIR/.power_rank/collect.lock"
     _sg_rank_pid=$(cat "$_sg_rank_lock/pid" 2>/dev/null | tr -d ' \r\n\t')
+    _sg_rank_start=$(cat "$_sg_rank_lock/start_ticks" 2>/dev/null | tr -d ' \r\n\t')
+    _sg_rank_boot=$(cat "$_sg_rank_lock/boot_id" 2>/dev/null | tr -d ' \r\n\t')
+    _sg_rank_live_start=$(process_start_ticks "$_sg_rank_pid" 2>/dev/null || true)
+    _sg_current_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n\t')
     case "$_sg_rank_pid" in ''|*[!0-9]*) _sg_rank_pid=0 ;; esac
-    if [ "$_sg_rank_pid" -gt 0 ] 2>/dev/null && kill -0 "$_sg_rank_pid" 2>/dev/null; then
+    if [ "$_sg_rank_pid" -gt 0 ] 2>/dev/null && [ -n "$_sg_rank_start" ] && [ -n "$_sg_rank_boot" ] && [ "$_sg_rank_start" = "$_sg_rank_live_start" ] && [ "$_sg_rank_boot" = "$_sg_current_boot" ] && kill -0 "$_sg_rank_pid" 2>/dev/null; then
         kill -TERM "$_sg_rank_pid" 2>/dev/null || true
         sleep 1
-        kill -KILL "$_sg_rank_pid" 2>/dev/null || true
+        _sg_rank_live_start=$(process_start_ticks "$_sg_rank_pid" 2>/dev/null || true)
+        [ "$_sg_rank_start" = "$_sg_rank_live_start" ] && kill -KILL "$_sg_rank_pid" 2>/dev/null || true
     fi
     _sg_telemetry_state="$MODDIR/.telemetry/state"
     _sg_telemetry_pid=$(sed -n 's/^pid=//p' "$_sg_telemetry_state" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+    _sg_telemetry_start=$(sed -n 's/^pid_start_ticks=//p' "$_sg_telemetry_state" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+    _sg_telemetry_boot=$(sed -n 's/^boot_id=//p' "$_sg_telemetry_state" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+    _sg_telemetry_live_start=$(process_start_ticks "$_sg_telemetry_pid" 2>/dev/null || true)
     case "$_sg_telemetry_pid" in ''|*[!0-9]*) _sg_telemetry_pid=0 ;; esac
-    if [ "$_sg_telemetry_pid" -gt 0 ] 2>/dev/null && kill -0 "$_sg_telemetry_pid" 2>/dev/null; then
+    if [ "$_sg_telemetry_pid" -gt 0 ] 2>/dev/null && [ -n "$_sg_telemetry_start" ] && [ -n "$_sg_telemetry_boot" ] && [ "$_sg_telemetry_start" = "$_sg_telemetry_live_start" ] && [ "$_sg_telemetry_boot" = "$_sg_current_boot" ] && kill -0 "$_sg_telemetry_pid" 2>/dev/null; then
         kill -TERM "$_sg_telemetry_pid" 2>/dev/null || true
+        sleep 1
+        _sg_telemetry_live_start=$(process_start_ticks "$_sg_telemetry_pid" 2>/dev/null || true)
+        [ "$_sg_telemetry_start" = "$_sg_telemetry_live_start" ] && kill -KILL "$_sg_telemetry_pid" 2>/dev/null || true
     fi
 }
 

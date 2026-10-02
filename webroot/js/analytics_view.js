@@ -103,7 +103,7 @@
     capture.append(el('div', 'analytics-section-title', '临时诊断记录'), el('div', 'analytics-section-desc', '只用于一次临时诊断会话，不会改变后台历史策略。息屏与 Doze 期间允许真实缺测，不补零、不伪造连续曲线。'), captureState, captureControls);
     const policy = el('section', 'analytics-policy-card');
     const policyTitle = el('div', 'analytics-section-title', '后台记录与存储');
-    const policyDesc = el('div', 'analytics-section-desc', '控制 Android 系统历史、模块低频记录与历史空间。关闭后停止后台采样和周期分析；前台读取与独占临时诊断仍可用。温控控制本身不受影响。');
+    const policyDesc = el('div', 'analytics-section-desc', '控制 Android 系统历史、模块低频记录与历史空间。息屏不主动调用 BatteryStats，“息屏缺测判定”只决定缺测间隔如何标记。关闭后停止后台采样和周期分析；前台读取与独占临时诊断仍可用。温控控制本身不受影响。');
     const policyFields = el('div', 'analytics-policy-fields');
     const enabledField = el('label', 'analytics-policy-toggle');
     const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = true; enabled.setAttribute('aria-label', '启用后台历史记录');
@@ -113,7 +113,7 @@
     const retention = makeSelect('保留时间', [1, 3, 7], ' 天');
     const cap = makeSelect('空间上限', [8, 16, 32], ' MiB');
     const onInterval = makeSelect('亮屏系统历史', [5, 15, 30, 60], ' 分钟');
-    const offInterval = makeSelect('息屏系统历史', [15, 30, 60, 120], ' 分钟');
+    const offInterval = makeSelect('息屏缺测判定', [15, 30, 60, 120], ' 分钟');
     const policyActions = el('div', 'analytics-actions'); const policyButton = el('button', 'tiny-btn tonal', '应用设置'); policyButton.type = 'button'; policyButton.disabled = true; policyButton.addEventListener('click', () => callbacks.onPolicy?.(policyButton, { analytics_enabled: enabled.checked, retention_days: retention.value, max_bytes: Number(cap.value) * 1048576, module_interval_on_sec: 60, module_interval_off_sec: 900, system_interval_on_sec: Math.max(300, Number(onInterval.value) * 60), system_interval_off_sec: Math.max(900, Number(offInterval.value) * 60) })); policyActions.appendChild(policyButton);
     [enabled, retention, cap, onInterval, offInterval].forEach((field) => field.addEventListener('change', () => { view.policy && (view.policy.dirty = true); policyButton.disabled = false; }));
     const policyState = el('div', 'analytics-policy-state', '等待读取后台策略'); policy.append(policyTitle, policyDesc, policyFields, policyActions, policyState);

@@ -1456,15 +1456,24 @@ esac
     esac
     [ "$_power_rank_interval_s" -ge 300 ] 2>/dev/null || _power_rank_interval_s=300
     _power_rank_pid=0
+    _power_rank_pid_start=0
+
+    _power_rank_pid_start_ticks() {
+        _pr_pid="$1"
+        case "$_pr_pid" in ''|*[!0-9]*) return 1 ;; esac
+        sed 's/^.*) //' "/proc/$_pr_pid/stat" 2>/dev/null | awk '{print $20}'
+    }
 
     _stop_power_rank_collector() {
         case "${_power_rank_pid:-0}" in
             ''|*[!0-9]*|0) _power_rank_pid=0; return 0 ;;
         esac
+        [ "$(_power_rank_pid_start_ticks "$_power_rank_pid")" = "$_power_rank_pid_start" ] || { _power_rank_pid=0; _power_rank_pid_start=0; return 0; }
         kill -TERM "$_power_rank_pid" 2>/dev/null || true
         sleep 1
-        kill -KILL "$_power_rank_pid" 2>/dev/null || true
+        [ "$(_power_rank_pid_start_ticks "$_power_rank_pid")" = "$_power_rank_pid_start" ] && kill -KILL "$_power_rank_pid" 2>/dev/null || true
         _power_rank_pid=0
+        _power_rank_pid_start=0
     }
 
     _start_power_rank_collector() {
@@ -1472,10 +1481,11 @@ esac
         case "${_power_rank_pid:-0}" in
             ''|*[!0-9]*|0) _power_rank_pid=0 ;;
             *)
-                if kill -0 "$_power_rank_pid" 2>/dev/null; then
+                if [ "$(_power_rank_pid_start_ticks "$_power_rank_pid")" = "$_power_rank_pid_start" ] && kill -0 "$_power_rank_pid" 2>/dev/null; then
                     return 0
                 fi
                 _power_rank_pid=0
+                _power_rank_pid_start=0
                 ;;
         esac
         _collector_timeout="${POWER_RANK_COLLECT_TIMEOUT_S:-20}"
@@ -1486,6 +1496,7 @@ esac
             sh "$MODDIR/scripts/power_rank_collect.sh" on interactive \
             >/dev/null 2>&1 &
         _power_rank_pid=$!
+        _power_rank_pid_start=$(_power_rank_pid_start_ticks "$_power_rank_pid")
     }
 
     _refresh_module_intervals() {
@@ -1512,15 +1523,11 @@ esac
         _analytics_enabled=$(system_history_enabled)
         if [ "$_analytics_enabled" != on ]; then
             _stop_power_rank_collector
-            # Foreground-only mode is a true observation pause. The sleeper
-            # checks only the module-owned config on wake; it does not read
-            # display, thermal, battery, modem, or process state.
-            sleep 900
-            continue
+        else
+            # Policy writes are live. Reload module cadence before deciding
+            # the next history sample instead of waiting for a restart.
+            _refresh_module_intervals
         fi
-        # Policy writes are live. Reload module cadence before deciding the
-        # next sample instead of waiting for a service restart.
-        _refresh_module_intervals
         _active_profile=$(profile_state_read_profile "$PROFILE_FILE" "$_active_profile")
         _sched_owner=$(read_valid_sched_owner)
         sbm_load_state

@@ -44,7 +44,7 @@ telemetry_worker_update() {
     _tw_pid_start="${TL_STATE_PID_START:-}"
     _tw_duration_state="${TL_STATE_DURATION_SEC:-$_tw_duration}"
     _tw_max_state="${TL_STATE_MAX_BYTES:-$_tw_max_bytes}"
-    telemetry_state_write "$_tw_id" "$_tw_status" "$_tw_start_ts" "$_tw_end" \
+    telemetry_state_write_locked "$_tw_id" "$_tw_status" "$_tw_start_ts" "$_tw_end" \
         "$_tw_duration_state" "$_tw_max_state" "$_tw_pid" "$_tw_pid_start" \
         "$_tw_reason" "$_tw_samples" "$_tw_bytes" "$_tw_last_sample" \
         "$_tw_quality" "$_tw_reset_count" "$_tw_stop" "$_tw_dir" \

@@ -7,6 +7,7 @@ TELEMETRY_SCHEMA=2
 TELEMETRY_ROOT="${PIXEL9PRO_TELEMETRY_ROOT:-${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.telemetry}"
 TELEMETRY_STATE="$TELEMETRY_ROOT/state"
 TELEMETRY_SESSIONS="$TELEMETRY_ROOT/sessions"
+TELEMETRY_STATE_LOCK="${PIXEL9PRO_LOCKDIR_BASE:-${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/.locks}/telemetry_state.lock"
 TELEMETRY_DEFAULT_MAX_BYTES=4194304
 TELEMETRY_MAX_BYTES_LIMIT=16777216
 
@@ -64,6 +65,49 @@ telemetry_state_value() {
     _tl_default="$3"
     _tl_value=$(sed -n "s/^${_tl_key}=//p" "$_tl_file" 2>/dev/null | head -n 1 | tr -d '\r')
     [ -n "$_tl_value" ] && printf '%s' "$_tl_value" || printf '%s' "$_tl_default"
+}
+
+telemetry_state_lock_acquire() {
+    _tl_lock_parent=${TELEMETRY_STATE_LOCK%/*}
+    mkdir -p "$_tl_lock_parent" 2>/dev/null || return 1
+    _tl_lock_start=$(telemetry_pid_start "$$" 2>/dev/null || true)
+    _tl_lock_boot=$(telemetry_boot_id)
+    _tl_try=0
+    while [ "$_tl_try" -lt 3 ]; do
+        if mkdir "$TELEMETRY_STATE_LOCK" 2>/dev/null; then
+            printf '%s\n' "$$" > "$TELEMETRY_STATE_LOCK/pid" 2>/dev/null || { rmdir "$TELEMETRY_STATE_LOCK" 2>/dev/null; return 1; }
+            printf '%s\n' "$_tl_lock_start" > "$TELEMETRY_STATE_LOCK/start_ticks" 2>/dev/null || { rm -f "$TELEMETRY_STATE_LOCK/pid"; rmdir "$TELEMETRY_STATE_LOCK" 2>/dev/null; return 1; }
+            printf '%s\n' "$_tl_lock_boot" > "$TELEMETRY_STATE_LOCK/boot_id" 2>/dev/null || { rm -f "$TELEMETRY_STATE_LOCK/pid" "$TELEMETRY_STATE_LOCK/start_ticks"; rmdir "$TELEMETRY_STATE_LOCK" 2>/dev/null; return 1; }
+            return 0
+        fi
+        _tl_owner=$(cat "$TELEMETRY_STATE_LOCK/pid" 2>/dev/null | tr -d ' \r\n\t')
+        _tl_owner_start=$(cat "$TELEMETRY_STATE_LOCK/start_ticks" 2>/dev/null | tr -d ' \r\n\t')
+        _tl_owner_live=$(telemetry_pid_start "$_tl_owner" 2>/dev/null || true)
+        if [ -z "$_tl_owner" ] || [ "$_tl_owner_start" != "$_tl_owner_live" ]; then
+            rm -f "$TELEMETRY_STATE_LOCK/pid" "$TELEMETRY_STATE_LOCK/start_ticks" "$TELEMETRY_STATE_LOCK/boot_id" 2>/dev/null
+            rmdir "$TELEMETRY_STATE_LOCK" 2>/dev/null || true
+        fi
+        _tl_try=$((_tl_try + 1))
+        sleep 1
+    done
+    return 1
+}
+
+telemetry_state_lock_release() {
+    _tl_owner=$(cat "$TELEMETRY_STATE_LOCK/pid" 2>/dev/null | tr -d ' \r\n\t')
+    _tl_owner_start=$(cat "$TELEMETRY_STATE_LOCK/start_ticks" 2>/dev/null | tr -d ' \r\n\t')
+    _tl_live=$(telemetry_pid_start "$_tl_owner" 2>/dev/null || true)
+    [ "$_tl_owner" = "$$" ] && [ "$_tl_owner_start" = "$_tl_lock_start" ] && [ "$_tl_live" = "$_tl_lock_start" ] || return 0
+    rm -f "$TELEMETRY_STATE_LOCK/pid" "$TELEMETRY_STATE_LOCK/start_ticks" "$TELEMETRY_STATE_LOCK/boot_id" 2>/dev/null
+    rmdir "$TELEMETRY_STATE_LOCK" 2>/dev/null || true
+}
+
+telemetry_state_write_locked() {
+    telemetry_state_lock_acquire || return 1
+    telemetry_state_write "$@"
+    _tl_rc=$?
+    telemetry_state_lock_release
+    return "$_tl_rc"
 }
 
 # Read the mutable recorder state once per observation. Callers that need many

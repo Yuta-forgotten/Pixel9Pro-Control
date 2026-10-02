@@ -142,7 +142,7 @@
     return state.view;
   }
   function updateView(details = false) {
-    if (!state.view) return;
+    if (!state.view || !state.open || !isActive()) return;
     const session = capture().getSession();
     const cached = state.cache.get(key());
     if (!cached) return;
@@ -293,8 +293,8 @@
       }
       schedule(); return true;
     }
-    if (!state.cache.has(cacheKey)) viewFeature().loading(view, state.source, state.rangeId, state.thermalSensor);
     try {
+      if (!state.cache.has(cacheKey)) viewFeature().loading(view, state.source, state.rangeId, state.thermalSensor);
       const data = await fetchSource(historyBounds);
       if (requestId !== state.requestId) return null;
       if (!data) {

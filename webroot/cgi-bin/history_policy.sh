@@ -29,16 +29,29 @@ config_enabled() {
 stop_module_observers() {
     _hpp_rank_lock="${MODDIR}/.power_rank/collect.lock"
     _hpp_pid=$(cat "$_hpp_rank_lock/pid" 2>/dev/null | tr -d ' \r\n\t')
+    _hpp_start=$(cat "$_hpp_rank_lock/start_ticks" 2>/dev/null | tr -d ' \r\n\t')
+    _hpp_boot=$(cat "$_hpp_rank_lock/boot_id" 2>/dev/null | tr -d ' \r\n\t')
+    _hpp_live_start=$(process_start_ticks "$_hpp_pid" 2>/dev/null || true)
+    _hpp_current_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \r\n\t')
     case "$_hpp_pid" in ''|*[!0-9]*) _hpp_pid=0 ;; esac
-    if [ "$_hpp_pid" -gt 0 ] 2>/dev/null && kill -0 "$_hpp_pid" 2>/dev/null; then
+    if [ "$_hpp_pid" -gt 0 ] 2>/dev/null && [ -n "$_hpp_start" ] && [ -n "$_hpp_boot" ] && [ "$_hpp_start" = "$_hpp_live_start" ] && [ "$_hpp_boot" = "$_hpp_current_boot" ] && kill -0 "$_hpp_pid" 2>/dev/null; then
         kill -TERM "$_hpp_pid" 2>/dev/null || true
         sleep 1
-        kill -KILL "$_hpp_pid" 2>/dev/null || true
+        _hpp_live_start=$(process_start_ticks "$_hpp_pid" 2>/dev/null || true)
+        [ "$_hpp_start" = "$_hpp_live_start" ] && kill -KILL "$_hpp_pid" 2>/dev/null || true
     fi
     _hpp_state="${MODDIR}/.telemetry/state"
     _hpp_pid=$(sed -n 's/^pid=//p' "$_hpp_state" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+    _hpp_start=$(sed -n 's/^pid_start_ticks=//p' "$_hpp_state" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+    _hpp_boot=$(sed -n 's/^boot_id=//p' "$_hpp_state" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
+    _hpp_live_start=$(process_start_ticks "$_hpp_pid" 2>/dev/null || true)
     case "$_hpp_pid" in ''|*[!0-9]*) _hpp_pid=0 ;; esac
-    [ "$_hpp_pid" -gt 0 ] 2>/dev/null && kill -TERM "$_hpp_pid" 2>/dev/null || true
+    if [ "$_hpp_pid" -gt 0 ] 2>/dev/null && [ -n "$_hpp_start" ] && [ -n "$_hpp_boot" ] && [ "$_hpp_start" = "$_hpp_live_start" ] && [ "$_hpp_boot" = "$_hpp_current_boot" ]; then
+        kill -TERM "$_hpp_pid" 2>/dev/null || true
+        sleep 1
+        _hpp_live_start=$(process_start_ticks "$_hpp_pid" 2>/dev/null || true)
+        [ "$_hpp_start" = "$_hpp_live_start" ] && kill -KILL "$_hpp_pid" 2>/dev/null || true
+    fi
 }
 
 valid_uint_range() {
