@@ -406,6 +406,19 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
             && cp "$OLDDIR/.power_rank/last_collect_ts" "$MODPATH/.power_rank/last_collect_ts" 2>/dev/null \
             || true
     fi
+    # Rebuild the persistent attribution ledger once during migration. The
+    # WebUI rank CGI can then read the collector-owned atomic ledger instead
+    # of concatenating every retained snapshot on the first long-window view.
+    if [ -d "$MODPATH/.power_rank/snapshots" ]; then
+        _rank_ledger_tmp="$MODPATH/.power_rank/.ledger.migrate.$$"
+        : > "$_rank_ledger_tmp" 2>/dev/null || _migration_failed=1
+        for _rank_snapshot in "$MODPATH/.power_rank/snapshots"/*; do
+            [ -f "$_rank_snapshot" ] || continue
+            cat "$_rank_snapshot" >> "$_rank_ledger_tmp" 2>/dev/null || _migration_failed=1
+        done
+        [ "$_migration_failed" -ne 0 ] || mv "$_rank_ledger_tmp" "$MODPATH/.power_rank/ledger.tsv" 2>/dev/null || _migration_failed=1
+        rm -f "$_rank_ledger_tmp" 2>/dev/null || true
+    fi
 if [ "$_migration_failed" -ne 0 ]; then
         ui_print "  ✗ 用户配置迁移不完整, 已中止安装"
         abort

@@ -96,7 +96,13 @@ if [ "$ledger_ready" -ne 1 ]; then
         [ -r "$file" ] || json_error '500 Internal Server Error' 'power rank snapshot missing'
         cat "$file" >> "$ledger_tmp" 2>/dev/null || json_error '500 Internal Server Error' 'cannot read power rank snapshot'
     done < "$files"
-    ledger="$ledger_tmp"
+    _ledger_commit_tmp="${ledger}.tmp.$$"
+    if cp "$ledger_tmp" "$_ledger_commit_tmp" 2>/dev/null && mv "$_ledger_commit_tmp" "$ledger" 2>/dev/null; then
+        ledger="$ledger"
+    else
+        rm -f "$_ledger_commit_tmp" 2>/dev/null
+        ledger="$ledger_tmp"
+    fi
 fi
 _rank_max_gap=$(awk -v on="$(sed -n 's/^system_interval_on_sec=//p' "${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config" 2>/dev/null | head -n 1)" -v off="$(sed -n 's/^system_interval_off_sec=//p' "${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config" 2>/dev/null | head -n 1)" 'BEGIN { if(on<900)on=900; if(off<900)off=900; m=(on>off?on:off)*2+120; if(m<1800)m=1800; print m }')
 if ! awk -F '\t' -v start_ts="$start_ts" -v end_ts="$end_ts" -v max_gap="$_rank_max_gap" \

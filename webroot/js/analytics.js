@@ -190,7 +190,8 @@
     // The main history sheet represents the entire selected time range. A
     // recent manual capture must not hide service history from the same range.
     if (state.source === 'system' || (state.source === 'thermal' && state.thermalSensor === 'battery')) {
-      return request(query(API.systemHistory || '/cgi-bin/system_history.sh', { start_ts: params.start_ts, end_ts: params.end_ts, granularity: bounds.granularity, dataset: 'system' }), 12000, 'request');
+      const historyTimeout = Number(bounds.endTs) - Number(bounds.startTs) >= 28800 ? 20000 : 12000;
+      return request(query(API.systemHistory || '/cgi-bin/system_history.sh', { start_ts: params.start_ts, end_ts: params.end_ts, granularity: bounds.granularity, dataset: 'system' }), historyTimeout, 'request');
     }
     if (state.source === 'thermal' && state.thermalSensor === 'module' && !policyEnabled()) {
       return request(query(API.thermal || '/cgi-bin/thermal.sh', { fresh: 1 }), 8000, 'request');
@@ -245,7 +246,7 @@
     state.ranking = { status: 'loading', window, cacheKey };
     updateView(true);
     try {
-      const full = await request(query(API.powerRank || '/cgi-bin/power_rank.sh', { start_ts: rankBounds.startTs, end_ts: rankBounds.endTs, granularity: rankBounds.granularity }), 30000, 'rankRequest');
+      const full = await request(query(API.powerRank || '/cgi-bin/power_rank.sh', { start_ts: rankBounds.startTs, end_ts: rankBounds.endTs, granularity: rankBounds.granularity }), 60000, 'rankRequest');
       if (!state.open || !isActive() || generation !== state.rankGeneration || !full) return;
       if (full.ok !== true) throw new Error(full.error || full.reason || '后台未返回有效排行');
       const rankCoverage = Number(full.coverage_ratio);
