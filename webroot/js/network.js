@@ -30,6 +30,13 @@ const state = {
 };
 
 const UECAP_REINSTALL_NOTICE = '更改配置需卸载本模块、重启后重新安装并在向导选择';
+const NETWORK_READ_TIMEOUTS = Object.freeze({
+  nr: 12000,
+  uecap: 30000,
+  standby: 12000,
+  baseband: 20000,
+  ntp: 12000
+});
 
 const core = () => requireFeature('core');
 const apiFetch = (...args) => core().apiFetch(...args);
@@ -46,6 +53,15 @@ function formatDuration(seconds) {
   if (value >= 3600) return `${Math.floor(value / 3600)}小时${Math.floor((value % 3600) / 60)}分`;
   if (value >= 60) return `${Math.floor(value / 60)}分${Math.floor(value % 60)}秒`;
   return `${Math.floor(value)}秒`;
+}
+
+function networkReadError(label, error, timeoutMs) {
+  const code = error?.code || '';
+  if (code === 'REQUEST_TIMEOUT') {
+    return `${label}读取超时（后端诊断预计不超过 ${Math.ceil(timeoutMs / 1000)} 秒）；请稍后重试，当前页面保留上次已确认状态。`;
+  }
+  if (error?.status) return `${label}读取失败（HTTP ${error.status}）：${error.detail || error.message || '后端未提供错误详情'}`;
+  return `${label}读取失败：${error?.message || '服务未返回有效响应'}`;
 }
 
 function buildNrSwitchDetail() {
@@ -420,7 +436,7 @@ function renderUecapRows(data) {
 
 async function refreshNrSwitch() {
   try {
-    const data = await apiFetch(API.nrSwitch, { timeoutMs: 6000, priority: 'normal', scope: 'network.nr.read' });
+    const data = await apiFetch(API.nrSwitch, { timeoutMs: NETWORK_READ_TIMEOUTS.nr, priority: 'normal', scope: 'network.nr.read' });
     state.nrSwitch = data.nr_switch || 'off';
     state.nrContract = {
       screenOffDelayS: Number(data.screen_off_delay_s),
@@ -432,14 +448,14 @@ async function refreshNrSwitch() {
     return true;
   } catch (err) {
     if (requireFeature('core').isRequestCancelled?.(err)) return null;
-    refs.nrSwitchRows.replaceChildren(); refs.nrSwitchRows.appendChild(errorBlock('获取失败：' + err.message));
+    refs.nrSwitchRows.replaceChildren(); refs.nrSwitchRows.appendChild(errorBlock(networkReadError('NR 息屏降级', err, NETWORK_READ_TIMEOUTS.nr)));
     return false;
   }
 }
 
 async function refreshUecap() {
   try {
-    const data = await apiFetch(API.uecap, { timeoutMs: 6000, priority: 'normal', scope: 'network.uecap.read' });
+    const data = await apiFetch(API.uecap, { timeoutMs: NETWORK_READ_TIMEOUTS.uecap, priority: 'normal', scope: 'network.uecap.read' });
     updateUecapRuntimeGuard(data);
     applyUecapContract(data);
     state.uecapMode = data.requested_mode || state.uecapContract.defaultMode;
@@ -454,31 +470,38 @@ async function refreshUecap() {
     return true;
   } catch (err) {
     if (requireFeature('core').isRequestCancelled?.(err)) return null;
-    refs.uecapBtnGroup.replaceChildren();
-    refs.uecapBtnGroup.hidden = true;
-    refs.uecapRows.replaceChildren(); refs.uecapRows.appendChild(errorBlock('获取失败：' + err.message));
+    const message = networkReadError('UE 网络能力', err, NETWORK_READ_TIMEOUTS.uecap);
+    // A slow UECap inspection must not erase a previously verified contract or
+    // remove the mode buttons. The backend remains authoritative; show the
+    // stale-read notice and keep the last confirmed state visible.
+    if (!state.uecapContract) {
+      refs.uecapBtnGroup.replaceChildren();
+      refs.uecapBtnGroup.hidden = true;
+      refs.uecapRows.replaceChildren(); refs.uecapRows.appendChild(errorBlock(message));
+    }
     const summary = document.getElementById('uecap-summary');
     if (summary) {
       summary.querySelectorAll('.badge').forEach((badge) => { badge.className = 'badge off'; });
       const result = summary.lastElementChild;
-      if (result) result.replaceWith(buildInfoRow('配置校验', '读取失败，以上为上次值', 'warn'));
+      if (result) result.replaceWith(buildInfoRow('配置校验', '本次读取未完成，保留上次已确认值', 'warn'));
     }
     const notice = document.getElementById('uecap-status-message');
-      if (notice) { notice.hidden = false; notice.textContent = '本次读取失败，状态已过期。请刷新后再确认实际生效情况。'; }
+      if (notice) { notice.hidden = false; notice.textContent = `${message} 当前页面保留上次已确认状态。`; }
     return false;
   }
 }
 
 async function refreshStandbyGuard() {
   try {
-    const data = await apiFetch(API.standbyGuard, { timeoutMs: 6000, priority: 'normal', scope: 'network.standby.read' });
+    const data = await apiFetch(API.standbyGuard, { timeoutMs: NETWORK_READ_TIMEOUTS.standby, priority: 'normal', scope: 'network.standby.read' });
     renderStandbyGuard(data);
     return true;
   } catch (err) {
     if (requireFeature('core').isRequestCancelled?.(err)) return null;
-    refs.sim2AutoRows.replaceChildren(); refs.sim2AutoRows.appendChild(errorBlock('获取失败：' + err.message));
-    refs.idleIsolateRows.replaceChildren(); refs.idleIsolateRows.appendChild(errorBlock('获取失败：' + err.message));
-    refs.standbyDiagRows.replaceChildren(); refs.standbyDiagRows.appendChild(errorBlock('获取失败：' + err.message));
+    const message = networkReadError('待机守护', err, NETWORK_READ_TIMEOUTS.standby);
+    refs.sim2AutoRows.replaceChildren(); refs.sim2AutoRows.appendChild(errorBlock(message));
+    refs.idleIsolateRows.replaceChildren(); refs.idleIsolateRows.appendChild(errorBlock(message));
+    refs.standbyDiagRows.replaceChildren(); refs.standbyDiagRows.appendChild(errorBlock(message));
     return false;
   }
 }
@@ -492,10 +515,10 @@ async function setStandbyGuard(update, successText, logText) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(update),
-      timeoutMs: 8000, priority: 'interactive', scope: 'network.standby'
+      timeoutMs: 15000, priority: 'interactive', scope: 'network.standby'
     });
     if (data.ok) {
-      const readback = await apiFetch(API.standbyGuard, { timeoutMs: 6000, priority: 'interactive', scope: 'network.standby.readback' });
+      const readback = await apiFetch(API.standbyGuard, { timeoutMs: NETWORK_READ_TIMEOUTS.standby, priority: 'interactive', scope: 'network.standby.readback' });
       const mismatch = Object.keys(update).find((key) => String(readback?.[key] ?? '') !== String(update[key]));
       if (readback?.ok === false || mismatch) throw new Error(mismatch ? `状态回读不一致：${mismatch}` : (readback?.error || '状态回读失败'));
       renderStandbyGuard(readback);
@@ -563,7 +586,7 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
     if (lastData) renderUecapRows(lastData);
 
     try {
-      const data = await apiFetch(API.uecap, { timeoutMs: 6000, priority: 'normal', scope: 'network.uecap.read' });
+      const data = await apiFetch(API.uecap, { timeoutMs: NETWORK_READ_TIMEOUTS.uecap, priority: 'normal', scope: 'network.uecap.read' });
       lastData = data;
       state.uecapMode = data.requested_mode || mode;
       state.uecapActiveMode = data.active_mode || 'custom';
@@ -600,11 +623,11 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
   state.uecapExpectedHash = '';
   state.uecapVerifyState = 'failed';
   state.uecapVerifyMessage = lastErr
-    ? `15 秒内未确认（${lastErr}）`
-    : '15 秒内未确认，请手动刷新复查';
+    ? `${Math.round(UECAP_VERIFY_TIMEOUT_MS / 1000)} 秒内未确认（${lastErr}）`
+    : `${Math.round(UECAP_VERIFY_TIMEOUT_MS / 1000)} 秒内未确认，请手动刷新复查`;
 
   if (lastData) renderUecapRows(lastData);
-  showToast(`${label} 已提交切换，但 15 秒内未完成校验，请手动刷新复查`, 4200);
+  showToast(`${label} 已提交切换，但 ${Math.round(UECAP_VERIFY_TIMEOUT_MS / 1000)} 秒内未完成校验，请手动刷新复查`, 4200);
   appendLog(`UE 配置待复查: ${label}`, 'warn');
 }
 
@@ -612,7 +635,7 @@ async function toggleNrSwitch() {
   if (state.nrBusy) return;
   state.nrBusy = true;
   try {
-    const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'toggle' }), timeoutMs: 8000, priority: 'interactive', scope: 'network.nr' });
+    const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'toggle' }), timeoutMs: 15000, priority: 'interactive', scope: 'network.nr' });
     if (data.ok) {
       state.nrSwitch = data.nr_switch;
       const readback = await refreshNrSwitch();
@@ -660,7 +683,7 @@ async function setUecapMode(mode) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ policy: state.uecapPolicy, mode }),
-      timeoutMs: 12000, priority: 'interactive', scope: 'network.uecap'
+      timeoutMs: NETWORK_READ_TIMEOUTS.uecap, priority: 'interactive', scope: 'network.uecap'
     });
     if (data.ok) {
       state.uecapMode = data.requested_mode || mode;
@@ -779,7 +802,7 @@ async function refreshBasebandTask() {
     return true;
   }
   try {
-      const data = await apiFetch(API.checkBaseband, { timeoutMs: 6000, priority: 'normal', scope: 'network.baseband.read' });
+      const data = await apiFetch(API.checkBaseband, { timeoutMs: NETWORK_READ_TIMEOUTS.baseband, priority: 'normal', scope: 'network.baseband.read' });
     renderBasebandRows(data);
     return true;
   } catch (err) {
@@ -791,7 +814,9 @@ async function refreshBasebandTask() {
       : status === 503
         ? '基带状态依赖的运行 receipt 不可用，请先等待 late-start 完成或重启后复读。'
         : '请查看后端返回的错误字段和模块 receipt。';
-    const message = `基带配置读取失败（HTTP ${status || 'unknown'}）：${detail}\n${reason}`;
+    const message = status === 0 && err?.code === 'REQUEST_TIMEOUT'
+      ? networkReadError('基带配置', err, NETWORK_READ_TIMEOUTS.baseband)
+      : `基带配置读取失败（HTTP ${status || 'unknown'}）：${detail}\n${reason}`;
     refs.basebandRows.replaceChildren(); refs.basebandRows.appendChild(errorBlock(message));
     appendLog(message, 'err');
     return false;
@@ -893,7 +918,7 @@ function renderNtpCard(data) {
 
 async function refreshNtp() {
   try {
-    const data = await apiFetch(API.ntp, { timeoutMs: 6000, priority: 'normal', scope: 'network.ntp.read' });
+    const data = await apiFetch(API.ntp, { timeoutMs: NETWORK_READ_TIMEOUTS.ntp, priority: 'normal', scope: 'network.ntp.read' });
     renderNtpCard(data);
     return true;
   } catch (err) {
@@ -911,7 +936,7 @@ async function setNtpServer(server) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ server }),
-      timeoutMs: 10000, priority: 'interactive', scope: 'network.ntp'
+      timeoutMs: 15000, priority: 'interactive', scope: 'network.ntp'
     });
     if (data.ok) {
       const label = state.ntpServers.find((s) => s.id === server)?.name || server;
@@ -949,7 +974,7 @@ async function syncNtp() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'sync' }),
-      timeoutMs: 10000, priority: 'interactive', scope: 'network.ntp'
+      timeoutMs: 15000, priority: 'interactive', scope: 'network.ntp'
     });
     if (data.ok) {
       const readback = await refreshNtp();
@@ -978,14 +1003,17 @@ async function syncNtp() {
 registerFeature('network', {
   async refresh() {
     return requireFeature('core').runFeatureTask('network.refresh', async () => {
-      // The shared Request Hub limits actual CGI concurrency. Keep independent
-      // network cards independent so one slow binder read does not block all UI
-      // state; each feature still owns its own rendering/error boundary.
-      const settled = await Promise.allSettled([
-        refreshNrSwitch(), refreshUecap(), refreshBaseband(),
-        refreshNtp(), refreshStandbyGuard()
+      // Short reads share one stage. UECap and baseband both perform slow
+      // runtime inspection, so they are isolated in a second stage with
+      // endpoint-specific deadlines instead of expiring in the Request Hub
+      // queue behind unrelated controls.
+      const fast = await Promise.allSettled([
+        refreshNrSwitch(), refreshNtp(), refreshStandbyGuard()
       ]);
-      const results = settled.map((item) => item.status === 'fulfilled' ? item.value : false);
+      const slow = await Promise.allSettled([
+        refreshUecap(), refreshBaseband()
+      ]);
+      const results = fast.concat(slow).map((item) => item.status === 'fulfilled' ? item.value : false);
       if (results.some((result) => result === false)) return false;
       return results.every((result) => result === null) ? null : true;
     });

@@ -659,7 +659,6 @@ async function loadInfoInternal() {
     refs.topbarKicker.textContent = data.module_version
       ? `${deviceModel} · UI ${data.module_version}`
       : `${deviceModel} · UI`;
-    if (network.isBasebandInstalled()) network.refreshBaseband();
     refs.rtWebuiMem.textContent = data.httpd_rss_kb
       ? data.httpd_rss_kb < 1024 ? `${data.httpd_rss_kb}KB` : `${(data.httpd_rss_kb / 1024).toFixed(1)}MB`
       : '—';

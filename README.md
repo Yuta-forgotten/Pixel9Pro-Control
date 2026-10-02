@@ -149,6 +149,8 @@ Doze 状态、覆盖率和缺测原因。BatteryStats 是系统模型估算，�
 
 端口 6210，`http://127.0.0.1:6210`（仅绑定本机回环地址）。采用 Material 3 设计，提供状态、性能温控、网络和系统四个页面；温度与功耗历史可查看采样覆盖、缺测区间并导出记录。实时功耗摘要与功耗排行分开刷新；排行按选定时间窗、粒度和 ledger revision 缓存，窗口外基线只标为参考，不把累计总计伪装成当前时间窗归因。后台记录开关由后端 policy contract 管理，关闭后停止历史、归因和 telemetry，温控控制读取保持独立。
 
+网络、温控和调度的字段、readback、耗时边界及 Request Hub 分阶段读取见 [`docs/webui_transport_contract.md`](docs/webui_transport_contract.md)。
+
 ### 隐私安全审计日志
 
 - 路径：`/data/adb/pixel9pro_control/logs/events.log`，目录 `0700`、文件 `0600`。

@@ -73,6 +73,13 @@ const state = {
   lastClusters: null
 };
 
+const SCHEDULER_READ_TIMEOUTS = Object.freeze({
+  cpu: 10000,
+  compact: 12000,
+  owner: 20000,
+  full: 60000
+});
+
 const core = () => requireFeature('core');
 const apiFetch = (...args) => core().apiFetch(...args);
 const isCancelled = (err) => core().isRequestCancelled?.(err) === true;
@@ -773,7 +780,7 @@ function invalidateFullProfileStateRefresh() {
 function refreshFullProfileState() {
   const generation = ++profileFullStateGeneration;
   const mutationRevision = profileMutationStateRevision;
-  return apiFetch(API.profile, { timeoutMs: 45000, priority: 'background', scope: 'profile.full.read' })
+  return apiFetch(API.profile, { timeoutMs: SCHEDULER_READ_TIMEOUTS.full, priority: 'background', scope: 'profile.full.read' })
     .then((fullState) => {
       if (generation !== profileFullStateGeneration) return false;
       const newerMutationState = mutationRevision !== profileMutationStateRevision
@@ -787,7 +794,7 @@ function refreshFullProfileState() {
 }
 
 async function confirmProfileMutation(expected) {
-  const data = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: 8000, priority: 'interactive', scope: 'profile.mutation.readback' });
+  const data = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: SCHEDULER_READ_TIMEOUTS.compact, priority: 'interactive', scope: 'profile.mutation.readback' });
   if (!data || data.ok === false) return false;
   applyProfileMutationState(data);
   const confirmed = typeof expected === 'function' ? expected() : true;
@@ -798,7 +805,7 @@ async function confirmProfileMutation(expected) {
 async function loadSavedProfile() {
   try {
     const revision = profileMutationStateRevision;
-    const data = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: 8000, priority: 'normal', scope: 'profile.read' });
+    const data = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: SCHEDULER_READ_TIMEOUTS.compact, priority: 'normal', scope: 'profile.read' });
     if (revision === profileMutationStateRevision) applyProfileMutationState(data);
     void refreshFullProfileState();
     return true;
@@ -866,7 +873,7 @@ async function refreshCpuTask() {
   state.cpuBusy = true;
   if (refs.refreshBtn) refs.refreshBtn.disabled = true;
   try {
-    const clusters = await apiFetch(API.status, { timeoutMs: 6000, priority: 'normal', scope: 'profile.cpu.read' });
+    const clusters = await apiFetch(API.status, { timeoutMs: SCHEDULER_READ_TIMEOUTS.cpu, priority: 'normal', scope: 'profile.cpu.read' });
     state.lastClusters = clusters;
     ensurePerfCpuRows(clusters);
     ensureHomeCpuRows(clusters);
@@ -885,7 +892,7 @@ async function refreshCpuTask() {
     });
     const mutationRevision = profileMutationStateRevision;
     try {
-      const profileData = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: 8000, priority: 'background', scope: 'profile.read' });
+      const profileData = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: SCHEDULER_READ_TIMEOUTS.compact, priority: 'background', scope: 'profile.read' });
       if (mutationRevision === profileMutationStateRevision) applyProfileMutationState(profileData);
     } catch (err) { if (!isCancelled(err)) {} }
     return true;
@@ -1188,7 +1195,7 @@ async function triggerOwnerArbiter() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'tick' }),
-      timeoutMs: 10000, priority: 'interactive', scope: 'profile.owner'
+      timeoutMs: SCHEDULER_READ_TIMEOUTS.owner, priority: 'interactive', scope: 'profile.owner'
     });
     if (data.ok) {
       showToast('调度状态已更新');

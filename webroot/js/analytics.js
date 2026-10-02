@@ -194,7 +194,7 @@
       return request(query(API.systemHistory || '/cgi-bin/system_history.sh', { start_ts: params.start_ts, end_ts: params.end_ts, granularity: bounds.granularity, dataset: 'system' }), historyTimeout, 'request');
     }
     if (state.source === 'thermal' && state.thermalSensor === 'module' && !policyEnabled()) {
-      return request(query(API.thermal || '/cgi-bin/thermal.sh', { fresh: 1 }), 8000, 'request');
+      return request(query(API.thermal || '/cgi-bin/thermal.sh', { fresh: 1 }), 15000, 'request');
     }
     return capture().history({ startTs: params.start_ts, endTs: params.end_ts, granularity: bounds.granularity });
   }
@@ -368,7 +368,7 @@
   async function triggerBurst(options = {}) {
     if (!state.open || state.source !== 'thermal' || !policyEnabled()) return false;
     if (!requireFeature('auth').hasToken()) return false;
-    try { await apiFetch(API.thermalBurst, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'start', duration_sec: 300 }), timeoutMs: 4000, priority: 'interactive', scope: 'analytics.burst' }); return true; } catch (err) { return isCancelled(err) ? null : false; }
+    try { await apiFetch(API.thermalBurst, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'start', duration_sec: 300 }), timeoutMs: 8000, priority: 'interactive', scope: 'analytics.burst' }); return true; } catch (err) { return isCancelled(err) ? null : false; }
   }
   function stopBurst() { if (!requireFeature('auth').hasToken()) return; apiFetch(API.thermalBurst, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }), timeoutMs: 2500, keepalive: true, priority: 'background', scope: 'analytics.burst' }).catch(() => {}); }
   function open(source = 'thermal') {

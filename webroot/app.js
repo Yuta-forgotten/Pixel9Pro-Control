@@ -29,17 +29,26 @@ async function doFullRefresh() {
     if (refreshButton) refreshButton.disabled = true;
     showToast('正在刷新…', 1000);
     if (tabRefreshPromise) await tabRefreshPromise.catch(() => {});
+    // Keep fast local snapshots together, then start the network stage after
+    // them. The network page contains slow modem/baseband inspections; putting
+    // all domains into one Promise.allSettled batch exhausts the shared
+    // Request Hub and makes valid CGI responses expire while queued.
     const tasks = [
       ['CPU', () => appFeatures.profile.refresh()],
       ['温控', () => appFeatures.thermal.refresh()],
-      ['内存', () => appFeatures.memory.refresh()],
+      ['内存', () => appFeatures.memory.refresh()]
+    ];
+    const results = await Promise.allSettled(tasks.map(([, task]) => task()));
+    const deferredTasks = [
       ['网络', () => appFeatures.network.refresh()],
       ['后台限制', () => appFeatures.memory.refreshRestrictions()],
       ['系统信息', () => appFeatures.shell.loadInfo()]
     ];
-    const results = await Promise.allSettled(tasks.map(([, task]) => task()));
-    const failures = results.flatMap((result, index) => result.status === 'rejected'
-      ? [`${tasks[index][0]}: ${result.reason?.message || result.reason}`] : []);
+    const deferredResults = await Promise.allSettled(deferredTasks.map(([, task]) => task()));
+    const allTasks = tasks.concat(deferredTasks);
+    const allResults = results.concat(deferredResults);
+    const failures = allResults.flatMap((result, index) => result.status === 'rejected'
+      ? [`${allTasks[index][0]}: ${result.reason?.message || result.reason}`] : []);
     failures.forEach((message) => appFeatures.core.appendLog(`${message}刷新失败`, 'err'));
     appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow']);
     appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay());
@@ -81,21 +90,23 @@ function refreshCurrentTabData() {
     if (tab === 'home') {
       appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow'], now);
       await Promise.allSettled([
-        appFeatures.profile.refresh(), appFeatures.thermal.refresh(),
-        appFeatures.memory.refresh(), appFeatures.network.refresh(), appFeatures.shell.loadInfo()
+        appFeatures.profile.refresh(), appFeatures.thermal.refresh(), appFeatures.memory.refresh()
       ]);
+      await Promise.allSettled([appFeatures.network.refresh(), appFeatures.shell.loadInfo()]);
     } else if (tab === 'tune') {
       appFeatures.core.markPollFresh(['cpu', 'thermal'], now);
       await Promise.allSettled([appFeatures.profile.refresh(), appFeatures.thermal.refresh()]);
     } else if (tab === 'network') {
       appFeatures.core.markPollFresh(['slow'], now);
-      await Promise.allSettled([appFeatures.network.refresh(), appFeatures.shell.loadInfo()]);
+      await appFeatures.shell.loadInfo();
+      await appFeatures.network.refresh();
     } else if (tab === 'system') {
       appFeatures.core.markPollFresh(['optim', 'slow'], now);
       await Promise.allSettled([
-        appFeatures.memory.refresh(), appFeatures.memory.refreshRestrictions(),
-        appFeatures.network.refresh(), appFeatures.shell.loadInfo()
+        appFeatures.memory.refresh(), appFeatures.memory.refreshRestrictions()
       ]);
+      await appFeatures.shell.loadInfo();
+      await appFeatures.network.refresh();
     }
   })().catch(() => {}).finally(() => {
     tabRefreshPromise = null;
@@ -281,9 +292,8 @@ function bindStaticEvents() {
 
 async function refreshDeferredInitData() {
   appFeatures.core.markPollFresh(['optim', 'slow']);
-  await Promise.allSettled([
-    appFeatures.memory.refresh(), appFeatures.memory.refreshRestrictions(), appFeatures.network.refresh()
-  ]);
+  await Promise.allSettled([appFeatures.memory.refresh(), appFeatures.memory.refreshRestrictions()]);
+  await appFeatures.network.refresh();
   appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay());
 }
 
