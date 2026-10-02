@@ -227,11 +227,6 @@ emit_service_array() {
 emit_history() {
     history_bounds
     read_session_fields
-    if [ "$TELEMETRY_FEATURE_ENABLED" != on ] && [ "${_tg_requested_valid:-0}" -eq 0 ]; then
-        json_headers
-        printf '{"ok":true,"schema":%s,"status":"disabled","quality":"disabled","reason":"feature_disabled","source":"service_history","window":{"start_ts":%s,"end_ts":%s,"coverage_ratio":0,"samples":0,"valid_samples":0,"invalid_samples":0,"gap_count":0,"quality":"disabled"},"power":[],"thermal":[]}\n' "$TELEMETRY_SCHEMA" "$(telemetry_num "$TG_START_FILTER")" "$(telemetry_num "$TG_END_FILTER")"
-        return 0
-    fi
     [ "${_tg_requested_valid:-0}" -eq 1 ] && [ -z "$TG_DIR" ] \
         && json_error '404 Not Found' 'telemetry session not found'
     # History without an explicit session_id is the persistent service ledger.

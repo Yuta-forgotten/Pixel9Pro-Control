@@ -60,7 +60,6 @@
       const data = await apiFetch(API.historyPolicy, { method: 'GET', timeoutMs: 8000, priority: 'interactive', scope: 'analytics.policy.read' });
       if (data?.ok === false) throw new Error(data.error || data.reason || '后台策略读取失败');
       state.policy = data.policy || data;
-      if (!policyEnabled()) abort('analytics-disabled');
       updateView(true);
       return state.policy;
     } catch (err) {
@@ -192,6 +191,9 @@
     if (state.source === 'system' || (state.source === 'thermal' && state.thermalSensor === 'battery')) {
       return request(query(API.systemHistory || '/cgi-bin/system_history.sh', { start_ts: params.start_ts, end_ts: params.end_ts, granularity: bounds.granularity, dataset: 'system' }), 12000, 'request');
     }
+    if (state.source === 'thermal' && state.thermalSensor === 'module' && !policyEnabled()) {
+      return request(query(API.thermal || '/cgi-bin/thermal.sh', { fresh: 1 }), 8000, 'request');
+    }
     return capture().history({ startTs: params.start_ts, endTs: params.end_ts, granularity: bounds.granularity });
   }
   function rankKey(bounds, stats) {
@@ -207,7 +209,6 @@
     return { label: windowLabel, granularity: bounds.granularity, coveragePct: ratio, validSamples: stats?.backendValidSamples ?? stats?.validCount ?? stats?.count };
   }
   async function fetchEnergySummary(bounds, stats, forceRank = false, contextKey = state.activeKey) {
-    if (!policyEnabled()) return;
     if (state.source === 'power') {
       try {
         const fast = await request(API.energyFast, 4000, 'overviewRequest');
@@ -251,15 +252,6 @@
   }
   async function load(force = false, forceRank = false) {
     if (!state.open || !isActive()) return null;
-    if (!policyEnabled()) {
-      abort('analytics-disabled');
-      state.summary = null;
-      state.ranking = { status: 'unavailable', summary: { reason: 'feature_disabled' } };
-      const cacheKey = key();
-      state.cache.set(cacheKey, { stats: disabledStats(), status: '后台历史记录已关闭；仅保留策略读取、导出和重新开启入口。' });
-      updateView(true);
-      return false;
-    }
     const view = ensureView(); const cacheKey = key(); const requestedBounds = rangeBounds();
     const selectionChanged = state.activeKey !== cacheKey;
     if (selectionChanged) {
@@ -284,7 +276,6 @@
       {
         fetchEnergySummary(rankBounds, state.cache.get(cacheKey).stats, requestedRank, cacheKey);
         const previousCaptureStatus = state.lastCaptureStatus;
-        if (!policyEnabled()) return true;
         capture().status().then((captureData) => {
           const currentCaptureStatus = captureData?.session?.status || '';
           state.lastCaptureStatus = currentCaptureStatus;
@@ -303,7 +294,7 @@
       state.cache.set(cacheKey, normalized); updateView();
       if (normalized.stats.count < 2) viewFeature().empty(view, state.source, state.rangeId, normalized.status, state.thermalSensor);
       fetchEnergySummary(rankBounds, normalized.stats, requestedRank, cacheKey);
-      if (policyEnabled() && isPowerSource()) {
+      if (isPowerSource()) {
         const previousCaptureStatus = state.lastCaptureStatus;
         capture().status().then((captureData) => {
           const currentCaptureStatus = captureData?.session?.status || '';
@@ -314,7 +305,7 @@
           } else updateView();
         }).catch(() => {});
       }
-      if (policyEnabled() && state.source === 'thermal') capture().status().catch(() => {}).then(() => updateView());
+      if (state.source === 'thermal') capture().status().catch(() => {}).then(() => updateView());
     } catch (err) {
       if (requestId !== state.requestId) return null;
       if (isCancelled(err)) return null;
@@ -350,7 +341,7 @@
       const applied = readback.policy || readback;
       const phase = applied.phase || result?.phase || result?.policy?.phase || 'staged';
       state.policy = applied; if (state.view?.policy) state.view.policy.dirty = false;
-      showToast(phase === 'effective' ? '后台记录设置已生效' : `后台记录设置已保存（${phase}）`); state.detailsDue = true; if (policyEnabled()) await load(true, true); else { abort('analytics-disabled'); updateView(true); }
+      showToast(phase === 'effective' ? '后台记录设置已生效' : `后台记录设置已保存（${phase}）`); state.detailsDue = true; await load(true, true);
     } catch (err) { showToast(`策略保存失败：${err.message || err}`); } finally { button.disabled = false; }
   }
   async function triggerBurst(options = {}) {

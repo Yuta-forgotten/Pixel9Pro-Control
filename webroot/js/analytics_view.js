@@ -103,11 +103,11 @@
     capture.append(el('div', 'analytics-section-title', '临时诊断记录'), el('div', 'analytics-section-desc', '只用于一次临时诊断会话，不会改变后台历史策略。息屏与 Doze 期间允许真实缺测，不补零、不伪造连续曲线。'), captureState, captureControls);
     const policy = el('section', 'analytics-policy-card');
     const policyTitle = el('div', 'analytics-section-title', '后台记录与存储');
-    const policyDesc = el('div', 'analytics-section-desc', '控制后台低频记录、软件归因与历史空间。关闭后停止后台采样、系统归因和临时会话；温控控制本身不受影响。');
+    const policyDesc = el('div', 'analytics-section-desc', '控制后台低频记录、软件归因与历史空间。关闭后停止周期采样和后台分析；前台读取与独占临时诊断仍可用。温控控制本身不受影响。');
     const policyFields = el('div', 'analytics-policy-fields');
     const enabledField = el('label', 'analytics-policy-toggle');
     const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = true; enabled.setAttribute('aria-label', '启用后台历史记录');
-    enabledField.append(enabled, el('span', 'analytics-section-desc', '启用后台历史记录（关闭后停止历史采样、系统归因和手动 telemetry）'));
+    enabledField.append(enabled, el('span', 'analytics-section-desc', '后台记录（关闭后停止周期采样；前台读取和临时诊断仍可用）'));
     policyFields.appendChild(enabledField);
     const makeSelect = (label, values, suffix) => { const select = document.createElement('select'); select.setAttribute('aria-label', label); values.forEach((value) => { const option = el('option', '', `${value}${suffix}`); option.value = String(value); select.appendChild(option); }); const field = el('label', 'analytics-custom-field'); field.append(el('span', 'analytics-section-desc', label), select); policyFields.appendChild(field); return select; };
     const retention = makeSelect('保留时间', [1, 3, 7], ' 天');
@@ -218,7 +218,7 @@
         need_two_snapshots: '当前还没有两份可比较的归因快照；保持亮屏使用约 10 分钟后再刷新。',
         need_two_same_identity_snapshots: '当前时间窗缺少同一 boot 的连续归因快照；跨 boot 或间断数据不会冒充排行。',
         interval_too_long: '最近两份快照间隔过长；下一份亮屏快照完成后再刷新。',
-        feature_disabled: '后台历史采样已关闭；打开“后台记录”后才会生成软件归因。'
+        feature_disabled: '后台归因采样已关闭；前台仍可读取已有 ledger，开启后台后才会产生新快照。'
       }[reason] || `当前窗口暂无可证明归因（${reason}）。`;
       body.appendChild(el('div', 'analytics-status warn', text));
       return;

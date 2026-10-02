@@ -27,15 +27,6 @@ valid_epoch "$start_ts" || { json_error '400 Bad Request' 'invalid start_ts'; ex
 [ "$start_ts" -ge $((end_ts - MAX_AGE)) ] 2>/dev/null || { json_error '400 Bad Request' 'history range exceeds 7 days'; exit 0; }
 case "$granularity" in ''|minute|hour) ;; *) json_error '400 Bad Request' 'invalid granularity'; exit 0 ;; esac
 
-_history_enabled=$(sed -n 's/^analytics_enabled=//p' "${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
-case "$_history_enabled" in 0|false|off|no)
-    json_headers
-    printf '{"ok":true,"schema":2,"status":"disabled","quality":"disabled","reason":"feature_disabled","attribution_state":"disabled","window_proven":false,"source":"power_rank_snapshot","start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_sec":0,"coverage_ratio":0,"valid_intervals":0,"valid_samples":0,"raw_samples":0,"gap_count":0,"gaps":[],"apps":[],"components":[]}\n' \
-        "$(json_num "$start_ts")" "$(json_num "$end_ts")" "$(json_escape "$granularity")"
-    exit 0
-    ;;
-esac
-
 json_headers
 if [ ! -r "$CALC" ] || [ ! -d "$SNAPSHOTS" ]; then
     printf '{"ok":true,"schema":1,"status":"unavailable","quality":"unavailable","reason":"collector_not_installed","source":"power_rank_snapshot","start_ts":%s,"end_ts":%s,"granularity":"%s","coverage_sec":0,"coverage_ratio":0,"valid_intervals":0,"valid_samples":0,"raw_samples":0,"gap_count":0,"gaps":[],"updated_at":null,"data_revision":"none","cache":{"hit":false},"apps":[],"components":[]}\n' \

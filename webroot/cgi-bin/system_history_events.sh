@@ -34,11 +34,6 @@ valid_epoch "$start_ts" || { json_error '400 Bad Request' 'invalid start_ts'; ex
 [ "$start_ts" -ge $((end_ts - MAX_AGE)) ] 2>/dev/null || { json_error '400 Bad Request' 'history range exceeds 7 days'; exit 0; }
 
 json_headers
-case "$(config_enabled)" in false)
-    printf '{"ok":true,"schema":2,"status":"disabled","quality":"disabled","reason":"feature_disabled","source":"android_batterystats_history","policy":{"analytics_enabled":false},"power":[],"power_rates":[],"thermal":[]}\n'
-    exit 0
-    ;;
-esac
 if [ ! -d "$EVENTS" ]; then
     printf '{"ok":true,"schema":2,"status":"unavailable","quality":"unavailable","reason":"history_not_collected","source":"android_batterystats_history","model":"BatteryStats estimated power use","policy":{"phase":"effective","analytics_enabled":%s,"retention_days":%s,"max_bytes":%s,"module_interval_on_sec":%s,"module_interval_off_sec":%s,"system_interval_on_sec":%s,"system_interval_off_sec":%s},"collection":{"phase":"effective","last_attempt_ts":null,"last_success_ts":null,"last_result":"never"},"start_ts":%s,"end_ts":%s,"coverage_sec":0,"coverage_ratio":0,"valid_samples":0,"raw_samples":0,"gap_count":0,"gaps":[],"updated_at":null,"window":{"start_ts":%s,"end_ts":%s,"coverage_ratio":0,"quality":"unavailable"},"sources":{"power":{"raw_samples":0,"valid_samples":0,"quality":"unavailable"},"thermal":{"raw_samples":0,"valid_samples":0,"quality":"unavailable"}},"power":[],"power_rates":[],"thermal":[]}\n' \
         "$(config_enabled)" "$(config_value retention_days 7)" "$(config_value max_bytes 33554432)" "$(config_value module_interval_on_sec 60)" "$(config_value module_interval_off_sec 900)" "$(config_value system_interval_on_sec 900)" "$(config_value system_interval_off_sec 900)" "$(json_num "$start_ts")" "$(json_num "$end_ts")" "$(json_num "$start_ts")" "$(json_num "$end_ts")"
