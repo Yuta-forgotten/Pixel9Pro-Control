@@ -2,7 +2,8 @@
 
 ## 发行说明
 
-本预览版修复网络能力、温控和调度接管在按钮交互或全量刷新后出现的读取失败、超时和状态回显不一致。
+优化：网络能力、温控和调度接管在按钮交互或全量刷新后出现的读取失败、超时和状态回显不一致。
+优化内核待机问题
 
 ### 修复
 
@@ -15,14 +16,12 @@
 
 ### 接口与交互
 
-- 网络能力诊断超时不再清空已有 UECap 合同和按钮；页面明确显示“本次读取未完成”，不把旧数据伪装成当前确认。
-- NR、NTP、待机守护、基带读取显示 HTTP 状态或超时阶段，便于区分后端错误、排队超时和设备状态未确认。
-- 温控和调度 mutation 仍要求 GET readback；提交成功、staged、pending reboot、effective 和 degraded 状态继续由后端合同决定。
-- 统一记录网络、温控和调度的接口字段、耗时边界和 Request Hub 分阶段策略，见 `docs/webui_transport_contract.md`。
+- 网络能力诊断超时不再清空已有 UECap 按钮；页面明确显示“本次读取未完成”，不把旧数据伪装成当前确认。
+- NR、NTP、待机、基带读取显示 HTTP 状态或超时阶段，便于区分后端错误、排队超时和设备状态未确认。
+- 温控和调度 mutation 要求 GET readback；提交成功、staged、pending reboot、effective 和 degraded 状态继续由后端合同决定。
+- 统一记录网络、温控和调度的接口字段、耗时边界和 Request Hub 分阶段策略。
 
 ### 验证边界
 
-- `SOURCE_AUDIT`：接口路径、字段校验、锁、readback 顺序和前端状态机已完成静态审查。
-- `BUILD`：发布包包含 caiman/komodo 两个 payload，发布合同和 SHA-256 校验通过。
-- `DEVICE_READBACK`：设备已安装此前的 v4.6.23-analyticsfix.24 并完成重启；本预览版使用 versionCode 164，需在设备端重新安装后再确认当前 WebUI 版本和同 boot 接口状态。
+- `DEVICE_READBACK`：本预览版需在设备端重新安装后再确认当前 WebUI 版本（必要时可以刷新浏览器缓存）。
 - `UNVERIFIED`：本预览版安装后的浏览器点击回归、远程 ADB 长时间在线状态和 Linux kernel 深度 suspend 仍需手动复现。
