@@ -99,7 +99,7 @@
       onRange: (rangeId) => { state.rangeId = rangeId; if (rangeId === 'custom') { viewFeature().setCustomValues(state.view, state.customSeconds, state.customGranularity); viewFeature().promptCustom(state.view); return; } load(false); },
       onCustom: (days, granularity) => {
         const parsedSeconds = Math.floor(Number(days));
-        if (!Number.isFinite(parsedSeconds) || parsedSeconds < 86400 || parsedSeconds > 604800 || !['hour', 'minute'].includes(granularity)) { showToast('自定义范围请选择 1 天至 7 天，并选择小时或分钟粒度'); return; }
+        if (!Number.isFinite(parsedSeconds) || parsedSeconds < 14400 || parsedSeconds > 604800 || !['hour', 'minute'].includes(granularity)) { showToast('自定义范围请选择 4 小时至 7 天，并选择小时或分钟粒度'); return; }
         state.customSeconds = parsedSeconds; state.customDays = Math.max(1, Math.ceil(parsedSeconds / 86400)); state.customGranularity = granularity; state.rangeId = 'custom'; load(false);
       },
       onCapture: async (button, duration) => {

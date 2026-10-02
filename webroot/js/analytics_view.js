@@ -55,7 +55,7 @@
     bindTabKeys(range);
     const custom = el('div', 'analytics-custom-range');
     const days = document.createElement('select'); days.setAttribute('aria-label', '自定义时间窗');
-    [['86400', '1 天'], ['259200', '3 天'], ['604800', '7 天']].forEach(([value, label]) => { const option = el('option', '', label); option.value = value; days.appendChild(option); });
+    [['14400', '4 小时'], ['28800', '8 小时'], ['43200', '12 小时'], ['86400', '1 天'], ['259200', '3 天'], ['604800', '7 天']].forEach(([value, label]) => { const option = el('option', '', label); option.value = value; days.appendChild(option); });
     const granularity = document.createElement('select'); granularity.setAttribute('aria-label', '采样粒度');
     granularity.append(el('option', '', '按小时'), el('option', '', '按分钟'));
     granularity.options[0].value = 'hour'; granularity.options[1].value = 'minute';
@@ -154,7 +154,7 @@
 
   function setCustomValues(view, durationSec, granularity) {
     const value = Number(durationSec) || 86400;
-    view.customWindow.value = String(Math.min(604800, Math.max(86400, value)));
+    view.customWindow.value = String(Math.min(604800, Math.max(14400, value)));
     view.customGranularity.value = granularity === 'minute' ? 'minute' : 'hour';
   }
 
