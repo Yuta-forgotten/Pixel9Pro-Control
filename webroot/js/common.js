@@ -123,7 +123,6 @@ async function rawApiFetch(path, opts = {}) {
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   const headers = { ...(opts.headers || {}) };
   const method = (opts.method || 'GET').toUpperCase();
-  let response;
   try {
     if (method !== 'GET') {
       if (!(await ensureWebuiToken())) throw new Error('missing WebUI token');
@@ -134,9 +133,37 @@ async function rawApiFetch(path, opts = {}) {
     const request = { cache: 'no-store', ...opts, headers, signal: controller.signal };
     delete request.timeoutMs;
     delete request.controller;
-    response = await fetch(path, request);
+    const response = await fetch(path, request);
+    // Keep the same AbortController active while the CGI body is consumed.
+    // BusyBox httpd can send headers before a slow shell/awk pipeline finishes;
+    // clearing the timer at that point would permanently occupy a Request Hub
+    // slot and make unrelated UI requests appear to load forever.
+    const bodyText = await response.text();
+    let payload = null;
+    try { payload = bodyText ? JSON.parse(bodyText) : null; } catch (_) {
+      const formatError = new Error(`接口返回格式错误（HTTP ${response.status}）`);
+      formatError.status = response.status;
+      formatError.detail = bodyText.slice(0, 240);
+      throw formatError;
+    }
+    if (!response.ok) {
+      if (response.status === 403 && method !== 'GET') clearWebuiToken();
+      const detail = payload?.error || payload?.message || (payload ? JSON.stringify(payload) : '接口未返回错误详情');
+      const message = response.status === 403 ? 'WebUI token 无效或已过期' : `HTTP ${response.status}`;
+      const error = new Error(`${message} · ${detail}`);
+      error.status = response.status;
+      error.detail = detail;
+      error.payload = payload;
+      throw error;
+    }
+    if (payload === null || typeof payload !== 'object') {
+      const formatError = new Error(`接口返回空数据（HTTP ${response.status}）`);
+      formatError.status = response.status;
+      throw formatError;
+    }
+    return payload;
   } catch (err) {
-    if (err && err.name === 'AbortError') {
+    if (err && (err.name === 'AbortError' || controller.signal.aborted)) {
       const reason = controller.signal.reason;
       const error = new Error(typeof reason === 'string' ? 'request cancelled' : 'request timeout');
       error.code = typeof reason === 'string' ? reason : 'REQUEST_TIMEOUT';
@@ -146,22 +173,6 @@ async function rawApiFetch(path, opts = {}) {
   } finally {
     clearTimeout(timeoutId);
   }
-  if (!response.ok) {
-    if (response.status === 403 && method !== 'GET') clearWebuiToken();
-    let detail = '';
-    try {
-      const payload = await response.clone().json();
-      detail = payload?.error || payload?.message || JSON.stringify(payload);
-    } catch (_) {
-      try { detail = (await response.clone().text()).trim(); } catch (_) {}
-    }
-    const message = response.status === 403 ? 'WebUI token 无效或已过期' : `HTTP ${response.status}`;
-    const error = new Error(detail ? `${message} · ${detail}` : message);
-    error.status = response.status;
-    error.detail = detail;
-    throw error;
-  }
-  return response.json();
 }
 
 function cancelBackgroundRequests() {
@@ -189,6 +200,32 @@ function requestHubKey(path, opts, method) {
   return String(opts.dedupeKey || path);
 }
 
+function requestPriority(value, method) {
+  if (Number.isFinite(Number(value))) return Number(value);
+  if (value === 'interactive') return method === 'GET' ? 90 : 100;
+  if (value === 'normal') return 50;
+  if (value === 'background') return 10;
+  return method === 'GET' ? 10 : 100;
+}
+
+function requestTimeoutMs(opts) {
+  const timeout = Number(opts?.timeoutMs);
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : 8000;
+}
+
+function queuedRequestTimeout(job) {
+  const index = requestHub.queue.indexOf(job);
+  if (index < 0) return;
+  requestHub.queue.splice(index, 1);
+  if (job.queueTimer) window.clearTimeout(job.queueTimer);
+  if (job.key && requestHub.pendingGets.get(job.key) === job.promise) requestHub.pendingGets.delete(job.key);
+  const error = new Error('request timeout while queued');
+  error.code = 'REQUEST_TIMEOUT';
+  job.reject(error);
+  requestHub.rejected += 1;
+  pumpRequestHub();
+}
+
 function pumpRequestHub() {
   while (requestHub.active < requestHub.maxConcurrent && requestHub.queue.length) {
     requestHub.queue.sort((left, right) => right.priority - left.priority || left.id - right.id);
@@ -196,6 +233,8 @@ function pumpRequestHub() {
       !candidate.mutation || !requestHub.mutationScopes.has(candidate.scope));
     if (jobIndex < 0) break;
     const [job] = requestHub.queue.splice(jobIndex, 1);
+    if (job.queueTimer) window.clearTimeout(job.queueTimer);
+    job.options.timeoutMs = Math.max(1, job.deadlineAt - Date.now());
     if (job.signal?.aborted) {
       requestHub.rejected += 1;
       const error = new Error('request cancelled');
@@ -212,6 +251,7 @@ function pumpRequestHub() {
       requestHub.completed += 1;
       requestHub.activeJobs.delete(job);
       if (job.mutation) requestHub.mutationScopes.delete(job.scope);
+      if (job.queueTimer) window.clearTimeout(job.queueTimer);
       if (job.key && requestHub.pendingGets.get(job.key) === job.promise) requestHub.pendingGets.delete(job.key);
       pumpRequestHub();
     });
@@ -220,6 +260,25 @@ function pumpRequestHub() {
 
 function apiFetch(path, opts = {}) {
   const method = (opts.method || 'GET').toUpperCase();
+  if (method !== 'GET' && opts._tokenReady !== true && !authState.webuiToken) {
+    const controller = opts.controller || new AbortController();
+    const timeoutMs = requestTimeoutMs(opts);
+    let timeoutId;
+    const timeout = new Promise((_, reject) => {
+      timeoutId = window.setTimeout(() => {
+        controller.abort();
+        const error = new Error('request timeout while obtaining WebUI token');
+        error.code = 'REQUEST_TIMEOUT';
+        reject(error);
+      }, timeoutMs);
+    });
+    return Promise.race([ensureWebuiToken(), timeout])
+      .then((ready) => {
+        if (!ready) throw new Error('missing WebUI token');
+        return apiFetch(path, { ...opts, controller, _tokenReady: true });
+      })
+      .finally(() => window.clearTimeout(timeoutId));
+  }
   const key = requestHubKey(path, opts, method);
   if (key) {
     const existing = requestHub.pendingGets.get(key);
@@ -229,9 +288,7 @@ function apiFetch(path, opts = {}) {
   delete options.priority;
   delete options.dedupe;
   delete options.dedupeKey;
-  const priority = Number.isFinite(Number(opts.priority))
-    ? Number(opts.priority)
-    : method === 'GET' ? 10 : 100;
+  const priority = requestPriority(opts.priority, method);
   const mutation = method !== 'GET';
   const controller = options.controller || new AbortController();
   options.controller = controller;
@@ -247,15 +304,18 @@ function apiFetch(path, opts = {}) {
     controller,
     supersedeAllowed: !opts.controller,
     signal: controller.signal,
-    promise, resolve: resolveJob, reject: rejectJob
+    promise, resolve: resolveJob, reject: rejectJob,
+    deadlineAt: Date.now() + requestTimeoutMs(opts), queueTimer: null
   };
   if (key) requestHub.pendingGets.set(key, promise);
   requestHub.queue.push(job);
+  job.queueTimer = window.setTimeout(() => queuedRequestTimeout(job), requestTimeoutMs(opts));
   if (job.signal) {
     job.signal.addEventListener('abort', () => {
       const index = requestHub.queue.indexOf(job);
       if (index < 0) return;
       requestHub.queue.splice(index, 1);
+      if (job.queueTimer) window.clearTimeout(job.queueTimer);
       requestHub.rejected += 1;
       if (job.key && requestHub.pendingGets.get(job.key) === promise) requestHub.pendingGets.delete(job.key);
       const error = new Error('request cancelled');
@@ -599,7 +659,6 @@ async function loadInfoInternal() {
     refs.topbarKicker.textContent = data.module_version
       ? `${deviceModel} · UI ${data.module_version}`
       : `${deviceModel} · UI`;
-    if (network.isBasebandInstalled()) network.refreshBaseband();
     refs.rtWebuiMem.textContent = data.httpd_rss_kb
       ? data.httpd_rss_kb < 1024 ? `${data.httpd_rss_kb}KB` : `${(data.httpd_rss_kb / 1024).toFixed(1)}MB`
       : '—';

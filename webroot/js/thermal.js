@@ -30,14 +30,22 @@ const state = {
   }
 };
 
-const THERMAL_REINSTALL_NOTICE = '更改配置需卸载本模块、重启后重新安装并在向导选择';
-const THERMAL_REBOOT_NOTICE = '配置已写入模块 source，重启后由 Hybrid Mount 应用；运行中的 Thermal HAL 不会被重启。';
+const THERMAL_REQUEST_TIMEOUTS = Object.freeze({
+  zones: 10000,
+  fresh: 15000,
+  contract: 15000,
+  mutation: 30000,
+  readback: 15000
+});
+
+const THERMAL_REINSTALL_NOTICE = '修改需卸载模块、重启、重新安装并重新选择';
+const THERMAL_REBOOT_NOTICE = '已写入 module source；需重启后由 Hybrid Mount 应用，当前 Thermal HAL 不重启。';
 
 const THERMAL_POLICY_PRESETS = {
   system: {
     name: '不修改温控',
-    summary: '沿用系统温控，不应用额外调整。',
-    detail: '<p>本模块不添加温控覆盖，保留当前系统 Thermal HAL 配置。</p><p>切换后是否需要重启由后端能力决定；界面分别显示已保存、等待重启和实际生效状态。</p>',
+    summary: '保留系统 Thermal HAL 配置，不写入覆盖。',
+    detail: '<p>模块不生成或修改温控 source。</p><p>系统负责温控阈值与 Thermal HAL 生命周期。</p>',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/></svg>',
   },
 };
@@ -70,11 +78,11 @@ function tempStatus(t) {
   const offset = state.currentPolicy === 'custom' ? Number(state.currentOffset) : 0;
   const modThresh = THRESH_STOCK + (Number.isFinite(offset) ? offset : 0);
   if (t < 36) return '凉爽';
-  if (t < THRESH_STOCK) return '正常';
-  if (t < modThresh) return '已高于原厂阈值，当前仍在放宽区间';
-  if (t < modThresh + 4) return '系统已开始主动降温';
-  if (t < 55) return '温度持续偏高，系统正在加强降温';
-  return '温度过高，系统已严格限制性能';
+  if (t < THRESH_STOCK) return '低于原厂介入阈值';
+  if (t < modThresh) return '进入原厂阈值以上区间';
+  if (t < modThresh + 4) return '已达到当前温控介入阈值';
+  if (t < 55) return '持续高温，系统加强限制';
+  return '超过高温限制阈值';
 }
 
 function barPct(t) {
@@ -101,10 +109,10 @@ function positionMarkers() {
 }
 
 function formatThermalOffset(policy, offset) {
-  if (policy === 'system') return '系统配置';
+  if (policy === 'system') return '系统阈值';
   const value = Number(offset);
-  if (!Number.isFinite(value) || value === 0) return '出厂口径';
-  return `${value > 0 ? '+' : ''}${value}°C 已启用`;
+  if (!Number.isFinite(value) || value === 0) return '原厂阈值';
+  return `当前阈值 ${value > 0 ? '+' : ''}${value}°C`;
 }
 
 function updateThermalRuntimeGuard(data) {
@@ -190,7 +198,7 @@ async function readThermalZones({ fresh = false, clear = false } = {}) {
   // worker tick. Keep enough time for one dumpsys without letting a stuck CGI
   // hold the UI indefinitely; manual clear/fresh reads get a larger bound.
   const options = {
-    timeoutMs: fresh || clear ? 12000 : 7000,
+    timeoutMs: fresh || clear ? THERMAL_REQUEST_TIMEOUTS.fresh : THERMAL_REQUEST_TIMEOUTS.zones,
     priority: fresh || clear ? 'interactive' : 'normal',
     scope: clear ? 'thermal.mutation' : 'thermal.read'
   };
@@ -363,7 +371,7 @@ async function loadThermalPreset() {
   return core().runFeatureTask('thermal.contract.load', async () => {
     let result = false;
     try {
-      const data = await apiFetch(API.thermalSet, { timeoutMs: 8000, priority: 'normal', scope: 'thermal.contract.read' });
+      const data = await apiFetch(API.thermalSet, { timeoutMs: THERMAL_REQUEST_TIMEOUTS.contract, priority: 'normal', scope: 'thermal.contract.read' });
       updateThermalRuntimeGuard(data);
       applyThermalContract(data);
       state.thermalContractRetryAttempts = 0;
@@ -487,10 +495,11 @@ async function applyThermalSelection(policy, offset) {
     try {
       await apiFetch(API.thermalSet, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'repair_system' }), timeoutMs: 8000, priority: 'interactive', scope: 'thermal.mutation'
+        body: JSON.stringify({ action: 'repair_system' }), timeoutMs: THERMAL_REQUEST_TIMEOUTS.mutation, priority: 'interactive', scope: 'thermal.mutation'
       });
+      const readback = await loadThermalPreset();
+      if (!readback || state.repairRequired) throw new Error('温控基线修复已提交，但 GET readback 仍显示需要修复');
       showToast('温控基线已修复，重启后复读生效。', 4200);
-      await loadThermalPreset();
     } catch (err) {
       showToast(`修复失败：${err?.message || '请重新安装模块'}`, 4200);
     }
@@ -528,8 +537,12 @@ async function applyThermalSelection(policy, offset) {
     saving: true
   }, prev);
   try {
-    const data = await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next), timeoutMs: 8000, priority: 'interactive', scope: 'thermal.mutation' });
+    const data = await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next), timeoutMs: THERMAL_REQUEST_TIMEOUTS.mutation, priority: 'interactive', scope: 'thermal.mutation' });
     if (data.ok && applyThermalState(data)) {
+      const readbackOk = await loadThermalPreset();
+      if (!readbackOk || state.currentPolicy !== policy || (policy === 'custom' && state.currentOffset !== Number(offset))) {
+        throw new Error('温控设置已提交，但 GET readback 未确认目标策略');
+      }
       state.selectionPending = null;
       updatePendingState(data, { open: false });
       syncThermalUi();
@@ -572,7 +585,7 @@ async function applyThermalSelection(policy, offset) {
     if (refs.rebootModal.classList.contains('open')) {
       requireFeature('ui').closeRebootModal('', { force: true, silent: true });
     }
-    showToast('请求失败，检查服务是否运行');
+    showToast(`请求失败：${err?.message || '服务未返回有效响应'}`);
     appendLog(String(err), 'err');
   } finally {
     state.selectionPending = null;
@@ -604,7 +617,7 @@ async function cancelThermalChange() {
   try {
     const data = await apiFetch(API.thermalSet, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'cancel_pending', pending_id: pendingId }), timeoutMs: 8000, priority: 'interactive', scope: 'thermal.mutation'
+      body: JSON.stringify({ action: 'cancel_pending', pending_id: pendingId }), timeoutMs: THERMAL_REQUEST_TIMEOUTS.mutation, priority: 'interactive', scope: 'thermal.mutation'
     });
     if (data?.ok !== true || data.canceled !== true || data.pending === true
       || data.reboot_required === true || !validThermalSelection(data.policy, data.offset)) {
@@ -622,7 +635,7 @@ async function cancelThermalChange() {
     state.thermalModal.dismissedPendingId = '';
     state.thermalModal.cancelReconcileNeeded = true;
     try {
-      const readback = await apiFetch(API.thermalSet, { timeoutMs: 8000, priority: 'normal', scope: 'thermal.contract.read' });
+      const readback = await apiFetch(API.thermalSet, { timeoutMs: THERMAL_REQUEST_TIMEOUTS.readback, priority: 'normal', scope: 'thermal.contract.read' });
       const readbackId = pendingIdFrom(readback);
       if (readback?.pending === false && !readbackId) {
         updatePendingState(readback, { open: false });

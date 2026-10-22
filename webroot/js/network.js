@@ -30,6 +30,13 @@ const state = {
 };
 
 const UECAP_REINSTALL_NOTICE = '更改配置需卸载本模块、重启后重新安装并在向导选择';
+const NETWORK_READ_TIMEOUTS = Object.freeze({
+  nr: 12000,
+  uecap: 30000,
+  standby: 12000,
+  baseband: 20000,
+  ntp: 12000
+});
 
 const core = () => requireFeature('core');
 const apiFetch = (...args) => core().apiFetch(...args);
@@ -48,6 +55,15 @@ function formatDuration(seconds) {
   return `${Math.floor(value)}秒`;
 }
 
+function networkReadError(label, error, timeoutMs) {
+  const code = error?.code || '';
+  if (code === 'REQUEST_TIMEOUT') {
+    return `${label}读取超时（后端诊断预计不超过 ${Math.ceil(timeoutMs / 1000)} 秒）；请稍后重试，当前页面保留上次已确认状态。`;
+  }
+  if (error?.status) return `${label}读取失败（HTTP ${error.status}）：${error.detail || error.message || '后端未提供错误详情'}`;
+  return `${label}读取失败：${error?.message || '服务未返回有效响应'}`;
+}
+
 function buildNrSwitchDetail() {
   const contract = state.nrContract || {};
   const delay = Number.isFinite(contract.screenOffDelayS) ? contract.screenOffDelayS : null;
@@ -55,7 +71,7 @@ function buildNrSwitchDetail() {
   const recheck = Number.isFinite(contract.lteRecheckS) ? contract.lteRecheckS : null;
   const lteMode = Number.isFinite(contract.lteMode) ? contract.lteMode : 'unknown';
   const seconds = (value) => value === null ? '运行参数尚未读取' : `${value} 秒`;
-  return `<b>NR 息屏降级 (Screen-Off LTE Switch)</b><br><br>开启后，息屏超过 <b>${seconds(delay)}</b> 时只把 DSDS slot 0 从 NR-capable mode 切到 LTE mode ${lteMode}；亮屏时恢复已保存的完整 mode，slot 1 保持不变。<br><br><b>防抖机制</b><br>- 息屏延迟：${seconds(delay)}<br>- NR 恢复冷却：${seconds(cooldown)}<br>- LTE 状态复查：${seconds(recheck)}<br>- 当前 mode 无效或恢复值无法持久化时不执行降级<br><br><b>边界</b><br>该功能减少息屏期间维持 NR 射频链路的机会，实际收益取决于信号、驻网、后台流量和运营商网络，不能用固定百分比承诺。开启热点时自动跳过；切换时可能短暂中断蜂窝数据。`;
+  return `<b>NR 息屏降级</b><br><br>息屏超过 <b>${seconds(delay)}</b> 后，将 DSDS slot 0 切换为 LTE mode ${lteMode}；亮屏恢复已保存的 NR mode，slot 1 不变。<br><br><b>时序参数</b><br>息屏延迟：${seconds(delay)}<br>恢复冷却：${seconds(cooldown)}<br>LTE 复查：${seconds(recheck)}<br><br><b>限制</b><br>mode 无效、恢复值无法持久化或热点启用时跳过切换；切换可能短暂中断蜂窝数据。`;
 }
 function renderNrSwitchRows(data) {
   refs.nrSwitchRows.replaceChildren();
@@ -90,11 +106,11 @@ function syncStandbyGuardButtons() {
 }
 
 function standbyWorkerModeLabel(mode) {
-  if (mode === 'screen_on') return '亮屏全量';
-  if (mode === 'thermal_burst') return '温度突发';
-  if (mode === 'deep_standby') return '深待机';
-  if (mode === 'idle_isolate') return '待机隔离';
-  return '未知';
+  if (mode === 'screen_on') return '亮屏：周期记录';
+  if (mode === 'thermal_burst') return '前台：临时温度采样';
+  if (mode === 'deep_standby') return '息屏：低频记录';
+  if (mode === 'idle_isolate') return '后台观测已暂停';
+  return '未读取';
 }
 
 function standbyWorkerModeClass(mode) {
@@ -124,6 +140,13 @@ function renderStandbyGuard(data) {
     profilePolicy: data.diag_profile_policy || 'unknown',
     activeProfile: data.diag_active_profile || 'unknown',
     cycleCount: data.diag_cycle_count || '0',
+    sleepMode: data.sleep_mode || 'unknown',
+    sleepFailedDev: data.sleep_last_failed_dev || '',
+    sleepFailedErrno: data.sleep_last_failed_errno || '',
+    sleepFailedStep: data.sleep_last_failed_step || '',
+    sleepErrorCode: data.sleep_error_code || 'SUSPEND_REASON_UNKNOWN',
+    sleepErrorSeverity: data.sleep_error_severity || 'info',
+    sleepErrorHuman: data.sleep_error_human || '当前没有可归类的 suspend 失败原因；请结合同一 boot 的 kernel log 复核。',
   };
 
   const sim2On = state.sim2AutoManage === 'on';
@@ -139,15 +162,14 @@ function renderStandbyGuard(data) {
   ].forEach((row) => refs.sim2AutoRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   const isolateOn = state.idleIsolateMode === 'on';
-  refs.idleIsolateToggleLabel.textContent = isolateOn ? '关闭' : '开启';
+  refs.idleIsolateToggleLabel.textContent = isolateOn ? '恢复后台观测' : '暂停后台观测';
   refs.idleIsolateDesc.textContent = isolateOn
-    ? '已开启：息屏优化已暂停，仅保留最低限度的状态检查。'
-    : '暂停模块的息屏优化，用于判断待机异常是否由模块引起。';
+    ? '当前：后台观测已暂停。后台历史、排行、telemetry 和周期分析均停止；仅前台页面或显式操作读取。'
+    : '当前：后台观测已开启。按低频策略记录历史并运行分析；前台读取仍可用。';
   refs.idleIsolateRows.replaceChildren();
   [
-    { label: '功能状态', value: isolateOn ? '已开启' : '已关闭', cls: isolateOn ? 'warn' : 'off' },
-    { label: '息屏行为', value: isolateOn ? '仅保留 900s 低频 recorder，其余全部暂停' : '常规待机 worker 正常运行', cls: isolateOn ? 'warn' : 'good' },
-    { label: '使用建议', value: isolateOn ? '仅用于一晚隔离测试，验证后请关闭' : '日常使用保持关闭', cls: 'off' },
+    { label: '当前状态', value: isolateOn ? '已暂停后台观测' : '后台观测已开启', cls: isolateOn ? 'warn' : 'good' },
+    { label: '后台行为', value: isolateOn ? '停止后台历史、排行、telemetry 和周期分析；仅保留前台读取' : '按低频策略记录历史并运行分析；息屏期间不做高频读取', cls: isolateOn ? 'warn' : 'good' },
   ].forEach((row) => refs.idleIsolateRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   refs.standbyDiagRows.replaceChildren();
@@ -164,12 +186,18 @@ function renderStandbyGuard(data) {
       { label: '当前工作', value: standbyWorkerModeLabel(state.standbyDiag.workerMode), cls: standbyWorkerModeClass(state.standbyDiag.workerMode) },
       { label: '下次检查约', value: state.standbyDiag.nextSleepSecs ? formatDuration(Number(state.standbyDiag.nextSleepSecs)) : '—', cls: 'off' },
       { label: '温度采样', value: state.standbyDiag.screen === 'on' ? '亮屏约每 60 秒' : '息屏约每 15 分钟一次', cls: state.standbyDiag.screen === 'on' ? 'good' : 'off' },
-      { label: '功耗采样', value: state.standbyDiag.screen === 'on' ? '亮屏约每 60 秒' : '息屏约每 15 分钟，禁用 BatteryStats', cls: 'off' },
+      { label: '功耗归因', value: state.standbyDiag.screen === 'on' ? '亮屏按策略采集 BatteryStats' : '息屏不采集 BatteryStats', cls: 'off' },
       { label: 'NR 状态', value: nrLabel, cls: state.standbyDiag.nrState === 'lte' ? 'warn' : 'off' },
       { label: '调度状态', value: profileLabel, cls: 'off' },
       { label: '检查次数', value: state.standbyDiag.cycleCount || '0', cls: 'off' },
     ].forEach((row) => refs.standbyDiagRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
   }
+  [
+    { label: '内核休眠模式', value: state.standbyDiag.sleepMode || 'unknown', cls: 'off' },
+    { label: '最近失败设备', value: state.standbyDiag.sleepFailedDev || '暂无读数', cls: state.standbyDiag.sleepFailedDev ? 'warn' : 'off' },
+    { label: '错误分类', value: state.standbyDiag.sleepErrorCode, cls: state.standbyDiag.sleepErrorSeverity === 'warning' ? 'warn' : 'off' },
+    { label: '最近失败原因', value: state.standbyDiag.sleepErrorHuman, cls: state.standbyDiag.sleepFailedDev ? 'warn' : 'off' },
+  ].forEach((row) => refs.standbyDiagRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   syncStandbyGuardButtons();
 }
@@ -408,7 +436,7 @@ function renderUecapRows(data) {
 
 async function refreshNrSwitch() {
   try {
-    const data = await apiFetch(API.nrSwitch, { timeoutMs: 6000, priority: 'normal', scope: 'network.nr.read' });
+    const data = await apiFetch(API.nrSwitch, { timeoutMs: NETWORK_READ_TIMEOUTS.nr, priority: 'normal', scope: 'network.nr.read' });
     state.nrSwitch = data.nr_switch || 'off';
     state.nrContract = {
       screenOffDelayS: Number(data.screen_off_delay_s),
@@ -420,14 +448,14 @@ async function refreshNrSwitch() {
     return true;
   } catch (err) {
     if (requireFeature('core').isRequestCancelled?.(err)) return null;
-    refs.nrSwitchRows.replaceChildren(); refs.nrSwitchRows.appendChild(errorBlock('获取失败：' + err.message));
+    refs.nrSwitchRows.replaceChildren(); refs.nrSwitchRows.appendChild(errorBlock(networkReadError('NR 息屏降级', err, NETWORK_READ_TIMEOUTS.nr)));
     return false;
   }
 }
 
 async function refreshUecap() {
   try {
-    const data = await apiFetch(API.uecap, { timeoutMs: 6000, priority: 'normal', scope: 'network.uecap.read' });
+    const data = await apiFetch(API.uecap, { timeoutMs: NETWORK_READ_TIMEOUTS.uecap, priority: 'normal', scope: 'network.uecap.read' });
     updateUecapRuntimeGuard(data);
     applyUecapContract(data);
     state.uecapMode = data.requested_mode || state.uecapContract.defaultMode;
@@ -442,31 +470,38 @@ async function refreshUecap() {
     return true;
   } catch (err) {
     if (requireFeature('core').isRequestCancelled?.(err)) return null;
-    refs.uecapBtnGroup.replaceChildren();
-    refs.uecapBtnGroup.hidden = true;
-    refs.uecapRows.replaceChildren(); refs.uecapRows.appendChild(errorBlock('获取失败：' + err.message));
+    const message = networkReadError('UE 网络能力', err, NETWORK_READ_TIMEOUTS.uecap);
+    // A slow UECap inspection must not erase a previously verified contract or
+    // remove the mode buttons. The backend remains authoritative; show the
+    // stale-read notice and keep the last confirmed state visible.
+    if (!state.uecapContract) {
+      refs.uecapBtnGroup.replaceChildren();
+      refs.uecapBtnGroup.hidden = true;
+      refs.uecapRows.replaceChildren(); refs.uecapRows.appendChild(errorBlock(message));
+    }
     const summary = document.getElementById('uecap-summary');
     if (summary) {
       summary.querySelectorAll('.badge').forEach((badge) => { badge.className = 'badge off'; });
       const result = summary.lastElementChild;
-      if (result) result.replaceWith(buildInfoRow('配置校验', '读取失败，以上为上次值', 'warn'));
+      if (result) result.replaceWith(buildInfoRow('配置校验', '本次读取未完成，保留上次已确认值', 'warn'));
     }
     const notice = document.getElementById('uecap-status-message');
-      if (notice) { notice.hidden = false; notice.textContent = '本次读取失败，状态已过期。请刷新后再确认实际生效情况。'; }
+      if (notice) { notice.hidden = false; notice.textContent = `${message} 当前页面保留上次已确认状态。`; }
     return false;
   }
 }
 
 async function refreshStandbyGuard() {
   try {
-    const data = await apiFetch(API.standbyGuard, { timeoutMs: 6000, priority: 'normal', scope: 'network.standby.read' });
+    const data = await apiFetch(API.standbyGuard, { timeoutMs: NETWORK_READ_TIMEOUTS.standby, priority: 'normal', scope: 'network.standby.read' });
     renderStandbyGuard(data);
     return true;
   } catch (err) {
     if (requireFeature('core').isRequestCancelled?.(err)) return null;
-    refs.sim2AutoRows.replaceChildren(); refs.sim2AutoRows.appendChild(errorBlock('获取失败：' + err.message));
-    refs.idleIsolateRows.replaceChildren(); refs.idleIsolateRows.appendChild(errorBlock('获取失败：' + err.message));
-    refs.standbyDiagRows.replaceChildren(); refs.standbyDiagRows.appendChild(errorBlock('获取失败：' + err.message));
+    const message = networkReadError('待机守护', err, NETWORK_READ_TIMEOUTS.standby);
+    refs.sim2AutoRows.replaceChildren(); refs.sim2AutoRows.appendChild(errorBlock(message));
+    refs.idleIsolateRows.replaceChildren(); refs.idleIsolateRows.appendChild(errorBlock(message));
+    refs.standbyDiagRows.replaceChildren(); refs.standbyDiagRows.appendChild(errorBlock(message));
     return false;
   }
 }
@@ -480,17 +515,24 @@ async function setStandbyGuard(update, successText, logText) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(update),
-      timeoutMs: 8000, priority: 'interactive', scope: 'network.standby'
+      timeoutMs: 15000, priority: 'interactive', scope: 'network.standby'
     });
     if (data.ok) {
-      renderStandbyGuard(data);
+      const readback = await apiFetch(API.standbyGuard, { timeoutMs: NETWORK_READ_TIMEOUTS.standby, priority: 'interactive', scope: 'network.standby.readback' });
+      const mismatch = Object.keys(update).find((key) => String(readback?.[key] ?? '') !== String(update[key]));
+      if (readback?.ok === false || mismatch) throw new Error(mismatch ? `状态回读不一致：${mismatch}` : (readback?.error || '状态回读失败'));
+      renderStandbyGuard(readback);
       showToast(successText);
       appendLog(logText, 'ok');
     } else {
       showToast(`操作失败：${data.error || '未知'}`);
     }
   } catch (err) {
-    if (!requireFeature('core').isRequestCancelled?.(err)) showToast('请求失败');
+    if (!requireFeature('core').isRequestCancelled?.(err)) {
+      const message = err?.message || String(err);
+      showToast(`操作失败：${message}`);
+      appendLog(`后台观测设置失败：${message}`, 'err');
+    }
   } finally {
     state.standbyGuardBusy = false;
     syncStandbyGuardButtons();
@@ -510,8 +552,8 @@ async function toggleIdleIsolateMode() {
   const next = state.idleIsolateMode === 'on' ? 'off' : 'on';
   await setStandbyGuard(
     { idle_isolate_mode: next },
-    next === 'on' ? '待机隔离模式已开启' : '待机隔离模式已关闭',
-    next === 'on' ? '待机隔离模式: 开启' : '待机隔离模式: 关闭'
+     next === 'on' ? '后台观测已暂停' : '后台观测已恢复',
+     next === 'on' ? '后台观测: 暂停' : '后台观测: 开启'
   );
 }
 
@@ -544,7 +586,7 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
     if (lastData) renderUecapRows(lastData);
 
     try {
-      const data = await apiFetch(API.uecap, { timeoutMs: 6000, priority: 'normal', scope: 'network.uecap.read' });
+      const data = await apiFetch(API.uecap, { timeoutMs: NETWORK_READ_TIMEOUTS.uecap, priority: 'normal', scope: 'network.uecap.read' });
       lastData = data;
       state.uecapMode = data.requested_mode || mode;
       state.uecapActiveMode = data.active_mode || 'custom';
@@ -581,11 +623,11 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
   state.uecapExpectedHash = '';
   state.uecapVerifyState = 'failed';
   state.uecapVerifyMessage = lastErr
-    ? `15 秒内未确认（${lastErr}）`
-    : '15 秒内未确认，请手动刷新复查';
+    ? `${Math.round(UECAP_VERIFY_TIMEOUT_MS / 1000)} 秒内未确认（${lastErr}）`
+    : `${Math.round(UECAP_VERIFY_TIMEOUT_MS / 1000)} 秒内未确认，请手动刷新复查`;
 
   if (lastData) renderUecapRows(lastData);
-  showToast(`${label} 已提交切换，但 15 秒内未完成校验，请手动刷新复查`, 4200);
+  showToast(`${label} 已提交切换，但 ${Math.round(UECAP_VERIFY_TIMEOUT_MS / 1000)} 秒内未完成校验，请手动刷新复查`, 4200);
   appendLog(`UE 配置待复查: ${label}`, 'warn');
 }
 
@@ -593,17 +635,24 @@ async function toggleNrSwitch() {
   if (state.nrBusy) return;
   state.nrBusy = true;
   try {
-    const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'toggle' }), timeoutMs: 8000, priority: 'interactive', scope: 'network.nr' });
+    const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'toggle' }), timeoutMs: 15000, priority: 'interactive', scope: 'network.nr' });
     if (data.ok) {
       state.nrSwitch = data.nr_switch;
-      showToast(data.nr_switch === 'on' ? 'NR 息屏降级已开启' : 'NR 息屏降级已关闭');
-      appendLog(data.nr_switch === 'on' ? 'NR 息屏降级: 开启' : 'NR 息屏降级: 关闭', 'ok');
-      void refreshNrSwitch();
+      const readback = await refreshNrSwitch();
+      if (!readback || state.nrSwitch !== data.nr_switch) {
+        showToast('NR 设置已提交，但状态回读未确认');
+        appendLog('NR 息屏降级提交后状态回读未确认', 'warn');
+      } else {
+        showToast(data.nr_switch === 'on' ? 'NR 息屏降级已开启' : 'NR 息屏降级已关闭');
+        appendLog(data.nr_switch === 'on' ? 'NR 息屏降级: 开启' : 'NR 息屏降级: 关闭', 'ok');
+      }
     } else {
       showToast('操作失败');
     }
-  } catch (_) {
-    showToast('请求失败');
+  } catch (err) {
+    const message = err?.message || String(err);
+    if (!requireFeature('core').isRequestCancelled?.(err)) showToast(`请求失败：${message}`);
+    appendLog(`NR 息屏降级请求失败：${message}`, 'err');
   } finally {
     state.nrBusy = false;
   }
@@ -634,7 +683,7 @@ async function setUecapMode(mode) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ policy: state.uecapPolicy, mode }),
-      timeoutMs: 12000, priority: 'interactive', scope: 'network.uecap'
+      timeoutMs: NETWORK_READ_TIMEOUTS.uecap, priority: 'interactive', scope: 'network.uecap'
     });
     if (data.ok) {
       state.uecapMode = data.requested_mode || mode;
@@ -676,8 +725,24 @@ async function setUecapMode(mode) {
       state.uecapVerifyMessage = data.error || '提交失败';
       await refreshUecap();
     }
-  } catch (_) {
-    showToast('请求失败');
+  } catch (err) {
+    const message = err?.message || String(err);
+    const payload = err?.payload;
+    if (payload?.applied) {
+      state.uecapMode = payload.requested_mode || mode;
+      state.uecapActiveMode = payload.active_mode || mode;
+      state.uecapVerifyState = 'failed';
+      state.uecapVerifyMessage = payload.error || '配置已切换，但 modem 未完成重载';
+      renderUecapRows(payload);
+      showToast(state.uecapVerifyMessage, 4200);
+      appendLog(`UE 配置已写入但重载失败: ${label}`, 'warn');
+      state.uecapBusy = false;
+      state.uecapPendingMode = '';
+      state.uecapExpectedHash = '';
+      return;
+    }
+    if (!requireFeature('core').isRequestCancelled?.(err)) showToast(`请求失败：${message}`);
+    appendLog(`UE 配置请求失败：${message}`, 'err');
     state.uecapBusy = false;
     state.uecapPendingMode = '';
     state.uecapExpectedHash = '';
@@ -737,7 +802,7 @@ async function refreshBasebandTask() {
     return true;
   }
   try {
-      const data = await apiFetch(API.checkBaseband, { timeoutMs: 6000, priority: 'normal', scope: 'network.baseband.read' });
+      const data = await apiFetch(API.checkBaseband, { timeoutMs: NETWORK_READ_TIMEOUTS.baseband, priority: 'normal', scope: 'network.baseband.read' });
     renderBasebandRows(data);
     return true;
   } catch (err) {
@@ -749,7 +814,9 @@ async function refreshBasebandTask() {
       : status === 503
         ? '基带状态依赖的运行 receipt 不可用，请先等待 late-start 完成或重启后复读。'
         : '请查看后端返回的错误字段和模块 receipt。';
-    const message = `基带配置读取失败（HTTP ${status || 'unknown'}）：${detail}\n${reason}`;
+    const message = status === 0 && err?.code === 'REQUEST_TIMEOUT'
+      ? networkReadError('基带配置', err, NETWORK_READ_TIMEOUTS.baseband)
+      : `基带配置读取失败（HTTP ${status || 'unknown'}）：${detail}\n${reason}`;
     refs.basebandRows.replaceChildren(); refs.basebandRows.appendChild(errorBlock(message));
     appendLog(message, 'err');
     return false;
@@ -851,7 +918,7 @@ function renderNtpCard(data) {
 
 async function refreshNtp() {
   try {
-    const data = await apiFetch(API.ntp, { timeoutMs: 6000, priority: 'normal', scope: 'network.ntp.read' });
+    const data = await apiFetch(API.ntp, { timeoutMs: NETWORK_READ_TIMEOUTS.ntp, priority: 'normal', scope: 'network.ntp.read' });
     renderNtpCard(data);
     return true;
   } catch (err) {
@@ -869,23 +936,30 @@ async function setNtpServer(server) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ server }),
-      timeoutMs: 10000, priority: 'interactive', scope: 'network.ntp'
+      timeoutMs: 15000, priority: 'interactive', scope: 'network.ntp'
     });
     if (data.ok) {
       const label = state.ntpServers.find((s) => s.id === server)?.name || server;
-      if (data.refreshed === false) {
+      const readback = await refreshNtp();
+      if (!readback || state.ntpServer !== server) {
+        showToast(`NTP 已提交，但 ${label} 状态回读未确认`);
+        appendLog(`NTP: ${server}（状态回读未确认）`, 'warn');
+      } else if (data.refreshed === false) {
         showToast(`NTP 已切换为 ${label}，即时同步未完成`);
         appendLog(`NTP: ${server}（即时同步未完成）`, 'warn');
       } else {
         showToast(`NTP 已切换为 ${label} 并同步`);
         appendLog(`NTP: ${server}`, 'ok');
       }
-      void refreshNtp();
     } else {
       showToast(`切换失败：${data.error || '未知'}`);
     }
   } catch (err) {
-    if (!requireFeature('core').isRequestCancelled?.(err)) showToast('请求失败');
+    if (!requireFeature('core').isRequestCancelled?.(err)) {
+      const message = err?.message || String(err);
+      showToast(`请求失败：${message}`);
+      appendLog(`NTP 切换失败：${message}`, 'err');
+    }
   } finally {
     state.ntpBusy = false;
   }
@@ -900,17 +974,26 @@ async function syncNtp() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'sync' }),
-      timeoutMs: 10000, priority: 'interactive', scope: 'network.ntp'
+      timeoutMs: 15000, priority: 'interactive', scope: 'network.ntp'
     });
     if (data.ok) {
-      showToast('时间已同步');
-      appendLog(`NTP 同步完成: ${data.device_time}`, 'ok');
-      void refreshNtp();
+      const readback = await refreshNtp();
+      if (!readback) {
+        showToast('时间同步已提交，但状态回读未确认');
+        appendLog('NTP 同步提交后状态回读未确认', 'warn');
+      } else {
+        showToast('时间已同步');
+        appendLog(`NTP 同步完成: ${data.device_time}`, 'ok');
+      }
     } else {
       showToast('同步失败');
     }
   } catch (err) {
-    if (!requireFeature('core').isRequestCancelled?.(err)) showToast('同步请求失败');
+    if (!requireFeature('core').isRequestCancelled?.(err)) {
+      const message = err?.message || String(err);
+      showToast(`同步请求失败：${message}`);
+      appendLog(`NTP 同步失败：${message}`, 'err');
+    }
   } finally {
     refs.ntpSyncLabel.textContent = '立即同步';
     state.ntpBusy = false;
@@ -920,14 +1003,17 @@ async function syncNtp() {
 registerFeature('network', {
   async refresh() {
     return requireFeature('core').runFeatureTask('network.refresh', async () => {
-      // The shared Request Hub limits actual CGI concurrency. Keep independent
-      // network cards independent so one slow binder read does not block all UI
-      // state; each feature still owns its own rendering/error boundary.
-      const settled = await Promise.allSettled([
-        refreshNrSwitch(), refreshUecap(), refreshBaseband(),
-        refreshNtp(), refreshStandbyGuard()
+      // Short reads share one stage. UECap and baseband both perform slow
+      // runtime inspection, so they are isolated in a second stage with
+      // endpoint-specific deadlines instead of expiring in the Request Hub
+      // queue behind unrelated controls.
+      const fast = await Promise.allSettled([
+        refreshNrSwitch(), refreshNtp(), refreshStandbyGuard()
       ]);
-      const results = settled.map((item) => item.status === 'fulfilled' ? item.value : false);
+      const slow = await Promise.allSettled([
+        refreshUecap(), refreshBaseband()
+      ]);
+      const results = fast.concat(slow).map((item) => item.status === 'fulfilled' ? item.value : false);
       if (results.some((result) => result === false)) return false;
       return results.every((result) => result === null) ? null : true;
     });

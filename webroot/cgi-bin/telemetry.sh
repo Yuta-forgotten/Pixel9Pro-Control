@@ -105,14 +105,14 @@ emit_status() {
     json_headers
     read_session_fields
     if [ "$TG_STATUS" = running ] && ! telemetry_pid_alive "$TG_PID" "$TG_PID_START"; then
-        telemetry_state_write "$TG_ID" failed "$TG_START" "$(telemetry_now)" "$TG_DURATION" "$TG_MAX_BYTES" "$TG_PID" "$TG_PID_START" worker_dead "$TG_SAMPLES" "$TG_BYTES" "$TG_LAST_SAMPLE" failed "$TG_RESETS" "$TG_STOP_REQUESTED" "$TG_DIR" >/dev/null 2>&1 || true
+        telemetry_state_write_locked "$TG_ID" failed "$TG_START" "$(telemetry_now)" "$TG_DURATION" "$TG_MAX_BYTES" "$TG_PID" "$TG_PID_START" worker_dead "$TG_SAMPLES" "$TG_BYTES" "$TG_LAST_SAMPLE" failed "$TG_RESETS" "$TG_STOP_REQUESTED" "$TG_DIR" >/dev/null 2>&1 || true
         read_session_fields
     fi
     if [ -z "$TG_ID" ]; then
-        printf '{"ok":true,"schema":%s,"session":null}\n' "$TELEMETRY_SCHEMA"
+        printf '{"ok":true,"schema":%s,"feature_enabled":%s,"session":null}\n' "$TELEMETRY_SCHEMA" "$(json_bool "$TELEMETRY_FEATURE_ENABLED")"
         return 0
     fi
-    printf '{"ok":true,"schema":%s,"session":' "$TELEMETRY_SCHEMA"
+    printf '{"ok":true,"schema":%s,"feature_enabled":%s,"session":' "$TELEMETRY_SCHEMA" "$(json_bool "$TELEMETRY_FEATURE_ENABLED")"
     emit_session_json
     printf '}\n'
 }
@@ -267,7 +267,7 @@ emit_history() {
         _tg_stats=$(awk -F, '
             $1 ~ /^[0-9]+$/ { n++; if ($27 == 1) valid++; if ($27 == 0) invalid++; if ($22 ~ /^[0-9]+$/ && $22 > 0) gaps++ }
             END { printf "%d|%d|%d|%d", n,valid,invalid,gaps }
-        ' "$_tg_file" 2>/dev/null)
+        ' "$_tg_csv" 2>/dev/null)
         _tg_samples=${_tg_stats%%|*}; _tg_rest=${_tg_stats#*|}
         _tg_valid=${_tg_rest%%|*}; _tg_rest=${_tg_rest#*|}
         _tg_invalid=${_tg_rest%%|*}; _tg_gaps=${_tg_rest#*|}
@@ -334,12 +334,12 @@ write_session_json() {
     _tg_stats=$(awk -F, '
         $1 ~ /^[0-9]+$/ { n++; if ($27 == 1) valid++; if ($27 == 0) invalid++; if ($22 ~ /^[0-9]+$/ && $22 > 0) gaps++ }
         END { printf "%d|%d|%d|%d", n,valid,invalid,gaps }
-    ' "$_tg_dir/samples.csv" 2>/dev/null)
+    ' "$_tg_csv" 2>/dev/null)
     _tg_samples=${_tg_stats%%|*}; _tg_rest=${_tg_stats#*|}
     _tg_valid=${_tg_rest%%|*}; _tg_rest=${_tg_rest#*|}
     _tg_invalid=${_tg_rest%%|*}; _tg_gaps=${_tg_rest#*|}
     case "$_tg_samples:$_tg_valid:$_tg_invalid:$_tg_gaps" in *[!0-9:]*) _tg_samples=0; _tg_valid=0; _tg_invalid=0; _tg_gaps=0 ;; esac
-    _tg_th_stats=$(awk -F, '{ n++; if ($26 == 1) valid++; if ($26 == 0) invalid++; if ($22 ~ /^[0-9]+$/ && $22 > 0) gaps++ } END { printf "%d|%d|%d|%d", n,valid,invalid,gaps }' "$_tg_dir/samples.csv" 2>/dev/null)
+    _tg_th_stats=$(awk -F, '{ n++; if ($26 == 1) valid++; if ($26 == 0) invalid++; if ($22 ~ /^[0-9]+$/ && $22 > 0) gaps++ } END { printf "%d|%d|%d|%d", n,valid,invalid,gaps }' "$_tg_csv" 2>/dev/null)
     _tg_th_samples=${_tg_th_stats%%|*}; _tg_rest=${_tg_th_stats#*|}
     _tg_th_valid=${_tg_rest%%|*}; _tg_rest=${_tg_rest#*|}
     _tg_th_invalid=${_tg_rest%%|*}; _tg_th_gaps=${_tg_rest#*|}
@@ -400,10 +400,11 @@ export_session() {
 
 handle_start() {
     acquire_lock telemetry
+    [ "$TELEMETRY_FEATURE_ENABLED" != on ] || { release_lock; json_error '409 Conflict' 'background_observation_active'; }
     read_session_fields
     if [ "$TG_STATUS" = running ] || [ "$TG_STATUS" = stopping ]; then
         telemetry_pid_alive "$TG_PID" "$TG_PID_START" && json_error '409 Conflict' 'telemetry session already running'
-        telemetry_state_write "$TG_ID" failed "$TG_START" "$(telemetry_now)" "$TG_DURATION" "$TG_MAX_BYTES" "$TG_PID" "$TG_PID_START" worker_dead "$TG_SAMPLES" "$TG_BYTES" "$TG_LAST_SAMPLE" failed "$TG_RESETS" 0 "$TG_DIR" \
+        telemetry_state_write_locked "$TG_ID" failed "$TG_START" "$(telemetry_now)" "$TG_DURATION" "$TG_MAX_BYTES" "$TG_PID" "$TG_PID_START" worker_dead "$TG_SAMPLES" "$TG_BYTES" "$TG_LAST_SAMPLE" failed "$TG_RESETS" 0 "$TG_DIR" \
             || json_error '500 Internal Server Error' 'cannot persist stale worker state'
     fi
     _tg_body="$JSON_BODY"
@@ -422,12 +423,12 @@ handle_start() {
     _tg_id="${_tg_now}_$$"
     _tg_dir=$(telemetry_session_dir "$_tg_id")
     mkdir -p "$_tg_dir" 2>/dev/null || json_error '500 Internal Server Error' 'cannot create telemetry session'
-    telemetry_state_write "$_tg_id" pending "$_tg_now" 0 "$_tg_duration" "$_tg_max" 0 0 pending 0 0 0 complete 0 0 "$_tg_dir" \
+    telemetry_state_write_locked "$_tg_id" pending "$_tg_now" 0 "$_tg_duration" "$_tg_max" 0 0 pending 0 0 0 complete 0 0 "$_tg_dir" \
         || json_error '500 Internal Server Error' 'cannot persist telemetry session'
     sh "$TELEMETRY_WORKER" "$_tg_id" "$_tg_dir" "$_tg_duration" "$_tg_max" >/dev/null 2>&1 &
     _tg_pid=$!
     _tg_pid_start=$(telemetry_pid_start "$_tg_pid")
-    telemetry_state_write "$_tg_id" running "$_tg_now" 0 "$_tg_duration" "$_tg_max" "$_tg_pid" "$_tg_pid_start" started 0 0 0 complete 0 0 "$_tg_dir" \
+    telemetry_state_write_locked "$_tg_id" running "$_tg_now" 0 "$_tg_duration" "$_tg_max" "$_tg_pid" "$_tg_pid_start" started 0 0 0 complete 0 0 "$_tg_dir" \
         || json_error '500 Internal Server Error' 'cannot persist worker state'
     if [ "$AUDIT_LOG_AVAILABLE" -eq 1 ]; then audit_log_event telemetry start success SESSION_STARTED 0 >/dev/null 2>&1 || true; fi
     json_headers
@@ -445,16 +446,16 @@ handle_stop() {
     telemetry_pid_alive "$TG_PID" "$TG_PID_START"
     _tg_alive=$?
     if [ "$TG_STATUS" = running ] && [ "$_tg_alive" -eq 0 ]; then
-        telemetry_state_write "$TG_ID" stopping "$TG_START" 0 "$TG_DURATION" "$TG_MAX_BYTES" "$TG_PID" "$TG_PID_START" user_stop "$TG_SAMPLES" "$TG_BYTES" "$TG_LAST_SAMPLE" "$TG_QUALITY" "$TG_RESETS" 1 "$TG_DIR" \
+        telemetry_state_write_locked "$TG_ID" stopping "$TG_START" 0 "$TG_DURATION" "$TG_MAX_BYTES" "$TG_PID" "$TG_PID_START" user_stop "$TG_SAMPLES" "$TG_BYTES" "$TG_LAST_SAMPLE" "$TG_QUALITY" "$TG_RESETS" 1 "$TG_DIR" \
             || json_error '500 Internal Server Error' 'cannot persist stop request'
         kill -TERM "$TG_PID" 2>/dev/null || true
         # A shell can defer a TERM trap while waiting in sleep.  Commit the
         # user-visible terminal state immediately; the worker observes this
         # state and exits without overwriting it when the trap is delivered.
-        telemetry_state_write "$TG_ID" stopped "$TG_START" "$(telemetry_now)" "$TG_DURATION" "$TG_MAX_BYTES" "$TG_PID" "$TG_PID_START" user_stop "$TG_SAMPLES" "$TG_BYTES" "$TG_LAST_SAMPLE" "$TG_QUALITY" "$TG_RESETS" 1 "$TG_DIR" \
+        telemetry_state_write_locked "$TG_ID" stopped "$TG_START" "$(telemetry_now)" "$TG_DURATION" "$TG_MAX_BYTES" "$TG_PID" "$TG_PID_START" user_stop "$TG_SAMPLES" "$TG_BYTES" "$TG_LAST_SAMPLE" "$TG_QUALITY" "$TG_RESETS" 1 "$TG_DIR" \
             || json_error '500 Internal Server Error' 'cannot persist stopped state'
     elif [ "$TG_STATUS" = running ]; then
-        telemetry_state_write "$TG_ID" failed "$TG_START" "$(telemetry_now)" "$TG_DURATION" "$TG_MAX_BYTES" "$TG_PID" "$TG_PID_START" worker_dead "$TG_SAMPLES" "$TG_BYTES" "$TG_LAST_SAMPLE" failed "$TG_RESETS" 0 "$TG_DIR" \
+    telemetry_state_write_locked "$TG_ID" failed "$TG_START" "$(telemetry_now)" "$TG_DURATION" "$TG_MAX_BYTES" "$TG_PID" "$TG_PID_START" worker_dead "$TG_SAMPLES" "$TG_BYTES" "$TG_LAST_SAMPLE" failed "$TG_RESETS" 0 "$TG_DIR" \
             || json_error '500 Internal Server Error' 'cannot persist worker failure'
     fi
     if [ "$AUDIT_LOG_AVAILABLE" -eq 1 ]; then audit_log_event telemetry stop success SESSION_STOP_REQUESTED 0 >/dev/null 2>&1 || true; fi
@@ -465,6 +466,7 @@ handle_stop() {
 }
 
 require_token
+TELEMETRY_FEATURE_ENABLED=$(telemetry_feature_enabled)
 case "$REQUEST_METHOD:${QUERY_STRING:-}" in
     GET:*action=status*|GET:) emit_status ;;
     GET:*action=history*) emit_history ;;

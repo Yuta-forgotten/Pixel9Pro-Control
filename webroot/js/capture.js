@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  const state = { session: null, getControllers: new Set() };
+  const state = { session: null, getControllers: new Set(), statusPromise: null };
 
   const core = () => requireFeature('core');
   const apiFetch = (...args) => core().apiFetch(...args);
@@ -25,7 +25,7 @@
     return `${endpoint()}?${search.toString()}`;
   }
 
-  async function status() {
+  async function fetchStatus() {
     if (!requireFeature('auth').hasToken()) return { ok: false, error: 'missing WebUI token', session: state.session };
     try {
       const path = query({ action: 'status' });
@@ -34,6 +34,14 @@
       else if (data && Object.prototype.hasOwnProperty.call(data, 'session')) state.session = null;
       return data;
     } catch (err) { if (isCancelled(err)) return null; throw err; }
+  }
+
+  async function status() {
+    if (state.statusPromise) return state.statusPromise;
+    const promise = fetchStatus();
+    state.statusPromise = promise;
+    try { return await promise; }
+    finally { if (state.statusPromise === promise) state.statusPromise = null; }
   }
 
   async function history({ sessionId = '', startTs = null, endTs = null, granularity = '' } = {}) {

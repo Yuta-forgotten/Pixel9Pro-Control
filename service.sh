@@ -34,6 +34,13 @@ system_history_config_value() {
     [ -n "$_shc_value" ] && printf '%s' "$_shc_value" || printf '%s' "$_shc_default"
 }
 
+system_history_enabled() {
+    case "$(system_history_config_value analytics_enabled 1)" in
+        0|false|off|no) printf off ;;
+        *) printf on ;;
+    esac
+}
+
 system_history_dispatch_interval() {
     _shc_screen="$1"
     _shc_default=900
@@ -510,11 +517,17 @@ ensure_profile_history_baseline() {
         *) _p_is_charging=0 ;;
     esac
     . "$MODDIR/webroot/cgi-bin/_thermal_cache.sh" 2>/dev/null
-    _sev=""
+    display_state_read >/dev/null 2>&1 || true
+    _ph_screen=$(display_state_legacy_screen)
+    _sev=-1
     if command -v build_thermal_json >/dev/null 2>&1; then
-        build_thermal_json hal >/dev/null 2>&1
-        _ph_json="$THERMAL_BUILD_JSON"
-        _sev="$THERMAL_BUILD_STATUS"
+        if [ "$_ph_screen" = on ]; then
+            build_thermal_json hal >/dev/null 2>&1
+            _ph_json="$THERMAL_BUILD_JSON"
+            _sev="$THERMAL_BUILD_STATUS"
+        else
+            _ph_json=$(build_thermal_json sysfs 2>/dev/null)
+        fi
         if [ -n "$_ph_json" ] && [ "$_ph_json" != "[]" ]; then
             if ! runtime_write_value "$THERMAL_CACHE" "$_ph_json"; then
                 log -t pixel9pro_ctrl "WARNING: failed to refresh thermal cache baseline"
@@ -959,6 +972,14 @@ HISTORY_SOURCE=service_worker
 HISTORY_SESSION_ID="service_${SERVICE_BOOT_ID}"
 HISTORY_INTERVAL_ON=60
 HISTORY_INTERVAL_OFF=900
+_configured_module_on=$(system_history_config_value module_interval_on_sec 60)
+_configured_module_off=$(system_history_config_value module_interval_off_sec 900)
+case "$_configured_module_on" in ''|*[!0-9]*) _configured_module_on=60 ;; esac
+case "$_configured_module_off" in ''|*[!0-9]*) _configured_module_off=900 ;; esac
+[ "$_configured_module_on" -ge 60 ] 2>/dev/null && [ "$_configured_module_on" -le 3600 ] 2>/dev/null \
+    && HISTORY_INTERVAL_ON="$_configured_module_on"
+[ "$_configured_module_off" -ge 900 ] 2>/dev/null && [ "$_configured_module_off" -le 7200 ] 2>/dev/null \
+    && HISTORY_INTERVAL_OFF="$_configured_module_off"
 THERMAL_BURST_INTERVAL="${THERMAL_BURST_INTERVAL_S:-10}"
 case "$THERMAL_BURST_INTERVAL" in
     ''|*[!0-9]*) THERMAL_BURST_INTERVAL=10 ;;
@@ -1074,6 +1095,25 @@ esac
         return 1
     }
 
+    _compact_history_bytes_if_needed() {
+        _history_file="$1"
+        _history_budget=$(system_history_config_value max_bytes 33554432)
+        case "$_history_budget" in ''|*[!0-9]*) _history_budget=33554432 ;; esac
+        _history_budget=$((_history_budget / 4))
+        [ "$_history_budget" -ge 1048576 ] 2>/dev/null || _history_budget=1048576
+        _history_bytes=$(wc -c < "$_history_file" 2>/dev/null | tr -d ' \r\n')
+        case "$_history_bytes" in ''|*[!0-9]*) return 0 ;; esac
+        [ "$_history_bytes" -gt "$_history_budget" ] 2>/dev/null || return 0
+        _history_tmp="${_history_file}.bytes.$$"
+        if tail -c "$_history_budget" "$_history_file" > "$_history_tmp" 2>/dev/null \
+            && mv "$_history_tmp" "$_history_file" 2>/dev/null; then
+            return 0
+        fi
+        rm -f "$_history_tmp" 2>/dev/null
+        log -t pixel9pro_ctrl "WARNING: failed to compact history bytes ($_history_file)"
+        return 1
+    }
+
     _compact_power_history_if_needed() {
         [ "$_power_history_lines" -lt "$POWER_HISTORY_MAX" ] && return 0
         _keep=$((POWER_HISTORY_MAX - 240))
@@ -1089,6 +1129,7 @@ esac
         else
             rm -f "$_trim_tmp"
         fi
+        _compact_history_bytes_if_needed "$POWER_HISTORY"
     }
 
     _compact_thermal_history_if_needed() {
@@ -1106,6 +1147,7 @@ esac
         else
             rm -f "$_trim_tmp"
         fi
+        _compact_history_bytes_if_needed "$THERMAL_HISTORY"
     }
 
     _write_history_meta() {
@@ -1372,6 +1414,7 @@ esac
     _POWER_SAMPLE_INTERVAL_ON=$HISTORY_INTERVAL_ON
     _POWER_SAMPLE_INTERVAL_OFF=$HISTORY_INTERVAL_OFF
     _thermal_last_sample=$(tail -n 1 "$THERMAL_HISTORY" 2>/dev/null | cut -d, -f1)
+    _control_thermal_last_sample=0
     case "$_thermal_last_sample" in ''|*[!0-9]*) _thermal_last_sample=0 ;; esac
     _thermal_last_uptime=0
     _history_prev_screen=unknown
@@ -1413,6 +1456,63 @@ esac
         ''|*[!0-9]*) _power_rank_interval_s=900 ;;
     esac
     [ "$_power_rank_interval_s" -ge 300 ] 2>/dev/null || _power_rank_interval_s=300
+    _power_rank_pid=0
+    _power_rank_pid_start=0
+
+    _power_rank_pid_start_ticks() {
+        _pr_pid="$1"
+        case "$_pr_pid" in ''|*[!0-9]*) return 1 ;; esac
+        sed 's/^.*) //' "/proc/$_pr_pid/stat" 2>/dev/null | awk '{print $20}'
+    }
+
+    _stop_power_rank_collector() {
+        case "${_power_rank_pid:-0}" in
+            ''|*[!0-9]*|0) _power_rank_pid=0; return 0 ;;
+        esac
+        [ "$(_power_rank_pid_start_ticks "$_power_rank_pid")" = "$_power_rank_pid_start" ] || { _power_rank_pid=0; _power_rank_pid_start=0; return 0; }
+        kill -TERM "$_power_rank_pid" 2>/dev/null || true
+        sleep 1
+        [ "$(_power_rank_pid_start_ticks "$_power_rank_pid")" = "$_power_rank_pid_start" ] && kill -KILL "$_power_rank_pid" 2>/dev/null || true
+        _power_rank_pid=0
+        _power_rank_pid_start=0
+    }
+
+    _start_power_rank_collector() {
+        [ -r "$MODDIR/scripts/power_rank_collect.sh" ] || return 0
+        case "${_power_rank_pid:-0}" in
+            ''|*[!0-9]*|0) _power_rank_pid=0 ;;
+            *)
+                if [ "$(_power_rank_pid_start_ticks "$_power_rank_pid")" = "$_power_rank_pid_start" ] && kill -0 "$_power_rank_pid" 2>/dev/null; then
+                    return 0
+                fi
+                _power_rank_pid=0
+                _power_rank_pid_start=0
+                ;;
+        esac
+        _collector_timeout="${POWER_RANK_COLLECT_TIMEOUT_S:-20}"
+        case "$_collector_timeout" in ''|*[!0-9]*) _collector_timeout=20 ;; esac
+        [ "$_collector_timeout" -ge 5 ] 2>/dev/null || _collector_timeout=5
+        [ "$_collector_timeout" -le 60 ] 2>/dev/null || _collector_timeout=60
+        timeout -k 2 "$_collector_timeout" \
+            sh "$MODDIR/scripts/power_rank_collect.sh" on interactive \
+            >/dev/null 2>&1 &
+        _power_rank_pid=$!
+        _power_rank_pid_start=$(_power_rank_pid_start_ticks "$_power_rank_pid")
+    }
+
+    _refresh_module_intervals() {
+        _configured_module_on=$(system_history_config_value module_interval_on_sec 60)
+        _configured_module_off=$(system_history_config_value module_interval_off_sec 900)
+        case "$_configured_module_on" in ''|*[!0-9]*) _configured_module_on=60 ;; esac
+        case "$_configured_module_off" in ''|*[!0-9]*) _configured_module_off=900 ;; esac
+        if [ "$_configured_module_on" -ge 60 ] 2>/dev/null && [ "$_configured_module_on" -le 3600 ] 2>/dev/null; then
+            _POWER_SAMPLE_INTERVAL_ON="$_configured_module_on"
+        fi
+        if [ "$_configured_module_off" -ge 900 ] 2>/dev/null && [ "$_configured_module_off" -le 7200 ] 2>/dev/null; then
+            _POWER_SAMPLE_INTERVAL_OFF="$_configured_module_off"
+        fi
+    }
+
     _health_last_run=0
 
     while true; do
@@ -1421,6 +1521,14 @@ esac
         _history_changed=0
         _history_write_error=none
         _cycle_count=$((_cycle_count + 1))
+        _analytics_enabled=$(system_history_enabled)
+        if [ "$_analytics_enabled" != on ]; then
+            _stop_power_rank_collector
+        else
+            # Policy writes are live. Reload module cadence before deciding
+            # the next history sample instead of waiting for a restart.
+            _refresh_module_intervals
+        fi
         _active_profile=$(profile_state_read_profile "$PROFILE_FILE" "$_active_profile")
         _sched_owner=$(read_valid_sched_owner)
         sbm_load_state
@@ -1437,6 +1545,9 @@ esac
         display_state_read >/dev/null 2>&1 || true
         _screen=$(display_state_legacy_screen)
         [ "$_screen" != "unknown" ] || _screen="off"
+        if [ "$_screen" != "on" ] || [ "${DISPLAY_STATE_INTERACTIVE:-no}" != "yes" ]; then
+            _stop_power_rank_collector
+        fi
         _idle_isolate=$(read_onoff_file "$IDLE_ISOLATE_FILE" "$IDLE_ISOLATE_DEFAULT")
         _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" "$SIM2_AUTO_DEFAULT")
         _screen_off_isolate=0
@@ -1597,8 +1708,13 @@ esac
         _thermal_interval=$HISTORY_INTERVAL_OFF
         [ "$_screen" = on ] && _thermal_interval=$HISTORY_INTERVAL_ON
         [ "$_burst_effective" -eq 1 ] && _thermal_interval="$THERMAL_BURST_INTERVAL"
-        if [ "$_thermal_last_sample" -eq 0 ] || [ $((_now - _thermal_last_sample)) -ge "$_thermal_interval" ] 2>/dev/null \
-            || { [ "$_screen" = on ] && [ "$_history_prev_screen" != on ]; }; then
+        _history_due=0
+        [ "$_thermal_last_sample" -eq 0 ] 2>/dev/null && _history_due=1
+        [ $((_now - _thermal_last_sample)) -ge "$_thermal_interval" ] 2>/dev/null && _history_due=1
+        [ "$_screen" = on ] && [ "$_history_prev_screen" != on ] && _history_due=1
+        _control_due=0
+        [ "$_screen" = on ] && { [ "$_control_thermal_last_sample" -eq 0 ] || [ $((_now - _control_thermal_last_sample)) -ge 60 ] 2>/dev/null; } && _control_due=1
+        if [ "$_history_due" -eq 1 ] || [ "$_control_due" -eq 1 ]; then
             [ "$_screen" = on ] && _worker_mode=screen_on
             [ "$_burst_effective" -eq 1 ] && _worker_mode=thermal_burst
             _thermal_source=sysfs
@@ -1624,20 +1740,23 @@ esac
                 _thermal_gap=$((_uptime_now - _thermal_last_uptime - _thermal_interval))
                 [ "$_thermal_quality" = ok ] && _thermal_quality=gap
             fi
-            _compact_thermal_history_if_needed
-            if printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$_now" "$_vs_temp" "$SERVICE_BOOT_ID" "$HISTORY_SESSION_ID" \
-                "$HISTORY_SOURCE" "$_thermal_valid" "$_thermal_gap" "$_thermal_quality" "$_screen" "$_uptime_now" >> "$THERMAL_HISTORY"; then
-                _thermal_history_lines=$((_thermal_history_lines + 1))
-                _thermal_last_sample=$_now
-                _thermal_last_uptime=$_uptime_now
-                _history_changed=1
-            else
-                _history_write_error=thermal_write_failed
+            [ "$_screen" = on ] && _control_thermal_last_sample=$_now
+            if [ "$_analytics_enabled" = on ]; then
+                _compact_thermal_history_if_needed
+                if printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$_now" "$_vs_temp" "$SERVICE_BOOT_ID" "$HISTORY_SESSION_ID" \
+                    "$HISTORY_SOURCE" "$_thermal_valid" "$_thermal_gap" "$_thermal_quality" "$_screen" "$_uptime_now" >> "$THERMAL_HISTORY"; then
+                    _thermal_history_lines=$((_thermal_history_lines + 1))
+                    _thermal_last_sample=$_now
+                    _thermal_last_uptime=$_uptime_now
+                    _history_changed=1
+                else
+                    _history_write_error=thermal_write_failed
+                fi
             fi
         fi
 
         # Isolate mode affects policy mutations, not the observability source.
-        _track_power_window
+        [ "$_analytics_enabled" = on ] && _track_power_window
         if [ "$_screen_off_isolate" -eq 1 ]; then
             _worker_mode="idle_isolate"
             _auto_hot_since=0
@@ -1766,17 +1885,19 @@ esac
             fi
         fi
 
-        if [ "$_history_changed" -eq 1 ] || [ "$_history_write_error" != none ]; then
+        if [ "$_analytics_enabled" = on ] && { [ "$_history_changed" -eq 1 ] || [ "$_history_write_error" != none ]; }; then
             _write_history_meta "$_now"
         fi
         _history_prev_screen="$_screen"
         # Export the native history only while interactive. Its buffer includes
         # the intervening standby window without periodic screen-off Binder work.
         _power_rank_interval_s=$(system_history_dispatch_interval "$_screen")
-        if [ "$_screen" = on ] && [ -r "$MODDIR/scripts/power_rank_collect.sh" ] \
+        if [ "$_analytics_enabled" = on ] \
+            && [ "$_screen" = on ] && [ "${DISPLAY_STATE_INTERACTIVE:-no}" = yes ] \
+            && [ -r "$MODDIR/scripts/power_rank_collect.sh" ] \
             && { [ "$_power_rank_dispatch_at" -eq 0 ] 2>/dev/null \
                 || [ $((_now - _power_rank_dispatch_at)) -ge "$_power_rank_interval_s" ] 2>/dev/null; }; then
-            sh "$MODDIR/scripts/power_rank_collect.sh" "$_screen" "${DISPLAY_STATE:-unknown}" >/dev/null 2>&1 &
+            _start_power_rank_collector
             _power_rank_dispatch_at=$_now
         fi
 

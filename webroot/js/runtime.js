@@ -180,8 +180,11 @@ const UECAP_MODE_PRESENTATION = {
 
 const UECAP_DETAIL = '<p>UE 网络能力配置描述手机向基站报告的载波组合。它不保证特定频段、5G 形态或功耗结果；实际连接由设备、运营商与无线环境共同决定。</p><h3>如何选择</h3><p>Pixel 9 Pro 的选项由当前后端合同提供；Google 默认沿用原厂能力，其他选项的适用范围以配置来源和校验结果为准。Pixel 9 Pro XL 保持机型独立，测试候选不能当作已经验证的正式配置。</p><h3>如何确认</h3><p>“已选配置”“当前绑定”“modem 实际加载”和“当前驻网”是不同事实。展开配置与无线诊断可查看加载、回读、Payload 和无线观察。切换是否可用、是否需要重新安装或重启，由当前后端返回；不要把已保存当作已生效。</p>';
 const BASEBAND_DETAIL = '<b>基带配置模块 (pixel9pro_baseband_trial)</b><br><br><b>提供内容</b><br>- 5G / IMS 属性：VoLTE、Wi-Fi Calling 开关<br>- CarrierSettings：运营商配置覆盖<br>- China MCFG：移动 / 联通 / 电信相关 modem 配置<br><br><b>不包含</b><br>- UECap binarypb 管理（由 pixel9pro_control 负责）<br>- 温控、CPU 调度、ZRAM 和 WebUI';
-const UECAP_VERIFY_INTERVAL_MS = 1500;
-const UECAP_VERIFY_TIMEOUT_MS = 15000;
+// UECap status is a modem/runtime inspection rather than a cached read. The
+// device can take 10–12 seconds before the JSON body is complete, so one
+// request must not be declared failed at the old six-second UI deadline.
+const UECAP_VERIFY_INTERVAL_MS = 2000;
+const UECAP_VERIFY_TIMEOUT_MS = 60000;
 const PROFILE_MUTATION_TIMEOUT_MS = 15000;
 const WEBUI_IDLE_MS = 45000;
 const POLL_MIN_DELAY_MS = 900;

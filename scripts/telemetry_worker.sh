@@ -44,7 +44,7 @@ telemetry_worker_update() {
     _tw_pid_start="${TL_STATE_PID_START:-}"
     _tw_duration_state="${TL_STATE_DURATION_SEC:-$_tw_duration}"
     _tw_max_state="${TL_STATE_MAX_BYTES:-$_tw_max_bytes}"
-    telemetry_state_write "$_tw_id" "$_tw_status" "$_tw_start_ts" "$_tw_end" \
+    telemetry_state_write_locked "$_tw_id" "$_tw_status" "$_tw_start_ts" "$_tw_end" \
         "$_tw_duration_state" "$_tw_max_state" "$_tw_pid" "$_tw_pid_start" \
         "$_tw_reason" "$_tw_samples" "$_tw_bytes" "$_tw_last_sample" \
         "$_tw_quality" "$_tw_reset_count" "$_tw_stop" "$_tw_dir" \
@@ -120,14 +120,25 @@ while :; do
 
     telemetry_read_screen
     telemetry_read_battery
-    telemetry_read_thermal
-    telemetry_read_odpm
-    telemetry_collect_top
+    # Screen-off telemetry is a low-frequency sysfs recorder. Do not call
+    # Thermal HAL, BatteryStats, ODPM or top-app/process enumeration from the
+    # Doze/AOD path; those Binder and proc walks can race suspend preparation.
+    TL_SKIN=""; TL_BATTERY=""; TL_SOC=""; TL_CHARGING=""; TL_SPEAKER=""
+    TL_THERMAL_STATUS=""; TL_ODPM_MODEM=""; TL_ODPM_RFFE=""; TL_TOP=""
+    if [ "$TL_SCREEN" = on ]; then
+        telemetry_read_thermal
+        telemetry_read_odpm
+        telemetry_collect_top
+    fi
 
     _tw_sample_quality=ok
     _tw_valid=1
     _tw_gap_sec=0
     _tw_quality_field=ok
+    [ "$TL_SCREEN" = on ] || {
+        _tw_sample_quality=screen_off_sample
+        _tw_quality_field=screen_off_sample
+    }
     _tw_uptime=$(telemetry_uptime)
     _tw_expected_interval=$_tw_interval_off
     [ "$TL_SCREEN" = on ] && _tw_expected_interval=$_tw_interval_on

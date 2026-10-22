@@ -54,17 +54,15 @@
     });
     bindTabKeys(range);
     const custom = el('div', 'analytics-custom-range');
-    const days = document.createElement('select'); days.setAttribute('aria-label', '最近天数');
-    for (let value = 1; value <= 7; value += 1) {
-      const option = el('option', '', String(value) + ' 天'); option.value = String(value); days.appendChild(option);
-    }
+    const days = document.createElement('select'); days.setAttribute('aria-label', '自定义时间窗');
+    [['14400', '4 小时'], ['28800', '8 小时'], ['43200', '12 小时'], ['86400', '1 天'], ['259200', '3 天'], ['604800', '7 天']].forEach(([value, label]) => { const option = el('option', '', label); option.value = value; days.appendChild(option); });
     const granularity = document.createElement('select'); granularity.setAttribute('aria-label', '采样粒度');
     granularity.append(el('option', '', '按小时'), el('option', '', '按分钟'));
     granularity.options[0].value = 'hour'; granularity.options[1].value = 'minute';
     const apply = el('button', 'tiny-btn tonal', '应用范围'); apply.type = 'button';
     apply.addEventListener('click', () => callbacks.onCustom(days.value, granularity.value));
-    const daysField = el('label', 'analytics-custom-field'); daysField.append(el('span', 'analytics-section-desc', '最近'), days);
-    const granularityField = el('label', 'analytics-custom-field'); granularityField.append(el('span', 'analytics-section-desc', '精细度'), granularity);
+    const daysField = el('label', 'analytics-custom-field'); daysField.append(el('span', 'analytics-section-desc', '时间窗'), days);
+    const granularityField = el('label', 'analytics-custom-field'); granularityField.append(el('span', 'analytics-section-desc', '采样粒度'), granularity);
     custom.append(daysField, granularityField, apply);
     const stateLine = el('div', 'analytics-status'); stateLine.setAttribute('role', 'status');
     const hero = el('section', 'analytics-hero');
@@ -81,8 +79,9 @@
     const chartCard = el('div', 'analytics-chart-card');
     const chartWrap = el('div', 'analytics-chart-wrap');
     const canvas = document.createElement('canvas');
-    canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-label', '历史趋势图');
-    chartWrap.appendChild(canvas); chartCard.appendChild(chartWrap);
+    canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-label', '历史趋势图'); canvas.tabIndex = 0;
+    const tooltip = el('div', 'analytics-chart-tooltip'); tooltip.hidden = true; tooltip.setAttribute('role', 'status');
+    chartWrap.appendChild(canvas); chartWrap.appendChild(tooltip); chartCard.appendChild(chartWrap);
     const legend = el('div', 'analytics-chart-legend'); chartCard.appendChild(legend);
     const quality = el('div', 'analytics-status'); quality.setAttribute('role', 'status'); quality.hidden = true; chartCard.appendChild(quality);
     chartSection.append(chartHead, chartCard);
@@ -94,23 +93,29 @@
     const capture = el('section', 'analytics-capture-card');
     const captureState = el('div', 'analytics-capture-state', '未开始记录');
     const captureControls = el('div', 'analytics-actions');
-    const duration = document.createElement('input'); duration.type = 'number'; duration.min = '0'; duration.max = '86400'; duration.step = '60'; duration.value = '0'; duration.placeholder = '0 = 手动结束'; duration.setAttribute('aria-label', '记录时长（秒）');
+    const duration = document.createElement('select'); duration.setAttribute('aria-label', '临时诊断时长');
+    [['1800', '30 分钟'], ['7200', '2 小时'], ['28800', '8 小时'], ['0', '手动结束']].forEach(([value, label]) => { const option = el('option', '', label); option.value = value; duration.appendChild(option); });
     const captureBtn = el('button', 'tiny-btn primary', '开始记录'); captureBtn.type = 'button';
     captureBtn.addEventListener('click', () => callbacks.onCapture(captureBtn, Number(duration.value) || 0));
     const captureExport = el('button', 'tiny-btn tonal', '导出记录'); captureExport.type = 'button';
     captureExport.addEventListener('click', () => callbacks.onCaptureExport(captureExport));
     captureControls.append(duration, captureBtn, captureExport);
-    capture.append(el('div', 'analytics-section-title', '模块采样会话'), el('div', 'analytics-section-desc', '仅用于模块自己的采样会话；系统统计耗电来自 Android 原生 history buffer，息屏、Doze 和后台缺测会保留为真实间隔。'), captureState, captureControls);
+    capture.append(el('div', 'analytics-section-title', '临时诊断记录'), el('div', 'analytics-section-desc', '只用于一次临时诊断会话，不会改变后台历史策略。息屏与 Doze 期间允许真实缺测，不补零、不伪造连续曲线。'), captureState, captureControls);
     const policy = el('section', 'analytics-policy-card');
-    const policyTitle = el('div', 'analytics-section-title', '历史保留策略');
-    const policyDesc = el('div', 'analytics-section-desc', '控制 Android 系统 history 的保留时间、缓存上限与导入周期；模块监测耗电保留独立策略。读取成功后以后台 policy/phase 为准。');
+    const policyTitle = el('div', 'analytics-section-title', '后台记录与存储');
+    const policyDesc = el('div', 'analytics-section-desc', '控制 Android 系统历史、模块低频记录与历史空间。息屏不主动调用 BatteryStats，“息屏缺测判定”只决定缺测间隔如何标记。关闭后停止后台采样和周期分析；前台读取与独占临时诊断仍可用。温控控制本身不受影响。');
     const policyFields = el('div', 'analytics-policy-fields');
+    const enabledField = el('label', 'analytics-policy-toggle');
+    const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = true; enabled.setAttribute('aria-label', '启用后台历史记录');
+    enabledField.append(enabled, el('span', 'analytics-section-desc', '后台记录（关闭后停止周期采样；前台读取和临时诊断仍可用）'));
+    policyFields.appendChild(enabledField);
     const makeSelect = (label, values, suffix) => { const select = document.createElement('select'); select.setAttribute('aria-label', label); values.forEach((value) => { const option = el('option', '', `${value}${suffix}`); option.value = String(value); select.appendChild(option); }); const field = el('label', 'analytics-custom-field'); field.append(el('span', 'analytics-section-desc', label), select); policyFields.appendChild(field); return select; };
-    const retention = makeSelect('保留天数', [1, 2, 3, 4, 5, 6, 7], ' 天');
-    const cap = makeSelect('容量上限', [4, 8, 12, 16, 24, 32], ' MiB');
-    const onInterval = makeSelect('亮屏间隔', [5, 10, 15, 20, 30, 45, 60], ' 分钟');
-    const offInterval = makeSelect('息屏间隔', [15, 30, 45, 60, 90, 120], ' 分钟');
-    const policyActions = el('div', 'analytics-actions'); const policyButton = el('button', 'tiny-btn tonal', '应用策略'); policyButton.type = 'button'; policyButton.disabled = true; policyButton.addEventListener('click', () => callbacks.onPolicy?.(policyButton, { retention_days: retention.value, max_bytes: Number(cap.value) * 1048576, system_interval_on_sec: Number(onInterval.value) * 60, system_interval_off_sec: Number(offInterval.value) * 60 })); policyActions.appendChild(policyButton);
+    const retention = makeSelect('历史保留', [1, 3, 7], ' 天');
+    const cap = makeSelect('存储上限', [8, 16, 32], ' MiB');
+    const onInterval = makeSelect('亮屏系统历史', [5, 15, 30, 60], ' 分钟');
+    const offInterval = makeSelect('息屏缺测判定', [15, 30, 60, 120], ' 分钟');
+    const policyActions = el('div', 'analytics-actions'); const policyButton = el('button', 'tiny-btn tonal', '应用设置'); policyButton.type = 'button'; policyButton.disabled = true; policyButton.addEventListener('click', () => callbacks.onPolicy?.(policyButton, { analytics_enabled: enabled.checked, retention_days: retention.value, max_bytes: Number(cap.value) * 1048576, module_interval_on_sec: 60, module_interval_off_sec: 900, system_interval_on_sec: Math.max(300, Number(onInterval.value) * 60), system_interval_off_sec: Math.max(900, Number(offInterval.value) * 60) })); policyActions.appendChild(policyButton);
+    [enabled, retention, cap, onInterval, offInterval].forEach((field) => field.addEventListener('change', () => { view.policy && (view.policy.dirty = true); policyButton.disabled = false; }));
     const policyState = el('div', 'analytics-policy-state', '等待读取后台策略'); policy.append(policyTitle, policyDesc, policyFields, policyActions, policyState);
     const actions = el('div', 'analytics-export-actions analytics-actions');
     const refresh = el('button', 'tiny-btn tonal', '刷新数据'); refresh.type = 'button';
@@ -118,8 +123,23 @@
     const exportWindow = el('button', 'tiny-btn tonal', '导出当前区间'); exportWindow.type = 'button';
     exportWindow.addEventListener('click', () => callbacks.onExport(exportWindow)); actions.appendChild(exportWindow);
     root.append(intro, source, sensor, range, custom, stateLine, hero, chartSection, more, capture, policy, actions);
-    view.root = root; view.sourceGroup = source; view.sensorGroup = sensor; view.rangeGroup = range; view.custom = custom; view.customDays = days; view.customGranularity = granularity; view.stateLine = stateLine; view.hero = hero;
-    view.heroKicker = heroHead.querySelector('.analytics-hero-kicker'); view.heroValue = heroHead.querySelector('.analytics-hero-value'); view.heroStatus = heroHead.querySelector('.analytics-hero-status'); view.heroBadge = heroHead.querySelector('.analytics-hero-badge'); view.summary = Array.from(summary.children); view.canvas = canvas; view.legend = legend; view.quality = quality; view.moreBody = moreBody; view.captureState = captureState; view.captureBtn = captureBtn; view.captureExport = captureExport; view.duration = duration; view.refresh = refresh; view.exportWindow = exportWindow; view.policy = { retention, cap, onInterval, offInterval, button: policyButton, state: policyState };
+    view.root = root; view.sourceGroup = source; view.sensorGroup = sensor; view.rangeGroup = range; view.custom = custom; view.customWindow = days; view.customGranularity = granularity; view.stateLine = stateLine; view.hero = hero;
+    view.heroKicker = heroHead.querySelector('.analytics-hero-kicker'); view.heroValue = heroHead.querySelector('.analytics-hero-value'); view.heroStatus = heroHead.querySelector('.analytics-hero-status'); view.heroBadge = heroHead.querySelector('.analytics-hero-badge'); view.summary = Array.from(summary.children); view.canvas = canvas; view.tooltip = tooltip; view.legend = legend; view.quality = quality; view.moreBody = moreBody; view.captureState = captureState; view.captureBtn = captureBtn; view.captureExport = captureExport; view.duration = duration; view.refresh = refresh; view.exportWindow = exportWindow; view.policy = { enabled, retention, cap, onInterval, offInterval, button: policyButton, state: policyState, dirty: false };
+    const showPoint = (point, source) => {
+      if (!point) { tooltip.hidden = true; return; }
+      const date = new Date(point.ts * 1000);
+      const value = Number.isFinite(Number(point.value)) ? Number(point.value).toFixed(source === 'thermal' ? 1 : 2) : '—';
+      tooltip.textContent = `${date.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${value}${source === 'thermal' ? ' °C' : ` ${view.stats?.seriesUnit || 'mAh/h'}`}`;
+      tooltip.hidden = false;
+    };
+    const nearestPoint = (clientX) => {
+      const rect = canvas.getBoundingClientRect(); const ratio = rect.width ? (clientX - rect.left) / rect.width : 0; const points = (view.stats?.chartSegments || []).flat();
+      return points.reduce((best, point) => !best || Math.abs((point.ts - (view.stats.startTs + ratio * (view.stats.endTs - view.stats.startTs)))) < Math.abs(best.ts - (view.stats.startTs + ratio * (view.stats.endTs - view.stats.startTs))) ? point : best, null);
+    };
+    canvas.addEventListener('pointermove', (event) => showPoint(nearestPoint(event.clientX), view.source));
+    canvas.addEventListener('pointerleave', () => { tooltip.hidden = true; });
+    canvas.addEventListener('focus', () => { const first = view.stats?.chartSegments?.flat()?.[0]; showPoint(first, view.source); });
+    canvas.addEventListener('keydown', (event) => { if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return; const points = view.stats?.chartSegments?.flat() || []; if (!points.length) return; event.preventDefault(); const current = points.findIndex((point) => tooltip.textContent.startsWith(new Date(point.ts * 1000).toLocaleString([], { month: '2-digit', day: '2-digit' }))); const next = Math.max(0, Math.min(points.length - 1, (current < 0 ? 0 : current) + (event.key === 'ArrowRight' ? 1 : -1))); showPoint(points[next], view.source); });
     return view;
   }
 
@@ -132,15 +152,16 @@
     view.custom.hidden = String(rangeId) !== 'custom';
   }
 
-  function setCustomValues(view, days, granularity) {
-    view.customDays.value = String(Math.min(7, Math.max(1, Number(days) || 1)));
+  function setCustomValues(view, durationSec, granularity) {
+    const value = Number(durationSec) || 86400;
+    view.customWindow.value = String(Math.min(604800, Math.max(14400, value)));
     view.customGranularity.value = granularity === 'minute' ? 'minute' : 'hour';
   }
 
   function promptCustom(view) {
     setActive(view, view.source, 'custom');
     view.stateLine.hidden = false;
-    view.stateLine.textContent = '选择最近天数和采样精细度后应用';
+    view.stateLine.textContent = '选择最近时间窗和采样粒度后应用';
   }
 
   function relativeTime(ts) {
@@ -176,14 +197,35 @@
   }
 
   function appendPowerAttribution(body, summary, ranking) {
-    body.append(el('div', 'analytics-section-title', '软件耗电排行'), el('div', 'analytics-section-desc', '排行按当前时间窗和粒度独立读取；失败不会阻塞温度或实时功耗趋势。'));
+    const disclosure = document.createElement('details'); disclosure.className = 'analytics-disclosure';
+    const disclosureSummary = el('summary', 'analytics-disclosure-summary');
+    const disclosureCopy = el('span', 'analytics-disclosure-copy'); disclosureCopy.append(el('strong', '', '软件耗电排行'), el('small', '', '按慢刷新策略读取；显示真实观测区间与归因证据状态'));
+    disclosureSummary.append(disclosureCopy, el('span', 'analytics-disclosure-chevron', '›'));
+    const content = el('div', 'analytics-disclosure-body'); disclosure.append(disclosureSummary, content); body.appendChild(disclosure); body = content;
+    body.append(el('div', 'analytics-section-desc', '排行按当前时间窗读取同一 BatteryStats start_clock 会话的累计差分；跨 reboot 只有在累计会话连续时才参与，窗口外基线会单独标注，证据不足时不会伪造当前窗口耗电。'));
     const rankState = ranking || { status: 'idle' };
     if (rankState.status === 'loading') {
       body.appendChild(el('div', 'analytics-loading-card', '正在读取当前窗口的功耗排行…'));
       return;
     }
-    if (rankState.status === 'error' || rankState.status === 'unavailable') {
-      body.appendChild(el('div', 'analytics-error', `功耗排行读取失败：${rankState.error || rankState.summary?.reason || '未知原因'}。可点击“刷新数据”重试。`));
+    if (rankState.status === 'error') {
+      body.appendChild(el('div', 'analytics-error', `功耗排行请求失败：${rankState.error || '后台暂时不可用'}。趋势数据仍可用。`));
+      return;
+    }
+    if (rankState.status === 'unavailable') {
+      const reason = rankState.summary?.reason || 'need_two_selected_snapshots';
+      const text = {
+        need_two_snapshots: '当前还没有两份可比较的归因快照；保持亮屏使用约 10 分钟后再刷新。',
+        need_two_selected_snapshots: '当前时间窗少于两份有效归因快照；窗口外的基线不会冒充当前窗口耗电。',
+        need_two_same_identity_snapshots: '当前时间窗缺少两份同一 BatteryStats 会话快照；设备重启只在 start_clock 连续时参与差分。',
+        interval_too_long: '最近两份快照间隔过长；下一份亮屏快照完成后再刷新。',
+        feature_disabled: '后台归因采样已关闭；前台仍可读取已有 ledger，开启后台后才会产生新快照。',
+        no_power_items: '快照存在，但没有可配对的 UID 或系统功耗项目。',
+        gaps_or_counter_reset: '归因快照存在间断或累计 counter 重置，无法证明完整区间。',
+        collector_not_installed: '归因采集器尚未生成快照。',
+        collector_calc_failed: '归因计算失败，趋势数据仍可用。'
+      }[reason] || `当前窗口暂无可证明归因（${reason}）。`;
+      body.appendChild(el('div', 'analytics-status warn', text));
       return;
     }
     summary = rankState.summary || summary;
@@ -214,7 +256,8 @@
     const metaText = [
       windowMeta.label ? `时间窗 ${windowMeta.label}` : '',
       windowMeta.granularity ? `粒度 ${windowMeta.granularity === 'minute' ? '分钟' : '小时'}` : '',
-      rankState.status === 'partial' ? `排行质量 partial${rankState.summary?.reason ? `：${rankState.summary.reason}` : ''}` : '',
+      rankState.status === 'partial' || rankState.summary?.window_proven === false ? `归因状态 ${rankState.summary?.attribution_state || 'baseline_clipped'}${rankState.summary?.reason ? `：${rankState.summary.reason}` : ''}` : '',
+      windowMeta.attributionState && !windowMeta.windowProven ? `基线：${windowMeta.attributionState}（仅作参考）` : '',
       Number.isFinite(Number(windowMeta.coveragePct)) ? `覆盖率 ${Number(windowMeta.coveragePct).toFixed(1)}%` : '',
       Number.isFinite(Number(windowMeta.validSamples)) ? `有效样本 ${Number(windowMeta.validSamples)}` : '',
       Number.isFinite(Number(windowMeta.gapCount)) && windowMeta.gapCount ? `间断 ${Number(windowMeta.gapCount)} 段` : '',
@@ -249,11 +292,19 @@
     const dayCrossing = new Date(stats.startTs * 1000).toDateString() !== new Date(stats.endTs * 1000).toDateString();
     const showDates = dayCrossing || spanSec >= 86400;
     const pad = { left: 46, right: 12, top: 26, bottom: showDates ? 58 : 42 }; const plotW = width - pad.left - pad.right; const plotH = height - pad.top - pad.bottom;
+    const orderedValues = values.slice().sort((a, b) => a - b);
+    const percentile = (ratio) => orderedValues.length ? orderedValues[Math.min(orderedValues.length - 1, Math.floor((orderedValues.length - 1) * ratio))] : 0;
     const min = values.length ? Math.min(...values) : 0; const max = values.length ? Math.max(...values) : 1;
-    const padding = source === 'thermal' ? 1 : Math.max(1, Math.abs(max || min) * 0.2);
-    const lo = min === max ? min - padding : min; const hi = min === max ? max + padding : max; const span = Math.max(1, stats.endTs - stats.startTs);
+    const robustLo = orderedValues.length > 4 ? percentile(0.05) : min;
+    const robustHi = orderedValues.length > 4 ? percentile(0.95) : max;
+    const baseLo = source === 'thermal' ? Math.min(min, robustLo) : Math.min(min, robustLo);
+    const baseHi = source === 'thermal' ? Math.max(max, robustHi) : Math.max(max, robustHi);
+    const padding = source === 'thermal' ? 1 : Math.max(1, Math.abs(baseHi || baseLo) * 0.2);
+    let lo = baseLo === baseHi ? baseLo - padding : baseLo; let hi = baseLo === baseHi ? baseHi + padding : baseHi;
+    if (source !== 'thermal' && lo < 0 && hi > 0) { const zeroPad = Math.max(Math.abs(lo), Math.abs(hi)) * 0.08; lo -= zeroPad; hi += zeroPad; }
+    const span = Math.max(1, stats.endTs - stats.startTs);
     const x = (ts) => pad.left + Math.max(0, Math.min(1, (ts - stats.startTs) / span)) * plotW;
-    const xy = (p) => ({ x: x(p.ts), y: pad.top + ((hi - p.value) / (hi - lo)) * plotH });
+    const xy = (p) => ({ x: x(p.ts), y: pad.top + ((hi - Math.max(lo, Math.min(hi, p.value))) / (hi - lo)) * plotH });
     const grid = cssVar('--line', 'rgba(20,34,28,.1)'); const muted = cssVar('--text-3', '#6b756f'); const primary = cssVar('--primary', '#006b57');
     ctx.strokeStyle = grid; ctx.lineWidth = 1; ctx.fillStyle = muted; ctx.font = '12px system-ui, sans-serif'; ctx.textAlign = 'left';
     ctx.fillText(unit, pad.left, 14);
@@ -264,6 +315,10 @@
         const displayValue = Math.abs(rawValue) < 0.05 ? 0 : rawValue;
         ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(width - pad.right, y); ctx.stroke();
         ctx.fillText(displayValue.toFixed(source === 'thermal' ? 1 : 0), pad.left - 6, y + 4);
+      }
+      if (source !== 'thermal' && lo < 0 && hi > 0) {
+        const zeroY = pad.top + (hi / (hi - lo)) * plotH;
+        ctx.strokeStyle = muted; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(pad.left, zeroY); ctx.lineTo(width - pad.right, zeroY); ctx.stroke(); ctx.setLineDash([]);
       }
     } else {
       ctx.textAlign = 'center';
@@ -347,17 +402,23 @@
           const onMah = totals.on_mah ?? totals.screen_on_mah; const offMah = totals.off_mah ?? totals.screen_off_mah; const onSec = totals.on_sec ?? totals.screen_on_sec; const offSec = totals.off_sec ?? totals.screen_off_sec;
           view.moreBody.append(row('亮屏/息屏耗电', `${onMah ?? '—'} / ${offMah ?? '—'} mAh`), row('亮屏/息屏区间', `${onSec ? model().formatDuration(onSec) : '—'} / ${offSec ? model().formatDuration(offSec) : '—'}`), row('屏幕/Doze 区段', stats?.screenSegments?.length ?? '—'), row('电量水平', battery == null ? '—' : `${battery}%`), row('最后采集', collection.last_success_ts ? relativeTime(collection.last_success_ts) : '—'), row('采集阶段', collection.phase || '—'));
         }
-        appendPowerAttribution(view.moreBody, summary, ranking);
       }
+      appendPowerAttribution(view.moreBody, summary, ranking);
       const policy = stats?.policy;
       if (policy && view.policy) {
-        view.policy.button.disabled = false;
-        view.policy.button.disabled = false;
-        if (policy.retention_days != null) view.policy.retention.value = String(policy.retention_days);
-        if (policy.max_bytes != null) view.policy.cap.value = String(Math.max(4, Math.min(32, Math.round(Number(policy.max_bytes) / 1048576))));
-        if (policy.system_interval_on_sec != null) view.policy.onInterval.value = String(Math.max(5, Math.min(60, Math.round(Number(policy.system_interval_on_sec) / 60))));
-        if (policy.system_interval_off_sec != null) view.policy.offInterval.value = String(Math.max(15, Math.min(120, Math.round(Number(policy.system_interval_off_sec) / 60))));
-        view.policy.state.textContent = `${policy.phase || 'effective'} · 保留 ${policy.retention_days ?? '—'} 天 · 上限 ${policy.max_bytes ? Math.round(Number(policy.max_bytes) / 1048576) : '—'} MiB`;
+        const enabled = policy.analytics_enabled !== false && policy.analytics_enabled !== 0 && policy.analytics_enabled !== 'false' && policy.analytics_enabled !== '0';
+        if (!view.policy.dirty) {
+          view.policy.enabled.checked = enabled;
+          if (policy.retention_days != null) view.policy.retention.value = String(policy.retention_days);
+          if (policy.max_bytes != null) view.policy.cap.value = String(Math.max(8, Math.min(32, Math.round(Number(policy.max_bytes) / 1048576))));
+          if (policy.system_interval_on_sec != null) view.policy.onInterval.value = String(Math.max(5, Math.min(60, Math.round(Number(policy.system_interval_on_sec) / 60))));
+          if (policy.system_interval_off_sec != null) view.policy.offInterval.value = String(Math.max(15, Math.min(120, Math.round(Number(policy.system_interval_off_sec) / 60))));
+        }
+        view.policy.button.disabled = !view.policy.dirty;
+        [view.policy.retention, view.policy.cap, view.policy.onInterval, view.policy.offInterval].forEach((field) => { field.disabled = !enabled && !view.policy.dirty; });
+        view.policy.state.textContent = enabled
+          ? `${policy.phase || 'effective'} · 已开启 · 保留 ${policy.retention_days ?? '—'} 天 · 上限 ${policy.max_bytes ? Math.round(Number(policy.max_bytes) / 1048576) : '—'} MiB${view.policy.dirty ? ' · 有未保存修改' : ''}`
+          : `${policy.phase || 'effective'} · 已关闭 · 不写入历史、不运行系统归因${view.policy.dirty ? ' · 有未保存修改' : ''}`;
       }
     }
     draw(view, source, stats);
