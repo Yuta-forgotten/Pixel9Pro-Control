@@ -8,11 +8,20 @@ const requestHub = {
   queue: [],
   pendingGets: new Map(),
   mutationScopes: new Set(),
+  mutationResources: new Set(),
   activeJobs: new Set(),
   nextId: 0,
   completed: 0,
   rejected: 0
 };
+const REQUEST_POLICIES = Object.freeze({
+  snapshot: Object.freeze({ timeoutMs: 8000, queueTimeoutMs: 12000, priority: 'background' }),
+  thermalHistory: Object.freeze({ timeoutMs: 8000, queueTimeoutMs: 12000, priority: 'normal' }),
+  thermalLive: Object.freeze({ timeoutMs: 14000, queueTimeoutMs: 12000, priority: 'normal' }),
+  diagnostic: Object.freeze({ timeoutMs: 30000, queueTimeoutMs: 15000, priority: 'normal' }),
+  mutation: Object.freeze({ timeoutMs: 30000, queueTimeoutMs: 15000, priority: 'interactive' }),
+  lifecycle: Object.freeze({ timeoutMs: 45000, queueTimeoutMs: 15000, priority: 'interactive' })
+});
 const featureTasks = new Map();
 const shellState = {
   currentTab: 'home',
@@ -95,10 +104,14 @@ async function fetchWebuiTokenForPrompt() {
   }
 }
 
-async function ensureWebuiToken() {
+async function ensureWebuiToken(signal) {
+  if (signal?.aborted) throw requestAbortError(signal);
   if (authState.webuiToken) return true;
   // auth.sh 经 loopback 自由提供 token（能 POST 必能 GET），读到即静默采用，不弹窗。
   const serverToken = await fetchWebuiTokenForPrompt();
+  // The shared auth GET can outlive a caller that timed out or closed its view.
+  if (signal?.aborted) throw requestAbortError(signal);
+  if (authState.webuiToken) return true;
   if (serverToken && setWebuiToken(serverToken)) return true;
   // 仅当 auth.sh 取不到 token 时（token 文件缺失/服务异常）才回退手动输入。
   const message = '无法自动读取 WebUI token，请手动输入\n\n获取方式: root shell 执行\ncat /data/adb/modules/pixel9pro_control/.webui_token\n\n也可打开 http://127.0.0.1:6210/#token=<token> 完成会话配对';
@@ -119,13 +132,14 @@ function prefetchWebuiToken() {
 
 async function rawApiFetch(path, opts = {}) {
   const controller = opts.controller || new AbortController();
-  const timeoutMs = opts.timeoutMs || 8000;
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutMs = opts.timeoutMs;
+  const deadlineAt = Date.now() + timeoutMs;
+  const timeoutId = window.setTimeout(() => controller.abort('REQUEST_TIMEOUT'), timeoutMs);
   const headers = { ...(opts.headers || {}) };
   const method = (opts.method || 'GET').toUpperCase();
   try {
     if (method !== 'GET') {
-      if (!(await ensureWebuiToken())) throw new Error('missing WebUI token');
+      if (!authState.webuiToken) throw new Error('missing WebUI token');
       headers['X-PIXEL9PRO-TOKEN'] = authState.webuiToken;
     } else if (authState.webuiToken) {
       headers['X-PIXEL9PRO-TOKEN'] = authState.webuiToken;
@@ -133,21 +147,27 @@ async function rawApiFetch(path, opts = {}) {
     const request = { cache: 'no-store', ...opts, headers, signal: controller.signal };
     delete request.timeoutMs;
     delete request.controller;
+    delete request._tokenReady;
     const response = await fetch(path, request);
+    if (response.status === 403 && method !== 'GET'
+      && authState.webuiToken === headers['X-PIXEL9PRO-TOKEN']) clearWebuiToken();
     // Keep the same AbortController active while the CGI body is consumed.
     // BusyBox httpd can send headers before a slow shell/awk pipeline finishes;
     // clearing the timer at that point would permanently occupy a Request Hub
     // slot and make unrelated UI requests appear to load forever.
     const bodyText = await response.text();
+    if (controller.signal.aborted) throw requestAbortError(controller.signal);
     let payload = null;
     try { payload = bodyText ? JSON.parse(bodyText) : null; } catch (_) {
+      if (Date.now() >= deadlineAt) throw requestAbortError(null, 'REQUEST_TIMEOUT');
       const formatError = new Error(`接口返回格式错误（HTTP ${response.status}）`);
       formatError.status = response.status;
       formatError.detail = bodyText.slice(0, 240);
       throw formatError;
     }
+    // JSON.parse is synchronous: check elapsed time before publishing its result.
+    if (Date.now() >= deadlineAt) throw requestAbortError(null, 'REQUEST_TIMEOUT');
     if (!response.ok) {
-      if (response.status === 403 && method !== 'GET') clearWebuiToken();
       const detail = payload?.error || payload?.message || (payload ? JSON.stringify(payload) : '接口未返回错误详情');
       const message = response.status === 403 ? 'WebUI token 无效或已过期' : `HTTP ${response.status}`;
       const error = new Error(`${message} · ${detail}`);
@@ -164,10 +184,7 @@ async function rawApiFetch(path, opts = {}) {
     return payload;
   } catch (err) {
     if (err && (err.name === 'AbortError' || controller.signal.aborted)) {
-      const reason = controller.signal.reason;
-      const error = new Error(typeof reason === 'string' ? 'request cancelled' : 'request timeout');
-      error.code = typeof reason === 'string' ? reason : 'REQUEST_TIMEOUT';
-      throw error;
+      throw requestAbortError(controller.signal);
     }
     throw err;
   } finally {
@@ -176,17 +193,9 @@ async function rawApiFetch(path, opts = {}) {
 }
 
 function cancelBackgroundRequests() {
-  const queued = requestHub.queue.splice(0);
-  queued.forEach((job) => {
-    if (job.mutation || job.priority >= 90) {
-      requestHub.queue.push(job);
-      return;
-    }
-    requestHub.rejected += 1;
-    if (job.key && requestHub.pendingGets.get(job.key) === job.promise) requestHub.pendingGets.delete(job.key);
-    const error = new Error('request cancelled');
-    error.code = 'REQUEST_SUPERSEDED';
-    job.reject(error);
+  [...requestHub.queue].forEach((job) => {
+    if (job.mutation || job.priority >= 90 || !job.supersedeAllowed) return;
+    rejectQueuedRequest(job, requestAbortError(null, 'REQUEST_SUPERSEDED'));
   });
   requestHub.activeJobs.forEach((job) => {
     if (!job.mutation && job.priority < 90 && job.supersedeAllowed) {
@@ -208,87 +217,165 @@ function requestPriority(value, method) {
   return method === 'GET' ? 10 : 100;
 }
 
-function requestTimeoutMs(opts) {
-  const timeout = Number(opts?.timeoutMs);
-  return Number.isFinite(timeout) && timeout > 0 ? timeout : 8000;
+function positiveTimeout(value, fallback) {
+  const timeout = Number(value);
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : fallback;
 }
 
-function queuedRequestTimeout(job) {
+function resolveRequestPolicy(path, opts = {}) {
+  const method = (opts.method || 'GET').toUpperCase();
+  const url = new URL(path, location.href);
+  const resource = url.pathname;
+  let requestClass = method === 'GET' ? 'snapshot' : 'mutation';
+  let defaults = {};
+  if (method === 'GET') {
+    if (resource === API.thermal) {
+      requestClass = url.searchParams.get('history') === '1' ? 'thermalHistory' : 'thermalLive';
+    } else if (resource === API.uecap || resource === API.checkBaseband || resource === API.thermalSet
+      || (resource === API.profile && url.searchParams.get('compact') !== '1')) {
+      requestClass = 'diagnostic';
+      if (resource === API.checkBaseband) defaults.timeoutMs = 20000;
+      if (resource === API.thermalSet) defaults.timeoutMs = 15000;
+      if (resource === API.profile) defaults = { timeoutMs: 60000, priority: 'background' };
+    } else if ([API.nrSwitch, API.ntp, API.standbyGuard, API.profile].includes(resource)) {
+      defaults.timeoutMs = 12000;
+    } else if (resource === API.status) defaults.timeoutMs = 10000;
+    else if (resource === API.auth) defaults.timeoutMs = 4000;
+    else if (resource === API.theme) defaults.timeoutMs = 5000;
+    else if (resource === API.swap) defaults.timeoutMs = 6000;
+  } else if (String(opts.scope || '').includes('lifecycle')) requestClass = 'lifecycle';
+  if (Object.prototype.hasOwnProperty.call(REQUEST_POLICIES, opts.requestClass)) {
+    requestClass = opts.requestClass;
+    defaults = {};
+  }
+  const policy = { ...REQUEST_POLICIES[requestClass], ...defaults };
+  return {
+    requestClass,
+    resource,
+    timeoutMs: positiveTimeout(opts.timeoutMs, policy.timeoutMs),
+    queueTimeoutMs: positiveTimeout(opts.queueTimeoutMs, policy.queueTimeoutMs),
+    priority: requestPriority(opts.priority ?? policy.priority, method)
+  };
+}
+
+function requestAbortError(signal, fallback = 'REQUEST_CANCELLED') {
+  const code = typeof signal?.reason === 'string' ? signal.reason : fallback;
+  const error = new Error(code === 'REQUEST_TIMEOUT' ? '请求超时' : '请求已取消');
+  error.code = code;
+  error.cancelled = code !== 'REQUEST_TIMEOUT';
+  return error;
+}
+
+function clearQueueWait(job) {
+  if (job.queueTimer) window.clearTimeout(job.queueTimer);
+  job.signal.removeEventListener('abort', job.onQueuedAbort);
+}
+
+function rejectQueuedRequest(job, error) {
   const index = requestHub.queue.indexOf(job);
   if (index < 0) return;
   requestHub.queue.splice(index, 1);
-  if (job.queueTimer) window.clearTimeout(job.queueTimer);
+  clearQueueWait(job);
   if (job.key && requestHub.pendingGets.get(job.key) === job.promise) requestHub.pendingGets.delete(job.key);
-  const error = new Error('request timeout while queued');
-  error.code = 'REQUEST_TIMEOUT';
   job.reject(error);
   requestHub.rejected += 1;
+}
+
+function queuedRequestTimeout(job) {
+  const error = new Error('请求排队超时，请稍后重试');
+  error.code = 'REQUEST_QUEUE_TIMEOUT';
+  rejectQueuedRequest(job, error);
   pumpRequestHub();
+}
+
+function isLimitedDiagnostic(job) {
+  return !job.mutation && job.requestClass === 'diagnostic' && job.priority < 90;
 }
 
 function pumpRequestHub() {
   while (requestHub.active < requestHub.maxConcurrent && requestHub.queue.length) {
     requestHub.queue.sort((left, right) => right.priority - left.priority || left.id - right.id);
+    // Slow automatic diagnostics share one slot; snapshots/history can use the
+    // other two. Explicit interactive readback keeps its existing admission.
+    const diagnosticBusy = [...requestHub.activeJobs].some(isLimitedDiagnostic);
     const jobIndex = requestHub.queue.findIndex((candidate) =>
-      !candidate.mutation || !requestHub.mutationScopes.has(candidate.scope));
+      (!diagnosticBusy || !isLimitedDiagnostic(candidate))
+      && (!candidate.mutation || (!requestHub.mutationScopes.has(candidate.scope)
+        && !requestHub.mutationResources.has(candidate.resource))));
     if (jobIndex < 0) break;
     const [job] = requestHub.queue.splice(jobIndex, 1);
-    if (job.queueTimer) window.clearTimeout(job.queueTimer);
-    job.options.timeoutMs = Math.max(1, job.deadlineAt - Date.now());
+    clearQueueWait(job);
+    // Dispatch starts a fresh network/body deadline; queue patience is separate.
     if (job.signal?.aborted) {
       requestHub.rejected += 1;
-      const error = new Error('request cancelled');
-      error.code = 'REQUEST_CANCELLED';
-      job.reject(error);
+      if (job.key && requestHub.pendingGets.get(job.key) === job.promise) requestHub.pendingGets.delete(job.key);
+      job.reject(requestAbortError(job.signal));
       continue;
     }
     requestHub.active += 1;
-    if (job.mutation) requestHub.mutationScopes.add(job.scope);
+    if (job.mutation) {
+      requestHub.mutationScopes.add(job.scope);
+      requestHub.mutationResources.add(job.resource);
+    }
     requestHub.activeJobs.add(job);
-    const run = rawApiFetch(job.path, job.options);
-    run.then(job.resolve, job.reject).finally(() => {
+    const finish = (settle, result) => {
       requestHub.active -= 1;
       requestHub.completed += 1;
       requestHub.activeJobs.delete(job);
-      if (job.mutation) requestHub.mutationScopes.delete(job.scope);
-      if (job.queueTimer) window.clearTimeout(job.queueTimer);
+      if (job.mutation) {
+        requestHub.mutationScopes.delete(job.scope);
+        requestHub.mutationResources.delete(job.resource);
+      }
       if (job.key && requestHub.pendingGets.get(job.key) === job.promise) requestHub.pendingGets.delete(job.key);
+      // A consumer's immediate follow-up GET must see a fresh request, not the
+      // completed promise that would survive until a later finally microtask.
+      settle(result);
       pumpRequestHub();
-    });
+    };
+    rawApiFetch(job.path, job.options).then(
+      (payload) => finish(job.resolve, payload),
+      (error) => finish(job.reject, error)
+    );
   }
 }
 
 function apiFetch(path, opts = {}) {
   const method = (opts.method || 'GET').toUpperCase();
+  const policy = resolveRequestPolicy(path, opts);
+  if (opts.controller?.signal.aborted) return Promise.reject(requestAbortError(opts.controller.signal));
   if (method !== 'GET' && opts._tokenReady !== true && !authState.webuiToken) {
     const controller = opts.controller || new AbortController();
-    const timeoutMs = requestTimeoutMs(opts);
     let timeoutId;
-    const timeout = new Promise((_, reject) => {
-      timeoutId = window.setTimeout(() => {
-        controller.abort();
-        const error = new Error('request timeout while obtaining WebUI token');
-        error.code = 'REQUEST_TIMEOUT';
-        reject(error);
-      }, timeoutMs);
+    let onAbort;
+    const token = new Promise((resolve, reject) => {
+      onAbort = () => reject(requestAbortError(controller.signal));
+      controller.signal.addEventListener('abort', onAbort, { once: true });
+      timeoutId = window.setTimeout(() => controller.abort('REQUEST_TIMEOUT'), policy.timeoutMs);
+      ensureWebuiToken(controller.signal).then(resolve, reject);
     });
-    return Promise.race([ensureWebuiToken(), timeout])
+    return token
+      .finally(() => {
+        window.clearTimeout(timeoutId);
+        controller.signal.removeEventListener('abort', onAbort);
+      })
       .then((ready) => {
         if (!ready) throw new Error('missing WebUI token');
         return apiFetch(path, { ...opts, controller, _tokenReady: true });
-      })
-      .finally(() => window.clearTimeout(timeoutId));
+      });
   }
   const key = requestHubKey(path, opts, method);
   if (key) {
     const existing = requestHub.pendingGets.get(key);
     if (existing) return existing;
   }
-  const options = { ...opts };
+  const options = { ...opts, timeoutMs: policy.timeoutMs };
   delete options.priority;
   delete options.dedupe;
   delete options.dedupeKey;
-  const priority = requestPriority(opts.priority, method);
+  delete options.queueTimeoutMs;
+  delete options.requestClass;
+  delete options.scope;
+  const priority = policy.priority;
   const mutation = method !== 'GET';
   const controller = options.controller || new AbortController();
   options.controller = controller;
@@ -300,30 +387,23 @@ function apiFetch(path, opts = {}) {
   });
   const job = {
     id: requestHub.nextId++, path, options, priority, key, mutation,
-    scope: String(opts.scope || path),
+    requestClass: policy.requestClass,
+    scope: String(opts.scope || policy.resource),
+    resource: policy.resource,
     controller,
     supersedeAllowed: !opts.controller,
     signal: controller.signal,
     promise, resolve: resolveJob, reject: rejectJob,
-    deadlineAt: Date.now() + requestTimeoutMs(opts), queueTimer: null
+    queueTimer: null, onQueuedAbort: null
   };
   if (key) requestHub.pendingGets.set(key, promise);
   requestHub.queue.push(job);
-  job.queueTimer = window.setTimeout(() => queuedRequestTimeout(job), requestTimeoutMs(opts));
-  if (job.signal) {
-    job.signal.addEventListener('abort', () => {
-      const index = requestHub.queue.indexOf(job);
-      if (index < 0) return;
-      requestHub.queue.splice(index, 1);
-      if (job.queueTimer) window.clearTimeout(job.queueTimer);
-      requestHub.rejected += 1;
-      if (job.key && requestHub.pendingGets.get(job.key) === promise) requestHub.pendingGets.delete(job.key);
-      const error = new Error('request cancelled');
-      error.code = 'REQUEST_CANCELLED';
-      job.reject(error);
-      pumpRequestHub();
-    }, { once: true });
-  }
+  job.queueTimer = window.setTimeout(() => queuedRequestTimeout(job), policy.queueTimeoutMs);
+  job.onQueuedAbort = () => {
+    rejectQueuedRequest(job, requestAbortError(job.signal));
+    pumpRequestHub();
+  };
+  job.signal.addEventListener('abort', job.onQueuedAbort, { once: true });
   if (mutation) cancelBackgroundRequests();
   pumpRequestHub();
   return promise;
@@ -355,7 +435,7 @@ function runFeatureTask(key, task) {
 }
 
 function isRequestCancelled(error) {
-  return ['REQUEST_CANCELLED', 'REQUEST_SUPERSEDED', 'PAGE_HIDDEN'].includes(error?.code);
+  return error?.cancelled === true || ['REQUEST_CANCELLED', 'REQUEST_SUPERSEDED', 'PAGE_HIDDEN'].includes(error?.code);
 }
 
 function sleep(ms) {
@@ -453,7 +533,9 @@ async function runPollCycle() {
         key: 'slow',
         run: async () => {
           await network.refresh();
+          if (!isWebUiActive()) return;
           await memory.refreshRestrictions();
+          if (!isWebUiActive()) return;
           await loadInfo();
         }
       });
@@ -753,6 +835,7 @@ registerFeature('core', {
   noteUserActivity,
   queueNextPoll,
   requestHubState,
+  resolveRequestPolicy,
   runFeatureTask,
   isRequestCancelled,
   showToast,

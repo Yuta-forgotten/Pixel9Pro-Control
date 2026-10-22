@@ -45,7 +45,7 @@ class ReleaseContractTest(unittest.TestCase):
             self.assertNotIn(b'__WEBUI_VER__', archive.read('webroot/index.html'))
 
     def test_reject_missing_linked_frontend(self):
-        candidate = self.write(tuple(item for item in self.files if item.archive_path != 'webroot/js/analytics_view.js'))
+        candidate = self.write(tuple(item for item in self.files if item.archive_path != 'webroot/js/theme.js'))
         with self.assertRaisesRegex(contract.ContractError, 'asset is missing'):
             contract.audit_zip(candidate)
 

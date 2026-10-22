@@ -36,10 +36,25 @@ json_status_headers() {
 
 json_escape() {
     case "$1" in
-        *[\\\"]*) ;;
+        *[[:cntrl:]\\\"]*) ;;
         *) printf '%s' "$1"; return 0 ;;
     esac
-    printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\r//g;s/\n/\\n/g'
+    # A sentinel preserves trailing newlines; JSON forbids raw controls.
+    printf '%s_' "$1" | LC_ALL=C awk '
+        function emit(value, i, c) {
+            if (printed++) printf "\\n"
+            for (i=1; i<=length(value); i++) {
+                c=substr(value,i,1)
+                if (c=="\\") printf "\\\\"
+                else if (c=="\"") printf "\\\""
+                else if (c in escaped) printf "%s",escaped[c]
+                else printf "%s",c
+            }
+        }
+        BEGIN { for (i=1;i<32;i++) escaped[sprintf("%c",i)]=sprintf("\\u%04x",i) }
+        { if (NR>1) emit(previous); previous=$0 }
+        END { emit(substr(previous,1,length(previous)-1)) }
+    '
 }
 
 json_error() {

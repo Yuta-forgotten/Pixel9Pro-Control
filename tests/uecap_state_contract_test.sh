@@ -231,41 +231,170 @@ uecap_reload_modem() {
 }
 
 uecap_apply_mode special manual_locked
-check_eq 'bind failure returns rolled-back status' 1 "$?"
-check_eq 'bind failure result is explicit' bind_failed_rolled_back "$UECAP_APPLY_RESULT"
-check_eq 'bind failure restores previous payload' "$(uecap_hash "$UECAP_BALANCED")" "$(uecap_hash "$UECAP_TARGET")"
+check_eq 'unsupported dynamic bind backend remains rejected' 4 "$?"
+check_eq 'unsupported backend failure is explicit' hybrid_mount_required "$UECAP_APPLY_RESULT"
 
-FAIL_SPECIAL_BIND=0
-FAIL_ALL_BINDS=1
+# Exercise the production Hybrid Mount path. Faults target real file commits,
+# and the whole source/intent inventory must match after a rejected request.
+uecap_refresh_runtime_policy() {
+    UECAP_ROOT_IMPL=apatch
+    UECAP_BACKEND=hybrid_mount
+    UECAP_RUNTIME_POLICY=managed_profiles
+}
+uecap_refresh_runtime_policy
+UECAP_HYBRID_TX_KEYS='source baseline content backend mode manual policy reason switch reboot'
+UECAP_HYBRID_TX_ROOT="$MODDIR/.uecap_stage_tx"
+STAGED_SOURCE=$(uecap_hybrid_transaction_path source)
+TX_FAULT_FILE="$TEST_ROOT/transaction_fault_seen"
+TX_FAIL_DEST=""
+TX_CORRUPT_SOURCE=0
+TX_FAIL_RESTORE=0
+
+mv() {
+    _tx_mock_src=""
+    _tx_mock_dest=""
+    for _tx_mock_arg in "$@"; do
+        case "$_tx_mock_arg" in -f) continue ;; esac
+        [ -n "$_tx_mock_src" ] || _tx_mock_src="$_tx_mock_arg"
+        _tx_mock_dest="$_tx_mock_arg"
+    done
+    case "$_tx_mock_src" in
+        *.rollback.*) [ "$TX_FAIL_RESTORE" -ne 1 ] || return 1 ;;
+        *)
+            if [ -n "$TX_FAIL_DEST" ] && [ "$_tx_mock_dest" = "$TX_FAIL_DEST" ] && [ ! -e "$TX_FAULT_FILE" ]; then
+                : > "$TX_FAULT_FILE"
+                return 1
+            fi
+            ;;
+    esac
+    command mv "$@" || return 1
+    case "$_tx_mock_src" in
+        *.rollback.*) ;;
+        *)
+            if [ "$TX_CORRUPT_SOURCE" -eq 1 ] && [ "$_tx_mock_dest" = "$STAGED_SOURCE" ]; then
+                printf corrupted-payload > "$STAGED_SOURCE"
+            fi
+            ;;
+    esac
+}
+
+reset_hybrid_fixture() {
+    TX_FAIL_DEST=""
+    TX_CORRUPT_SOURCE=0
+    TX_FAIL_RESTORE=0
+    rm -f "$TX_FAULT_FILE" "$MODDIR/.uecap_reboot_required"
+    printf balanced-payload > "$STAGED_SOURCE"
+    printf baseline-before > "$UECAP_STOCK_BASELINE_FILE"
+    printf content-before > "$MODDIR/.uecap_content_image"
+    printf hybrid_mount > "$MODDIR/.uecap_backend"
+    printf balanced > "$UECAP_MODE_FILE"
+    printf balanced > "$UECAP_MANUAL_MODE_FILE"
+    printf managed_profiles > "$UECAP_POLICY_FILE"
+    printf old_reason > "$UECAP_REASON_FILE"
+    printf 100 > "$UECAP_SWITCH_FILE"
+}
+
+hybrid_inventory() {
+    for _tx_inventory_key in $UECAP_HYBRID_TX_KEYS; do
+        _tx_inventory_path=$(uecap_hybrid_transaction_path "$_tx_inventory_key")
+        if [ -f "$_tx_inventory_path" ]; then
+            printf '%s=%s:%s\n' "$_tx_inventory_key" "$(uecap_hash "$_tx_inventory_path")" "$(stat -c %a "$_tx_inventory_path")"
+        else
+            printf '%s=absent\n' "$_tx_inventory_key"
+        fi
+    done
+}
+
+for _tx_fault_key in source content backend mode manual policy reason switch reboot; do
+    reset_hybrid_fixture
+    _tx_before=$(hybrid_inventory)
+    TX_FAIL_DEST=$(uecap_hybrid_transaction_path "$_tx_fault_key")
+    uecap_apply_mode special manual_locked
+    check_eq "$_tx_fault_key failure returns rejected request" 1 "$?"
+    check_eq "$_tx_fault_key failure reports verified rollback" hybrid_failed_rolled_back "$UECAP_APPLY_RESULT"
+    check_eq "$_tx_fault_key failure restores payload and every marker" "$_tx_before" "$(hybrid_inventory)"
+    [ -d "$UECAP_HYBRID_TX_ROOT" ] && _tx_journal=present || _tx_journal=absent
+    check_eq "$_tx_fault_key rollback removes completed journal" absent "$_tx_journal"
+done
+
+reset_hybrid_fixture
+rm -f "$STAGED_SOURCE"
+_tx_before=$(hybrid_inventory)
+TX_FAIL_DEST="$UECAP_MANUAL_MODE_FILE"
 uecap_apply_mode special manual_locked
-check_eq 'bind rollback failure returns distinct status' 2 "$?"
-check_eq 'bind rollback failure is explicit' bind_failed_rollback_incomplete "$UECAP_APPLY_RESULT"
+check_eq 'failed first staging is rejected' 1 "$?"
+check_eq 'failed first staging restores source absence' "$_tx_before" "$(hybrid_inventory)"
 
-FAIL_ALL_BINDS=0
+reset_hybrid_fixture
+_tx_before=$(hybrid_inventory)
+TX_CORRUPT_SOURCE=1
+uecap_apply_mode special manual_locked
+check_eq 'post-rename source hash mismatch is rejected' 1 "$?"
+check_eq 'post-rename mismatch restores all intent and source bytes' "$_tx_before" "$(hybrid_inventory)"
+
+reset_hybrid_fixture
+_tx_before=$(hybrid_inventory)
+TX_FAIL_DEST="$UECAP_MANUAL_MODE_FILE"
+TX_FAIL_RESTORE=1
+uecap_apply_mode special manual_locked
+check_eq 'failed source rollback has a distinct result' 2 "$?"
+check_eq 'failed source rollback is explicit' hybrid_rollback_incomplete "$UECAP_APPLY_RESULT"
+[ -d "$UECAP_HYBRID_TX_ROOT" ] && _tx_journal=present || _tx_journal=absent
+check_eq 'incomplete rollback retains the binary journal' present "$_tx_journal"
+TX_FAIL_RESTORE=0
+uecap_hybrid_transaction_restore && uecap_hybrid_transaction_clear
+check_eq 'retained journal restores the original inventory' "$_tx_before" "$(hybrid_inventory)"
+
+reset_hybrid_fixture
+uecap_apply_mode special manual_locked
+check_eq 'complete Hybrid Mount transaction requests reboot' 5 "$?"
+check_eq 'complete Hybrid Mount transaction stages verified payload' "$(uecap_hash "$UECAP_SPECIAL")" "$(uecap_hash "$STAGED_SOURCE")"
+check_eq 'complete Hybrid Mount transaction commits desired mode' special "$(cat "$UECAP_MANUAL_MODE_FILE")"
+check_eq 'complete Hybrid Mount transaction commits reboot marker' 1 "$(cat "$MODDIR/.uecap_reboot_required")"
+
+# The stock branch removes the staged source and updates its stock baseline.
+# Use the komodo contract, where stock is an allowed user choice.
+PIXEL9PRO_UECAP_DEVICE=komodo
+uecap_refresh_device_contract >/dev/null 2>&1 || exit 2
+UECAP_RUNTIME_POLICY=single_candidate
+STAGED_SOURCE=$(uecap_hybrid_transaction_path source)
+reset_hybrid_fixture
+printf candidate-payload > "$STAGED_SOURCE"
+printf candidate > "$UECAP_MODE_FILE"
+printf candidate > "$UECAP_MANUAL_MODE_FILE"
+printf single_candidate > "$UECAP_POLICY_FILE"
+_tx_before=$(hybrid_inventory)
+TX_FAIL_DEST="$UECAP_STOCK_BASELINE_FILE"
+uecap_apply_mode stock manual_locked
+check_eq 'stock baseline failure rejects the removal request' 1 "$?"
+check_eq 'stock baseline failure restores deleted source and all markers' "$_tx_before" "$(hybrid_inventory)"
+PIXEL9PRO_UECAP_DEVICE=caiman
+uecap_refresh_device_contract >/dev/null 2>&1 || exit 2
+UECAP_RUNTIME_POLICY=managed_profiles
+STAGED_SOURCE=$(uecap_hybrid_transaction_path source)
+reset_hybrid_fixture
+_tx_before=$(hybrid_inventory)
+rm -f "$MODDIR/.uecap_backend"
+mkdir "$MODDIR/.uecap_backend" || exit 2
+uecap_apply_mode special manual_locked
+check_eq 'nonregular marker is rejected before staging' 1 "$?"
+check_eq 'preflight rejection is distinct from rollback failure' hybrid_snapshot_failed "$UECAP_APPLY_RESULT"
+rmdir "$MODDIR/.uecap_backend" || exit 2
+printf hybrid_mount > "$MODDIR/.uecap_backend"
+check_eq 'preflight rejection leaves every original file unchanged' "$_tx_before" "$(hybrid_inventory)"
+
+# Receipt observation is independent from the unsupported dynamic mutation
+# route. Keep effective bytes, labels, and radio handoff explicit in fixtures.
+UECAP_BACKEND=dynamic_bind
 MOUNTED=1
-printf 'balanced-payload' > "$UECAP_TARGET"
-RELOAD_FAIL=1
-uecap_apply_mode special manual_locked
-check_eq 'modem reload failure returns applied status' 3 "$?"
-check_eq 'modem reload failure keeps applied mode' special "$(cat "$UECAP_MODE_FILE")"
-check_eq 'modem reload failure is explicit' applied_reload_failed "$UECAP_APPLY_RESULT"
-check_eq 'runtime receipt records reload failure' applied_reload_failed "$(uecap_receipt_get apply_result)"
-check_eq 'runtime receipt never claims modem effective after reload failure' unverified "$(uecap_receipt_get effective_state)"
-check_eq 'runtime receipt keeps bind verification separate' verified "$(uecap_receipt_get bind_status)"
-
-RELOAD_FAIL=0
-uecap_apply_mode universal manual_locked
-check_eq 'successful apply dispatches modem reload' 0 "$?"
-check_eq 'runtime receipt records successful modem reload' success "$(uecap_receipt_get reload_result)"
-check_eq 'successful bind remains separately verified' verified "$(uecap_receipt_get bind_status)"
-check_eq 'successful reload records accepted handoff, not unverified effective payload' reload_accepted "$(uecap_receipt_get effective_state)"
-check_eq 'UECap runtime receipt uses current schema' 3 "$(uecap_receipt_get schema)"
+command cp "$UECAP_UNIVERSAL" "$UECAP_TARGET"
 
 UECAP_RELOAD_DISPATCHED=false
 UECAP_RELOAD_RESULT=not_required_pre_modem
 uecap_capture_radio_snapshot
 uecap_write_runtime_receipt universal "$(uecap_hash "$UECAP_UNIVERSAL")" \
     "$(uecap_hash "$UECAP_TARGET")" pre_modem applied pre_modem_bind
+check_eq 'UECap runtime receipt uses current schema' 3 "$(uecap_receipt_get schema)"
 if uecap_pre_modem_receipt_is_current universal; then
     PASS=$((PASS + 1))
     printf 'ok %s - same-boot pre-modem receipt validates source and target\n' "$((PASS + FAIL))"

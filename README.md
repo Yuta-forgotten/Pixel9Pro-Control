@@ -46,7 +46,7 @@ Thermal source 在安装、WebUI staging 和撤销恢复时固定为 `0644`；po
 
 偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前置 severity 先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。靠近 SHUTDOWN 时，生成器按 stock `HotHysteresis` 从后向前收窄，并额外保留 `0.1°C` 的严格间隔，保证“前一档阈值 `<` 下一档阈值减下一档 hysteresis”；只检查阈值递增并不足以保证 Pixel Thermal HAL 接受配置。
 
-WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，普通读取缓存约 90 秒，和亮屏 60 秒 worker 采样对齐，避免重复启动 `dumpsys thermalservice`；当缓存缺失、无 `VIRTUAL-SKIN`、温度越界或连续异常时，自动走 `fresh=1` 重建。历史页按 15/30/60 分钟、12 小时和 1/3/7 天窗口显示 minute/hour 粒度；图表保留中间时间刻度、缺测 gap 和后台 raw/display/valid/invalid 计数。
+WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，普通读取复用 60 秒内的温度。前台已经读取的温度与后台采样共用同一限频记录器；温度历史可按 30 分钟、2/8 小时、1/3/7 天或自定义范围查看机身与电池温度、最低/平均/最高值及采样间断。缺失的传感器不补零。
 
 温控档位提交后进入模块私有 `.thermal_tx` journal。同一 boot 且 backend 返回
 `cancel_supported=true` 时，“放弃本次修改”会携带 `pending_id` 原子恢复旧 source、policy
@@ -54,7 +54,7 @@ WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，普通�
 安装阶段会从当前设备的 fingerprint/hash 校验 stock 一次并预生成四个 custom profile，运行时只复制经过同一 provenance 校验的 profile；缓存失效时才回退到生成器。
 Journal 在同一模块文件系统上优先保存 source hard-link，跨文件系统或链接被拒绝时自动回退原子 copy，不改变 SELinux 或挂载所有权。
 
-WebUI 的所有 API 请求经过统一 Request Hub：GET 在途请求按 endpoint 合并，最多三个请求并发；交互 mutation 到达时会取消可中断的低优先级读取并立即占用通信槽，POST/mutation 按资源 scope 顺序执行，组件取消会从等待队列移除。组件仍各自处理数据和错误，但不再各自创建全局通信并发策略；页面隐藏只取消读取，不取消已提交 mutation。Thermal journal 解析兼容没有末尾换行的原子 metadata。温控撤销先关闭本地提示并在后台完成 source readback，失败时重新打开提示；审计事件异步写入，不阻塞用户响应。
+WebUI 的所有 API 请求经过统一 Request Hub，按快照、温度历史、实时温度、慢诊断、修改和生命周期分类调度。最多三个请求并发；排队与 HTTP/body 读取分别限时，同一 CGI 的修改即使来自不同按钮也顺序执行。页面隐藏取消读取，不取消已提交的修改；失败修改不自动重试。
 
 ### ZRAM / 内存优化
 
@@ -87,7 +87,7 @@ WebUI 的所有 API 请求经过统一 Request Hub：GET 在途请求按 endpoin
 - 亮屏时恢复保存的 NR 模式
 - 热点开启时跳过切换
 - 息屏 worker 使用 900 秒低频 recorder 窗口；owner arbiter 在息屏完全停止，避免 30 秒轮询阻止 Doze
-- 温度历史亮屏约每 60 秒读取 Thermal HAL；息屏 recorder 每 900 秒只读取 thermal_zone/battery sysfs 并标记 `screen_off_sample`，不调用 Thermal HAL/BatteryStats Binder；系统功耗 history 只在 interactive 亮屏窗口导入；手动 telemetry 息屏仅记录低频 sysfs 电池样本，不轮询 Top 进程、ODPM 或 owner arbiter
+- 温度历史亮屏约每 60 秒记录；息屏 worker 每 900 秒只读取 thermal_zone/battery sysfs。系统休眠可延后采样；机身传感器不可读时仍可记录电池温度。功耗统计、BatteryStats 导入、功耗排行和临时功耗记录已移除。
 - 屏幕状态先读 DRM sysfs；只有 connector 仍 enabled 或 sysfs 不可用时才用 `cmd deviceidle` / `dumpsys power` 兜底。sysfs 的 inotify 事件在不同 Android/SELinux policy 上并不保证，不能作为唯一唤醒源。
 - CGI 保留 Android 固定 `/system/bin/sh` shebang，由 BusyBox `httpd` 按脚本 shebang 执行；硬编码某个 Root 实现下的 BusyBox `ash` 路径会在 APatch/KernelSU/Magisk 间失效并可能触发 SELinux，未作为运行时依赖引入。
 
@@ -138,16 +138,13 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 
 ### WebUI 控制台
 
-历史页现在把模块功耗与 Android 系统分开：模块曲线来自电荷计/电流/电压
-ledger，系统曲线来自 Android BatteryStats 原生 history buffer 的七日事件差分，并显示屏幕状态、
-Doze 状态、覆盖率和缺测原因。BatteryStats 是系统模型估算，不等同电表；息屏期间
-若 Doze 延迟或终止 worker，时间轴显示 gap/unknown，不补零，也不把两种 mAh 口径相加。
-系统快照由后台 service 在亮屏和息屏均按至少 900 秒节奏尝试采集；实际持续性必须以
-同一 boot 的设备 readback 为准。
-历史页还可设置后台记录开关、系统事件保留 1–7 天、4–32 MiB 存储上限，以及亮屏
-5–60 分钟/息屏 15–120 分钟的系统 history 导入周期；关闭后台记录后停止历史、系统归因和 telemetry，保留既有文件；后台返回 effective policy 与采集 receipt 后才更新界面。
+端口 6210，`http://127.0.0.1:6210`（仅绑定本机回环地址）。采用 Material 3 设计，提供状态、性能温控、网络和系统四个页面。
 
-端口 6210，`http://127.0.0.1:6210`（仅绑定本机回环地址）。采用 Material 3 设计，提供状态、性能温控、网络和系统四个页面；温度与功耗历史可查看采样覆盖、缺测区间并导出记录。实时功耗摘要与功耗排行分开刷新；排行按选定时间窗、粒度和 ledger revision 缓存，窗口外基线只标为参考，不把累计总计伪装成当前时间窗归因。后台记录开关由后端 policy contract 管理，关闭后停止历史、归因和 telemetry，温控控制读取保持独立。
+温度历史记录机身与电池温度，亮屏约每分钟、息屏约每 15 分钟采样。采样使用可挂起的普通 sleep，不持有唤醒锁或注册唤醒闹钟；系统休眠时允许延后，不为补齐曲线唤醒内核。息屏采样只读取 sysfs，不读取 BatteryStats 或软件功耗排行。
+
+“模块后台总开关”统一控制温度记录、启动恢复及自动策略；关闭后停止 worker，前台读取也不再写入历史。WebUI、明确的手动操作和已有历史查询/导出仍可使用；关闭后台不等于卸载模块，也不会撤销已选择的静态配置或第三方模块策略。正在提交的事务先完成验证/回滚，页面如实显示“正在停止”，不会强制杀断。
+
+区间切换只读取本地温度文件；页面前台每分钟刷新，隐藏或缩小时暂停读取。最多保留 20,160 行，查询最近七天区间；没有记录时显示为空，间断不连成连续曲线。可将当前传感器和区间导出为 CSV 或 JSON；导出包含 UTC 时间、摄氏度、来源、屏幕状态和间断信息，JSON 另含区间、记录开关及统计元数据。平均值是采样均值，不是连续温度积分。
 
 网络、温控和调度的字段、readback、耗时边界及 Request Hub 分阶段读取见 [`docs/webui_transport_contract.md`](docs/webui_transport_contract.md)。
 
@@ -162,9 +159,8 @@ Doze 状态、覆盖率和缺测原因。BatteryStats 是系统模型估算，�
 
 **应用与 UID 识别目录**
 
-- `config/app_identities.tsv` 是功耗排行和后台应用限制共用的唯一名称资料源，记录 Android 特殊 UID、系统分项、常用包名、中文名称、类别和限制风险级别。
-- 功耗排行优先使用当前 PackageManager 的 UID→包名关系，再用目录补充易读名称；`UID -5` 会识别为“网络共享 / 热点”，未知负 UID 标成 Android 特殊统计 UID。
-- 目录是只读 TSV 数据，后端使用字段白名单解析，不作为 shell 脚本 `source` / `eval`；新增常用 App 时只需增加一行，不需要修改 `energy.sh` 或 `app.js`。
+- `config/app_identities.tsv` 为后台应用限制提供常用包名、中文名称、类别和限制风险级别。
+- 目录是只读 TSV 数据，后端使用字段白名单解析，不作为 shell 脚本 `source` / `eval`。
 
 
 

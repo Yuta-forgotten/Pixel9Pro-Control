@@ -107,15 +107,14 @@ function syncStandbyGuardButtons() {
 
 function standbyWorkerModeLabel(mode) {
   if (mode === 'screen_on') return '亮屏：周期记录';
-  if (mode === 'thermal_burst') return '前台：临时温度采样';
   if (mode === 'deep_standby') return '息屏：低频记录';
-  if (mode === 'idle_isolate') return '后台观测已暂停';
+  if (mode === 'idle_isolate') return '息屏：策略隔离，低频测温';
   return '未读取';
 }
 
 function standbyWorkerModeClass(mode) {
   if (mode === 'screen_on' || mode === 'deep_standby') return 'good';
-  if (mode === 'thermal_burst' || mode === 'idle_isolate') return 'warn';
+  if (mode === 'idle_isolate') return 'warn';
   return 'off';
 }
 
@@ -128,7 +127,9 @@ function formatStandbyTimestamp(value) {
 function renderStandbyGuard(data) {
   const updatedAt = Number(data.diag_updated_at || data.diag_updated_epoch || 0);
   state.sim2AutoManage = data.sim2_auto_manage === 'on' ? 'on' : 'off';
-  state.idleIsolateMode = data.idle_isolate_mode === 'on' ? 'on' : 'off';
+  state.idleIsolateMode = typeof data.background_enabled === 'boolean'
+    ? (data.background_enabled ? 'off' : 'on')
+    : (data.idle_isolate_mode === 'on' ? 'on' : 'off');
   state.standbyDiag = {
     updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : '',
     screen: data.diag_screen || 'unknown',
@@ -162,14 +163,18 @@ function renderStandbyGuard(data) {
   ].forEach((row) => refs.sim2AutoRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   const isolateOn = state.idleIsolateMode === 'on';
-  refs.idleIsolateToggleLabel.textContent = isolateOn ? '恢复后台观测' : '暂停后台观测';
+  const workerState = data.background_state || 'unknown';
+  const workerLabel = ({ running: '运行中', starting: '正在初始化', paused: '已停止', stopping: '正在停止，等待当前事务收尾', stopped: '未启动', unknown: '待后端确认' })[workerState] || workerState;
+  refs.idleIsolateToggleLabel.textContent = isolateOn ? '开启后台任务' : '关闭后台任务';
   refs.idleIsolateDesc.textContent = isolateOn
-    ? '当前：后台观测已暂停。后台历史、排行、telemetry 和周期分析均停止；仅前台页面或显式操作读取。'
-    : '当前：后台观测已开启。按低频策略记录历史并运行分析；前台读取仍可用。';
+    ? `后台任务已关闭：温度记录及所有自动策略暂停。${workerLabel}。`
+    : `后台任务已开启：${workerLabel}。温度记录与各项策略服从各自低频周期。`;
   refs.idleIsolateRows.replaceChildren();
   [
-    { label: '当前状态', value: isolateOn ? '已暂停后台观测' : '后台观测已开启', cls: isolateOn ? 'warn' : 'good' },
-    { label: '后台行为', value: isolateOn ? '停止后台历史、排行、telemetry 和周期分析；仅保留前台读取' : '按低频策略记录历史并运行分析；息屏期间不做高频读取', cls: isolateOn ? 'warn' : 'good' },
+    { label: '后台总开关', value: isolateOn ? '已关闭（不再记录温度）' : '已开启', cls: isolateOn ? 'warn' : 'good' },
+    { label: '实际进程', value: workerLabel, cls: data.final === false ? 'warn' : 'off' },
+    { label: '临时策略收尾', value: data.background_cleanup === 'failed' ? '后台已停止，但临时策略恢复失败；请查看模块日志' : data.background_cleanup === 'ok' ? '已完成' : '暂无本次停止记录', cls: data.background_cleanup === 'failed' ? 'warn' : 'off' },
+    { label: '温度记录', value: isolateOn ? '已暂停；已有历史仍可查看和导出' : '亮屏约 60 秒，息屏约 15 分钟；不主动唤醒休眠内核', cls: isolateOn ? 'off' : 'good' },
   ].forEach((row) => refs.idleIsolateRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   refs.standbyDiagRows.replaceChildren();
@@ -186,7 +191,6 @@ function renderStandbyGuard(data) {
       { label: '当前工作', value: standbyWorkerModeLabel(state.standbyDiag.workerMode), cls: standbyWorkerModeClass(state.standbyDiag.workerMode) },
       { label: '下次检查约', value: state.standbyDiag.nextSleepSecs ? formatDuration(Number(state.standbyDiag.nextSleepSecs)) : '—', cls: 'off' },
       { label: '温度采样', value: state.standbyDiag.screen === 'on' ? '亮屏约每 60 秒' : '息屏约每 15 分钟一次', cls: state.standbyDiag.screen === 'on' ? 'good' : 'off' },
-      { label: '功耗归因', value: state.standbyDiag.screen === 'on' ? '亮屏按策略采集 BatteryStats' : '息屏不采集 BatteryStats', cls: 'off' },
       { label: 'NR 状态', value: nrLabel, cls: state.standbyDiag.nrState === 'lte' ? 'warn' : 'off' },
       { label: '调度状态', value: profileLabel, cls: 'off' },
       { label: '检查次数', value: state.standbyDiag.cycleCount || '0', cls: 'off' },
@@ -515,13 +519,17 @@ async function setStandbyGuard(update, successText, logText) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(update),
-      timeoutMs: 15000, priority: 'interactive', scope: 'network.standby'
+      requestClass: 'lifecycle', timeoutMs: 15000, scope: 'network.standby'
     });
     if (data.ok) {
       const readback = await apiFetch(API.standbyGuard, { timeoutMs: NETWORK_READ_TIMEOUTS.standby, priority: 'interactive', scope: 'network.standby.readback' });
       const mismatch = Object.keys(update).find((key) => String(readback?.[key] ?? '') !== String(update[key]));
       if (readback?.ok === false || mismatch) throw new Error(mismatch ? `状态回读不一致：${mismatch}` : (readback?.error || '状态回读失败'));
       renderStandbyGuard(readback);
+      if (readback.final === false) {
+        showToast('后台总开关已保存，进程尚在收尾或等待启动；请刷新确认', 4500, 'warn');
+        return;
+      }
       showToast(successText);
       appendLog(logText, 'ok');
     } else {
@@ -529,9 +537,13 @@ async function setStandbyGuard(update, successText, logText) {
     }
   } catch (err) {
     if (!requireFeature('core').isRequestCancelled?.(err)) {
+      const committed = err?.payload?.committed === true;
+      // A failed cleanup can still leave a verified paused worker and saved
+      // pause intent. Keep the next toggle aligned with that confirmed state.
+      if (committed) renderStandbyGuard(err.payload);
       const message = err?.message || String(err);
-      showToast(`操作失败：${message}`);
-      appendLog(`后台观测设置失败：${message}`, 'err');
+      showToast(`${committed ? '后台开关已保存，但收尾失败' : '操作失败'}：${message}`);
+      appendLog(`待机策略设置失败：${message}`, 'err');
     }
   } finally {
     state.standbyGuardBusy = false;
@@ -552,8 +564,8 @@ async function toggleIdleIsolateMode() {
   const next = state.idleIsolateMode === 'on' ? 'off' : 'on';
   await setStandbyGuard(
     { idle_isolate_mode: next },
-     next === 'on' ? '后台观测已暂停' : '后台观测已恢复',
-     next === 'on' ? '后台观测: 暂停' : '后台观测: 开启'
+     next === 'on' ? '模块后台任务已关闭（含温度记录）' : '模块后台任务已开启',
+     next === 'on' ? '后台总开关: 关闭' : '后台总开关: 开启'
   );
 }
 
@@ -1002,6 +1014,7 @@ async function syncNtp() {
 
 registerFeature('network', {
   async refresh() {
+    if (!core().isWebUiActive()) return null;
     return requireFeature('core').runFeatureTask('network.refresh', async () => {
       // Short reads share one stage. UECap and baseband both perform slow
       // runtime inspection, so they are isolated in a second stage with
@@ -1010,6 +1023,7 @@ registerFeature('network', {
       const fast = await Promise.allSettled([
         refreshNrSwitch(), refreshNtp(), refreshStandbyGuard()
       ]);
+      if (!core().isWebUiActive()) return null;
       const slow = await Promise.allSettled([
         refreshUecap(), refreshBaseband()
       ]);

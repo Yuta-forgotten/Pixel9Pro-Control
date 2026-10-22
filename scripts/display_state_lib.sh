@@ -105,7 +105,7 @@ display_state_read() {
     esac
 
     if [ -x "$DISPLAY_STATE_CMD_BIN" ]; then
-        _ds_screen=$("$DISPLAY_STATE_CMD_BIN" deviceidle get screen 2>/dev/null)
+        _ds_screen=$(timeout -k 1 3 "$DISPLAY_STATE_CMD_BIN" deviceidle get screen 2>/dev/null) || _ds_screen=""
         _ds_screen=${_ds_screen%%[!A-Za-z]*}
         case "$_ds_screen" in
             true|false)
@@ -116,7 +116,7 @@ display_state_read() {
     fi
 
     if [ -x "$DISPLAY_STATE_DUMPSYS_BIN" ]; then
-        _ds_wakefulness=$("$DISPLAY_STATE_DUMPSYS_BIN" power 2>/dev/null \
+        _ds_wakefulness=$(timeout -k 1 5 "$DISPLAY_STATE_DUMPSYS_BIN" power 2>/dev/null \
             | sed -n 's/^[[:space:]]*mWakefulness=//p' | head -n 1 | tr -d ' \r\n\t')
     fi
     display_state_classify "" "$_ds_wakefulness" "$_ds_drm"

@@ -24,8 +24,6 @@ const runtime = {
   bgEnabled: 'on',
   ntpServer: 'time.android.com',
 };
-let telemetrySession = null;
-
 const cpuContract = {
   foreground_cpus: '0-6',
   background_cpus: '0-3',
@@ -290,27 +288,6 @@ function uecapState(extra = {}) {
   };
 }
 
-function energyState(fast) {
-  const now = Math.floor(Date.now() / 1000);
-  return {
-    ok: true,
-    fast,
-    generated_at: now,
-    freshness_seconds: 0,
-    window_minutes: 30,
-    session: { start_epoch: now - 900, duration_sec: 900, discharge_mah: 18.4, rate_mah_per_h: 73.6 },
-    battery: { level: 78, status: 'Discharging', voltage_mv: 3910, current_ma: -420, power_mw: 1642, temp_c: 33.1 },
-    power_source: { source: 'battery', external_power: false },
-    thermal: { current_c: 36.5, max_c: 38.2, samples: 18 },
-    top_consumers: [
-      { label: 'Screen', mah: 7.2 },
-      { label: 'CPU', mah: 5.8 },
-      { label: 'Wi-Fi', mah: 2.1 },
-    ],
-    system: fast ? undefined : { batterystats_age_seconds: 10, procstats_age_seconds: 12 },
-  };
-}
-
 async function handleApi(req, res, url) {
   const pathname = url.pathname;
   const body = req.method === 'POST' ? await readBody(req) : {};
@@ -338,7 +315,26 @@ async function handleApi(req, res, url) {
     case '/cgi-bin/thermal.sh':
       if (url.searchParams.get('history') === '1') {
         const now = Math.floor(Date.now() / 1000);
-        return json(res, { points: [[now - 600, 35100], [now - 300, 36200], [now, 36500]] });
+        const start = Number(url.searchParams.get('start_ts')) || now - 1800;
+        const end = Number(url.searchParams.get('end_ts')) || now;
+        const sensor = url.searchParams.get('sensor') === 'battery' ? 'battery' : 'module';
+        const interval = end - start <= 28800 ? 60 : 900;
+        const temps = sensor === 'battery' ? [32800, 33400, 34200] : [37500, 38200, 39100];
+        const points = temps.map((temp_mc, index) => ({
+          ts: Math.floor(start + (end - start) * (index + 1) / temps.length),
+          temp_mc, sensor, source: 'mock_sysfs', screen: 'off', expected_interval_sec: interval,
+          boot_id: 'mock-boot', session_id: 'mock-session', quality: 'screen_off_sample', valid: true
+        }));
+        return json(res, {
+          ok: true, schema: 1, source: 'module_thermal_history', sensor,
+          recording_enabled: runtime.idleIsolate !== 'on',
+          recording_state: runtime.idleIsolate === 'on' ? 'paused' : 'running',
+          start_ts: start, end_ts: end, raw_samples: points.length, valid_samples: points.length,
+          count: points.length, coverage_sec: points.at(-1).ts - points[0].ts,
+          coverage_ratio: (points.at(-1).ts - points[0].ts) / Math.max(1, end - start),
+          gap_count: 0, quality: 'available', updated_at: now, data_revision: `mock:${sensor}:${end}`,
+          points
+        });
       }
       return json(res, thermalZones());
     case '/cgi-bin/set_thermal.sh':
@@ -390,38 +386,6 @@ async function handleApi(req, res, url) {
           { host: 'ntp.aliyun.com', label: 'Aliyun', region: 'cn', default: false },
         ],
       });
-    case '/cgi-bin/energy.sh': {
-      if (url.searchParams.get('trend') === '1') {
-        const now = Math.floor(Date.now() / 1000);
-        return json(res, { points: [[now - 900, 82, 4200000, 'Discharging'], [now - 450, 80, 4192000, 'Discharging'], [now, 78, 4184000, 'Discharging']], count: 3, source: 'module_power_history' });
-      }
-      return json(res, energyState(url.searchParams.get('fast') === '1'));
-    }
-    case '/cgi-bin/telemetry.sh': {
-      const now = Math.floor(Date.now() / 1000);
-      if (req.method === 'GET' && url.searchParams.get('action') === 'status') return json(res, { ok: true, schema: 1, session: telemetrySession });
-      if (req.method === 'GET' && url.searchParams.get('action') === 'history') {
-        return json(res, {
-          ok: true, schema: 1, session_id: telemetrySession?.id || 'mock-session',
-          window: { start_ts: now - 900, end_ts: now, coverage_ratio: .66, quality: 'partial' },
-          power: [900,840,780,720,660,300,240,180,120,60,0].map((ago, index) => ({ ts: now - ago, screen: 'on', status: 'Discharging', level_pct: 82 - index * .1, charge_uah: 4200000 - index * 1000, current_ua: -420000, voltage_uv: 3910000 })),
-          thermal: [900,840,780,720,660,300,240,180,120,60,0].map((ago, index) => [now - ago, 35100 + index * 140]),
-          attribution: { source: 'mock', quality: 'independent_snapshots' },
-        });
-      }
-      if (req.method === 'POST' && body.action === 'start') {
-        telemetrySession = { id: `mock-${now}`, status: 'running', start_ts: now, duration_sec: body.duration_sec || 0, sample_count: 0, bytes: 0, quality: 'complete' };
-        return json(res, { ok: true, schema: 1, session: telemetrySession });
-      }
-      if (req.method === 'POST' && body.action === 'stop') {
-        if (telemetrySession) telemetrySession = { ...telemetrySession, status: 'stopped', end_ts: now };
-        return json(res, { ok: true, schema: 1, session: telemetrySession });
-      }
-      if (req.method === 'POST' && body.action === 'export') return json(res, { ok: true, schema: 1, directory: '/sdcard/Download/mock-telemetry', files: [] });
-      return json(res, { ok: false, error: 'invalid telemetry action' }, 400);
-    }
-    case '/cgi-bin/thermal_burst.sh': return json(res, { ok: true, active: body.action !== 'stop' });
-    case '/cgi-bin/history_export.sh': return json(res, { ok: true, path: '/sdcard/Download/pixel9pro-control-test.csv' });
     case '/cgi-bin/owner_arbiter.sh': return json(res, profileState());
     case '/cgi-bin/theme.sh': return json(res, req.method === 'POST' ? { ok: true } : { mode: 'system', palette: 'default', custom: '#3aa6c2' });
     case '/cgi-bin/reboot.sh': return json(res, { ok: true });

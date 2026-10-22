@@ -338,7 +338,8 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
 
     json_headers
     printf '{"ok":true,'
-    emit_state
+    # Mutation completion cannot depend on a per-package Binder/pm scan.
+    printf '"committed":true,"enabled":"%s","action":"%s"' "$(bg_read_enabled)" "$action"
     printf '}\n'
 else
     json_error '405 Method Not Allowed' 'GET or POST'

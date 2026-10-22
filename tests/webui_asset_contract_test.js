@@ -13,14 +13,12 @@ const expectedScripts = [
   '/js/common.js?v=__WEBUI_VER__',
   '/js/diagnostics.js?v=__WEBUI_VER__',
   '/js/analytics_model.js?v=__WEBUI_VER__',
-  '/js/capture.js?v=__WEBUI_VER__',
   '/js/analytics_view.js?v=__WEBUI_VER__',
   '/js/analytics.js?v=__WEBUI_VER__',
   '/js/profile.js?v=__WEBUI_VER__',
   '/js/thermal.js?v=__WEBUI_VER__',
   '/js/memory.js?v=__WEBUI_VER__',
   '/js/network.js?v=__WEBUI_VER__',
-  '/js/energy.js?v=__WEBUI_VER__',
   '/app.js?v=__WEBUI_VER__'
 ];
 const scripts = [...html.matchAll(/<script\s+src="([^"]+)"/g)].map((match) => match[1]);
@@ -51,23 +49,25 @@ const privateStateContracts = {
   'common.js': ['const authState = {', 'const shellState = {'],
   'diagnostics.js': ['const state = {'],
   'analytics_model.js': ["registerFeature('analyticsModel'"],
-  'capture.js': ['const state = {'],
   'analytics_view.js': ["registerFeature('analyticsView'"],
   'analytics.js': ['const state = {', "registerFeature('analytics'"],
   'profile.js': ['const state = {'],
   'thermal.js': ['const state = {'],
   'memory.js': ['const state = {'],
-  'network.js': ['const state = {'],
-  'energy.js': ['const state = {']
+  'network.js': ['const state = {']
 };
 for (const [file, markers] of Object.entries(privateStateContracts)) {
   const source = fs.readFileSync(path.join(webroot, 'js', file), 'utf8');
   assert(source.includes('(() => {'), `${file} 必须用私有 scope 隔离 feature state`);
   for (const marker of markers) assert(source.includes(marker), `${file} 缺少私有 state：${marker}`);
 }
-for (const feature of ['core', 'auth', 'shell', 'ui', 'diagnostics', 'analytics', 'theme', 'profile', 'thermal', 'memory', 'network', 'energy']) {
+for (const feature of ['core', 'auth', 'shell', 'ui', 'diagnostics', 'analytics', 'theme', 'profile', 'thermal', 'memory', 'network']) {
   assert(bootstrap.includes(`requireFeature('${feature}')`), `bootstrap 未声明功能依赖：${feature}`);
 }
+for (const endpoint of ['/cgi-bin/energy.sh', '/cgi-bin/power_rank.sh', '/cgi-bin/system_history.sh', '/cgi-bin/telemetry.sh']) {
+  assert(!runtime.includes(endpoint), `运行时仍暴露功耗接口：${endpoint}`);
+}
+assert(html.includes('id="energy-btn" type="button">温度历史</button>'), '主页入口必须打开温度历史');
 assert(bootstrap.includes("registerFeature('app'"), 'bootstrap 必须注册 poll coordinator API');
 
 process.stdout.write(`WebUI 资源契约通过：${scripts.length} 个脚本\n`);

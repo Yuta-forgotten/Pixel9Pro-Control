@@ -68,13 +68,14 @@ HTTP `200` 只表示 CGI 返回了成功响应；对 mutation 而言，前端还
 `common.js` 中的 Request Hub 对所有 `apiFetch()` 请求统一调度：
 
 - 最多同时运行 3 个请求。
+- 普通慢诊断 `diagnostic` GET 最多 1 个在途，避免同时占满通信槽；交互 readback 不受此限流影响，仍受全局并发和独立 deadline 约束。
 - 无 mutation 的 GET 默认可按完整 URL 合并；带自定义 `controller` 或 `dedupe:false` 的请求不合并。
 - `interactive` GET 优先级为 90，`interactive` POST 为 100，`normal` 为 50，`background` 为 10。
-- mutation 按 `scope` 串行；同一 scope 的前一个 mutation 未释放时，后一个不能启动。
+- mutation 同时按 `scope` 和 CGI pathname 串行；不同按钮、scope 或 query 不能绕过同一资源的写入顺序；失败修改不自动重试。
 - mutation 到达时取消可中断的低优先级 GET；已提交 mutation 不因页面隐藏而取消。
-- deadline 从进入队列开始计算，包含排队、HTTP header、response body 和 JSON 解析时间。
-- 队列超时返回 `REQUEST_TIMEOUT`；AbortController 取消返回 `REQUEST_CANCELLED`、`REQUEST_SUPERSEDED` 或领域传入的取消原因。
-- CGI body 读取也受同一 deadline 约束，不能因已收到 HTTP header 而无限占用通信槽。
+- 共享请求类型为 `snapshot/thermalHistory/thermalLive/diagnostic/mutation/lifecycle`，领域可显式传 `requestClass`，不按按钮另建通信队列。兼容已有 `timeoutMs/priority/scope` 覆盖。
+- `queueTimeoutMs` 独立限制排队；真正发出后获得完整 `timeoutMs`，覆盖 HTTP header、body 和 JSON 解析。收到 header 不会提前解除 body 限时。
+- 队列超时返回 `REQUEST_QUEUE_TIMEOUT`；网络/body 超时为 `REQUEST_TIMEOUT`；主动取消为 `REQUEST_CANCELLED`，替换/隐藏页面保留各自取消码。
 
 ### 4.2 页面刷新顺序
 
@@ -101,7 +102,8 @@ HTTP `200` 只表示 CGI 返回了成功响应；对 mutation 而言，前端还
 | 基带状态 | 20s | 只读 |
 | 待机守护 | 12s | POST 15s，GET readback 12s |
 | NTP | 12s | POST 15s，GET readback 12s |
-| Thermal HAL | 10s | `fresh`/clear 15s |
+| Thermal HAL | 14s | `fresh`/clear 同属 thermalLive；HAL 最多 6s + 1s kill grace，失败回退 sysfs |
+| 温度历史 | 8s | 只读本地文件，不触发 HAL、Binder 或采集 |
 | Thermal contract | 15s | transaction 30s，readback 15s |
 | CPU status | 10s | — |
 | Profile compact | 12s | mutation 后用于确认 |
@@ -143,7 +145,7 @@ mutation 的标准流程：
 | GET | 无 | `nr_switch`、`current_mode`、`current_slot0`、`actual_rat`、`saved_nr_mode`、`screen_off_delay_s`、`restore_cooldown_s`、`lte_recheck_s`、`lte_mode` |
 | POST | `{"action":"toggle"}` 或 `{"action":"set","enabled":"on\|off"}` | `ok`、`nr_switch`；失败返回错误对象 |
 
-POST 先取得 `nr_switch` 锁。关闭策略时先恢复已保存的 NR-capable mode，再写入状态；恢复失败时后端尝试回滚并返回 `500`。前端只有 GET 回读的 `nr_switch` 与目标值一致时才显示操作成功。
+POST 先取得 `nr_switch` 锁，并与 worker 共用 `nr_policy` 事务锁；worker 取锁后复读总开关与 NR 选择，不能在用户关闭后继续提交旧的 LTE 决定。关闭策略时只恢复保存的 slot 0，保留当前 slot 1；恢复失败时回滚并返回 `500`。已关闭策略再次关闭不会改写用户手动选择。前端只有 GET 回读一致时才显示成功。
 
 ### 6.2 UECap：`/cgi-bin/uecap.sh`
 
@@ -159,15 +161,21 @@ POST 先取得 `nr_switch` 锁。关闭策略时先恢复已保存的 NR-capable
 - HTTP `500` 且 `applied:true`：目标配置已写入，但 modem reload 失败；前端显示待复查，不回滚为旧选择。
 - HTTP `409`：运行期不可写，例如 content image backend 要求卸载、重启和重新安装。
 
+Hybrid staging 的 binary source、baseline、content/backend 及选择/原因/重启 markers 使用同一快照事务。后续任一写入失败恢复并复读旧 source 和状态；回滚不完整时保留 journal 并明确返回错误，不让 HTTP 失败悄悄改变下次启动的配置。
+
 ### 6.3 基带状态：`/cgi-bin/check_baseband.sh`
 
 GET 只读独立基带模块的 `source`、`effective_path`、content image、hash、mount、receipt、CarrierSettings、MCFG 和 IMS properties。Control 不在此接口挂载、复制、修复或接管基带模块。`installed` 表示目录存在；`runtime_verified` 只有在当前 boot 的 receipt、effective contract 和必要 content 状态全部满足时才为 true。
 
 ### 6.4 待机守护：`/cgi-bin/standby_guard.sh`
 
-GET 返回 `sim2_auto_manage`、`idle_isolate_mode`、`analytics_enabled`、`background_mode`、低频 worker 快照，以及 `/sys/power/suspend_stats` 的最近失败设备、errno、step、分类码和人类可读原因。POST 接受 `sim2_auto_manage`、`idle_isolate_mode` 的 `on/off` 字段。
+GET 返回 `sim2_auto_manage`、`idle_isolate_mode`、低频 worker 快照，以及 `/sys/power/suspend_stats` 的最近失败设备、errno、step、分类码和人类可读原因。POST 接受 `sim2_auto_manage`、`idle_isolate_mode` 的 `on/off` 字段。
 
-POST 使用 policy lock；后台观测开关同时更新历史 policy 并停止或恢复 module observers。失败时恢复开关文件、历史配置和 observer 状态；前端以 GET readback 判断开关是否真正生效。
+`idle_isolate_mode=on` 保留旧字段的反向语义：后台总开关关闭，温度记录和所有自动策略均暂停；`off` 表示允许后台工作。此接口不控制第三方模块或已经挂载的静态配置。
+
+POST 使用 `standby_guard` 锁，保存意愿后调用共享生命周期管理器。`background_enabled` 是用户意愿；`background_state=starting/running/stopping/paused/stopped` 是经 boot ID、PID、start ticks 核对的实际进程状态；`final=false` 表示尚未达到目标终态。停止先 TERM 并有界等待，允许当前事务完成验证/回滚，不发送 KILL。启动失败恢复旧意愿与生命周期；前端 GET readback 校验开关值和终态，不能只按标志文件宣布成功。
+
+`background_cleanup=ok/failed/none` 单独说明当前 boot 的停止收尾。进程已停但 NR/组播临时策略恢复失败时返回 HTTP 500、`committed=true`，保留暂停意愿并显示恢复失败，不为了掩盖失败而重新开启后台。
 
 ### 6.5 NTP：`/cgi-bin/ntp.sh`
 
@@ -184,10 +192,12 @@ POST 使用 policy lock；后台观测开关同时更新历史 policy 并停止�
 
 - `GET` 返回热区数组 `[{"zone":"...","temp":整数毫摄氏度}]`；普通读取优先使用 worker 维护的 `.thermal_cache.json`。
 - `GET ?fresh=1` 绕过有效缓存执行一次 Thermal HAL 读取。
-- `GET ?history=1&minutes=N` 返回 `{"points":[[epoch,temp],...]}`；`N` 的有效范围由 CGI 限制在 1–720 分钟。
-- `POST {"action":"clear"}` 在 `thermal_cache` 锁内原子清除缓存，随后由下一次读取重建。
+- `GET ?history=1&sensor=module|battery&start_ts=epoch&end_ts=epoch` 只读本地温度历史，区间最长 7 天；兼容 `minutes=1..10080`。
+- 历史响应返回 `ok/schema/sensor/points[]/raw_samples/valid_samples/coverage_sec/coverage_ratio/gap_count/quality/updated_at/data_revision/recording_enabled/recording_state/time_unit/temperature_unit`。每点含 `ts/temp_mc/sensor/source/screen/expected_interval_sec/boot_id/session_id/quality/valid`。单位为毫摄氏度和 Unix 秒；机身与电池不混合计数。
+- 实时读取成功时仅在后台总开关允许时通过共享写入器记录，每传感器至少间隔 60 秒；复用缓存沿用实际测量时间，不把旧值改成新采样。总开关关闭不隐藏旧历史，也不禁止明确的手动实时读取。
+- `POST {"action":"clear"}` 在 `thermal_cache` 锁内清除缓存，随后在同一请求内执行有界实时读取；它是显式认证操作，不是 GET 失败的自动修复路径。
 
-前端只接受温度在有效范围内且包含 `VIRTUAL-SKIN` 或 `SKIN` 的响应；普通读取异常时依次尝试 fresh 和缓存清理，不用空数组覆盖有效界面状态。
+前端只接受温度在有效范围内且包含 `VIRTUAL-SKIN` 或 `SKIN` 的响应。一次普通刷新只发一次 GET，失败保留上次确认读数并显示错误；不隐式发 fresh 或 POST clear。前台温度读取和 contract retry 在页面隐藏时取消/停止；mutation 后的交互 readback 使用独立任务和优先级，不能被普通在途 GET 当作旧缓存合并。
 
 ### 7.2 温控状态与 transaction：`/cgi-bin/set_thermal.sh`
 
@@ -214,9 +224,11 @@ POST 请求：
 
 第二次温控 mutation 在 pending transaction 存在时返回 `409 pending_change_exists`。取消只能使用后端返回的当前 `pending_id`；跨 boot 或 baseline/hash 不一致时后端拒绝撤销。
 
-### 7.3 前台临时采样：`/cgi-bin/thermal_burst.sh`
+取消恢复本身也保存取消前的 desired source 和 markers；恢复或清理失败时补偿回原 desired 状态，保留可重试 journal。补偿失败明确返回 rollback incomplete，而不是把部分恢复当成完成。升级缺少同 build stock provenance 时拒绝从仍受覆盖的 vendor 路径重采；disable 标记不代表挂载已卸除。
 
-GET 返回 `burst_active` 和 `burst_until`。POST 接受 `{"action":"start","duration_sec":60|120|300|600}` 或 `{"action":"stop"}`。该标记只允许前台亮屏采样路径使用；service 在息屏时强制忽略 burst，避免临时高频读取影响 suspend。
+### 7.3 后台限制提交
+
+`bg_restrict.sh` POST 在事务提交后返回 compact `ok/committed/enabled/action`，不在响应末尾重新做完整 per-package Binder/pm 扫描。前端在独立 GET 完成前显示“已提交，回读未确认”并暂停继续写入；刷新只读回，不重复 POST。首次隐藏加载时，应用恢复可见后补完未完成的初始化数据阶段，不重复绑定 UI 事件。
 
 ## 8. 调度与 owner 接口
 
@@ -243,20 +255,30 @@ Profile mutation 的前端顺序是 POST → `profile.sh?compact=1` →（确认
 
 POST `{"action":"tick"}` 需要 token、owner arbiter lock、fas-rs 检测结果、亮屏状态以及有效游戏 handoff 或 lease。成功返回 `screen`、`screen_source`、`output` 和 `state`；未检测到 fas-rs、屏幕未亮或没有有效 lease 时返回 `409`。息屏时不执行 owner arbiter tick。
 
-## 9. 历史与功耗接口
+## 9. 温度历史生命周期
 
-历史页面使用以下只读或显式提交接口：
+历史页面仅使用 7.1 的温度历史接口，不读取功耗、BatteryStats 或软件排行。总开关开启时，worker 在亮屏约每 60 秒、息屏约每 900 秒尝试采样；内核休眠允许延后。前台新测量值也通过同一总开关和写入器记录，避免长睡眠阻塞首次亮屏记录。关闭总开关停止 worker 及历史写入；只读 httpd 仍可服务查询与手动操作。
 
-| 接口 | 用途 | 关键约束 |
+共享写入器按传感器限频，使用无等待目录锁，失效锁在跨 boot 或超时后回收；不持 wakelock、不注册 alarm。历史读取不请求 Binder、不遍历归因快照、不启动采集器。兼容旧两列 CSV 及第 11 列存采样周期的旧记录；不可用的传感器保持缺失。
+
+worker 和历史写入器共用 boot ID/PID/start ticks 身份校验。关闭总开关还会等待已在途的前台历史写入结束；不能只看到 worker 已退出就发布 paused/final=true。GET 完成时先移除去重项再通知消费者，后续 readback 必须得到新响应。各层刷新在 await 后重新检查页面前台状态，不在页面隐藏后开启新的自动读取阶段。
+
+### 9.1 运行代码职责
+
+| 文件 | 直接消费者 | 责任与边界 |
 |---|---|---|
-| `/cgi-bin/energy.sh` | 实时功耗摘要和模块 ledger | `?fast=1` 为快速摘要 |
-| `/cgi-bin/system_history.sh` | Android BatteryStats 系统历史 | `start_ts/end_ts` 不超过 7 天；缺测返回 gap，不补零 |
-| `/cgi-bin/power_rank.sh` | 软件耗电排行 | 时间窗不超过 7 天；需要有效连续快照，不能用累计总计冒充窗口归因 |
-| `/cgi-bin/history_policy.sh` | 后台记录、保留和采样策略 | mutation 后必须 GET readback |
-| `/cgi-bin/history_export.sh` | 导出选定窗口 | dataset、时间戳和范围由后端校验 |
-| `/cgi-bin/telemetry.sh` | 前台显式低功耗记录 | 后台观测开启时拒绝冲突 session |
+| `runtime_defaults_lib.sh` 等现有领域库 | installer/service/领域 CGI | 继续维护原有默认值、NR、VM、调度、温控事务；不重写既有安全机制 |
+| `background_tasks_lib.sh` | service、standby CGI、历史写入器 | 唯一最高开关、共享进程身份、启停和收尾状态；无自身循环 |
+| `control_worker_lib.sh` | `service.sh --background-worker` | 从 service 提取的自动工作体；不是新增第二个服务或通用库框架 |
+| `thermal_history_lib.sh` | thermal CGI、worker | 代替已删除的功耗 telemetry 混合写入路径；唯一限频温度追加器，无独立进程 |
+| `common.js` | 所有前端领域模块 | 继续复用原有 Request Hub；分类 admission/deadline/取消/认证/错误统一处理 |
+| `analytics_model/view/analytics.js` | 温度历史页 | 分别负责纯分析/导出、呈现、生命周期；不另造请求框架 |
 
-后台记录关闭后，service 停止历史、归因和 telemetry 写入；已经存在的文件仍可由前台读取或导出。息屏 recorder 只使用低频 sysfs 电池/温度路径，不启动 Thermal HAL、BatteryStats、Top 进程或 owner arbiter 轮询。
+没有新增第三方依赖。`tests/` 中进程/温度 fixture 是受控反例，不是生产库；实际 `tools/release_contract.py` 明确排除 tests/tools/logs/tmp。发行必需条目与上述新共享组件和退役功耗条目同步，避免入口删掉但打包仍要求旧文件。
+
+### 9.2 温度导出
+
+前端 `analyticsModel.exportHistory(payload, format)` 仅序列化已确认响应，支持 `csv/json`；不另发采集请求或恢复后台。CSV 为 UTF-8、CRLF、逗号分隔，列名自带时间/温度单位，引用含逗号/引号/换行的字段并防止公式注入。JSON schema 为 `pixel9pro.temperature_history.v1`，包含单位、UTC 时间、查询边界、采样策略、记录开关、revision、采样均值和 points。两种格式均保留来源、屏幕状态、boot ID、有效性和 `gap_before_sec`。缺测不补零、不补线；暂停时允许导出已有数据，空窗口允许导出空文档/表头。
 
 ## 10. 维护规则
 

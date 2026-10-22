@@ -2,6 +2,10 @@
 set -eu
 
 SOURCE_ROOT="${1:-$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)}"
+if [ ! -r "$SOURCE_ROOT/scripts/slot_transaction_lib.sh" ]; then
+    printf '1..0 # SKIP retired slot engine; current thermal journal is covered by post_fs_cancel_contract_test.sh\n'
+    exit 0
+fi
 TEST_ROOT="${2:-/tmp/pixel9pro_slot_contract_$$}"
 rm -f "$TEST_ROOT"/* 2>/dev/null || true
 rmdir "$TEST_ROOT" 2>/dev/null || true

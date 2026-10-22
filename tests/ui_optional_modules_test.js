@@ -23,7 +23,8 @@ const uecapCgi = fs.readFileSync(path.join(root, 'webroot', 'cgi-bin', 'uecap.sh
 const uecapProfile = fs.readFileSync(path.join(root, 'uecap_profile.sh'), 'utf8');
 const postMount = fs.readFileSync(path.join(root, 'post-mount.sh'), 'utf8');
 const customize = fs.readFileSync(path.join(root, 'customize.sh'), 'utf8');
-const service = fs.readFileSync(path.join(root, 'service.sh'), 'utf8');
+const service = ['service.sh', 'scripts/control_worker_lib.sh']
+  .map((name) => fs.readFileSync(path.join(root, name), 'utf8')).join('\n');
 const thermalLib = fs.readFileSync(path.join(root, 'scripts', 'thermal_profile.sh'), 'utf8');
 const thermalPolicyLib = fs.readFileSync(path.join(root, 'scripts', 'thermal_policy_lib.sh'), 'utf8');
 const bgRestrictLib = fs.readFileSync(path.join(root, 'scripts', 'bg_restrict_lib.sh'), 'utf8');
@@ -426,7 +427,7 @@ assert(rebootCgi.includes('acquire_lock "reboot"'), 'reboot requests must be ser
 assert(thermalReadCgi.includes('acquire_lock "thermal_cache"'), 'thermal cache clears must use a mutation lock');
 assert(thermalReadCgi.includes('[ ! -e "$THERMAL_CACHE" ]'), 'thermal cache deletion must be verified');
 assert(!thermalReadCgi.includes('*clear=1*'), 'GET must not mutate the thermal cache');
-assert(app.includes("options.method = 'POST'") && app.includes("JSON.stringify({ action: 'clear' })"), 'thermal cache clear must use authenticated POST');
+assert(thermalReadCgi.includes('require_token') && !app.includes('readThermalZones({ clear: true })'), 'thermal cache mutation stays authenticated and ordinary failed reads cannot clear cache');
 assert(!uecapCgi.includes('auto|manual') && !uecapCgi.includes('toggle_mode()'), 'UECap CGI must not retain the retired auto/toggle branches');
 assert(!uecapProfile.includes('auto|manual'), 'UECap runtime contract must remain manual-only');
 assert(postMount.includes('uecap_apply_mode "$_uecap_post_mount_mode" pre_modem') && service.includes('uecap_pre_modem_receipt_is_current'), 'UECap must bind after MetaModule mount and verify the same-boot receipt before modem startup fallback');

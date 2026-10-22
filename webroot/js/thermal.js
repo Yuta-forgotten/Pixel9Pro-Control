@@ -6,7 +6,7 @@ const state = {
   currentPolicy: 'unknown',
   currentOffset: null,
   thermalBusy: false,
-  thermalBadReads: 0,
+  thermalReadRequest: null,
   lastSkinTempC: null,
   thermalApplyBusy: false,
   selectionPending: null,
@@ -31,8 +31,6 @@ const state = {
 };
 
 const THERMAL_REQUEST_TIMEOUTS = Object.freeze({
-  zones: 10000,
-  fresh: 15000,
   contract: 15000,
   mutation: 30000,
   readback: 15000
@@ -192,30 +190,20 @@ function isThermalZoneValid(zone) {
   return Number.isFinite(temp) && temp >= 10000 && temp <= 85000;
 }
 
-async function readThermalZones({ fresh = false, clear = false } = {}) {
-  const path = clear ? API.thermalClear : fresh ? API.thermalFresh : API.thermal;
+async function readThermalZones(controller) {
   // A normal read can legitimately rebuild the cache after the 60-second
   // worker tick. Keep enough time for one dumpsys without letting a stuck CGI
-  // hold the UI indefinitely; manual clear/fresh reads get a larger bound.
+  // hold the UI indefinitely. All live paths share the same bounded policy.
   const options = {
-    timeoutMs: fresh || clear ? THERMAL_REQUEST_TIMEOUTS.fresh : THERMAL_REQUEST_TIMEOUTS.zones,
-    priority: fresh || clear ? 'interactive' : 'normal',
-    scope: clear ? 'thermal.mutation' : 'thermal.read'
+    requestClass: 'thermalLive',
+    controller,
+    scope: 'thermal.read'
   };
-  if (clear) {
-    options.method = 'POST';
-    options.headers = { 'Content-Type': 'application/json' };
-    options.body = JSON.stringify({ action: 'clear' });
-  }
-  const zones = await apiFetch(path, options);
+  const zones = await apiFetch(API.thermal, options);
   if (!Array.isArray(zones) || !zones.length) throw new Error('未读取到热区数据');
   const valid = zones.filter(isThermalZoneValid);
   const skin = valid.find((zone) => zone.zone === 'VIRTUAL-SKIN') || valid.find((zone) => zone.zone === 'SKIN');
   if (!skin) throw new Error('VIRTUAL-SKIN 未找到');
-  const tempC = skin.temp / 1000;
-  if (state.lastSkinTempC !== null && Math.abs(tempC - state.lastSkinTempC) >= 12 && !fresh && !clear) {
-    throw new Error('缓存温度跳变，准备校准');
-  }
   return valid;
 }
 
@@ -367,11 +355,15 @@ function ensureSensorRefs(container, key, zones, className) {
   return state[key];
 }
 
-async function loadThermalPreset() {
-  return core().runFeatureTask('thermal.contract.load', async () => {
+async function loadThermalPreset({ readback = false } = {}) {
+  if (!readback && !core().isWebUiActive()) return null;
+  if (readback) state.thermalContractRequest?.abort('REQUEST_SUPERSEDED');
+  return core().runFeatureTask(readback ? 'thermal.contract.readback' : 'thermal.contract.load', async () => {
     let result = false;
+    const controller = new AbortController();
+    if (!readback) state.thermalContractRequest = controller;
     try {
-      const data = await apiFetch(API.thermalSet, { timeoutMs: THERMAL_REQUEST_TIMEOUTS.contract, priority: 'normal', scope: 'thermal.contract.read' });
+      const data = await apiFetch(API.thermalSet, { timeoutMs: THERMAL_REQUEST_TIMEOUTS.contract, controller, priority: readback ? 'interactive' : 'normal', scope: 'thermal.contract.read' });
       updateThermalRuntimeGuard(data);
       applyThermalContract(data);
       state.thermalContractRetryAttempts = 0;
@@ -393,16 +385,18 @@ async function loadThermalPreset() {
       // A transient WebUI/CGI failure must not erase an already valid contract.
       // Retry a bounded number of times so a slow post-boot service does not
       // leave the thermal cards permanently blank until a full page reload.
-      if (!state.contract && state.thermalContractRetryAttempts < 5) {
+      if (!readback && core().isWebUiActive() && !state.contract && state.thermalContractRetryAttempts < 5) {
         state.thermalContractRetryAttempts += 1;
         if (!state.thermalContractRetryTimer) {
           state.thermalContractRetryTimer = window.setTimeout(() => {
             state.thermalContractRetryTimer = null;
-            void loadThermalPreset();
+            if (core().isWebUiActive()) void loadThermalPreset();
           }, 1500 * state.thermalContractRetryAttempts);
         }
       }
       result = false;
+    } finally {
+      if (state.thermalContractRequest === controller) state.thermalContractRequest = null;
     }
     syncThermalUi();
     syncHeroDesc();
@@ -411,20 +405,14 @@ async function loadThermalPreset() {
 }
 
 async function refreshThermalTask() {
+  if (!core().isWebUiActive()) return null;
   if (!state.contract && !state.thermalContractRetryTimer) void loadThermalPreset();
   state.thermalBusy = true;
+  const controller = new AbortController();
+  state.thermalReadRequest = controller;
   try {
-    let zones;
-    try {
-      zones = await readThermalZones();
-    } catch (err) {
-      if (isCancelled(err)) return null;
-      state.thermalBadReads += 1;
-      zones = await readThermalZones({ fresh: true });
-    }
-    if (state.thermalBadReads >= 2) {
-      try { zones = await readThermalZones({ clear: true }); } catch (_) {}
-    }
+    // A failed GET is not permission to clear state or repeat a HAL dump.
+    const zones = await readThermalZones(controller);
     const skin = zones.find((zone) => zone.zone === 'VIRTUAL-SKIN') || zones.find((zone) => zone.zone === 'SKIN');
     const secondary = zones.filter((zone) => zone !== skin && ['soc_therm', 'battery', 'charging_therm', 'btmspkr_therm'].includes(zone.zone));
     refs.homeThermalSkel.hidden = true;
@@ -434,7 +422,6 @@ async function refreshThermalTask() {
     if (skin) {
       const tempC = skin.temp / 1000;
       state.lastSkinTempC = tempC;
-      state.thermalBadReads = 0;
       const color = tempHex(tempC);
       refs.homeTempNum.textContent = tempC.toFixed(1);
       refs.homeTempNum.style.color = color;
@@ -471,13 +458,17 @@ async function refreshThermalTask() {
     refs.homeThermalContent.hidden = false;
     refs.thermalSkel.hidden = true;
     refs.thermalContent.hidden = false;
-    refs.homeTempNum.textContent = '--';
-    refs.homeTempStatus.textContent = err.message;
-    refs.tempNum.textContent = '--';
-    refs.tempStatus.textContent = err.message;
+    if (state.lastSkinTempC === null) {
+      refs.homeTempNum.textContent = '--';
+      refs.tempNum.textContent = '--';
+    }
+    const message = state.lastSkinTempC === null ? err.message : `读取失败，保留上次读数：${err.message}`;
+    refs.homeTempStatus.textContent = message;
+    refs.tempStatus.textContent = message;
     return false;
   } finally {
     state.thermalBusy = false;
+    if (state.thermalReadRequest === controller) state.thermalReadRequest = null;
   }
 }
 
@@ -497,7 +488,7 @@ async function applyThermalSelection(policy, offset) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'repair_system' }), timeoutMs: THERMAL_REQUEST_TIMEOUTS.mutation, priority: 'interactive', scope: 'thermal.mutation'
       });
-      const readback = await loadThermalPreset();
+      const readback = await loadThermalPreset({ readback: true });
       if (!readback || state.repairRequired) throw new Error('温控基线修复已提交，但 GET readback 仍显示需要修复');
       showToast('温控基线已修复，重启后复读生效。', 4200);
     } catch (err) {
@@ -539,7 +530,7 @@ async function applyThermalSelection(policy, offset) {
   try {
     const data = await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next), timeoutMs: THERMAL_REQUEST_TIMEOUTS.mutation, priority: 'interactive', scope: 'thermal.mutation' });
     if (data.ok && applyThermalState(data)) {
-      const readbackOk = await loadThermalPreset();
+      const readbackOk = await loadThermalPreset({ readback: true });
       if (!readbackOk || state.currentPolicy !== policy || (policy === 'custom' && state.currentOffset !== Number(offset))) {
         throw new Error('温控设置已提交，但 GET readback 未确认目标策略');
       }
@@ -630,7 +621,7 @@ async function cancelThermalChange() {
     requireFeature('ui').closeRebootModal('已撤销本次温控修改', { force: true });
     state.thermalModal.dismissedPendingId = '';
     appendLog('已撤销温控待重启变更', 'ok');
-    void loadThermalPreset();
+    void loadThermalPreset({ readback: true });
   } catch (err) {
     state.thermalModal.dismissedPendingId = '';
     state.thermalModal.cancelReconcileNeeded = true;
@@ -641,7 +632,7 @@ async function cancelThermalChange() {
         updatePendingState(readback, { open: false });
         syncThermalUi();
         requireFeature('ui').closeRebootModal('', { force: true, silent: true });
-        void loadThermalPreset();
+        void loadThermalPreset({ readback: true });
         return;
       }
       if (readbackId && readbackId !== pendingId) throw new Error('状态显示了不同的待变更');
@@ -678,24 +669,20 @@ async function cancelPendingRebootChange() {
   } else await cancelThermalChange();
 }
 
-const analytics = () => requireFeature('analytics');
-function openTempChart() { analytics().open('thermal'); }
-function triggerThermalBurst(options = {}) { return analytics().triggerBurst(options); }
-function stopTempChartRefresh() { analytics().stop(); }
-function pauseTempChartRefresh() { analytics().pause(); }
-function scheduleTempChartRefresh(delay = TEMP_CHART_REFRESH_MS) { analytics().schedule(delay); }
-
 registerFeature('thermal', {
   initialize() { refs.thermalList.replaceChildren(); },
   load: loadThermalPreset,
   refresh: refreshThermal,
-  pause: pauseTempChartRefresh,
+  pause() {
+    state.thermalReadRequest?.abort('PAGE_HIDDEN');
+    state.thermalContractRequest?.abort('PAGE_HIDDEN');
+    if (state.thermalContractRetryTimer) clearTimeout(state.thermalContractRetryTimer);
+    state.thermalContractRetryTimer = null;
+  },
   positionMarkers,
   isRefreshing: () => state.thermalBusy,
   syncHeroDesc,
   getSystemPreset: () => THERMAL_POLICY_PRESETS.system,
-  openChart: openTempChart,
-  triggerBurst: triggerThermalBurst,
   rebootDevice,
   cancelPendingRebootChange,
   setPendingChange(pending, prev) {
@@ -712,9 +699,6 @@ registerFeature('thermal', {
     state.thermalModal.dismissedPendingId = state.thermalModal.pendingId || '';
   },
   isCancelBusy: () => state.thermalCancelBusy,
-  isChartActive: () => analytics().isActive(),
-  stopChart: stopTempChartRefresh,
-  pauseChart: pauseTempChartRefresh,
-  scheduleChart: scheduleTempChartRefresh
+  isChartActive: () => requireFeature('analytics').isActive(),
 });
 })();

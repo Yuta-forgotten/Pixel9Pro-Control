@@ -45,10 +45,11 @@ cp "$MOD/webroot/cgi-bin/thermal.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$MOD/webroot/cgi-bin/_thermal_cache.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$MOD/webroot/cgi-bin/owner_arbiter.sh" "$FIXTURE/webroot/cgi-bin/" || exit 2
 cp "$MOD/scripts/runtime_defaults_lib.sh" "$FIXTURE/scripts/" || exit 2
+cp "$MOD/scripts/background_tasks_lib.sh" "$FIXTURE/scripts/" || exit 2
+cp "$MOD/scripts/thermal_history_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/nr_mode_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/thermal_profile.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/thermal_policy_lib.sh" "$FIXTURE/scripts/" || exit 2
-cp "$MOD/scripts/slot_transaction_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/bg_restrict_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/app_identity_lib.sh" "$FIXTURE/scripts/" || exit 2
 cp "$MOD/scripts/display_state_lib.sh" "$FIXTURE/scripts/" || exit 2
@@ -263,49 +264,8 @@ mv "$FIXTURE/scripts/display_state_lib.sh.missing" "$FIXTURE/scripts/display_sta
 response=$(run_cgi owner_arbiter.sh '{"action":"invalid"}' 0 0)
 assert_contains 'owner arbiter rejects an unknown action before runtime execution' "$response" 'invalid owner arbiter action'
 
-printf '4' > "$FIXTURE/.thermal_offset"
-printf 'running' > "$MOCK_STATE_DIR/thermal_service_state"
-printf '0' > "$MOCK_STATE_DIR/thermal_start_count"
-thermal_before=$(sha256sum "$FIXTURE/system/vendor/etc/thermal_info_config.json" | awk '{print $1}')
-response=$(run_cgi set_thermal.sh '{"offset":2}' 0 0 2)
-thermal_after=$(sha256sum "$FIXTURE/system/vendor/etc/thermal_info_config.json" | awk '{print $1}')
-assert_contains 'thermal restart failure returns HTTP error' "$response" 'thermal restart failed'
-assert_eq 'thermal restart failure restores config bytes' "$thermal_before" "$thermal_after"
-assert_eq 'thermal restart failure restores offset' 4 "$(cat "$FIXTURE/.thermal_offset")"
-assert_eq 'thermal rollback restarts prior service' running "$(cat "$MOCK_STATE_DIR/thermal_service_state")"
-
-printf 'running' > "$MOCK_STATE_DIR/thermal_service_state"
-printf '0' > "$MOCK_STATE_DIR/thermal_start_count"
-response=$(run_cgi set_thermal.sh '{"offset":2}' 0 0 0)
-thermal_after=$(sha256sum "$FIXTURE/system/vendor/etc/thermal_info_config.json" | awk '{print $1}')
-assert_contains 'thermal success returns ok' "$response" '"ok":true'
-assert_eq 'thermal success commits offset' 2 "$(cat "$FIXTURE/.thermal_offset")"
-if [ "$thermal_before" != "$thermal_after" ]; then
-    ok 'thermal success commits regenerated config'
-else
-    not_ok 'thermal success commits regenerated config (hash unchanged)'
-fi
-
-# Hybrid Mount pending changes can be canceled before reboot.  The cancel
-# transaction must restore the previous persistent state and remove the
-# inactive slot; it must not trust a client-supplied previous value.
-printf 'custom' > "$FIXTURE/.thermal_policy"
-printf '4' > "$FIXTURE/.thermal_offset"
-response=$(run_hybrid_cgi set_thermal.sh '{"offset":2}')
-assert_contains 'hybrid thermal change reports pending reboot' "$response" '"effective_state":"pending_reboot"'
-assert_eq 'hybrid thermal change persists the new pending offset' 2 "$(cat "$FIXTURE/.thermal_offset")"
-test -n "$(cat "$FIXTURE/slots/thermal/pending")"
-hybrid_pending_id=$(printf '%s\n' "$response" | sed -n 's/.*"pending_id":"\([^"]*\)".*/\1/p')
-test -n "$hybrid_pending_id"
-response=$(run_hybrid_cgi set_thermal.sh "{\"action\":\"cancel_pending\",\"pending_id\":\"$hybrid_pending_id\"}")
-assert_contains 'hybrid thermal cancel returns confirmed cancellation' "$response" '"canceled":true'
-assert_eq 'hybrid thermal cancel restores the previous policy' custom "$(cat "$FIXTURE/.thermal_policy")"
-assert_eq 'hybrid thermal cancel restores the previous offset' 4 "$(cat "$FIXTURE/.thermal_offset")"
-if [ ! -e "$FIXTURE/slots/thermal/pending" ] && [ ! -e "$FIXTURE/slots/thermal/previous_state" ]; then
-    ok 'hybrid thermal cancel removes pending slot and rollback state'
-else
-    not_ok 'hybrid thermal cancel removes pending slot and rollback state'
-fi
+# Current thermal writes are staged without restarting HAL. Journal/source/
+# marker failure and retry coverage lives in post_fs_cancel_contract_test.sh.
 
 printf '[{"zone":"VIRTUAL-SKIN","temp":42000}]' > "$FIXTURE/.thermal_cache.json"
 response=$(run_cgi thermal.sh '{"action":"clear"}' 0 0 0)

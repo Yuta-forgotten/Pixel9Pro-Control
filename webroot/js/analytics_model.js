@@ -9,129 +9,181 @@
     { id: '10080', minutes: 10080, label: '7 天', shortLabel: '7 天' },
     { id: 'custom', minutes: 0, label: '自定义', shortLabel: '自定义' }
   ]);
+
   const number = (value) => {
-    if (value === null || value === undefined || value === '' || (typeof value !== 'number' && typeof value !== 'string')) return null;
+    if (value === null || value === undefined || value === '') return null;
     const result = Number(value);
     return Number.isFinite(result) ? result : null;
   };
-  const positive = (value) => { const result = number(value); return result !== null && result >= 0 ? result : null; };
-  const temperature = (value, milli = false) => {
-    const result = number(value);
-    const celsius = result === null ? null : (milli || Math.abs(result) > 180 ? result / 1000 : result);
-    return celsius !== null && celsius > -20 && celsius < 120 ? celsius : null;
-  };
-  const identity = (point, fallback = '') => {
-    const values = [point.segment_id ?? point.segmentId, point.boot_id ?? point.bootId, point.session_id ?? point.sessionId].filter((value) => value !== null && value !== undefined && value !== '');
-    return values.length ? values.join('|') : String(fallback || '');
-  };
-  const metaIdentity = (meta) => identity(meta, '');
-  const sort = (points) => (Array.isArray(points) ? points : []).filter(Boolean).map((point) => ({ ...point, ts: number(point.ts) })).filter((point) => point.ts !== null && point.ts > 0).sort((a, b) => a.ts - b.ts);
-  const sameSegment = (left, right) => {
-    const leftId = String(left?.segmentId || '');
-    const rightId = String(right?.segmentId || '');
-    return (!leftId && !rightId) || leftId === rightId;
-  };
-  const envelope = (payload) => payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
-  function rangeFor(id) { return RANGES.find((item) => item.id === String(id)) || RANGES[1]; }
+
+  function rangeFor(id) {
+    return RANGES.find((item) => item.id === String(id)) || RANGES[0];
+  }
 
   function normalizeThermal(payload) {
-    const meta = envelope(payload); const source = Array.isArray(payload) ? payload : (payload?.thermal || payload?.points || []);
-    const fallbackSegment = metaIdentity(meta); const fallbackSource = meta.source || 'module';
-    return sort(source.map((point) => {
-      if (Array.isArray(point)) return { ts: point[0], tempC: temperature(point[1], true), sensor: fallbackSource === 'system' ? 'battery' : 'module', source: fallbackSource, segmentId: fallbackSegment };
-      if (!point || typeof point !== 'object') return null;
-      const sourceName = String(point.source || fallbackSource); const system = sourceName === 'android' || sourceName === 'system' || point.sensor === 'battery' || 'battery_mc' in point;
-      const raw = system ? (point.battery_mc ?? point.battery_temp_mc ?? point.temp_mc ?? point.temp) : (point.virtual_skin_mc ?? point.temp_mc ?? point.temp ?? point.value);
-      const value = temperature(raw, 'battery_mc' in point || 'battery_temp_mc' in point || 'temp_mc' in point || 'virtual_skin_mc' in point);
-      return { ts: point.ts, tempC: point.valid === false ? null : value, sensor: system ? 'battery' : 'module', source: sourceName, screen: point.screen || 'unknown', segmentId: identity(point, fallbackSegment), quality: String(point.quality || point.sample_quality || '') };
-    }));
+    const data = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+    const values = Array.isArray(payload) ? payload : (data.points || data.thermal || []);
+    return values.map((item) => {
+      if (Array.isArray(item)) {
+        const ts = number(item[0]);
+        const tempC = number(item[1]);
+        if (ts === null || ts <= 0 || tempC === null) return null;
+        return { ts, tempC: Math.abs(tempC) > 180 ? tempC / 1000 : tempC, sensor: 'module', expectedIntervalSec: 60 };
+      }
+      if (!item || typeof item !== 'object' || item.valid === false) return null;
+      const ts = number(item.ts);
+      const raw = number(item.temp_mc ?? item.temp_c ?? item.temp);
+      const tempC = raw === null ? null : (item.temp_mc !== undefined || Math.abs(raw) > 180 ? raw / 1000 : raw);
+      if (ts === null || ts <= 0 || tempC === null || tempC < -20 || tempC > 120) return null;
+      const expected = number(item.expected_interval_sec);
+      return {
+        ts,
+        tempC,
+        sensor: item.sensor === 'battery' ? 'battery' : 'module',
+        source: String(item.source || 'module'),
+        screen: String(item.screen || 'unknown'),
+        bootId: String(item.boot_id || ''),
+        expectedIntervalSec: expected !== null && expected > 0 ? expected : (item.screen === 'on' ? 60 : 900),
+        quality: String(item.quality || '')
+      };
+    }).filter(Boolean).sort((left, right) => left.ts - right.ts);
   }
 
-  function normalizePower(payload) {
-    const meta = envelope(payload); const fallbackSegment = metaIdentity(meta);
-    const source = Array.isArray(payload) ? payload : (Array.isArray(payload?.power_rates) && payload.power_rates.length ? payload.power_rates : payload?.power || []); const explicitRates = !Array.isArray(payload) && Array.isArray(payload?.power_rates) && payload.power_rates.length > 0;
-    return sort(source.map((point) => {
-      if (Array.isArray(point)) return { ts: point[0], startTs: null, endTs: number(point[0]), intervalSec: null, levelPct: number(point[1]), chargeUah: positive(point[2]), currentUa: null, voltageUv: null, rateMahH: null, mah: null, screen: 'unknown', status: String(point[3] || ''), source: 'module', segmentId: fallbackSegment, valid: positive(point[2]) !== null, explicitRate: false };
-      if (!point || typeof point !== 'object') return null;
-      const requestedStart = number(point.start_ts ?? point.startTs ?? point.ts_start); const endTs = number(point.end_ts ?? point.endTs ?? point.ts ?? point.timestamp); const intervalSec = positive(point.interval_sec) ?? (requestedStart !== null && endTs !== null ? Math.max(0, endTs - requestedStart) : null); const startTs = requestedStart ?? (endTs !== null && intervalSec !== null ? endTs - intervalSec : null);
-      const rate = number(point.rate_mah_h ?? point.rateMahH ?? point.system_rate_mah_h); const mah = positive(point.mah ?? point.system_mah); const chargeUah = positive(point.charge_uah ?? point.charge); const currentUa = number(point.current_ua); const voltageUv = positive(point.voltage_uv); const explicit = explicitRates || startTs !== null && endTs !== null && (rate !== null || mah !== null); const valid = point.valid === false || point.power_valid === false ? false : explicit ? (rate !== null || mah !== null) : (chargeUah !== null || (currentUa !== null && voltageUv !== null && voltageUv > 0));
-      return { ts: endTs, startTs, endTs, intervalSec, levelPct: number(point.level_pct ?? point.level), chargeUah, currentUa, voltageUv: voltageUv !== null && voltageUv > 0 ? voltageUv : null, rateMahH: rate, mah, screen: point.screen || 'unknown', status: String(point.status || point.charge_status || ''), source: point.source || (explicit ? 'android' : 'module'), segmentId: identity(point, fallbackSegment), quality: String(point.quality || point.sample_quality || ''), valid, explicitRate: explicit };
-    }));
+  function clip(points, startTs, endTs) {
+    const start = number(startTs);
+    const end = number(endTs);
+    return (Array.isArray(points) ? points : []).filter((point) => {
+      const ts = number(point?.ts);
+      return ts !== null && (start === null || ts >= start) && (end === null || ts <= end);
+    });
   }
-  function explicitGaps(payload) { const list = envelope(payload).gaps; return (Array.isArray(list) ? list : []).map((gap) => { const start = gap && typeof gap === 'object' && !Array.isArray(gap) ? gap.start_ts ?? gap.startTs : Array.isArray(gap) ? gap[0]?.ts ?? gap[0] : null; const end = gap && typeof gap === 'object' && !Array.isArray(gap) ? gap.end_ts ?? gap.endTs : Array.isArray(gap) ? gap[1]?.ts ?? gap[1] : null; return { startTs: number(start), endTs: number(end), reason: String(gap?.reason || 'backend_gap'), segmentId: String(gap?.segment_id ?? gap?.segmentId ?? '') }; }).filter((gap) => gap.startTs !== null && gap.endTs !== null && gap.endTs > gap.startTs); }
-  function clip(points, startTs, endTs, intervalAware = false) { const start = number(startTs); const end = number(endTs); return (Array.isArray(points) ? points : []).filter((point) => { const from = intervalAware && point.startTs !== null ? number(point.startTs) : number(point.ts); const to = intervalAware && point.endTs !== null ? number(point.endTs) : number(point.ts); return from !== null && to !== null && to >= from && (start === null || from >= start) && (end === null || to <= end); }); }
-  function addGap(list, startTs, endTs, reason, segmentId = '') { if (!(endTs > startTs)) return; const previous = list[list.length - 1]; if (previous && previous.endTs >= startTs && previous.reason === reason) previous.endTs = Math.max(previous.endTs, endTs); else list.push({ startTs, endTs, reason, segmentId }); }
-  function windowFor(points, options) { const startTs = number(options.startTs) ?? points[0]?.ts ?? null; const endTs = number(options.endTs) ?? points[points.length - 1]?.ts ?? null; return { startTs, endTs, elapsedSec: startTs !== null && endTs !== null ? Math.max(0, endTs - startTs) : 0 }; }
-  function backendGapRanges(options, window) { return (Array.isArray(options.backendGaps) ? options.backendGaps : []).map((gap) => ({ ...gap, startTs: Math.max(window.startTs ?? gap.startTs, gap.startTs), endTs: Math.min(window.endTs ?? gap.endTs, gap.endTs) })).filter((gap) => gap.endTs > gap.startTs); }
 
   function temperatureStats(points, options = {}) {
-    const sorted = sort(clip(points, options.startTs, options.endTs)); const window = windowFor(sorted, options); const gaps = backendGapRanges(options, window); const valid = sorted.filter((point) => temperature(point.tempC) !== null); const runs = []; let run = []; let coverageSec = 0; let thresholdSec = 0; const threshold = number(globalThis.THRESH_STOCK) ?? 37;
-    sorted.forEach((point, index) => { const previous = sorted[index - 1]; const value = temperature(point.tempC); if (previous) { const delta = point.ts - previous.ts; const explicit = gaps.some((gap) => gap.startTs < point.ts && gap.endTs > previous.ts); const reason = !sameSegment(previous, point) ? 'session_changed' : delta > 1800 ? 'missing' : previous.tempC === null || value === null ? 'missing_measurement' : explicit ? 'backend_gap' : ''; const blocked = Boolean(reason); if (!blocked) { coverageSec += delta; if (previous.tempC >= threshold) thresholdSec += delta; } else { if (!explicit) addGap(gaps, previous.ts, point.ts, reason, point.segmentId); if (run.length) { runs.push(run); run = []; } } } if (value !== null) run.push({ ...point, tempC: value }); }); if (run.length) runs.push(run);
-    const values = valid.map((point) => temperature(point.tempC));
-    const min = values.reduce((current, value) => Math.min(current, value), Infinity);
-    const max = values.reduce((current, value) => Math.max(current, value), -Infinity);
-    const last = valid.length ? valid[valid.length - 1] : null;
-    return { ...window, points: sorted, runs, gapRanges: gaps, gaps: gaps.map((gap) => [{ ts: gap.startTs }, { ts: gap.endTs }]), chartSegments: runs.map((segment) => segment.map((point) => ({ ts: point.ts, value: point.tempC }))), seriesUnit: '°C', count: valid.length, validCount: valid.length, missingCount: sorted.length - valid.length, sampleCount: sorted.length, coverageSec, unknownSec: Math.max(0, window.elapsedSec - coverageSec), lastSampleTs: last ? last.ts : null, current: values.length ? values[values.length - 1] : null, min: values.length ? min : null, max: values.length ? max : null, avg: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null, thresholdSec, coveragePct: window.elapsedSec ? Math.min(100, coverageSec * 100 / window.elapsedSec) : 0, quality: values.length ? (gaps.length ? 'partial' : 'good') : 'no_data' };
-  }
-  function coalesceRates(points) { const sorted = points.filter((point) => point.explicitRate && point.startTs !== null && point.endTs !== null && point.endTs > point.startTs && point.valid !== false).sort((a, b) => a.startTs - b.startTs); const result = []; sorted.forEach((point) => { const previous = result.length ? result[result.length - 1] : null; const mah = point.mah ?? (point.rateMahH * point.intervalSec / 3600); if (previous && previous.endTs === point.startTs && previous.segmentId === point.segmentId && previous.screen === point.screen && previous.quality === point.quality) { previous.mah += mah; previous.endTs = point.endTs; previous.intervalSec = previous.endTs - previous.startTs; previous.rateMahH = previous.mah * 3600 / previous.intervalSec; } else result.push({ ...point, mah, rateMahH: point.rateMahH ?? mah * 3600 / point.intervalSec }); }); return result; }
-  function powerStats(points, options = {}) {
-    const nativeRates = coalesceRates(points); const window = windowFor(points, options); const backendGaps = backendGapRanges(options, window); const rates = nativeRates.length ? clip(nativeRates, window.startTs, window.endTs, true) : [];
-    if (rates.length) { const consumedMah = rates.reduce((sum, rate) => sum + Math.max(0, rate.mah), 0); const coverageSec = rates.reduce((sum, rate) => sum + rate.intervalSec, 0); const chartSegments = rates.map((rate) => [{ ts: rate.startTs, value: rate.rateMahH }, { ts: rate.endTs, value: rate.rateMahH }]); const screenSegments = []; rates.forEach((rate) => { const previous = screenSegments.length ? screenSegments[screenSegments.length - 1] : null; if (previous && previous.screen === rate.screen && previous.endTs === rate.startTs) previous.endTs = rate.endTs; else screenSegments.push({ startTs: rate.startTs, endTs: rate.endTs, screen: rate.screen }); }); const gaps = backendGaps.slice(); const hasGap = (start, end) => gaps.some((gap) => gap.startTs < end && gap.endTs > start); rates.slice(1).forEach((rate, index) => { const previous = rates[index]; if (rate.startTs > previous.endTs && !hasGap(previous.endTs, rate.startTs)) addGap(gaps, previous.endTs, rate.startTs, 'missing', rate.segmentId); if (rate.segmentId !== previous.segmentId && !hasGap(previous.endTs, rate.startTs)) addGap(gaps, previous.endTs, rate.startTs, 'session_changed', rate.segmentId); }); return { ...window, points, series: rates.map((rate) => ({ ts: rate.endTs, startTs: rate.startTs, value: rate.rateMahH, unit: 'mAh/h', screen: rate.screen })), chartSegments, screenSegments, gapRanges: gaps, gaps: gaps.map((gap) => [{ ts: gap.startTs }, { ts: gap.endTs }]), seriesUnit: 'mAh/h', count: rates.length, validCount: rates.length, missingCount: Math.max(0, points.length - rates.length), sampleCount: points.length, coverageSec, unknownSec: Math.max(0, window.elapsedSec - coverageSec), nonDischargeSec: 0, consumedMah, avgMahPerHour: coverageSec ? consumedMah * 3600 / coverageSec : null, avgMw: null, activeSec: coverageSec, measuredSec: 0, coveragePct: window.elapsedSec ? Math.min(100, coverageSec * 100 / window.elapsedSec) : 0, quality: gaps.length ? 'partial' : 'good', native: true }; }
-    if (options.native) return { ...window, points, series: [], chartSegments: [], gapRanges: backendGaps, gaps: backendGaps.map((gap) => [{ ts: gap.startTs }, { ts: gap.endTs }]), seriesUnit: 'mAh/h', count: 0, validCount: 0, missingCount: points.length, sampleCount: points.length, coverageSec: 0, unknownSec: window.elapsedSec, nonDischargeSec: 0, consumedMah: null, avgMahPerHour: null, avgMw: null, activeSec: 0, measuredSec: 0, coveragePct: 0, quality: 'no_data', native: true };
-    const sorted = sort(clip(points, options.startTs, options.endTs));
-    const intervals = [];
-    let consumedUah = 0;
-    let activeSec = 0;
-    let measuredMw = 0;
-    let measuredSec = 0;
-    let nonDischargeSec = 0;
-    let resetDetected = /reset|mismatch/i.test(String(options.quality || ''));
-    const gaps = backendGaps.slice();
-    for (let index = 1; index < sorted.length; index += 1) {
-      const previous = sorted[index - 1];
-      const point = sorted[index];
-      const delta = point.ts - previous.ts;
-      const interval = { startTs: previous.ts, endTs: point.ts, counterRate: null, mw: null, reason: '' };
-      intervals.push(interval);
-      const previousStatus = String(previous.status || '').trim().toLowerCase();
-      const pointStatus = String(point.status || '').trim().toLowerCase();
-      const coveredByGap = gaps.some((gap) => gap.startTs < point.ts && gap.endTs > previous.ts);
-      if (!sameSegment(previous, point) || delta > 1800 || coveredByGap) { interval.reason = !sameSegment(previous, point) ? 'session_changed' : 'missing'; continue; }
-      if (previous.valid === false || point.valid === false) { interval.reason = 'invalid_sample'; continue; }
-      if (previousStatus !== pointStatus) { interval.reason = 'state_change'; continue; }
-      if (previousStatus !== 'discharging') { interval.reason = 'not_discharging'; nonDischargeSec += delta; continue; }
-      if (previous.chargeUah !== null && point.chargeUah !== null) {
-        const deltaUah = previous.chargeUah - point.chargeUah;
-        if (deltaUah < 0) { resetDetected = true; interval.reason = 'counter_reset'; }
-        else if (!resetDetected) { interval.counterRate = deltaUah * 3.6 / delta; consumedUah += deltaUah; activeSec += delta; }
-      }
-      if (previous.currentUa !== null && previous.voltageUv !== null && point.currentUa !== null && point.voltageUv !== null) {
-        interval.mw = Math.abs(previous.currentUa * previous.voltageUv) / 1e9;
-        measuredMw += interval.mw * delta;
-        measuredSec += delta;
-      }
-    }
-    const seriesUnit = activeSec && !resetDetected ? 'mAh/h' : 'mW';
-    const field = seriesUnit === 'mAh/h' ? 'counterRate' : 'mw';
+    const sorted = (Array.isArray(points) ? points : []).filter((point) => Number.isFinite(point?.tempC) && Number.isFinite(point?.ts)).slice().sort((a, b) => a.ts - b.ts);
+    const startTs = number(options.startTs) ?? sorted[0]?.ts ?? null;
+    const endTs = number(options.endTs) ?? sorted[sorted.length - 1]?.ts ?? null;
+    const windowSec = startTs !== null && endTs !== null ? Math.max(0, endTs - startTs) : 0;
     const chartSegments = [];
-    const series = [];
-    let segment = [];
+    const gapRanges = [];
     let coverageSec = 0;
-    intervals.forEach((interval) => {
-      if (Number.isFinite(interval[field])) {
-        segment.push({ ts: interval.startTs, value: interval[field] }, { ts: interval.endTs, value: interval[field] });
-        series.push({ ts: interval.endTs, startTs: interval.startTs, value: interval[field], unit: seriesUnit });
-        coverageSec += interval.endTs - interval.startTs;
+    let thresholdSec = 0;
+    let previous = null;
+
+    sorted.forEach((point) => {
+      const chartPoint = { ts: point.ts, value: point.tempC };
+      const expected = Math.max(60, number(point.expectedIntervalSec) || 60);
+      if (!previous) {
+        chartSegments.push([chartPoint]);
       } else {
-        if (segment.length) chartSegments.push(segment);
-        segment = [];
-        addGap(gaps, interval.startTs, interval.endTs, interval.reason || 'missing');
+        const delta = point.ts - previous.ts;
+        const allowance = Math.max(expected, number(previous.expectedIntervalSec) || 60) * 2;
+        if (delta > allowance || point.bootId !== previous.bootId) {
+          gapRanges.push({ startTs: previous.ts + (number(previous.expectedIntervalSec) || 60), endTs: point.ts, reason: 'sample_gap' });
+          chartSegments.push([chartPoint]);
+        } else {
+          chartSegments[chartSegments.length - 1].push(chartPoint);
+          coverageSec += delta;
+          if (previous.tempC >= 40 && point.tempC >= 40) thresholdSec += delta;
+        }
       }
+      previous = point;
     });
-    if (segment.length) chartSegments.push(segment);
-    const count = sorted.filter((point) => point.valid !== false && (point.chargeUah !== null || point.currentUa !== null)).length;
-    const consumedMah = activeSec && !resetDetected ? consumedUah / 1000 : null;
-    return { ...window, points: sorted, series, chartSegments, gapRanges: gaps, gaps: gaps.map((gap) => [{ ts: gap.startTs }, { ts: gap.endTs }]), seriesUnit, count, validCount: count, missingCount: Math.max(0, sorted.length - count), sampleCount: sorted.length, coverageSec, nonDischargeSec, unknownSec: Math.max(0, window.elapsedSec - coverageSec - nonDischargeSec), consumedMah, avgMahPerHour: activeSec && !resetDetected ? consumedMah * 3600 / activeSec : null, avgMw: measuredSec ? measuredMw / measuredSec : null, activeSec: resetDetected ? 0 : activeSec, measuredSec, coveragePct: window.elapsedSec ? Math.min(100, coverageSec * 100 / window.elapsedSec) : 0, quality: resetDetected ? 'reset_or_mismatch' : count ? (gaps.length ? 'partial' : 'good') : 'no_data', native: false };
+
+    coverageSec = Math.min(windowSec, coverageSec);
+    const values = sorted.map((point) => point.tempC);
+    const count = values.length;
+    const sum = values.reduce((total, value) => total + value, 0);
+    const gaps = Math.max(gapRanges.length, number(options.backendGapCount) || 0);
+    return {
+      startTs,
+      endTs,
+      current: count ? values[count - 1] : null,
+      lastSampleTs: count ? sorted[count - 1].ts : null,
+      min: count ? Math.min(...values) : null,
+      max: count ? Math.max(...values) : null,
+      avg: count ? sum / count : null,
+      count,
+      sampleCount: number(options.backendSampleCount) ?? count,
+      validCount: number(options.backendValidSamples) ?? count,
+      coverageSec,
+      unknownSec: Math.max(0, windowSec - coverageSec),
+      coveragePct: windowSec > 0 ? coverageSec / windowSec * 100 : 0,
+      thresholdSec,
+      gapRanges,
+      gaps: gapRanges,
+      gapCount: gaps,
+      chartSegments,
+      quality: gaps ? 'partial' : count ? 'available' : 'no_data',
+      backendQuality: String(options.backendQuality || '')
+    };
   }
-  registerFeature('analyticsModel', { ranges: () => RANGES.map((item) => ({ ...item })), rangeFor, normalizeThermal, normalizePower, explicitGaps, temperatureStats, powerStats, clip, formatDuration(sec) { const value = number(sec); if (value === null || value < 0) return '—'; if (value >= 3600) return `${Math.floor(value / 3600)}小时${Math.floor(value % 3600 / 60)}分`; if (value >= 60) return `${Math.floor(value / 60)}分${Math.floor(value % 60)}秒`; return `${Math.floor(value)}秒`; } });
+
+  function formatDuration(seconds) {
+    const value = number(seconds);
+    if (value === null || value < 0) return '—';
+    if (value >= 3600) return `${Math.floor(value / 3600)}小时${Math.floor(value % 3600 / 60)}分`;
+    if (value >= 60) return `${Math.floor(value / 60)}分${Math.floor(value % 60)}秒`;
+    return `${Math.floor(value)}秒`;
+  }
+
+  function exportHistory(payload, format) {
+    if (!payload || payload.ok !== true || !Array.isArray(payload.points)) throw new Error('尚无可导出的历史响应');
+    if (!['json', 'csv'].includes(format)) throw new Error('不支持的导出格式');
+    const points = normalizeThermal(payload).filter((point) => point.sensor === payload.sensor);
+    const stats = temperatureStats(points, {
+      startTs: payload.start_ts, endTs: payload.end_ts, backendGapCount: payload.gap_count
+    });
+    const iso = (ts) => new Date(ts * 1000).toISOString();
+    const metadata = {
+      schema: 'pixel9pro.temperature_history.v1',
+      exported_at_utc: new Date().toISOString(),
+      sensor: payload.sensor,
+      start_ts: payload.start_ts,
+      end_ts: payload.end_ts,
+      recording_enabled: payload.recording_enabled,
+      recording_state: payload.recording_state,
+      data_revision: payload.data_revision,
+      units: { ts: 'unix_seconds', timestamp_utc: 'ISO-8601 UTC', temperature_c: 'celsius', gap_before_sec: 'seconds' },
+      sampling: { screen_on_sec: 60, screen_off_sec: 900, suspend_may_delay: true },
+      interpretation: 'Irregular point samples, not continuous monitoring. Gaps are unknown, not zero; average is a sample mean.',
+      summary: { valid_samples: points.length, sample_mean_c: stats.avg, min_c: stats.min, max_c: stats.max, coverage_sec: stats.coverageSec, gap_count: stats.gapCount }
+    };
+    const rows = points.map((point, index) => {
+      const previous = points[index - 1];
+      const delta = previous ? point.ts - previous.ts : 0;
+      const gap = previous && (delta > Math.max(previous.expectedIntervalSec, point.expectedIntervalSec) * 2 || previous.bootId !== point.bootId);
+      return {
+        ts: point.ts, timestamp_utc: iso(point.ts), temperature_c: point.tempC,
+        sensor: point.sensor, source: point.source, screen: point.screen,
+        expected_interval_sec: point.expectedIntervalSec,
+        gap_before_sec: gap ? delta : 0, boot_id: point.bootId,
+        quality: point.quality, valid: true
+      };
+    });
+    const filename = `pixel9pro-temperature-${payload.sensor}-${payload.start_ts}-${payload.end_ts}.${format}`;
+    if (format === 'json') {
+      return { filename, mime: 'application/json;charset=utf-8', text: `${JSON.stringify({ ...metadata, points: rows }, null, 2)}\n` };
+    }
+    const columns = ['ts', 'timestamp_utc', 'temperature_c', 'sensor', 'source', 'screen', 'expected_interval_sec', 'gap_before_sec', 'boot_id', 'quality', 'valid', 'window_start_ts', 'window_end_ts', 'recording_enabled', 'recording_state'];
+    const csv = (value) => {
+      let text = value === undefined || value === null ? '' : String(value);
+      if (typeof value === 'string' && /^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+      return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const lines = rows.map((row) => columns.map((key) => csv(({
+      window_start_ts: payload.start_ts, window_end_ts: payload.end_ts,
+      recording_enabled: payload.recording_enabled, recording_state: payload.recording_state, ...row
+    })[key])).join(','));
+    return { filename, mime: 'text/csv;charset=utf-8', text: `${columns.join(',')}\r\n${lines.join('\r\n')}${lines.length ? '\r\n' : ''}` };
+  }
+
+  registerFeature('analyticsModel', {
+    ranges: () => RANGES.map((item) => ({ ...item })),
+    rangeFor,
+    normalizeThermal,
+    temperatureStats,
+    clip,
+    formatDuration,
+    exportHistory
+  });
 })();

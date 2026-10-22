@@ -13,7 +13,7 @@ const documentHtml = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '').repl
 const results = [];
 const filter = process.env.PIXEL_UI_LIFECYCLE_FILTER || '';
 
-async function setup(browser, viewport = { width: 390, height: 844 }) {
+async function setup(browser, viewport = { width: 390, height: 844 }, withToken = true, withMemory = false) {
   const context = await browser.newContext({ viewport, bypassCSP: true, reducedMotion: 'reduce' });
   const page = await context.newPage();
   page.on('pageerror', (error) => results.push({ error: error.message }));
@@ -23,10 +23,10 @@ async function setup(browser, viewport = { width: 390, height: 844 }) {
     ? route.fulfill({ contentType: 'text/html', body: documentHtml }) : route.abort());
   await page.goto('http://127.0.0.1:6210/');
   await page.addStyleTag({ content: styles.join('\n') });
-  for (const file of ['runtime', 'ui', 'common', 'diagnostics']) {
+  for (const file of ['runtime', 'ui', 'common', 'diagnostics', ...(withMemory ? ['memory'] : [])]) {
     await page.addScriptTag({ content: fs.readFileSync(path.join(webroot, 'js', `${file}.js`), 'utf8') });
   }
-  await page.evaluate(() => {
+  await page.evaluate(({ withToken, withMemory }) => {
     window.testAnalytics = { stop: 0, minimize: 0, resume: 0 };
     registerFeature('analytics', {
       stop() { window.testAnalytics.stop += 1; },
@@ -34,9 +34,8 @@ async function setup(browser, viewport = { width: 390, height: 844 }) {
       resume() { window.testAnalytics.resume += 1; }
     });
     registerFeature('thermal', { setPendingChange() {}, stopChart() {}, pauseChart() {}, scheduleChart() {} });
-    registerFeature('energy', { stop() {}, pause() {} });
     registerFeature('profile', { getSchedulerBootTargetMode: () => 'pixel' });
-    registerFeature('memory', {
+    if (!withMemory) registerFeature('memory', {
       closeSwapTuneModal() {
         refs.swapTuneModal.classList.remove('open');
         requireFeature('ui').popModalIfTop('swapTune');
@@ -60,9 +59,11 @@ async function setup(browser, viewport = { width: 390, height: 844 }) {
       }, { once: true });
     });
     // The storage key is part of runtime's production token contract.
-    sessionStorage.setItem(STORAGE_TOKEN_KEY, 'lifecycle-test-token');
-    requireFeature('auth').initialize();
-  });
+    if (withToken) {
+      sessionStorage.setItem(STORAGE_TOKEN_KEY, 'lifecycle-test-token');
+      requireFeature('auth').initialize();
+    }
+  }, { withToken, withMemory });
   return { context, page };
 }
 
@@ -85,6 +86,418 @@ async function test(name, fn) {
 (async () => {
   const browser = await chromium.launch({ headless: true, ...(process.env.PIXEL_CHROME_PATH ? { executablePath: process.env.PIXEL_CHROME_PATH } : {}) });
   try {
+    await test('request hub resolves shared request classes and explicit overrides', async () => {
+      const { context, page } = await setup(browser);
+      try {
+        const policies = await page.evaluate(() => {
+          const resolve = requireFeature('core').resolveRequestPolicy;
+          return {
+            snapshot: resolve(API.info),
+            history: resolve(`${API.thermal}?history=1&minutes=30`),
+            live: resolve(API.thermal),
+            fresh: resolve(API.thermalFresh),
+            diagnostic: resolve(API.uecap),
+            baseband: resolve(API.checkBaseband),
+            profile: resolve(API.profile),
+            compact: resolve(`${API.profile}?compact=1`),
+            mutation: resolve(API.thermalSet, { method: 'POST', body: '{"action":"stop"}' }),
+            lifecycle: resolve(API.standbyGuard, { method: 'POST', requestClass: 'lifecycle' }),
+            explicit: resolve(API.thermalFresh, { timeoutMs: 1234, queueTimeoutMs: 5678, priority: 'interactive' })
+          };
+        });
+        for (const [key, requestClass] of Object.entries({ snapshot: 'snapshot', history: 'thermalHistory', live: 'thermalLive',
+          fresh: 'thermalLive', diagnostic: 'diagnostic', baseband: 'diagnostic', profile: 'diagnostic', compact: 'snapshot',
+          mutation: 'mutation', lifecycle: 'lifecycle' })) assert.equal(policies[key].requestClass, requestClass, key);
+        assert.equal(policies.history.timeoutMs, 8000);
+        assert.equal(policies.live.timeoutMs, 14000);
+        assert.equal(policies.fresh.timeoutMs, 14000);
+        assert.equal(policies.diagnostic.timeoutMs, 30000);
+        assert.equal(policies.baseband.timeoutMs, 20000);
+        assert.equal(policies.profile.timeoutMs, 60000);
+        assert.equal(policies.compact.timeoutMs, 12000);
+        assert.equal(policies.lifecycle.priority, 100);
+        assert.equal(policies.explicit.timeoutMs, 1234);
+        assert.equal(policies.explicit.queueTimeoutMs, 5678);
+        assert.equal(policies.explicit.priority, 90);
+      } finally { await context.close(); }
+    });
+
+    await test('request hub queue wait preserves a full bounded response body budget', async () => {
+      const { context, page } = await setup(browser);
+      try {
+        await page.clock.install();
+        await page.evaluate(() => {
+          const core = requireFeature('core');
+          for (let i = 0; i < 3; i += 1) core.apiFetch(`/held-${i}`, { timeoutMs: 5000, priority: 'interactive' }).catch(() => {});
+          window.bodyResult = null;
+          core.apiFetch(`${API.thermal}?history=1`, { timeoutMs: 1000, queueTimeoutMs: 2000 })
+            .then((data) => { window.bodyResult = data; }, (error) => { window.bodyResult = { code: error.code }; });
+        });
+        assert.equal(await page.evaluate(() => requireFeature('core').requestHubState().queued), 1);
+        await page.clock.runFor(750);
+        await respond(page, { ok: true });
+        await page.waitForFunction(() => window.testRequests.length === 4);
+        await page.evaluate(() => {
+          const entry = window.testRequests.at(-1);
+          entry.done = true;
+          entry.resolve({ ok: true, status: 200, text: () => new Promise((resolve, reject) => {
+            window.finishBody = resolve;
+            entry.options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+          }) });
+        });
+        await page.waitForFunction(() => typeof window.finishBody === 'function');
+        await page.clock.runFor(400);
+        assert.equal(await page.evaluate(() => window.bodyResult), null);
+        assert.equal(await page.evaluate(() => window.testRequests.at(-1).aborted), false);
+        await page.evaluate(() => window.finishBody('{"ok":true,"source":"history"}'));
+        await page.waitForFunction(() => window.bodyResult?.ok === true);
+        assert.deepEqual(await page.evaluate(() => window.bodyResult), { ok: true, source: 'history' });
+
+        await page.evaluate(() => {
+          window.stalledBodyResult = null;
+          requireFeature('core').apiFetch('/stalled-body', { timeoutMs: 100 })
+            .catch((error) => { window.stalledBodyResult = error.code; });
+          const entry = window.testRequests.at(-1);
+          entry.done = true;
+          entry.resolve({ ok: true, status: 200, text: () => new Promise((resolve, reject) => {
+            entry.options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+          }) });
+        });
+        await page.clock.runFor(101);
+        await page.waitForFunction(() => window.stalledBodyResult !== null);
+        assert.equal(await page.evaluate(() => window.stalledBodyResult), 'REQUEST_TIMEOUT');
+      } finally { await context.close(); }
+    });
+
+    await test('request hub distinguishes queue timeout and queued or active cancellation', async () => {
+      const { context, page } = await setup(browser);
+      try {
+        await page.clock.install();
+        await page.evaluate(() => {
+          const core = requireFeature('core');
+          for (let i = 0; i < 3; i += 1) core.apiFetch(`/held-${i}`, { timeoutMs: 5000, priority: 'interactive' }).catch(() => {});
+          window.queueResult = null;
+          core.apiFetch('/queued-timeout', { timeoutMs: 1000, queueTimeoutMs: 100 })
+            .catch((error) => { window.queueResult = { code: error.code, cancelled: core.isRequestCancelled(error) }; });
+        });
+        await page.clock.runFor(101);
+        assert.deepEqual(await page.evaluate(() => window.queueResult), { code: 'REQUEST_QUEUE_TIMEOUT', cancelled: false });
+        assert.equal(await page.evaluate(() => window.testRequests.length), 3);
+        assert.equal(await page.evaluate(() => requireFeature('core').requestHubState().deduped), 3);
+        const cancelled = await page.evaluate(async () => {
+          const core = requireFeature('core');
+          const controller = new AbortController();
+          const result = core.apiFetch('/queued-cancel', { controller }).catch((error) => ({ code: error.code, cancelled: core.isRequestCancelled(error) }));
+          controller.abort();
+          return result;
+        });
+        assert.deepEqual(cancelled, { code: 'REQUEST_CANCELLED', cancelled: true });
+        assert.equal(await page.evaluate(() => requireFeature('core').requestHubState().queued), 0);
+        await respond(page, { ok: true });
+        const active = await page.evaluate(async () => {
+          const core = requireFeature('core');
+          const controller = new AbortController();
+          const result = core.apiFetch('/active-cancel', { controller }).catch((error) => ({ code: error.code, cancelled: core.isRequestCancelled(error) }));
+          controller.abort();
+          return result;
+        });
+        assert.deepEqual(active, { code: 'REQUEST_CANCELLED', cancelled: true });
+        assert.equal(await page.evaluate(() => window.testRequests.at(-1).aborted), true);
+        const preaborted = await page.evaluate(async () => {
+          const controller = new AbortController();
+          controller.abort('PAGE_HIDDEN');
+          return requireFeature('core').apiFetch('/preaborted', { controller }).catch((error) => error.code);
+        });
+        assert.equal(preaborted, 'PAGE_HIDDEN');
+        assert.equal(await page.evaluate(() => window.testRequests.length), 4);
+        const custom = await page.evaluate(async () => {
+          const core = requireFeature('core');
+          const controller = new AbortController();
+          controller.abort('thermal-history-minimized');
+          return core.apiFetch('/custom-abort', { controller })
+            .catch((error) => ({ code: error.code, cancelled: core.isRequestCancelled(error) }));
+        });
+        assert.deepEqual(custom, { code: 'thermal-history-minimized', cancelled: true });
+      } finally { await context.close(); }
+    });
+
+    await test('request hub limits slow diagnostics while history and snapshots keep capacity', async () => {
+      const { context, page } = await setup(browser);
+      try {
+        await page.evaluate(() => {
+          const core = requireFeature('core');
+          for (const endpoint of [API.uecap, API.checkBaseband, API.profile]) core.apiFetch(endpoint).catch(() => {});
+        });
+        assert.equal(await page.evaluate(() => window.testRequests.length), 1);
+        assert.equal(await page.evaluate(() => requireFeature('core').requestHubState().queued), 2);
+        await page.evaluate(() => {
+          const core = requireFeature('core');
+          core.apiFetch(API.thermalHistory).catch(() => {});
+          core.apiFetch(API.info).catch(() => {});
+        });
+        assert.deepEqual(await page.evaluate(() => window.testRequests.map((entry) => entry.url)),
+          ['/cgi-bin/uecap.sh', '/cgi-bin/thermal.sh?history=1', '/cgi-bin/info.sh']);
+        assert.equal(await page.evaluate(() => requireFeature('core').requestHubState().active), 3);
+        await respond(page, { ok: true });
+        await page.waitForFunction(() => window.testRequests.length === 4);
+        assert.equal(await page.evaluate(() => window.testRequests.at(-1).url), '/cgi-bin/check_baseband.sh');
+        await respond(page, { ok: true, points: [] });
+        await page.waitForFunction(() => requireFeature('core').requestHubState().active === 2);
+        assert.equal(await page.evaluate(() => window.testRequests.length), 4);
+        await page.evaluate(() => {
+          requireFeature('core').apiFetch(API.thermalSet, { priority: 'interactive', scope: 'thermal.mutation.readback' }).catch(() => {});
+        });
+        assert.equal(await page.evaluate(() => window.testRequests.length), 5);
+        assert.equal(await page.evaluate(() => window.testRequests.at(-1).url), '/cgi-bin/set_thermal.sh');
+        assert.equal(await page.evaluate(() => requireFeature('core').requestHubState().active), 3);
+        assert.equal(await page.evaluate(() => requireFeature('core').requestHubState().queued), 1);
+      } finally { await context.close(); }
+    });
+
+    await test('request hub merges reads and serializes same resource writes without retry', async () => {
+      const { context, page } = await setup(browser);
+      try {
+        assert.equal(await page.evaluate(() => {
+          const core = requireFeature('core');
+          const first = core.apiFetch(API.info);
+          const second = core.apiFetch(API.info);
+          first.catch(() => {});
+          return first === second;
+        }), true);
+        assert.equal(await page.evaluate(() => window.testRequests.length), 1);
+        await respond(page, { ok: true });
+        await page.waitForFunction(() => requireFeature('core').requestHubState().active === 0);
+        await page.evaluate(() => {
+          const core = requireFeature('core');
+          window.writeResults = [];
+          for (const [query, scope] of [['?first=1', 'first'], ['?second=1', 'second']]) {
+            core.apiFetch(`${API.standbyGuard}${query}`, { method: 'POST', body: '{}', requestClass: 'lifecycle', scope })
+              .then((data) => window.writeResults.push(data), (error) => window.writeResults.push({ status: error.status }));
+          }
+        });
+        assert.equal(await page.evaluate(() => window.testRequests.length), 2);
+        assert.equal(await page.evaluate(() => requireFeature('core').requestHubState().queued), 1);
+        assert.equal(await page.evaluate(() => 'requestClass' in window.testRequests.at(-1).options || 'scope' in window.testRequests.at(-1).options), false);
+        await respond(page, { error: 'Write failed' }, 500);
+        await page.waitForFunction(() => window.testRequests.length === 3);
+        await respond(page, { ok: true });
+        await page.waitForFunction(() => window.writeResults.length === 2 && requireFeature('core').requestHubState().active === 0);
+        assert.deepEqual(await page.evaluate(() => window.writeResults), [{ status: 500 }, { ok: true }]);
+        assert.equal(await page.evaluate(() => window.testRequests.filter((entry) => entry.method === 'POST').length), 2);
+        await page.evaluate(() => {
+          window.scopeResults = [];
+          for (const endpoint of [API.ntp, API.nrSwitch]) {
+            requireFeature('core').apiFetch(endpoint, { method: 'POST', body: '{}', scope: 'shared.settings' })
+              .then((data) => window.scopeResults.push(data), () => {});
+          }
+        });
+        assert.equal(await page.evaluate(() => window.testRequests.length), 4);
+        assert.equal(await page.evaluate(() => requireFeature('core').requestHubState().queued), 1);
+        await respond(page, { ok: true, scope: 1 });
+        await page.waitForFunction(() => window.testRequests.length === 5);
+        await respond(page, { ok: true, scope: 2 });
+        await page.waitForFunction(() => window.scopeResults.length === 2 && requireFeature('core').requestHubState().active === 0);
+        assert.deepEqual(await page.evaluate(() => window.scopeResults), [{ ok: true, scope: 1 }, { ok: true, scope: 2 }]);
+      } finally { await context.close(); }
+    });
+
+    await test('request hub releases completed read deduplication before a consumer requests readback', async () => {
+      const { context, page } = await setup(browser);
+      try {
+        await page.evaluate(() => {
+          window.readbackResult = null;
+          const core = requireFeature('core');
+          core.apiFetch(API.info).then(async () => {
+            window.readbackResult = await core.apiFetch(API.info);
+          });
+        });
+        await respond(page, { generation: 1 });
+        await page.waitForFunction(() => window.testRequests.length === 2 || window.readbackResult !== null);
+        assert.equal(await page.evaluate(() => window.testRequests.length), 2);
+        await respond(page, { generation: 2 });
+        await page.waitForFunction(() => window.readbackResult !== null);
+        assert.deepEqual(await page.evaluate(() => window.readbackResult), { generation: 2 });
+      } finally { await context.close(); }
+    });
+
+    for (const outcome of ['cancel', 'timeout']) {
+      await test(`request hub token ${outcome} does not prompt or dispatch a late mutation`, async () => {
+        const { context, page } = await setup(browser, undefined, false);
+        try {
+          await page.clock.install();
+          await page.evaluate((outcome) => {
+            window.promptCount = 0;
+            window.prompt = () => { window.promptCount += 1; return 'unexpected-late-token'; };
+            window.tokenResult = null;
+            const controller = new AbortController();
+            requireFeature('core').apiFetch(API.standbyGuard, { method: 'POST', body: '{}', timeoutMs: 100, controller })
+              .catch((error) => { window.tokenResult = error.code; });
+            if (outcome === 'cancel') controller.abort();
+          }, outcome);
+          if (outcome === 'timeout') await page.clock.runFor(101);
+          await page.waitForFunction(() => window.tokenResult !== null);
+          assert.equal(await page.evaluate(() => window.tokenResult), outcome === 'cancel' ? 'REQUEST_CANCELLED' : 'REQUEST_TIMEOUT');
+          await respond(page, { error: 'Auth unavailable' }, 500);
+          await page.waitForFunction(() => requireFeature('core').requestHubState().active === 0);
+          assert.equal(await page.evaluate(() => window.promptCount), 0);
+          assert.equal(await page.evaluate(() => window.testRequests.filter((entry) => entry.method === 'POST').length), 0);
+          assert.equal(await page.evaluate(() => requireFeature('auth').hasToken()), false);
+        } finally { await context.close(); }
+      });
+    }
+
+    await test('request hub invalidates a rejected token before parsing an HTML error body', async () => {
+      const { context, page } = await setup(browser);
+      try {
+        await page.evaluate(() => {
+          window.deniedResult = null;
+          requireFeature('core').apiFetch(API.standbyGuard, { method: 'POST', body: '{}' })
+            .catch((error) => { window.deniedResult = error.status; });
+          const entry = window.testRequests.at(-1);
+          entry.done = true;
+          entry.resolve(new Response('<html>Forbidden</html>', { status: 403 }));
+        });
+        await page.waitForFunction(() => window.deniedResult !== null);
+        assert.equal(await page.evaluate(() => window.deniedResult), 403);
+        assert.equal(await page.evaluate(() => requireFeature('auth').hasToken()), false);
+        assert.equal(await page.evaluate(() => window.testRequests.length), 1);
+      } finally { await context.close(); }
+    });
+
+    await test('master background committed cleanup failure updates confirmed state without retrying POST', async () => {
+      const { context, page } = await setup(browser);
+      try {
+        await page.addScriptTag({ content: fs.readFileSync(path.join(webroot, 'js', 'network.js'), 'utf8') });
+        await page.evaluate(async () => {
+          const initial = { background_enabled: true, background_state: 'running', final: true,
+            idle_isolate_mode: 'off', sim2_auto_manage: 'off' };
+          window.standbyPosts = [];
+          window.fetch = async (url, options = {}) => {
+            if (options.method === 'POST') {
+              window.standbyPosts.push(JSON.parse(options.body));
+              return new Response(JSON.stringify({ ...initial, ok: false, committed: true,
+                background_enabled: false, background_state: 'paused', idle_isolate_mode: 'on',
+                background_cleanup: 'failed', error: 'background stopped; temporary policy restoration failed; pause intent retained' }), { status: 500 });
+            }
+            const data = String(url).includes('standby_guard') ? initial
+              : String(url).includes('ntp') ? { ntp_server: 'time.android.com', servers: [] } : {};
+            return new Response(JSON.stringify(data), { status: 200 });
+          };
+          await requireFeature('network').refresh();
+        });
+        assert.equal(await page.locator('#idle-isolate-toggle-label').textContent(), '关闭后台任务');
+        await page.evaluate(() => requireFeature('network').toggleIdleIsolateMode());
+        assert.equal(await page.locator('#idle-isolate-toggle-label').textContent(), '开启后台任务');
+        assert.match(await page.locator('#idle-isolate-desc').textContent(), /后台任务已关闭/);
+        assert.match(await page.locator('#idle-isolate-rows').textContent(), /恢复失败/);
+        assert.match(await page.locator('#toast-wrap').textContent(), /后台开关已保存.*HTTP 500/);
+        assert.deepEqual(await page.evaluate(() => window.standbyPosts), [{ idle_isolate_mode: 'on' }]);
+        await page.evaluate(() => requireFeature('network').toggleIdleIsolateMode());
+        assert.deepEqual(await page.evaluate(() => window.standbyPosts), [{ idle_isolate_mode: 'on' }, { idle_isolate_mode: 'off' }]);
+      } finally { await context.close(); }
+    });
+
+    await test('background restriction compact commit stays unconfirmed until a read-only refresh succeeds', async () => {
+      const { context, page } = await setup(browser, undefined, true, true);
+      try {
+        await page.evaluate(async () => {
+          window.bgPosts = [];
+          window.failBgReadback = false;
+          let enabled = 'on';
+          window.fetch = async (url, options = {}) => {
+            if (options.method === 'POST') {
+              window.bgPosts.push(JSON.parse(options.body));
+              enabled = 'off';
+              window.failBgReadback = true;
+              return new Response(JSON.stringify({ ok: true, committed: true, enabled }), { status: 200 });
+            }
+            if (window.failBgReadback) return new Response('{"ok":false,"error":"readback unavailable"}', { status: 503 });
+            return new Response(JSON.stringify({ ok: true, enabled, packages: [], suggestions: [],
+              bg_contract: { policy_order: ['stop_after_leave', 'bucket'], allowed_delays: [5], default_policy: 'stop_after_leave', default_delay: 5 } }), { status: 200 });
+          };
+          await requireFeature('memory').refreshRestrictions();
+        });
+        assert.equal(await page.locator('#bg-restrict-toggle-label').textContent(), '关闭');
+        await page.evaluate(() => requireFeature('memory').toggleBgRestrict());
+        assert.match(await page.locator('#bg-restrict-desc').textContent(), /已提交，回读未确认/);
+        assert.match(await page.locator('#bg-restrict-rows').textContent(), /readback unavailable/);
+        assert.doesNotMatch(await page.locator('#bg-restrict-rows').textContent(), /尚未添加应用/);
+        assert.equal(await page.locator('#bg-restrict-toggle-btn').isDisabled(), true);
+        assert.match(await page.locator('#toast-wrap').textContent(), /已提交，回读未确认/);
+        assert.deepEqual(await page.evaluate(() => window.bgPosts), [{ action: 'toggle' }]);
+        await page.evaluate(() => requireFeature('memory').forceRefreshBgRestrict());
+        assert.deepEqual(await page.evaluate(() => window.bgPosts), [{ action: 'toggle' }]);
+        await page.evaluate(async () => { window.failBgReadback = false; await requireFeature('memory').forceRefreshBgRestrict(); });
+        assert.equal(await page.locator('#bg-restrict-toggle-btn').isEnabled(), true);
+        assert.equal(await page.locator('#bg-restrict-toggle-label').textContent(), '开启');
+        assert.doesNotMatch(await page.locator('#bg-restrict-desc').textContent(), /未确认/);
+        assert.deepEqual(await page.evaluate(() => window.bgPosts), [{ action: 'toggle' }]);
+      } finally { await context.close(); }
+    });
+
+    await test('hidden first load resumes data initialization once without rebinding the UI', async () => {
+      const context = await browser.newContext({ bypassCSP: true });
+      const page = await context.newPage();
+      page.on('pageerror', (error) => results.push({ error: error.message }));
+      try {
+        await page.route('**/*', (route) => route.request().isNavigationRequest()
+          ? route.fulfill({ contentType: 'text/html', body: documentHtml }) : route.abort());
+        await page.goto('http://127.0.0.1:6210/');
+        for (const file of ['runtime', 'ui', 'common', 'diagnostics']) {
+          await page.addScriptTag({ content: fs.readFileSync(path.join(webroot, 'js', `${file}.js`), 'utf8') });
+        }
+        await page.clock.install();
+        await page.evaluate(() => {
+          window.initCounts = { profile: 0, thermal: 0, theme: 0, profileLoad: 0, thermalLoad: 0, profileRefresh: 0, thermalRefresh: 0 };
+          window.initialContractLoaded = false;
+          window.reviewVisible = false;
+          Object.defineProperty(document, 'hidden', { configurable: true, get: () => !window.reviewVisible });
+          Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => window.reviewVisible ? 'visible' : 'hidden' });
+          sessionStorage.setItem(STORAGE_TOKEN_KEY, 'lifecycle-test-token');
+          window.fetch = async () => new Response('{"model":"Pixel 9 Pro","module_version":"review"}');
+          registerFeature('profile', {
+            initialize() { window.initCounts.profile += 1; },
+            load() { window.initCounts.profileLoad += 1; return new Promise((resolve) => { window.finishProfileLoad = () => { window.initialContractLoaded = true; resolve(true); }; }); },
+            refresh() { window.initCounts.profileRefresh += 1; return Promise.resolve(true); },
+            syncOptionalModuleUi() {}
+          });
+          registerFeature('thermal', {
+            initialize() { window.initCounts.thermal += 1; },
+            load() { window.initCounts.thermalLoad += 1; return Promise.resolve(true); },
+            refresh() { window.initCounts.thermalRefresh += 1; return Promise.resolve(true); }, pause() {}
+          });
+          registerFeature('theme', { initialize() { window.initCounts.theme += 1; } });
+          registerFeature('memory', { refresh: async () => true, refreshRestrictions: async () => true });
+          registerFeature('network', { refresh: async () => true, setBasebandBackendState() {}, setBasebandInstalled() {}, syncDeviceClockForTab() {}, stopDeviceClock() {} });
+          registerFeature('analytics', { pause() {}, isActive: () => false });
+        });
+        await page.addScriptTag({ content: fs.readFileSync(path.join(webroot, 'app.js'), 'utf8') });
+        await page.evaluate(() => document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true })));
+        assert.deepEqual(results.filter((item) => item.error), []);
+        assert.equal(await page.evaluate(() => window.initCounts.profileLoad), 0);
+        await page.evaluate(() => {
+          window.reviewVisible = true;
+          document.dispatchEvent(new Event('visibilitychange'));
+          window.dispatchEvent(new Event('pageshow'));
+        });
+        await page.waitForFunction(() => typeof window.finishProfileLoad === 'function');
+        assert.equal(await page.evaluate(() => window.initCounts.profileLoad), 1);
+        await page.evaluate(() => window.finishProfileLoad());
+        await page.waitForFunction(() => requireFeature('shell').isPolling());
+        assert.equal(await page.evaluate(() => window.initialContractLoaded), true);
+        assert.deepEqual(await page.evaluate(() => window.initCounts), { profile: 1, thermal: 1, theme: 1, profileLoad: 1, thermalLoad: 1, profileRefresh: 1, thermalRefresh: 1 });
+        await page.evaluate(() => {
+          window.reviewVisible = false;
+          document.dispatchEvent(new Event('visibilitychange'));
+          window.reviewVisible = true;
+          document.dispatchEvent(new Event('visibilitychange'));
+        });
+        await page.waitForFunction(() => window.initCounts.profileRefresh === 2);
+        assert.equal(await page.evaluate(() => window.initCounts.profileLoad), 1);
+        assert.equal(await page.evaluate(() => window.initCounts.profile), 1);
+      } finally { await context.close(); }
+    });
+
     await test('closed dialogs stay out of focus; Tab/Escape restore the opener', async () => {
       const { context, page } = await setup(browser);
       try {

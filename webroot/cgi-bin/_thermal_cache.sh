@@ -9,6 +9,7 @@ build_thermal_json() {
     _thermal_source="${1:-hal}"
     THERMAL_BUILD_JSON='[]'
     THERMAL_BUILD_STATUS=""
+    THERMAL_BUILD_SOURCE=sysfs
     case "$_thermal_source" in hal|sysfs) ;; *) return 1 ;; esac
     out="["
     sep=""
@@ -28,7 +29,8 @@ build_thermal_json() {
 
     _thermal_dump=""
     if [ "$_thermal_source" = hal ]; then
-        _thermal_dump=$(timeout -k 2 15 dumpsys -t 10 thermalservice 2>/dev/null) || _thermal_dump=""
+        _thermal_dump=$(timeout -k 1 6 dumpsys -t 5 thermalservice 2>/dev/null) || _thermal_dump=""
+        [ -z "$_thermal_dump" ] || THERMAL_BUILD_SOURCE=hal
         THERMAL_BUILD_STATUS=$(printf '%s\n' "$_thermal_dump" \
             | sed -n 's/.*Thermal Status:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)
     fi
@@ -75,25 +77,5 @@ build_thermal_json() {
 }
 
 build_thermal_sysfs_json() {
-    _sysfs_out="["
-    _sysfs_sep=""
-    _sysfs_seen=""
-    _sysfs_append() {
-        _sysfs_name="$1"; _sysfs_value="$2"
-        case "$_sysfs_value" in ''|*[!0-9-]*) return ;; esac
-        case "$_sysfs_seen" in *"|${_sysfs_name}|"*) return ;; esac
-        _sysfs_out="${_sysfs_out}${_sysfs_sep}{\"zone\":\"${_sysfs_name}\",\"temp\":${_sysfs_value}}"
-        _sysfs_sep=","; _sysfs_seen="${_sysfs_seen}|${_sysfs_name}|"
-    }
-    for _sysfs_zone in /sys/class/thermal/thermal_zone*; do
-        [ -f "$_sysfs_zone/type" ] && [ -f "$_sysfs_zone/temp" ] || continue
-        _sysfs_type=$(cat "$_sysfs_zone/type" 2>/dev/null | tr -d ' \r\n')
-        case "$_sysfs_type" in VIRTUAL-SKIN|soc_therm|charging_therm|btmspkr_therm|battery)
-            _sysfs_temp=$(cat "$_sysfs_zone/temp" 2>/dev/null | tr -d ' \r\n')
-            _sysfs_append "$_sysfs_type" "$_sysfs_temp" ;;
-        esac
-    done
-    _sysfs_battery=$(cat /sys/class/power_supply/battery/temp 2>/dev/null | tr -d ' \r\n')
-    case "$_sysfs_battery" in ''|*[!0-9-]*|0) ;; *) _sysfs_append battery "$((_sysfs_battery * 100))" ;; esac
-    printf '%s]' "$_sysfs_out"
+    build_thermal_json sysfs
 }

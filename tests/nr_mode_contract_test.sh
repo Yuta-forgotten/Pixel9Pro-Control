@@ -14,6 +14,7 @@ check_eq() {
 mkdir -p "$TEST_ROOT" || exit 2
 . "$SOURCE_ROOT/scripts/runtime_defaults_lib.sh" || exit 2
 . "$SOURCE_ROOT/scripts/nr_mode_lib.sh" || exit 2
+. "$SOURCE_ROOT/scripts/background_tasks_lib.sh" || exit 2
 
 MOCK_MODE_FILE="$TEST_ROOT/mode"
 runtime_android_settings() {
@@ -47,6 +48,21 @@ check_eq 'failed Settings write preserves prior mode' '33,11' "$(cat "$MOCK_MODE
 saved="$TEST_ROOT/saved"
 if nr_mode_save_current "$saved" '33,11'; then ok 'persists verified restore mode'; else not_ok 'persists verified restore mode'; fi
 check_eq 'saved restore mode retains DSDS tuple' '33,11' "$(cat "$saved")"
+
+NR_TEST_FAIL_PUT=0
+printf '9,22' > "$MOCK_MODE_FILE"
+nr_mode_restore_slot0_verified preferred_network_mode1 '33,11'
+check_eq 'restore changes slot 0 without overwriting a later slot 1 choice' '33,22' "$(cat "$MOCK_MODE_FILE")"
+nr_mode_lock_acquire "$TEST_ROOT" || exit 1
+if ( NR_MODE_LOCK_HELD=0; nr_mode_lock_acquire "$TEST_ROOT" ); then
+    not_ok 'competing NR transaction is rejected'
+else
+    ok 'competing NR transaction is rejected'
+fi
+nr_mode_lock_release || exit 1
+nr_mode_lock_acquire "$TEST_ROOT" || exit 1
+ok 'released NR transaction can be reacquired'
+nr_mode_lock_release || exit 1
 
 printf '1..%s\n' "$((PASS + FAIL))"
 printf '# pass=%s fail=%s\n' "$PASS" "$FAIL"

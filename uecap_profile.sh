@@ -644,6 +644,7 @@ uecap_hybrid_stage_mode() {
             [ -n "$_uecap_hybrid_baseline" ] \
                 && [ "$_uecap_hybrid_context" = u:object_r:vendor_fw_file:s0 ] || return 1
             rm -f "$_uecap_hybrid_stage_target" 2>/dev/null || return 1
+            [ ! -e "$_uecap_hybrid_stage_target" ] && [ ! -L "$_uecap_hybrid_stage_target" ] || return 1
             uecap_atomic_write "$UECAP_STOCK_BASELINE_FILE" "$_uecap_hybrid_baseline" || return 1
             uecap_atomic_write "$MODDIR/.uecap_content_image" metadata_staging || return 1
             uecap_atomic_write "$MODDIR/.uecap_backend" hybrid_mount || return 1
@@ -656,7 +657,10 @@ uecap_hybrid_stage_mode() {
     [ -f "$_uecap_hybrid_stage_source" ] || return 1
     mkdir -p "$_uecap_hybrid_stage_root" || return 1
     _uecap_hybrid_stage_tmp="${_uecap_hybrid_stage_target}.tmp.$$"
-    cp -f "$_uecap_hybrid_stage_source" "$_uecap_hybrid_stage_tmp" || return 1
+    cp -f "$_uecap_hybrid_stage_source" "$_uecap_hybrid_stage_tmp" || {
+        rm -f "$_uecap_hybrid_stage_tmp" 2>/dev/null
+        return 1
+    }
     chmod 0644 "$_uecap_hybrid_stage_tmp" 2>/dev/null || {
         rm -f "$_uecap_hybrid_stage_tmp" 2>/dev/null
         return 1
@@ -666,7 +670,11 @@ uecap_hybrid_stage_mode() {
         rm -f "$_uecap_hybrid_stage_tmp" 2>/dev/null
         return 1
     }
-    mv -f "$_uecap_hybrid_stage_tmp" "$_uecap_hybrid_stage_target" || return 1
+    mv -f "$_uecap_hybrid_stage_tmp" "$_uecap_hybrid_stage_target" || {
+        rm -f "$_uecap_hybrid_stage_tmp" 2>/dev/null
+        return 1
+    }
+    [ "$(uecap_hash "$_uecap_hybrid_stage_target")" = "$(uecap_hash "$_uecap_hybrid_stage_source")" ] || return 1
     uecap_atomic_write "$MODDIR/.uecap_content_image" metadata_staging || return 1
     uecap_atomic_write "$MODDIR/.uecap_backend" hybrid_mount || return 1
     UECAP_CONTENT_IMAGE="$_uecap_hybrid_stage_target"
@@ -1383,6 +1391,102 @@ uecap_restore_previous_mount() {
     ! uecap_target_is_mounted
 }
 
+uecap_hybrid_transaction_path() {
+    case "$1" in
+        source) printf '%s/system/vendor/firmware/uecapconfig/%s' "$MODDIR" "$UECAP_TARGET_NAME" ;;
+        baseline) printf '%s' "$UECAP_STOCK_BASELINE_FILE" ;;
+        content) printf '%s/.uecap_content_image' "$MODDIR" ;;
+        backend) printf '%s/.uecap_backend' "$MODDIR" ;;
+        mode) printf '%s' "$UECAP_MODE_FILE" ;;
+        manual) printf '%s' "$UECAP_MANUAL_MODE_FILE" ;;
+        policy) printf '%s' "$UECAP_POLICY_FILE" ;;
+        reason) printf '%s' "$UECAP_REASON_FILE" ;;
+        switch) printf '%s' "$UECAP_SWITCH_FILE" ;;
+        reboot) printf '%s/.uecap_reboot_required' "$MODDIR" ;;
+        *) return 1 ;;
+    esac
+}
+
+uecap_hybrid_transaction_restore() {
+    _uecap_ht_restore_failed=0
+    for _uecap_ht_key in $UECAP_HYBRID_TX_KEYS; do
+        _uecap_ht_path=$(uecap_hybrid_transaction_path "$_uecap_ht_key") || return 1
+        if [ -f "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key.present" ]; then
+            uecap_hybrid_transaction_matches "$_uecap_ht_key" "$_uecap_ht_path" && continue
+            _uecap_ht_tmp="${_uecap_ht_path}.rollback.$$"
+            if ! ln "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key" "$_uecap_ht_tmp" 2>/dev/null; then
+                cp -p "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key" "$_uecap_ht_tmp" 2>/dev/null \
+                    || { _uecap_ht_restore_failed=1; continue; }
+                _uecap_ht_context=$(cat "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key.context" 2>/dev/null)
+                case "$_uecap_ht_context" in u:*) chcon "$_uecap_ht_context" "$_uecap_ht_tmp" 2>/dev/null || true ;; esac
+            fi
+            if ! mv -f "$_uecap_ht_tmp" "$_uecap_ht_path" 2>/dev/null \
+                || ! uecap_hybrid_transaction_matches "$_uecap_ht_key" "$_uecap_ht_path"; then
+                rm -f "$_uecap_ht_tmp" 2>/dev/null
+                _uecap_ht_restore_failed=1
+                continue
+            fi
+        else
+            rm -f "$_uecap_ht_path" 2>/dev/null || _uecap_ht_restore_failed=1
+            [ ! -e "$_uecap_ht_path" ] && [ ! -L "$_uecap_ht_path" ] || _uecap_ht_restore_failed=1
+        fi
+    done
+    [ "$_uecap_ht_restore_failed" -eq 0 ]
+}
+
+uecap_hybrid_transaction_matches() {
+    [ -f "$2" ] && [ ! -L "$2" ] \
+        && [ "$(uecap_hash "$2")" = "$(uecap_hash "$UECAP_HYBRID_TX_ROOT/$1")" ] \
+        && [ "$(stat -c %a "$2" 2>/dev/null)" = "$(cat "$UECAP_HYBRID_TX_ROOT/$1.mode")" ] || return 1
+    _uecap_ht_match_context=$(cat "$UECAP_HYBRID_TX_ROOT/$1.context" 2>/dev/null)
+    case "$_uecap_ht_match_context" in
+        u:*) [ "$(ls -Zd "$2" 2>/dev/null | awk '{print $1}')" = "$_uecap_ht_match_context" ] ;;
+        *) return 0 ;;
+    esac
+}
+
+uecap_hybrid_transaction_clear() {
+    for _uecap_ht_key in $UECAP_HYBRID_TX_KEYS; do
+        rm -f "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key" "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key.present" \
+            "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key.mode" "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key.context" 2>/dev/null || return 1
+    done
+    rmdir "$UECAP_HYBRID_TX_ROOT" 2>/dev/null
+}
+
+# The regular Hybrid Mount source is consumed on the next boot. Snapshot it
+# together with every intent marker so a failed HTTP request cannot change
+# next-boot radio policy. Keep an incomplete rollback journal for diagnosis.
+uecap_hybrid_stage_transaction() (
+    UECAP_HYBRID_TX_ROOT="$MODDIR/.uecap_stage_tx"
+    UECAP_HYBRID_TX_KEYS='source baseline content backend mode manual policy reason switch reboot'
+    mkdir "$UECAP_HYBRID_TX_ROOT" 2>/dev/null || exit 3
+    _uecap_ht_active=0
+    _uecap_ht_committed=0
+    trap '_uecap_ht_rc=$?; trap - EXIT; if [ "$_uecap_ht_active" -eq 1 ] && [ "$_uecap_ht_committed" -ne 1 ]; then uecap_hybrid_transaction_restore || exit 2; fi; uecap_hybrid_transaction_clear || exit 2; exit "$_uecap_ht_rc"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    for _uecap_ht_key in $UECAP_HYBRID_TX_KEYS; do
+        _uecap_ht_path=$(uecap_hybrid_transaction_path "$_uecap_ht_key") || exit 3
+        [ ! -L "$_uecap_ht_path" ] && [ ! -d "$_uecap_ht_path" ] || exit 3
+        if [ -e "$_uecap_ht_path" ]; then
+            [ -f "$_uecap_ht_path" ] || exit 3
+            ln "$_uecap_ht_path" "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key" 2>/dev/null \
+                || cp -p "$_uecap_ht_path" "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key" 2>/dev/null || exit 3
+            [ -n "$(uecap_hash "$_uecap_ht_path")" ] \
+                && [ "$(uecap_hash "$_uecap_ht_path")" = "$(uecap_hash "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key")" ] || exit 3
+            stat -c %a "$_uecap_ht_path" > "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key.mode" 2>/dev/null || exit 3
+            ls -Zd "$_uecap_ht_path" 2>/dev/null | awk '{print $1}' > "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key.context"
+            : > "$UECAP_HYBRID_TX_ROOT/$_uecap_ht_key.present" || exit 3
+        fi
+    done
+    _uecap_ht_active=1
+    uecap_hybrid_stage_mode "$1" || exit 1
+    uecap_commit_state "$1" "$2" "$(date +%s 2>/dev/null || echo 0)" || exit 1
+    uecap_atomic_write "$MODDIR/.uecap_reboot_required" 1 || exit 1
+    _uecap_ht_committed=1
+)
+
 uecap_apply_mode() {
     UECAP_APPLY_RESULT="invalid"
     uecap_is_available || {
@@ -1410,19 +1514,17 @@ uecap_apply_mode() {
             UECAP_APPLY_RESULT="pending_reboot_exists"
             return 5
         fi
-        uecap_stage_mode "$_uecap_apply_mode_value" || {
-            UECAP_APPLY_RESULT="hybrid_stage_failed"
-            return 1
-        }
-        _uecap_hybrid_switch_time=$(date +%s 2>/dev/null || echo 0)
-        uecap_commit_state "$_uecap_apply_mode_value" "$_uecap_apply_reason" "$_uecap_hybrid_switch_time" || {
-            UECAP_APPLY_RESULT="hybrid_state_commit_failed"
-            return 1
-        }
-        uecap_atomic_write "$MODDIR/.uecap_reboot_required" 1 || {
-            UECAP_APPLY_RESULT="hybrid_reboot_marker_failed"
-            return 1
-        }
+        _uecap_hybrid_rc=0
+        uecap_hybrid_stage_transaction "$_uecap_apply_mode_value" "$_uecap_apply_reason" || _uecap_hybrid_rc=$?
+        case "$_uecap_hybrid_rc" in
+            0) UECAP_STATE_ROLLBACK_RESULT=not_needed ;;
+            2) UECAP_STATE_ROLLBACK_RESULT=incomplete; UECAP_APPLY_RESULT=hybrid_rollback_incomplete; return 2 ;;
+            3) UECAP_STATE_ROLLBACK_RESULT=not_needed; UECAP_APPLY_RESULT=hybrid_snapshot_failed; return 1 ;;
+            *) UECAP_STATE_ROLLBACK_RESULT=complete; UECAP_APPLY_RESULT=hybrid_failed_rolled_back; return 1 ;;
+        esac
+        UECAP_CONTENT_IMAGE="$MODDIR/system/vendor/firmware/uecapconfig/$UECAP_TARGET_NAME"
+        UECAP_STAGE_RESULT=staged
+        case "$_uecap_apply_mode_value" in stock|disabled) UECAP_CONTENT_IMAGE=metadata_staging; UECAP_STAGE_RESULT=stock ;; esac
         UECAP_APPLY_RESULT=staged_reboot_required
         UECAP_MOUNT_OBSERVED=pending_reboot
         UECAP_RELOAD_RESULT=not_required_pre_modem

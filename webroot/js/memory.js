@@ -12,6 +12,7 @@ const state = {
   bgContract: null,
   bgRestrictEnabled: 'on',
   bgRestrictBusy: false,
+  bgRestrictReadbackPending: false,
   bgRestrictSuggestions: []
 };
 
@@ -601,11 +602,11 @@ function createBgDelaySelect(value) {
 
 function syncBgDelayControl(policySelect, delaySelect) {
   if (!policySelect || !delaySelect) return;
-  delaySelect.disabled = state.bgRestrictBusy || policySelect.value !== 'stop_after_leave';
+  delaySelect.disabled = state.bgRestrictBusy || state.bgRestrictReadbackPending || policySelect.value !== 'stop_after_leave';
 }
 
 function syncBgRestrictControls() {
-  const busy = state.bgRestrictBusy || !state.bgContract;
+  const busy = state.bgRestrictBusy || state.bgRestrictReadbackPending || !state.bgContract;
   if (refs.bgRestrictToggleBtn) refs.bgRestrictToggleBtn.disabled = busy;
   if (refs.bgRestrictAddBtn) refs.bgRestrictAddBtn.disabled = busy;
   if (refs.bgRestrictPkgInput) refs.bgRestrictPkgInput.disabled = busy;
@@ -666,6 +667,7 @@ function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled, runtime = {
 
 function renderBgRestrict(data) {
   applyBgContract(data);
+  state.bgRestrictReadbackPending = false;
   state.bgRestrictEnabled = data.enabled === 'on' ? 'on' : 'off';
   const on = state.bgRestrictEnabled === 'on';
   refs.bgRestrictToggleLabel.textContent = on ? '关闭' : '开启';
@@ -747,14 +749,31 @@ function renderBgRestrict(data) {
   syncBgRestrictControls();
 }
 
-async function refreshBgRestrict() {
-  return requireFeature('core').runFeatureTask('memory.bgRestrict.refresh', async () => {
+function showBgReadbackPending(detail = '') {
+  const message = `后台限制设置已提交，回读未确认${detail ? `：${detail}` : '，正在读取当前状态…'}`;
+  state.bgRestrictReadbackPending = true;
+  refs.bgRestrictToggleLabel.textContent = '等待确认';
+  refs.bgRestrictDesc.textContent = message;
+  refs.bgRestrictRows.replaceChildren(detail
+    ? errorBlock(`${message}。可点“刷新”只读核对，不会重新提交修改。`)
+    : buildInfoRow('提交状态', '已提交，等待当前状态回读', 'warn'));
+  syncBgRestrictControls();
+}
+
+async function refreshBgRestrict({ readback = false } = {}) {
+  return requireFeature('core').runFeatureTask(readback ? 'memory.bgRestrict.readback' : 'memory.bgRestrict.refresh', async () => {
     try {
-      const data = await apiFetch(API.bgRestrict, { timeoutMs: 8000, priority: 'normal', scope: 'memory.bgRestrict.read' });
-    renderBgRestrict(data);
+      const data = await apiFetch(API.bgRestrict, { timeoutMs: 8000, dedupe: !readback,
+        priority: readback ? 'interactive' : 'normal', scope: readback ? 'memory.bgRestrict.readback' : 'memory.bgRestrict.read' });
+      if (data?.ok === false) throw new Error(data.error || '后台限制状态回读失败');
+      renderBgRestrict(data);
       return true;
     } catch (err) {
       if (requireFeature('core').isRequestCancelled?.(err)) return null;
+      if (state.bgRestrictReadbackPending) {
+        showBgReadbackPending(err.message);
+        return false;
+      }
       syncBgRestrictControls();
       refs.bgRestrictRows.replaceChildren();
       refs.bgRestrictRows.appendChild(errorBlock('获取失败：' + err.message));
@@ -764,35 +783,15 @@ async function refreshBgRestrict() {
 }
 
 async function forceRefreshBgRestrict() {
-  try {
-    const data = await apiFetch(API.bgRestrict, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'refresh' }),
-      timeoutMs: 10000, priority: 'interactive', scope: 'memory.bgRestrict'
-    });
-    if (data.ok) {
-      const readback = await apiFetch(API.bgRestrict, { timeoutMs: 8000, priority: 'interactive', scope: 'memory.bgRestrict.readback' });
-      if (readback?.ok === false) throw new Error(readback.error || '后台限制状态回读失败');
-      renderBgRestrict(readback);
-      showToast('已重新应用后台策略');
-    } else {
-      const fallback = await apiFetch(API.bgRestrict, { timeoutMs: 8000, priority: 'normal', scope: 'memory.bgRestrict.read' });
-      renderBgRestrict(fallback);
-    }
-  } catch (err) {
-    syncBgRestrictControls();
-    refs.bgRestrictRows.replaceChildren();
-    refs.bgRestrictRows.appendChild(errorBlock('获取失败：' + err.message));
-  }
+  if (state.bgRestrictReadbackPending) return refreshBgRestrict({ readback: true });
+  return bgRestrictAction({ action: 'refresh' }, '已重新应用后台策略并回读');
 }
 
 async function bgRestrictAction(body, successText) {
-  if (state.bgRestrictBusy) return;
+  if (state.bgRestrictBusy || state.bgRestrictReadbackPending) return false;
   state.bgRestrictBusy = true;
   syncBgRestrictControls();
-  let nextData = null;
-  let ok = false;
+  let committed = false;
   try {
     const data = await apiFetch(API.bgRestrict, {
       method: 'POST',
@@ -800,22 +799,23 @@ async function bgRestrictAction(body, successText) {
       body: JSON.stringify(body),
       timeoutMs: 10000, priority: 'interactive', scope: 'memory.bgRestrict'
     });
-    if (data.ok) {
-      nextData = await apiFetch(API.bgRestrict, { timeoutMs: 8000, priority: 'interactive', scope: 'memory.bgRestrict.readback' });
-      if (nextData?.ok === false) throw new Error(nextData.error || '后台限制状态回读失败');
-      ok = true;
-      showToast(successText);
-    } else {
-      showToast(`操作失败：${data.error || '未知'}`);
+    if (data?.ok !== true || data.committed === false) throw new Error(data?.error || '后台限制修改未确认提交');
+    committed = true;
+    showBgReadbackPending();
+    if (await refreshBgRestrict({ readback: true }) !== true) {
+      showToast('后台限制设置已提交，回读未确认；请刷新核对');
+      return false;
     }
+    showToast(successText);
+    return true;
   } catch (e) {
-    showToast('请求失败：' + e.message);
+    if (committed) showBgReadbackPending(e.message);
+    showToast(`${committed ? '设置已提交，回读未确认' : '请求失败'}：${e.message}`);
+    return false;
   } finally {
     state.bgRestrictBusy = false;
-    if (nextData) renderBgRestrict(nextData);
     syncBgRestrictControls();
   }
-  return ok;
 }
 
 async function toggleBgRestrict() {

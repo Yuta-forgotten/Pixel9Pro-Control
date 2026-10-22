@@ -17,7 +17,6 @@
 <link rel="stylesheet" href="/css/surfaces.css?v=__WEBUI_VER__">
 <link rel="stylesheet" href="/css/modal.css?v=__WEBUI_VER__">
 <link rel="stylesheet" href="/css/settings.css?v=__WEBUI_VER__">
-<link rel="stylesheet" href="/css/analytics-legacy.css?v=__WEBUI_VER__">
 <link rel="stylesheet" href="/css/analytics.css?v=__WEBUI_VER__">
 <link rel="stylesheet" href="/css/diagnostics.css?v=__WEBUI_VER__">
 <link rel="stylesheet" href="/app.css?v=__WEBUI_VER__">
@@ -101,7 +100,7 @@
                 <div class="panel-title">内存与系统</div>
               </div>
               <div class="header-actions">
-                <button class="tiny-btn tonal" id="energy-btn" type="button">功耗统计</button>
+                <button class="tiny-btn tonal" id="energy-btn" type="button">温度历史</button>
               </div>
             </div>
             <div class="summary-grid memory-summary-grid">
@@ -467,16 +466,16 @@
         <article class="surface-card preference-card advanced-card">
           <div class="panel-head">
             <div class="panel-copy">
-              <div class="kicker">后台观测控制</div>
-              <div class="panel-title">后台观测</div>
-              <div class="panel-desc" id="idle-isolate-desc">正在读取后台观测状态…</div>
+              <div class="kicker">待机策略</div>
+              <div class="panel-title">模块后台总开关</div>
+              <div class="panel-desc" id="idle-isolate-desc">正在读取后台任务状态…</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn primary" id="idle-isolate-toggle-btn" type="button"><span id="idle-isolate-toggle-label">读取中…</span></button>
             </div>
           </div>
           <details class="disclosure compact">
-            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>后台观测范围</strong><small>当前状态与实际后台行为</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
+            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>后台行为</strong><small>统一控制自动策略与温度记录</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
             <div class="disclosure-body"><div class="data-list" id="idle-isolate-rows"><div class="skel" style="height:48px"></div></div></div>
           </details>
         </article>
@@ -491,8 +490,8 @@
               <div class="skel" style="height:48px"></div>
             </div>
             <div class="support-copy task-status-help">
-              <p>这里显示后台 worker 最近一次已完成检查，不是系统任务队列。亮屏时只按策略记录历史；息屏时仅保留低频记录，不执行 BatteryStats、软件排行或频繁唤醒。</p>
-              <p>打开历史页面只进行前台读取。需要临时高频温度采样时，仅在页面可见且亮屏期间运行；页面隐藏、息屏或关闭页面后自动停止。</p>
+              <p>这里显示 worker 最近一次已完成检查；总开关关闭后快照不再更新。关闭会停止温度记录和所有模块自动策略，WebUI 仍可查看已有历史和执行明确的手动操作。</p>
+              <p>温度历史亮屏约每分钟、息屏约每 15 分钟记录。使用普通可挂起 sleep，不设置唤醒闹钟、不持有唤醒锁；系统休眠时允许缺测，不为补齐曲线唤醒内核。</p>
             </div>
           </div>
         </details>
@@ -689,14 +688,12 @@
 <script src="/js/common.js?v=__WEBUI_VER__"></script>
 <script src="/js/diagnostics.js?v=__WEBUI_VER__"></script>
 <script src="/js/analytics_model.js?v=__WEBUI_VER__"></script>
-<script src="/js/capture.js?v=__WEBUI_VER__"></script>
 <script src="/js/analytics_view.js?v=__WEBUI_VER__"></script>
 <script src="/js/analytics.js?v=__WEBUI_VER__"></script>
 <script src="/js/profile.js?v=__WEBUI_VER__"></script>
 <script src="/js/thermal.js?v=__WEBUI_VER__"></script>
 <script src="/js/memory.js?v=__WEBUI_VER__"></script>
 <script src="/js/network.js?v=__WEBUI_VER__"></script>
-<script src="/js/energy.js?v=__WEBUI_VER__"></script>
 <script src="/app.js?v=__WEBUI_VER__"></script>
 </body>
 </html>

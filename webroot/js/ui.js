@@ -456,7 +456,6 @@ function closeRebootModal(message = '', options = {}) {
 
 function openDetail(title, html) {
   requireFeature('analytics').stop();
-  refs.detailModal.classList.remove('energy-mode');
   refs.detailModal.classList.remove('history-mode');
   refs.detailModal.classList.remove('analytics-mode');
   refs.detailModal.classList.remove('detail-minimized');
@@ -471,7 +470,7 @@ function openDetail(title, html) {
 }
 
 function toggleDetailMinimized() {
-  if (!refs.detailModal.classList.contains('energy-mode') && !refs.detailModal.classList.contains('history-mode') && !refs.detailModal.classList.contains('analytics-mode')) return;
+  if (!refs.detailModal.classList.contains('history-mode') && !refs.detailModal.classList.contains('analytics-mode')) return;
   const minimized = refs.detailModal.classList.toggle('detail-minimized');
   refs.detailMinimizeBtn?.setAttribute('aria-expanded', String(!minimized));
   refs.detailMinimizeBtn?.setAttribute('aria-label', minimized ? '展开详情' : '缩小详情');
@@ -484,7 +483,6 @@ function toggleDetailMinimized() {
 function closeDetailModal(){
   requireFeature('analytics').stop();
   refs.detailModal.classList.remove('open');
-  refs.detailModal.classList.remove('energy-mode');
   refs.detailModal.classList.remove('history-mode');
   refs.detailModal.classList.remove('analytics-mode');
   refs.detailModal.classList.remove('detail-minimized');
@@ -496,30 +494,8 @@ function closeDetailModal(){
 
 // 仅夹取 [min,max] 并取整, 不吸附 step —— 预设/手输需保留 27386 等非整步原厂值;
 // step 吸附交给滑块 (<input type=range step>) 的原生行为
-function stopTempChartRefresh() {
-  requireFeature('thermal').stopChart();
-}
-
-function pauseTempChartRefresh() {
-  requireFeature('thermal').pauseChart();
-}
-
-function stopEnergyDetailRefresh() {
-  requireFeature('energy').stop();
-}
-
-function pauseEnergyDetailRefresh() {
-  requireFeature('energy').pause();
-}
-
-function scheduleTempChartRefresh(delay = TEMP_CHART_REFRESH_MS) {
-  requireFeature('thermal').scheduleChart(delay);
-}
-
 registerFeature('ui', {
   initialize: initRefs,
-  pauseTemperature: pauseTempChartRefresh,
-  pauseEnergy: pauseEnergyDetailRefresh,
   getElement: $,
   setStaticHtml,
   pushModalState,
@@ -538,9 +514,6 @@ registerFeature('ui', {
   openDetail,
   toggleDetailMinimized,
   closeDetailModal,
-  stopTemperature: stopTempChartRefresh,
-  stopEnergy: stopEnergyDetailRefresh,
-  scheduleTemperature: scheduleTempChartRefresh,
   getRebootContext: () => state.rebootContext
 });
 })();

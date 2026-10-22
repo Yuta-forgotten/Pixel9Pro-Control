@@ -16,7 +16,7 @@ NR_LIB="$MODDIR/scripts/nr_mode_lib.sh"
     || json_error '500 Internal Server Error' 'NR mode contract failed to load'
 
 read_actual_rat() {
-    dumpsys telephony.registry 2>/dev/null \
+    timeout -k 1 4 dumpsys -t 3 telephony.registry 2>/dev/null \
         | sed -n 's/.*mTelephonyDisplayInfo=TelephonyDisplayInfo {network=\([^,} ]*\).*/\1/p' \
         | head -n 1
 }
@@ -42,6 +42,10 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
     require_token
     acquire_lock "nr_switch"
+    nr_mode_lock_acquire "$MODDIR" || json_error '409 Conflict' 'NR policy transaction is busy'
+    trap 'nr_mode_lock_release; release_lock' EXIT
+    trap 'nr_mode_lock_release; release_lock; exit 130' INT
+    trap 'nr_mode_lock_release; release_lock; exit 143' TERM
     read_json_body 256
     body="$JSON_BODY"
     action=$(printf '%s' "$body" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
@@ -53,22 +57,24 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
         set) case "$requested" in on|off) new="$requested" ;; *) json_error '400 Bad Request' 'invalid enabled' ;; esac ;;
         *) json_error '400 Bad Request' 'invalid action' ;;
     esac
-    if [ "$new" = "off" ]; then
+    _nr_restore_applied=0
+    if [ "$new" = "off" ] && [ "$current" = on ]; then
         saved_nr=$(nr_mode_read_saved "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" 2>/dev/null) \
             || json_error '500 Internal Server Error' 'saved NR mode is unavailable'
         nr_mode_detect_setting
         _nr_key="$NR_MODE_KEY"
         _nr_before="$NR_MODE_CURRENT"
-        if ! nr_mode_write_verified "$_nr_key" "$saved_nr"; then
+        if ! nr_mode_restore_slot0_verified "$_nr_key" "$saved_nr"; then
             if nr_mode_is_valid_raw "$_nr_before" \
                 && nr_mode_write_verified "$_nr_key" "$_nr_before"; then
                 json_error '500 Internal Server Error' 'failed to restore NR mode; previous mode restored'
             fi
             json_error '500 Internal Server Error' 'failed to restore NR mode and rollback was incomplete'
         fi
+        _nr_restore_applied=1
     fi
     if ! cgi_atomic_write "$STATE_FILE" "$new"; then
-        if [ "$new" = "off" ]; then
+        if [ "$_nr_restore_applied" -eq 1 ]; then
             if nr_mode_is_valid_raw "$_nr_before" \
                 && nr_mode_write_verified "$_nr_key" "$_nr_before"; then
                 json_error '500 Internal Server Error' 'failed to persist NR setting; previous mode restored'
@@ -77,6 +83,7 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
         fi
         json_error '500 Internal Server Error' 'failed to persist NR setting'
     fi
+    nr_mode_lock_release || json_error '500 Internal Server Error' 'NR policy saved but lock release failed'
     json_headers
     printf '{"ok":true,"nr_switch":"%s"}' "$new"
 else

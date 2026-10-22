@@ -101,7 +101,12 @@ test('性能、温控与详情交互保持可用', async ({ page }) => {
   await expect(page.locator('#modal-detail')).toHaveClass(/analytics-mode/);
   await expect(page.locator('#modal-detail')).toHaveClass(/open/);
   await expect(page.locator('.analytics-overview')).toBeVisible();
-  await expect(page.locator('.analytics-export-actions')).toContainText('导出当前区间');
+  await expect(page.locator('.analytics-hero-value')).toHaveText('39.1°C');
+  await page.locator('[data-range="120"]').click();
+  await expect(page.locator('.analytics-hero-badge')).toHaveText('2 小时');
+  await page.locator('[data-thermal-sensor="battery"]').click();
+  await expect(page.locator('.analytics-hero-kicker')).toHaveText('最近电池温度');
+  await expect(page.locator('.analytics-hero-value')).toHaveText('34.2°C');
   await page.locator('#detail-close-x').click();
   await expect(page.locator('#modal-detail')).not.toHaveClass(/open/);
 
@@ -110,6 +115,7 @@ test('性能、温控与详情交互保持可用', async ({ page }) => {
   await expect(page.locator('#modal-detail')).toHaveClass(/analytics-mode/);
   await expect(page.locator('#modal-detail')).toHaveClass(/open/);
   await expect(page.locator('.analytics-overview')).toBeVisible();
+  await expect(page.locator('.analytics-hero-value')).toHaveText('39.1°C');
   await page.locator('#detail-minimize-btn').click();
   await expect(page.locator('#modal-detail')).toHaveClass(/detail-minimized/);
   await page.locator('#detail-minimize-btn').click();
@@ -120,6 +126,127 @@ test('性能、温控与详情交互保持可用', async ({ page }) => {
   await expectNoHorizontalOverflow(page);
   await expectNoInvalidRenderedValues(page);
   expect(errors).toEqual([]);
+});
+
+test('温度历史区间与传感器切换有记录、有曲线且读取失败后可恢复', async ({ page }, testInfo) => {
+  const errors = [];
+  const requests = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('request', (request) => requests.push(request.url()));
+  await page.goto('/');
+  await waitForWebuiReady(page);
+  await page.locator('#home-temp-chart-btn').click();
+  await expect(page.locator('#detail-title')).toHaveText('温度历史');
+  await expect(page.locator('.analytics-hero-value')).toHaveText('39.1°C');
+  await expect(page.locator('.analytics-chart-legend')).toContainText('3 个有效点');
+  await page.locator('[data-range="120"]').click();
+  await expect(page.locator('.analytics-hero-badge')).toHaveText('2 小时');
+  await expect(page.locator('.analytics-hero-value')).toHaveText('39.1°C');
+  const chartPixels = await page.locator('.analytics-chart-wrap canvas').evaluate((canvas) => {
+    const context = canvas.getContext('2d');
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    const sample = document.createElement('canvas').getContext('2d');
+    sample.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim();
+    sample.fillRect(0, 0, 1, 1);
+    const color = sample.getImageData(0, 0, 1, 1).data;
+    let matches = 0;
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      if (pixels[offset + 3] > 220 && Math.abs(pixels[offset] - color[0]) < 5
+        && Math.abs(pixels[offset + 1] - color[1]) < 5 && Math.abs(pixels[offset + 2] - color[2]) < 5) matches += 1;
+    }
+    return matches;
+  });
+  expect(chartPixels).toBeGreaterThan(10);
+  await page.screenshot({ path: testInfo.outputPath('thermal-history-2h.png'), fullPage: true });
+  await page.locator('[data-thermal-sensor="battery"]').click();
+  await expect(page.locator('.analytics-hero-value')).toHaveText('34.2°C');
+  await expect(page.locator('.analytics-hero-kicker')).toHaveText('最近电池温度');
+  await page.locator('[data-range="custom"]').click();
+  await expect(page.locator('.analytics-custom-range')).toBeVisible();
+  await page.locator('.analytics-custom-range select').selectOption('14400');
+  await page.locator('.analytics-custom-range button').click();
+  await expect(page.locator('.analytics-hero-badge')).toHaveText('自定义');
+  await expect(page.locator('.analytics-hero-value')).toHaveText('34.2°C');
+
+  // Download exactly the displayed window, without another collection request.
+  await page.locator('.analytics-export summary').click();
+  await page.screenshot({ path: testInfo.outputPath('thermal-history-export.png'), fullPage: true });
+  await expect(page.getByRole('button', { name: '导出当前区间' })).toBeEnabled();
+  const beforeExport = requests.filter((url) => url.includes('history=1')).length;
+  await page.getByLabel('温度历史导出格式').selectOption('json');
+  const jsonDownloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: '导出当前区间' }).click();
+  const jsonDownload = await jsonDownloadPromise;
+  const jsonFile = testInfo.outputPath('temperature-export.json');
+  await jsonDownload.saveAs(jsonFile);
+  const exported = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
+  expect(exported.schema).toBe('pixel9pro.temperature_history.v1');
+  expect(exported.sensor).toBe('battery');
+  expect(exported.points).toHaveLength(3);
+  expect(exported.points[2].temperature_c).toBe(34.2);
+  expect(exported.points[2].timestamp_utc).toMatch(/Z$/);
+  await page.getByLabel('温度历史导出格式').selectOption('csv');
+  const csvDownloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: '导出当前区间' }).click();
+  const csvDownload = await csvDownloadPromise;
+  const csvFile = testInfo.outputPath('temperature-export.csv');
+  await csvDownload.saveAs(csvFile);
+  expect(fs.readFileSync(csvFile, 'utf8').trim().split('\r\n')).toHaveLength(4);
+  expect(requests.filter((url) => url.includes('history=1'))).toHaveLength(beforeExport);
+  await page.locator('.analytics-export summary').click();
+
+  await page.route('**/cgi-bin/thermal.sh?history=1&**', (route) => route.fulfill({
+    status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'fixture read failed' })
+  }));
+  await page.locator('[data-range="30"]').click();
+  await expect(page.locator('.analytics-error')).toContainText('温度历史读取失败');
+  await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeEnabled();
+  await expect(page.locator('.analytics-export button')).toBeDisabled();
+  await page.unroute('**/cgi-bin/thermal.sh?history=1&**');
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await expect(page.locator('.analytics-hero-value')).toHaveText('34.2°C');
+  await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeEnabled();
+  await page.route('**/cgi-bin/thermal.sh?history=1&**', async (route) => {
+    const original = await route.fetch();
+    const data = await original.json();
+    await route.fulfill({ json: { ...data, recording_enabled: false, recording_state: 'paused' } });
+  });
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await expect(page.locator('.analytics-status')).toContainText('后台总开关已关闭');
+  await expect(page.locator('.analytics-hero-value')).toHaveText('34.2°C');
+  await expect(page.locator('.analytics-export button')).toBeEnabled();
+  await expect(page.locator('.toast')).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('thermal-history-paused.png'), fullPage: true });
+  await page.locator('.analytics-export summary').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('thermal-history-controls.png'), fullPage: true });
+  expect(requests.some((url) => /cgi-bin\/(energy|telemetry|power_rank|system_history|thermal_burst|history_policy)\.sh/.test(url))).toBe(false);
+  expect(errors).toEqual([]);
+  await expectNoHorizontalOverflow(page);
+});
+
+test('温度读取失败不隐式清缓存，页面隐藏不继续自动读取', async ({ page }) => {
+  await page.goto('/');
+  await waitForWebuiReady(page);
+  await page.evaluate(() => requireFeature('shell').stopPolling());
+  const previous = await page.locator('#home-temp-num').textContent();
+  const calls = [];
+  await page.route('**/cgi-bin/thermal.sh**', (route) => {
+    calls.push({ url: route.request().url(), method: route.request().method() });
+    return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: 'fixture sensors unavailable' }) });
+  });
+  const results = await page.evaluate(async () => [await requireFeature('thermal').refresh(), await requireFeature('thermal').refresh()]);
+  expect(results).toEqual([false, false]);
+  expect(calls).toHaveLength(2);
+  expect(calls.every((call) => call.method === 'GET' && !call.url.includes('fresh='))).toBe(true);
+  await expect(page.locator('#home-temp-num')).toHaveText(previous);
+  await expect(page.locator('#home-temp-status')).toContainText('保留上次读数');
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  expect(await page.evaluate(() => requireFeature('thermal').refresh())).toBe(null);
+  expect(calls).toHaveLength(2);
 });
 
 test('缺失 backend UI contract 时可变选项保持关闭', async ({ page }) => {

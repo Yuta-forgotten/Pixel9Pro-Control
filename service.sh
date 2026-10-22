@@ -6,6 +6,10 @@
 # and versions.prop; release history belongs in git, not this runtime file.
 
 MODDIR="${0%/*}"
+SERVICE_MODE="${1:-boot}"
+case "$SERVICE_MODE" in boot|--background-worker) ;; *) exit 64 ;; esac
+. "$MODDIR/scripts/background_tasks_lib.sh" || exit 1
+[ "$SERVICE_MODE" != --background-worker ] || background_tasks_enabled || exit 0
 PORT=6210
 SERVICE_START_FILE="$MODDIR/.service_started"
 HTTPD_PID_FILE="$MODDIR/.webui_httpd.pid"
@@ -24,35 +28,8 @@ IDLE_ISOLATE_FILE="$MODDIR/.idle_isolate_mode"
 STANDBY_DIAG_FILE="$MODDIR/.standby_diag_state"
 SCHEDULER_INVENTORY_PATH="$MODDIR/.scheduler_inventory"
 SERVICE_LOCK_DIR="$MODDIR/.service_lock"
+[ "$SERVICE_MODE" != --background-worker ] || SERVICE_LOCK_DIR="$MODDIR/.background_worker.lock"
 SERVICE_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')"
-SYSTEM_HISTORY_CONFIG="${PIXEL9PRO_STATE_ROOT:-/data/adb/pixel9pro_control}/system_history_config"
-
-system_history_config_value() {
-    _shc_key="$1"
-    _shc_default="$2"
-    _shc_value=$(sed -n "s/^${_shc_key}=//p" "$SYSTEM_HISTORY_CONFIG" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
-    [ -n "$_shc_value" ] && printf '%s' "$_shc_value" || printf '%s' "$_shc_default"
-}
-
-system_history_enabled() {
-    case "$(system_history_config_value analytics_enabled 1)" in
-        0|false|off|no) printf off ;;
-        *) printf on ;;
-    esac
-}
-
-system_history_dispatch_interval() {
-    _shc_screen="$1"
-    _shc_default=900
-    _shc_key=system_interval_off_sec
-    [ "$_shc_screen" = on ] && { _shc_default=900; _shc_key=system_interval_on_sec; }
-    _shc_value=$(system_history_config_value "$_shc_key" "$_shc_default")
-    case "$_shc_value" in ''|*[!0-9]*) _shc_value="$_shc_default" ;; esac
-    [ "$_shc_value" -ge 300 ] 2>/dev/null || _shc_value=300
-    [ "$_shc_value" -le 7200 ] 2>/dev/null || _shc_value=7200
-    printf '%s' "$_shc_value"
-}
-
 service_uptime() {
     _svc_up=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null)
     case "$_svc_up" in ''|*[!0-9]*) _svc_up=0 ;; esac
@@ -65,8 +42,8 @@ service_start_ticks() {
 
 service_singleton_or_exit() {
     if mkdir "$SERVICE_LOCK_DIR" 2>/dev/null; then
-        printf 'pid=%s\nboot_id=%s\nstart_ticks=%s\n' "$$" "$SERVICE_BOOT_ID" "$(service_start_ticks $$)" \
-            > "$SERVICE_LOCK_DIR/owner" 2>/dev/null || true
+        module_lock_write_owner "$SERVICE_LOCK_DIR" \
+            || { rm -f "$SERVICE_LOCK_DIR/owner"; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null; exit 1; }
         trap 'rm -f "$SERVICE_LOCK_DIR/owner" 2>/dev/null; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null' EXIT
         return 0
     fi
@@ -75,23 +52,19 @@ service_singleton_or_exit() {
         sleep 1
         _service_wait=$((_service_wait + 1))
     done
-    [ -s "$SERVICE_LOCK_DIR/owner" ] || exit 0
-    _service_old_pid=$(sed -n 's/^pid=//p' "$SERVICE_LOCK_DIR/owner" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
-    _service_old_boot=$(sed -n 's/^boot_id=//p' "$SERVICE_LOCK_DIR/owner" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
-    _service_old_ticks=$(sed -n 's/^start_ticks=//p' "$SERVICE_LOCK_DIR/owner" 2>/dev/null | head -n 1 | tr -d ' \r\n\t')
-    case "$_service_old_pid" in ''|*[!0-9]*) _service_old_pid="" ;; esac
-    _service_live_ticks=""
-    [ -n "$_service_old_pid" ] && _service_live_ticks=$(service_start_ticks "$_service_old_pid")
-    if [ -n "$_service_old_pid" ] && [ "$_service_old_boot" = "$SERVICE_BOOT_ID" ] \
-        && kill -0 "$_service_old_pid" 2>/dev/null \
-        && [ -n "$_service_old_ticks" ] && [ "$_service_live_ticks" = "$_service_old_ticks" ]; then
+    if [ ! -s "$SERVICE_LOCK_DIR/owner" ]; then
+        rmdir "$SERVICE_LOCK_DIR" 2>/dev/null || exit 0
+        service_singleton_or_exit
+        return $?
+    fi
+    if module_lock_owner_alive "$SERVICE_LOCK_DIR"; then
         exit 0
     fi
-    rm -f "$SERVICE_LOCK_DIR/owner" 2>/dev/null || true
+    rm -f "$SERVICE_LOCK_DIR/owner" "$SERVICE_LOCK_DIR/stopping" 2>/dev/null || true
     rmdir "$SERVICE_LOCK_DIR" 2>/dev/null || exit 0
     mkdir "$SERVICE_LOCK_DIR" 2>/dev/null || exit 0
-    printf 'pid=%s\nboot_id=%s\nstart_ticks=%s\n' "$$" "$SERVICE_BOOT_ID" "$(service_start_ticks $$)" \
-        > "$SERVICE_LOCK_DIR/owner" 2>/dev/null || true
+    module_lock_write_owner "$SERVICE_LOCK_DIR" \
+        || { rm -f "$SERVICE_LOCK_DIR/owner"; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null; exit 1; }
     trap 'rm -f "$SERVICE_LOCK_DIR/owner" 2>/dev/null; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null' EXIT
 }
 
@@ -99,7 +72,9 @@ service_singleton_or_exit
 
 # Persist an early entry marker before loading optional contracts.  A missing
 # marker distinguishes "service never launched" from a later ZRAM failure.
-printf 'epoch=%s\npid=%s\n' "$(date +%s)" "$$" > "$SERVICE_START_FILE" 2>/dev/null || true
+if [ "$SERVICE_MODE" = boot ]; then
+    printf 'epoch=%s\npid=%s\n' "$(date +%s)" "$$" > "$SERVICE_START_FILE" 2>/dev/null || true
+fi
 log -t pixel9pro_ctrl "service entry moddir=$MODDIR pid=$$"
 
 [ -r "$MODDIR/scripts/runtime_defaults_lib.sh" ] \
@@ -107,7 +82,7 @@ log -t pixel9pro_ctrl "service entry moddir=$MODDIR pid=$$"
     || { log -t pixel9pro_ctrl "ERROR: runtime defaults contract missing"; exit 1; }
 # The WebUI may start before slow modem work, but VM/ZRAM mutations remain
 # closed until the policy state has been normalized and readied below.
-runtime_write_value "$VM_POLICY_READY_FILE" false >/dev/null 2>&1 || true
+[ "$SERVICE_MODE" != boot ] || runtime_write_value "$VM_POLICY_READY_FILE" false >/dev/null 2>&1 || true
 [ -r "$MODDIR/scripts/display_state_lib.sh" ] \
     && . "$MODDIR/scripts/display_state_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: display state contract missing"; exit 1; }
@@ -161,13 +136,6 @@ if [ -r "$MODDIR/scripts/vm_profile_lib.sh" ]; then
 fi
 scheduler_owner_init "$MODDIR" "/data/adb/fas_rs"
 sbm_init "$MODDIR" "/data/adb/fas_rs"
-so_migrate_state >/dev/null 2>&1 \
-    || log -t pixel9pro_ctrl "WARNING: scheduler-owner state migration failed"
-detect_external_scheduler_fresh >/dev/null 2>&1
-_scheduler_inventory_rc=$?
-if [ "$_scheduler_inventory_rc" -gt 1 ] 2>/dev/null; then
-    log -t pixel9pro_ctrl "WARNING: scheduler inventory refresh failed"
-fi
 
 detect_root_impl() {
     if [ "${APATCH:-}" = "true" ] || [ -d /data/adb/ap ]; then
@@ -688,6 +656,8 @@ apply_profile_state() {
 # ──────────────────────────────────────────────────────────
 # 1. 等待系统完全启动
 # ──────────────────────────────────────────────────────────
+start_control_plane() {
+
 until [ "$(getprop sys.boot_completed)" = "1" ]; do
     sleep 5
 done
@@ -719,6 +689,16 @@ export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
 # operations may be slow or unavailable during early boot; they must not make
 # the local WebUI disappear.
 start_webui_httpd || true
+}
+
+# Boot restoration and recurring policies have the same managed owner. A
+# paused boot can resume here later without starting a second boot service.
+restore_boot_policies() {
+background_worker_should_run || return 1
+so_migrate_state >/dev/null 2>&1 \
+    || log -t pixel9pro_ctrl "WARNING: scheduler-owner state migration failed"
+detect_external_scheduler_fresh >/dev/null 2>&1
+background_worker_should_run || return 1
 
 # ──────────────────────────────────────────────────────────
 # 2. 系统设置优化 (保 5G 分支)
@@ -737,20 +717,20 @@ log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: applying keep-5G standby optimizati
 # special / balanced / universal 分别对应全面增强 / 国内频段 / Google 默认；
 # payload 组合与 hash 由模块资源和构建校验负责，boot 不复制第二份参数表。
 apply_uecap_profile
+background_worker_should_run || return 1
 
 # === Modem / standby settings ===
 # Apply once after boot, then repeat after unlock because Android may restore
 # scan/time settings during late framework initialization.
 apply_keep5g_standby_settings \
     || log -t pixel9pro_ctrl "WARNING: one or more standby settings failed verification"
+background_worker_should_run || return 1
 restore_ntp_server
+background_worker_should_run || return 1
 
 # === SIM2 空槽省电: 关闭空卡槽的 radio instance ===
 manage_sim2_radio
-
-# Wi-Fi multicast follows screen state through the interface flag. The
-# WifiShellCommand has no mutating disable-multicast command on this build.
-ip link set wlan0 multicast off 2>/dev/null
+background_worker_should_run || return 1
 
 # === 内核 I/O 参数优化 ===
 if [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
@@ -878,6 +858,7 @@ else
 fi
 
 log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: boot policy restore completed; warnings above remain authoritative"
+background_worker_should_run || return 1
 
 # ──────────────────────────────────────────────────────────
 # 2.5 持久后台策略。CPU/L2 由同一 profile transaction 应用。
@@ -889,19 +870,7 @@ log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: boot policy restore completed; warn
 [ -f "$GAME_HANDOFF_POLICY_FILE" ] || runtime_write_value "$GAME_HANDOFF_POLICY_FILE" off \
     || log -t pixel9pro_ctrl "WARNING: failed to initialize game handoff policy"
 apply_l1_persistent_limits
-
-# 延迟复写：NTP 服务器和扫描类设置可能在用户解锁后被系统回写。
-(
-    sleep 120
-    _late_settings_result=ok
-    apply_keep5g_standby_settings || _late_settings_result=failed
-    restore_ntp_server
-    if [ "$_late_settings_result" = "ok" ]; then
-        log -t pixel9pro_ctrl "Standby settings re-applied after late boot"
-    else
-        log -t pixel9pro_ctrl "WARNING: late-boot standby settings were only partially applied"
-    fi
-) &
+background_worker_should_run || return 1
 
 # ──────────────────────────────────────────────────────────
 # 3. 有界恢复 CPU 调度方案 (CPU + cpuset + cap + vendor_sched L2)
@@ -948,989 +917,30 @@ if [ "$CPU_PROFILE_AVAILABLE" -eq 1 ]; then
 else
     log -t pixel9pro_ctrl "Scheduler health observation disabled: CPU profile contract unavailable"
 fi
+background_worker_should_run || return 1
+runtime_write_value "$MODDIR/.background_boot_ready" "$SERVICE_BOOT_ID"
+}
+
+if [ "$SERVICE_MODE" = --background-worker ]; then
+    . "$MODDIR/scripts/control_worker_lib.sh" || exit 1
+    control_worker_main
+    exit $?
+fi
+start_control_plane
+if ! background_tasks_enabled; then
+    log -t pixel9pro_ctrl "All automatic module tasks are paused; WebUI remains available"
+    exit 0
+fi
 
 # ──────────────────────────────────────────────────────────
 # 4. 统一后台工作循环 (Doze 友好)
-#    屏幕状态优先读 DRM sysfs，仅在节点异常时回退一次 display/power IPC
-#    亮屏 15s / 息屏首次 60s (NR防抖) / 息屏后续 900s / 突发低功耗采样
+#    DRM disabled 直接判息屏；enabled 可能是 AOD，使用有界交互态查询
+#    亮屏 15s / 息屏 900s；已切换 LTE 时按既有 NR 恢复周期复查
 #    若已降到 LTE, 改为较短复查周期，避免亮屏后长期停留 LTE
 #    WiFi multicast: 仅在屏幕状态变化时切换，不轮询
 #    NR 降级: 集成防抖，仅在开启时生效
-#    温度历史: 亮屏 60s、息屏 900s；息屏样本显式标记 screen_off_sample，WebUI 前台突发窗口使用可调低功耗间隔
+#    温度历史: 亮屏 60s、息屏 900s；息屏只读 sysfs，前台读取共享同一限频写入器
 #    UECap: manual profile is applied only during boot or an explicit WebUI action
 # ──────────────────────────────────────────────────────────
-NR_SWITCH_FILE="$MODDIR/.nr_screen_switch"
-NR_MODE_FILE="$MODDIR/.nr_saved_mode"
-THERMAL_HISTORY="$MODDIR/.thermal_history"
-THERMAL_HISTORY_MAX=8640
-THERMAL_BURST_FILE="$MODDIR/.thermal_burst_until"
-POWER_HISTORY="$MODDIR/.power_history"
-POWER_HISTORY_MAX=20160
-POWER_SESSION_FILE="$MODDIR/.power_session"
-HISTORY_META="$MODDIR/.history.meta"
-HISTORY_SOURCE=service_worker
-HISTORY_SESSION_ID="service_${SERVICE_BOOT_ID}"
-HISTORY_INTERVAL_ON=60
-HISTORY_INTERVAL_OFF=900
-_configured_module_on=$(system_history_config_value module_interval_on_sec 60)
-_configured_module_off=$(system_history_config_value module_interval_off_sec 900)
-case "$_configured_module_on" in ''|*[!0-9]*) _configured_module_on=60 ;; esac
-case "$_configured_module_off" in ''|*[!0-9]*) _configured_module_off=900 ;; esac
-[ "$_configured_module_on" -ge 60 ] 2>/dev/null && [ "$_configured_module_on" -le 3600 ] 2>/dev/null \
-    && HISTORY_INTERVAL_ON="$_configured_module_on"
-[ "$_configured_module_off" -ge 900 ] 2>/dev/null && [ "$_configured_module_off" -le 7200 ] 2>/dev/null \
-    && HISTORY_INTERVAL_OFF="$_configured_module_off"
-THERMAL_BURST_INTERVAL="${THERMAL_BURST_INTERVAL_S:-10}"
-case "$THERMAL_BURST_INTERVAL" in
-    ''|*[!0-9]*) THERMAL_BURST_INTERVAL=10 ;;
-esac
-[ "$THERMAL_BURST_INTERVAL" -ge 5 ] 2>/dev/null || THERMAL_BURST_INTERVAL=5
-
-[ -f "$NR_SWITCH_FILE" ] || runtime_write_value "$NR_SWITCH_FILE" "$NR_SCREEN_SWITCH_DEFAULT" >/dev/null 2>&1 \
-    || log -t pixel9pro_ctrl "WARNING: failed to initialize NR switch state"
-
-(
-    HISTORY_SESSION_ID="service_${SERVICE_BOOT_ID}_$$_$(date +%s 2>/dev/null | tr -cd '0-9')"
-    . "$MODDIR/webroot/cgi-bin/_thermal_cache.sh"
-
-    # Automatic profile decisions are disposable. If another scheduler
-    # transaction owns the lock, skip this decision and recompute next cycle.
-    SO_TRANSITION_LOCK_MAX_ATTEMPTS=1
-    SO_TRANSITION_LOCK_RETRY_SLEEP_S=0
-
-    _cleanup_nr() {
-        if [ "$_nr_state" = "lte" ] && [ -n "$_nr_key" ]; then
-            _nr_restore=$(nr_mode_read_saved "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" 2>/dev/null)
-            if [ -n "$_nr_restore" ] && nr_mode_write_verified "$_nr_key" "$_nr_restore"; then
-                log -t pixel9pro_ctrl "NR switch: worker exit, restored NR"
-            else
-                log -t pixel9pro_ctrl "WARNING: worker exit NR restore failed"
-            fi
-        fi
-    }
-    trap '_cleanup_nr' EXIT
-    trap '_cleanup_nr; exit 130' INT
-    trap '_cleanup_nr; exit 143' TERM
-    trap '_cleanup_nr; exit 129' HUP
-
-    _write_standby_diag_state() {
-        _diag_tmp="${STANDBY_DIAG_FILE}.tmp.$$"
-        [ ! -d "$STANDBY_DIAG_FILE" ] || return 1
-        {
-            printf 'updated_at=%s\n' "$1"
-            printf 'screen=%s\n' "$2"
-            printf 'worker_mode=%s\n' "$3"
-            printf 'next_sleep_secs=%s\n' "$4"
-            printf 'burst_active=%s\n' "$5"
-            printf 'nr_switch=%s\n' "$6"
-            printf 'nr_state=%s\n' "$7"
-            printf 'profile_policy=%s\n' "$8"
-            printf 'active_profile=%s\n' "$9"
-            printf 'idle_isolate=%s\n' "${10}"
-            printf 'sim2_auto_manage=%s\n' "${11}"
-            printf 'cycle_count=%s\n' "${12}"
-            printf 'wake_recheck_secs=%s\n' "$UNIFIED_SCREEN_WAKE_RECHECK_S"
-        } > "$_diag_tmp" 2>/dev/null \
-            && mv "$_diag_tmp" "$STANDBY_DIAG_FILE" 2>/dev/null \
-            && [ -f "$STANDBY_DIAG_FILE" ] && return 0
-        rm -f "$_diag_tmp" 2>/dev/null
-        return 1
-    }
-
-    _sleep_until_worker_cycle() {
-        _sleep_remaining="$1"
-        _sleep_recheck="$UNIFIED_SCREEN_WAKE_RECHECK_S"
-        case "$_sleep_remaining" in ''|*[!0-9]*|0) return 0 ;; esac
-        case "$_sleep_recheck" in ''|*[!0-9]*|0) _sleep_recheck=900 ;; esac
-
-        if [ "${_screen:-off}" = "on" ] || [ "$_sleep_remaining" -le "$_sleep_recheck" ] 2>/dev/null; then
-            sleep "$_sleep_remaining"
-            return 0
-        fi
-
-        while [ "$_sleep_remaining" -gt 0 ] 2>/dev/null; do
-            _sleep_chunk="$_sleep_recheck"
-            [ "$_sleep_chunk" -le "$_sleep_remaining" ] 2>/dev/null || _sleep_chunk="$_sleep_remaining"
-            sleep "$_sleep_chunk"
-            _sleep_remaining=$((_sleep_remaining - _sleep_chunk))
-            [ "$_sleep_remaining" -gt 0 ] 2>/dev/null || break
-
-            display_state_read >/dev/null 2>&1 || true
-            [ "$DISPLAY_STATE_INTERACTIVE" = "yes" ] && return 0
-        done
-        return 0
-    }
-
-    _read_odpm_uws() {
-        # Read ODPM cumulative energy (µWs) for modem rails
-        # VSYS_PWR_MODEM: iio:device0 CH9, VSYS_PWR_RFFE: iio:device1 CH11
-        _odpm_modem=0; _odpm_rffe=0
-        _d0=$(cat /sys/bus/iio/devices/iio:device0/energy_value 2>/dev/null)
-        _d1=$(cat /sys/bus/iio/devices/iio:device1/energy_value 2>/dev/null)
-        _odpm_modem=$(printf '%s' "$_d0" | sed -n 's/.*VSYS_PWR_MODEM\], *\([0-9]*\).*/\1/p')
-        _odpm_rffe=$(printf '%s' "$_d1" | sed -n 's/.*VSYS_PWR_RFFE\], *\([0-9]*\).*/\1/p')
-        [ -z "$_odpm_modem" ] && _odpm_modem=0
-        [ -z "$_odpm_rffe" ] && _odpm_rffe=0
-    }
-
-    _write_power_session() {
-        _ps_start="$1"
-        _ps_level="$2"
-        _ps_charge="$3"
-        _ps_reason="$4"
-        _read_odpm_uws
-        _ps_tmp="${POWER_SESSION_FILE}.tmp.$$"
-        [ ! -d "$POWER_SESSION_FILE" ] || return 1
-        {
-            printf 'start_ts=%s\n' "$_ps_start"
-            printf 'start_level=%s\n' "$_ps_level"
-            printf 'start_charge_uah=%s\n' "${_ps_charge:-0}"
-            printf 'reset_reason=%s\n' "$_ps_reason"
-            printf 'odpm_modem_uws=%s\n' "$_odpm_modem"
-            printf 'odpm_rffe_uws=%s\n' "$_odpm_rffe"
-        } > "$_ps_tmp" 2>/dev/null \
-            && mv "$_ps_tmp" "$POWER_SESSION_FILE" 2>/dev/null \
-            && [ -f "$POWER_SESSION_FILE" ] && return 0
-        rm -f "$_ps_tmp" 2>/dev/null
-        return 1
-    }
-
-    _compact_history_bytes_if_needed() {
-        _history_file="$1"
-        _history_budget=$(system_history_config_value max_bytes 33554432)
-        case "$_history_budget" in ''|*[!0-9]*) _history_budget=33554432 ;; esac
-        _history_budget=$((_history_budget / 4))
-        [ "$_history_budget" -ge 1048576 ] 2>/dev/null || _history_budget=1048576
-        _history_bytes=$(wc -c < "$_history_file" 2>/dev/null | tr -d ' \r\n')
-        case "$_history_bytes" in ''|*[!0-9]*) return 0 ;; esac
-        [ "$_history_bytes" -gt "$_history_budget" ] 2>/dev/null || return 0
-        _history_tmp="${_history_file}.bytes.$$"
-        if tail -c "$_history_budget" "$_history_file" > "$_history_tmp" 2>/dev/null \
-            && mv "$_history_tmp" "$_history_file" 2>/dev/null; then
-            return 0
-        fi
-        rm -f "$_history_tmp" 2>/dev/null
-        log -t pixel9pro_ctrl "WARNING: failed to compact history bytes ($_history_file)"
-        return 1
-    }
-
-    _compact_power_history_if_needed() {
-        [ "$_power_history_lines" -lt "$POWER_HISTORY_MAX" ] && return 0
-        _keep=$((POWER_HISTORY_MAX - 240))
-        _trim_tmp="${POWER_HISTORY}.trim.$$"
-        if tail -n "$_keep" "$POWER_HISTORY" > "$_trim_tmp" 2>/dev/null; then
-            if [ ! -d "$POWER_HISTORY" ] && mv "$_trim_tmp" "$POWER_HISTORY" 2>/dev/null \
-                && [ -f "$POWER_HISTORY" ]; then
-                _power_history_lines=$_keep
-            else
-                rm -f "$_trim_tmp" 2>/dev/null
-                log -t pixel9pro_ctrl "WARNING: failed to compact power history"
-            fi
-        else
-            rm -f "$_trim_tmp"
-        fi
-        _compact_history_bytes_if_needed "$POWER_HISTORY"
-    }
-
-    _compact_thermal_history_if_needed() {
-        [ "$_thermal_history_lines" -lt "$THERMAL_HISTORY_MAX" ] && return 0
-        _keep=$((THERMAL_HISTORY_MAX - 360))
-        _trim_tmp="${THERMAL_HISTORY}.trim.$$"
-        if tail -n "$_keep" "$THERMAL_HISTORY" > "$_trim_tmp" 2>/dev/null; then
-            if [ ! -d "$THERMAL_HISTORY" ] && mv "$_trim_tmp" "$THERMAL_HISTORY" 2>/dev/null \
-                && [ -f "$THERMAL_HISTORY" ]; then
-                _thermal_history_lines=$_keep
-            else
-                rm -f "$_trim_tmp" 2>/dev/null
-                log -t pixel9pro_ctrl "WARNING: failed to compact thermal history"
-            fi
-        else
-            rm -f "$_trim_tmp"
-        fi
-        _compact_history_bytes_if_needed "$THERMAL_HISTORY"
-    }
-
-    _write_history_meta() {
-        _hm_now="$1"
-        _hm_tmp="${HISTORY_META}.tmp.$$"
-        _hm_stats=$(awk -F, '
-            $1 ~ /^[0-9]+$/ { raw++; if ($6 == 1) valid++; if ($6 == 0) invalid++; if ($7 ~ /^[0-9]+$/ && $7 > 0) gaps++; if (!first) first=$1; last=$1 }
-            END { printf "%d|%d|%d|%d|%s|%s", raw,valid,invalid,gaps,first,last }
-        ' "$THERMAL_HISTORY" 2>/dev/null)
-        _hm_t_raw=${_hm_stats%%|*}; _hm_rest=${_hm_stats#*|}
-        _hm_t_valid=${_hm_rest%%|*}; _hm_rest=${_hm_rest#*|}
-        _hm_t_invalid=${_hm_rest%%|*}; _hm_rest=${_hm_rest#*|}
-        _hm_t_gaps=${_hm_rest%%|*}; _hm_rest=${_hm_rest#*|}
-        _hm_t_first=${_hm_rest%%|*}; _hm_t_last=${_hm_rest#*|}
-        _hm_stats=$(awk -F, '
-            $1 ~ /^[0-9]+$/ { raw++; if ($8 == 1) valid++; if ($8 == 0) invalid++; if ($9 ~ /^[0-9]+$/ && $9 > 0) gaps++; if (!first) first=$1; last=$1 }
-            END { printf "%d|%d|%d|%d|%s|%s", raw,valid,invalid,gaps,first,last }
-        ' "$POWER_HISTORY" 2>/dev/null)
-        _hm_p_raw=${_hm_stats%%|*}; _hm_rest=${_hm_stats#*|}
-        _hm_p_valid=${_hm_rest%%|*}; _hm_rest=${_hm_rest#*|}
-        _hm_p_invalid=${_hm_rest%%|*}; _hm_rest=${_hm_rest#*|}
-        _hm_p_gaps=${_hm_rest%%|*}; _hm_rest=${_hm_rest#*|}
-        _hm_p_first=${_hm_rest%%|*}; _hm_p_last=${_hm_rest#*|}
-        case "$_hm_t_raw:$_hm_t_valid:$_hm_t_invalid:$_hm_t_gaps:$_hm_p_raw:$_hm_p_valid:$_hm_p_invalid:$_hm_p_gaps" in
-            *[!0-9:]*) _hm_t_raw=0; _hm_t_valid=0; _hm_t_invalid=0; _hm_t_gaps=0; _hm_p_raw=0; _hm_p_valid=0; _hm_p_invalid=0; _hm_p_gaps=0 ;;
-        esac
-        _hm_quality=complete
-        [ $((_hm_t_raw + _hm_p_raw)) -gt 0 ] 2>/dev/null || _hm_quality=no_data
-        _hm_t_unknown=$((_hm_t_raw - _hm_t_valid - _hm_t_invalid))
-        _hm_p_unknown=$((_hm_p_raw - _hm_p_valid - _hm_p_invalid))
-        [ "$_hm_t_unknown" -gt 0 ] 2>/dev/null || [ "$_hm_p_unknown" -gt 0 ] 2>/dev/null && _hm_quality=legacy_history
-        [ "$_hm_t_invalid" -gt 0 ] 2>/dev/null || [ "$_hm_p_invalid" -gt 0 ] 2>/dev/null || [ "$_hm_t_gaps" -gt 0 ] 2>/dev/null || [ "$_hm_p_gaps" -gt 0 ] 2>/dev/null && _hm_quality=partial
-        [ "${_history_write_error:-none}" = none ] || _hm_quality=write_failed
-        _hm_first=$_hm_t_first
-        [ -n "$_hm_first" ] || _hm_first=$_hm_p_first
-        _hm_last=$_hm_p_last
-        [ -n "$_hm_last" ] || _hm_last=$_hm_t_last
-        _hm_coverage=0
-        if [ -n "$_hm_first" ] && [ -n "$_hm_last" ] && [ "$_hm_now" -gt "$_hm_first" ] 2>/dev/null; then
-            _hm_coverage=$(((_hm_last - _hm_first) * 100 / (_hm_now - _hm_first)))
-            [ "$_hm_coverage" -gt 100 ] 2>/dev/null && _hm_coverage=100
-            [ "$_hm_coverage" -lt 0 ] 2>/dev/null && _hm_coverage=0
-        fi
-        {
-            printf 'schema=2\nboot_id=%s\nsession_id=%s\nsource=%s\nupdated_ts=%s\n' "$SERVICE_BOOT_ID" "$HISTORY_SESSION_ID" "$HISTORY_SOURCE" "$_hm_now"
-            printf 'thermal_raw_samples=%s\nthermal_display_samples=%s\nthermal_valid_samples=%s\nthermal_invalid_samples=%s\nthermal_gap_count=%s\n' "$_hm_t_raw" "$_hm_t_raw" "$_hm_t_valid" "$_hm_t_invalid" "$_hm_t_gaps"
-            printf 'power_raw_samples=%s\npower_display_samples=%s\npower_valid_samples=%s\npower_invalid_samples=%s\npower_gap_count=%s\n' "$_hm_p_raw" "$_hm_p_raw" "$_hm_p_valid" "$_hm_p_invalid" "$_hm_p_gaps"
-            printf 'coverage_percent=%s\nquality=%s\n' "$_hm_coverage" "$_hm_quality"
-            printf 'thermal_unknown_samples=%s\npower_unknown_samples=%s\n' "$_hm_t_unknown" "$_hm_p_unknown"
-            printf 'reason=%s\ninterval_on_sec=%s\ninterval_off_sec=%s\nlast_screen=%s\n' "${_history_write_error:-none}" "$HISTORY_INTERVAL_ON" "$HISTORY_INTERVAL_OFF" "$_screen"
-        } > "$_hm_tmp" 2>/dev/null && mv "$_hm_tmp" "$HISTORY_META" 2>/dev/null || rm -f "$_hm_tmp" 2>/dev/null
-    }
-
-    _track_power_window() {
-        _p_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null | tr -d '\r')
-        _p_status=$(printf '%s' "$_p_status" | sed 's/[[:space:]]*$//')
-        _p_level=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null | tr -d ' \n\r')
-        _p_charge=$(cat /sys/class/power_supply/battery/charge_counter 2>/dev/null | tr -d ' \n\r')
-        _p_valid=1
-        _p_quality=ok
-        case "$_p_level" in
-            ''|*[!0-9]*) _p_level=0; _p_valid=0; _p_quality=missing_capacity ;;
-        esac
-        case "$_p_charge" in
-            ''|*[!0-9-]*) _p_charge=0; _p_valid=0; _p_quality=missing_charge_counter ;;
-        esac
-
-        _p_is_charging=0
-        case "$_p_status" in
-            Charging|Full) _p_is_charging=1 ;;
-        esac
-
-        if [ "$_p_is_charging" -eq 1 ]; then
-            if [ "$_power_prev_is_charging" -ne 1 ]; then
-                _power_charge_since=$_now
-                _power_charge_start_level=$_p_level
-                _power_charge_seen_full=0
-                _power_reset_armed=0
-            elif [ "$_power_charge_since" -eq 0 ]; then
-                _power_charge_since=$_now
-            fi
-
-            [ "$_p_status" = "Full" ] && _power_charge_seen_full=1
-
-            if [ "$_power_charge_since" -gt 0 ] && [ $((_now - _power_charge_since)) -ge 600 ]; then
-                if [ "$_p_status" = "Full" ] || [ "$_p_level" -gt "$_power_charge_start_level" ]; then
-                    _power_reset_armed=1
-                fi
-            fi
-        else
-            if [ ! -s "$POWER_SESSION_FILE" ]; then
-                _write_power_session "$_now" "$_p_level" "$_p_charge" "boot_init" \
-                    || log -t pixel9pro_ctrl "WARNING: failed to initialize power session"
-            elif [ "$_power_prev_is_charging" -eq 1 ] && [ "$_power_reset_armed" -eq 1 ]; then
-                _reason="charged_10m"
-                [ "$_power_charge_seen_full" -eq 1 ] && _reason="full_replug"
-                _write_power_session "$_now" "$_p_level" "$_p_charge" "$_reason" \
-                    || log -t pixel9pro_ctrl "WARNING: failed to reset power session ($_reason)"
-                log -t pixel9pro_ctrl "Power session reset: ${_reason}, level=${_p_level}"
-            fi
-            _power_charge_since=0
-            _power_charge_start_level=$_p_level
-            _power_charge_seen_full=0
-            _power_reset_armed=0
-        fi
-
-        _power_interval=$_POWER_SAMPLE_INTERVAL_OFF
-        [ "$_screen" = "on" ] && _power_interval=$_POWER_SAMPLE_INTERVAL_ON
-        _should_sample=0
-        if [ "$_power_last_sample" -eq 0 ] || [ $((_now - _power_last_sample)) -ge "$_power_interval" ]; then
-            _should_sample=1
-        fi
-        [ "$_p_status" != "$_power_last_status" ] && _should_sample=1
-        [ "$_p_level" != "$_power_last_level" ] && _should_sample=1
-
-        if [ "$_should_sample" -eq 1 ]; then
-            _compact_power_history_if_needed
-            _p_gap=0
-            if [ "${_power_last_uptime:-0}" -gt 0 ] 2>/dev/null && [ "$_uptime_now" -ge "$_power_last_uptime" ] 2>/dev/null \
-                && [ $((_uptime_now - _power_last_uptime)) -gt $((_power_interval * 2)) ] 2>/dev/null; then
-                _p_gap=$((_uptime_now - _power_last_uptime - _power_interval))
-                [ "$_p_quality" = ok ] && _p_quality=gap
-            fi
-            if printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$_now" "$_p_level" "$_p_charge" "$_p_status" \
-                "$SERVICE_BOOT_ID" "$HISTORY_SESSION_ID" "$HISTORY_SOURCE" "$_p_valid" "$_p_gap" "$_p_quality" "$_screen" "$_uptime_now" >> "$POWER_HISTORY"; then
-                _power_history_lines=$((_power_history_lines + 1))
-                _power_last_sample=$_now
-                _power_last_uptime=$_uptime_now
-                _history_changed=1
-            else
-                _history_write_error=power_write_failed
-            fi
-        fi
-
-        _power_last_status="$_p_status"
-        _power_last_level="$_p_level"
-        _power_last_charge="$_p_charge"
-        _power_prev_is_charging=$_p_is_charging
-    }
-
-    _bg_stop_state_get() {
-        _bg_stop_pkg="$1"
-        _bg_stop_since=0
-        _bg_stop_done=0
-        [ -s "$BG_STOP_STATE_FILE" ] || return 0
-        _bg_stop_line=$(awk -F'|' -v p="$_bg_stop_pkg" '$1 == p { print; exit }' "$BG_STOP_STATE_FILE" 2>/dev/null)
-        [ -n "$_bg_stop_line" ] || return 0
-        _old_ifs="$IFS"
-        IFS='|'
-        set -- $_bg_stop_line
-        IFS="$_old_ifs"
-        case "$2" in ''|*[!0-9]*) _bg_stop_since=0 ;; *) _bg_stop_since="$2" ;; esac
-        case "$3" in 1) _bg_stop_done=1 ;; *) _bg_stop_done=0 ;; esac
-    }
-
-    _bg_stop_state_set() {
-        _bg_stop_pkg="$1"
-        _bg_stop_since="$2"
-        _bg_stop_done="$3"
-        mkdir -p "${BG_STOP_STATE_FILE%/*}" 2>/dev/null || return 1
-        [ ! -d "$BG_STOP_STATE_FILE" ] || return 1
-        _bg_state_tmp="${BG_STOP_STATE_FILE}.tmp.$$"
-        if [ -s "$BG_STOP_STATE_FILE" ]; then
-            awk -F'|' -v p="$_bg_stop_pkg" '$1 != p' "$BG_STOP_STATE_FILE" > "$_bg_state_tmp" 2>/dev/null \
-                || { rm -f "$_bg_state_tmp" 2>/dev/null; return 1; }
-        else
-            : > "$_bg_state_tmp" 2>/dev/null \
-                || return 1
-        fi
-        printf '%s|%s|%s\n' "$_bg_stop_pkg" "$_bg_stop_since" "$_bg_stop_done" >> "$_bg_state_tmp" 2>/dev/null \
-            && mv "$_bg_state_tmp" "$BG_STOP_STATE_FILE" 2>/dev/null \
-            && [ -f "$BG_STOP_STATE_FILE" ] && return 0
-        rm -f "$_bg_state_tmp" 2>/dev/null
-        return 1
-    }
-
-    _enforce_stop_after_leave() {
-        _bg_stop_next_due=0
-        [ "$(bg_read_enabled)" = "on" ] || return 0
-        [ "${_screen_off_isolate:-0}" -eq 1 ] 2>/dev/null && return 0
-        [ -s "$BG_LIST_FILE" ] || return 0
-
-        _fg_pkg=""
-        if [ "$_screen" = "on" ] || [ "${_just_off:-0}" -eq 1 ] 2>/dev/null; then
-            _fg_pkg=$(foreground_package_name)
-        fi
-
-        while IFS= read -r _line || [ -n "$_line" ]; do
-            bg_parse_entry "$_line"
-            [ -z "$_bg_pkg" ] && continue
-            case "$_bg_pkg" in \#*) continue ;; esac
-            [ "$_bg_policy" = "stop_after_leave" ] || continue
-
-            if [ -n "$_fg_pkg" ] && [ "$_fg_pkg" = "$_bg_pkg" ]; then
-                _bg_stop_state_set "$_bg_pkg" "$_now" 0 \
-                    || log -t pixel9pro_ctrl "WARNING: failed to persist background-stop timer for $_bg_pkg"
-                continue
-            fi
-
-            _bg_stop_state_get "$_bg_pkg"
-            if [ "$_bg_stop_since" -eq 0 ] 2>/dev/null; then
-                continue
-            fi
-
-            _delay_sec=$((_bg_delay * 60))
-            _elapsed=$((_now - _bg_stop_since))
-            if [ "$_elapsed" -ge "$_delay_sec" ] 2>/dev/null; then
-                if [ "$_bg_stop_done" -ne 1 ]; then
-                    am force-stop "$_bg_pkg" 2>/dev/null
-                    _bg_stop_state_set "$_bg_pkg" "$_now" 1 \
-                        || log -t pixel9pro_ctrl "WARNING: failed to persist background-stop completion for $_bg_pkg"
-                    log -t pixel9pro_ctrl "L1: force-stopped $_bg_pkg after ${_bg_delay}m away from foreground"
-                fi
-            else
-                _due=$((_delay_sec - _elapsed))
-                [ "$_due" -lt 15 ] 2>/dev/null && _due=15
-                if [ "$_bg_stop_next_due" -eq 0 ] || [ "$_due" -lt "$_bg_stop_next_due" ]; then
-                    _bg_stop_next_due=$_due
-                fi
-            fi
-        done < "$BG_LIST_FILE"
-    }
-
-    # Detect the active Settings key once. DSDS values keep slot 1 unchanged.
-    nr_mode_detect_setting
-    _nr_key="$NR_MODE_KEY"
-    _cur="$NR_MODE_CURRENT"
-    if nr_mode_is_valid_raw "$_cur" && nr_mode_is_nr_capable "$_cur"; then
-        nr_mode_save_current "$NR_MODE_FILE" "$_cur" >/dev/null 2>&1 \
-            || log -t pixel9pro_ctrl "WARNING: failed to persist current NR mode"
-    elif [ ! -s "$NR_MODE_FILE" ]; then
-        runtime_write_value "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" >/dev/null 2>&1 \
-            || log -t pixel9pro_ctrl "WARNING: failed to initialize NR mode fallback"
-    fi
-
-    _NR_LTE="$NR_LTE_MODE"
-    _mc_state=""
-    _cur_slot0=$(nr_mode_slot0 "$_cur")
-    case "$_cur_slot0" in
-        ''|null|*[!0-9-]*) _nr_state="5g" ;;
-        *)
-            if [ "$_cur_slot0" -lt "$_NR_LTE" ] 2>/dev/null || [ "$_cur_slot0" -eq "$_NR_LTE" ] 2>/dev/null; then
-                _nr_state="lte"
-            else
-                _nr_state="5g"
-            fi
-            ;;
-    esac
-    _nr_off_since=0
-    _nr_restored=0
-    _prev_screen=""
-    _just_off=0
-    _sim2_check_count=0
-    # _NR_DELAY: 屏幕熄灭后多久才切到 LTE-only。
-    # 60s 会让短时间锁屏(口袋亮灭/查看消息)反复触发 modem 重注册,
-    # 每次 attach/detach 持 s5100_wake_lock ~1-2s。300s 防抖,只在真待机时切。
-    _NR_DELAY="$NR_SCREEN_OFF_DELAY_S"
-    _NR_COOLDOWN="$NR_RESTORE_COOLDOWN_S"
-    # _NR_LTE_POLL: 切换到 LTE 后,worker 多久醒一次检查屏幕状态。
-    # 60s 节奏会让 alarmtimer.4.auto 与 suspend 流程挤兑(实测 71 次 failed_suspend)。
-    # 300s 把 wakeup 密度降到 12 次/h,给 kernel 真正的 deep suspend 窗口。
-    # 代价:屏幕点亮后 NR 恢复最多滞后 5 分钟(用户体感可接受,RIL 数据通道不受影响)。
-    _NR_LTE_POLL="$NR_LTE_RECHECK_S"
-    _POWER_SAMPLE_INTERVAL_ON=$HISTORY_INTERVAL_ON
-    _POWER_SAMPLE_INTERVAL_OFF=$HISTORY_INTERVAL_OFF
-    _thermal_last_sample=$(tail -n 1 "$THERMAL_HISTORY" 2>/dev/null | cut -d, -f1)
-    _control_thermal_last_sample=0
-    case "$_thermal_last_sample" in ''|*[!0-9]*) _thermal_last_sample=0 ;; esac
-    _thermal_last_uptime=0
-    _history_prev_screen=unknown
-    _power_last_sample=0
-    _power_last_uptime=0
-    _power_last_status=""
-    _power_last_level=-1
-    _power_last_charge=0
-    _power_prev_is_charging=0
-    _power_charge_since=0
-    _power_charge_start_level=0
-    _power_charge_seen_full=0
-    _power_reset_armed=0
-    if [ -s "$THERMAL_HISTORY" ]; then
-        _thermal_history_lines=$(wc -l < "$THERMAL_HISTORY" 2>/dev/null)
-    else
-        _thermal_history_lines=0
-    fi
-    if [ -s "$POWER_HISTORY" ]; then
-        _power_history_lines=$(wc -l < "$POWER_HISTORY" 2>/dev/null)
-    else
-        _power_history_lines=0
-    fi
-    case "$_thermal_history_lines" in ''|*[!0-9]*) _thermal_history_lines=0 ;; esac
-    case "$_power_history_lines" in ''|*[!0-9]*) _power_history_lines=0 ;; esac
-    _compact_thermal_history_if_needed
-    _compact_power_history_if_needed
-    _write_history_meta "$(date +%s 2>/dev/null || printf 0)"
-    _auto_hot_since=0
-    _auto_cool_since=0
-    _auto_charge_hot_since=0
-    _auto_charge_cool_since=0
-    _active_profile=$(profile_state_read_profile "$PROFILE_FILE" 'default')
-    _cycle_count=0
-    _idle_isolate_prev=""
-    _power_rank_dispatch_at=0
-    _power_rank_interval_s="${POWER_RANK_COLLECT_INTERVAL_S:-900}"
-    case "$_power_rank_interval_s" in
-        ''|*[!0-9]*) _power_rank_interval_s=900 ;;
-    esac
-    [ "$_power_rank_interval_s" -ge 300 ] 2>/dev/null || _power_rank_interval_s=300
-    _power_rank_pid=0
-    _power_rank_pid_start=0
-
-    _power_rank_pid_start_ticks() {
-        _pr_pid="$1"
-        case "$_pr_pid" in ''|*[!0-9]*) return 1 ;; esac
-        sed 's/^.*) //' "/proc/$_pr_pid/stat" 2>/dev/null | awk '{print $20}'
-    }
-
-    _stop_power_rank_collector() {
-        case "${_power_rank_pid:-0}" in
-            ''|*[!0-9]*|0) _power_rank_pid=0; return 0 ;;
-        esac
-        [ "$(_power_rank_pid_start_ticks "$_power_rank_pid")" = "$_power_rank_pid_start" ] || { _power_rank_pid=0; _power_rank_pid_start=0; return 0; }
-        kill -TERM "$_power_rank_pid" 2>/dev/null || true
-        sleep 1
-        [ "$(_power_rank_pid_start_ticks "$_power_rank_pid")" = "$_power_rank_pid_start" ] && kill -KILL "$_power_rank_pid" 2>/dev/null || true
-        _power_rank_pid=0
-        _power_rank_pid_start=0
-    }
-
-    _start_power_rank_collector() {
-        [ -r "$MODDIR/scripts/power_rank_collect.sh" ] || return 0
-        case "${_power_rank_pid:-0}" in
-            ''|*[!0-9]*|0) _power_rank_pid=0 ;;
-            *)
-                if [ "$(_power_rank_pid_start_ticks "$_power_rank_pid")" = "$_power_rank_pid_start" ] && kill -0 "$_power_rank_pid" 2>/dev/null; then
-                    return 0
-                fi
-                _power_rank_pid=0
-                _power_rank_pid_start=0
-                ;;
-        esac
-        _collector_timeout="${POWER_RANK_COLLECT_TIMEOUT_S:-20}"
-        case "$_collector_timeout" in ''|*[!0-9]*) _collector_timeout=20 ;; esac
-        [ "$_collector_timeout" -ge 5 ] 2>/dev/null || _collector_timeout=5
-        [ "$_collector_timeout" -le 60 ] 2>/dev/null || _collector_timeout=60
-        timeout -k 2 "$_collector_timeout" \
-            sh "$MODDIR/scripts/power_rank_collect.sh" on interactive \
-            >/dev/null 2>&1 &
-        _power_rank_pid=$!
-        _power_rank_pid_start=$(_power_rank_pid_start_ticks "$_power_rank_pid")
-    }
-
-    _refresh_module_intervals() {
-        _configured_module_on=$(system_history_config_value module_interval_on_sec 60)
-        _configured_module_off=$(system_history_config_value module_interval_off_sec 900)
-        case "$_configured_module_on" in ''|*[!0-9]*) _configured_module_on=60 ;; esac
-        case "$_configured_module_off" in ''|*[!0-9]*) _configured_module_off=900 ;; esac
-        if [ "$_configured_module_on" -ge 60 ] 2>/dev/null && [ "$_configured_module_on" -le 3600 ] 2>/dev/null; then
-            _POWER_SAMPLE_INTERVAL_ON="$_configured_module_on"
-        fi
-        if [ "$_configured_module_off" -ge 900 ] 2>/dev/null && [ "$_configured_module_off" -le 7200 ] 2>/dev/null; then
-            _POWER_SAMPLE_INTERVAL_OFF="$_configured_module_off"
-        fi
-    }
-
-    _health_last_run=0
-
-    while true; do
-        _now=$(date +%s 2>/dev/null || echo 0)
-        _uptime_now=$(service_uptime)
-        _history_changed=0
-        _history_write_error=none
-        _cycle_count=$((_cycle_count + 1))
-        _analytics_enabled=$(system_history_enabled)
-        if [ "$_analytics_enabled" != on ]; then
-            _stop_power_rank_collector
-        else
-            # Policy writes are live. Reload module cadence before deciding
-            # the next history sample instead of waiting for a restart.
-            _refresh_module_intervals
-        fi
-        _active_profile=$(profile_state_read_profile "$PROFILE_FILE" "$_active_profile")
-        _sched_owner=$(read_valid_sched_owner)
-        sbm_load_state
-        _scheduler_profile_writable=0
-        if [ "$SBM_PHASE" = "success" ] && [ "$SBM_EFFECTIVE_MODE" = "pixel" ] \
-            && [ "$_sched_owner" = "pixel" ]; then
-            _scheduler_profile_writable=1
-        else
-            _sched_owner=external
-        fi
-
-        # DeviceIdle tracks user interactivity across ON/AOD/OFF. DRM enabled
-        # only identifies an attached encoder and remains enabled during DOZE.
-        display_state_read >/dev/null 2>&1 || true
-        _screen=$(display_state_legacy_screen)
-        [ "$_screen" != "unknown" ] || _screen="off"
-        if [ "$_screen" != "on" ] || [ "${DISPLAY_STATE_INTERACTIVE:-no}" != "yes" ]; then
-            _stop_power_rank_collector
-        fi
-        _idle_isolate=$(read_onoff_file "$IDLE_ISOLATE_FILE" "$IDLE_ISOLATE_DEFAULT")
-        _sim2_auto=$(read_onoff_file "$SIM2_AUTO_FILE" "$SIM2_AUTO_DEFAULT")
-        _screen_off_isolate=0
-        if [ "$_idle_isolate" = "on" ] && [ "$_screen" = "off" ]; then
-            _screen_off_isolate=1
-        fi
-
-        if [ "$_idle_isolate" != "$_idle_isolate_prev" ]; then
-            log -t pixel9pro_ctrl "Idle isolate: $_idle_isolate"
-            _idle_isolate_prev="$_idle_isolate"
-        fi
-
-        # --- WiFi multicast: state-transition only ---
-        if [ "$_screen" != "$_mc_state" ]; then
-            if [ "$_screen" = "off" ]; then
-                ip link set wlan0 multicast off 2>/dev/null
-            else
-                ip link set wlan0 multicast on 2>/dev/null
-            fi
-            _mc_state="$_screen"
-        fi
-
-        # --- Screen transition tracking ---
-        if [ "$_screen" = "off" ] && [ "$_prev_screen" = "on" ]; then
-            _just_off=1
-        elif [ "$_screen" = "on" ] && [ "$_prev_screen" = "off" ]; then
-            _just_off=0
-        fi
-
-        # Health and owner arbitration are screen-on observations. The first
-        # cycle after wake performs an immediate read; steady foreground work
-        # repeats only at the low 300-second health cadence. The off recorder
-        # never performs top-app or scheduler binder queries.
-        if [ "$_screen" = "on" ]; then
-            _health_due=0
-            [ "$_health_last_run" -eq 0 ] 2>/dev/null && _health_due=1
-            [ $((_now - _health_last_run)) -ge "$CPU_PROFILE_HEALTH_INTERVAL_S" ] 2>/dev/null && _health_due=1
-            [ "$_prev_screen" = "off" ] && _health_due=1
-            if [ "$_health_due" -eq 1 ] && [ "$CPU_PROFILE_AVAILABLE" -eq 1 ]; then
-                sh "$MODDIR/scripts/scheduler_reconcile.sh" health "$MODDIR" >/dev/null 2>&1
-                _scheduler_health_rc=$?
-                [ "$_scheduler_health_rc" -eq 5 ] \
-                    && log -t pixel9pro_ctrl "Scheduler health observed profile drift; no automatic repair (system writeback boundary)"
-                _health_last_run=$_now
-            fi
-            _arbiter_handoff=$(cat "$GAME_HANDOFF_POLICY_FILE" 2>/dev/null | tr -d ' \n\r\t')
-            _arbiter_lease_state=$(cat "/data/adb/fas_rs/.owner_state" 2>/dev/null | tr -d '\r\n')
-            _arbiter_lease_active=0
-            case "$_arbiter_lease_state" in *fas-rs:game:*) _arbiter_lease_active=1 ;; esac
-            if [ -f "$MODDIR/scripts/owner_arbiter.sh" ] \
-                && { [ "$_arbiter_handoff" = fas_rs ] || [ "$_arbiter_lease_active" -eq 1 ]; }; then
-                SO_TRANSITION_LOCK_MAX_ATTEMPTS=1
-                SO_TRANSITION_LOCK_RETRY_SLEEP_S=0
-                export SO_TRANSITION_LOCK_MAX_ATTEMPTS SO_TRANSITION_LOCK_RETRY_SLEEP_S
-                sh "$MODDIR/scripts/owner_arbiter.sh" tick "$MODDIR" on >/dev/null 2>&1
-            fi
-        fi
-        _prev_screen="$_screen"
-
-        # Check SIM2 every ~10 on-screen cycles. Boot performs one initial
-        # application; screen-off avoids telephony IPC so suspend is not disturbed.
-        if [ "$_screen" = "on" ] && [ "$_idle_isolate" != "on" ]; then
-            _sim2_check_count=$((_sim2_check_count + 1))
-            if [ "$_sim2_check_count" -ge 10 ]; then
-                manage_sim2_radio
-                _sim2_check_count=0
-            fi
-        fi
-
-        # --- NR screen-off switch ---
-        _nr_enabled=$(read_onoff_file "$NR_SWITCH_FILE" "$NR_SCREEN_SWITCH_DEFAULT")
-        if [ "$_screen_off_isolate" -eq 1 ]; then
-            _nr_off_since=0
-        else
-            if [ "$_nr_enabled" != "on" ]; then
-                if [ "$_nr_state" = "lte" ]; then
-                    _nr_restore=$(nr_mode_read_saved "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" 2>/dev/null)
-                    if [ -n "$_nr_restore" ] && nr_mode_write_verified "$_nr_key" "$_nr_restore"; then
-                        _nr_state="5g"
-                        _nr_restored=$_now
-                        log -t pixel9pro_ctrl "NR switch: disabled, restored NR"
-                    else
-                        log -t pixel9pro_ctrl "WARNING: NR switch disabled but restore failed"
-                    fi
-                fi
-                _nr_off_since=0
-            elif [ "$_screen" = "off" ]; then
-                if [ "$_nr_state" = "5g" ]; then
-                    [ "$_nr_off_since" -eq 0 ] && _nr_off_since=$_now
-                    _elapsed=$((_now - _nr_off_since))
-                    _since_nr=$((_now - _nr_restored))
-                    if [ "$_elapsed" -ge "$_NR_DELAY" ] && [ "$_since_nr" -ge "$_NR_COOLDOWN" ]; then
-                        # tethering 检测: 只检查真正的热点/USB 接口是否 UP。
-                        # wlan1/wlan2 是 bcmdhd P2P 虚拟接口, Wi-Fi 开启时就存在(state DOWN),
-                        # 不代表 tethering。Android 17 Pixel 热点常见桥接接口是 ap_br_wlan*。
-                        _tether=0
-                        for _tif in swlan0 ap0 softap0 rndis0 ncm0 /sys/class/net/ap_br_wlan* /sys/class/net/ap_br_softap*; do
-                            case "$_tif" in /sys/class/net/*) _tif="${_tif##*/}" ;; esac
-                            if [ -d "/sys/class/net/$_tif" ]; then
-                                _tif_state=$(cat "/sys/class/net/$_tif/operstate" 2>/dev/null)
-                                [ "$_tif_state" = "up" ] && _tether=1 && break
-                            fi
-                        done
-                        if [ "$_tether" -eq 0 ]; then
-                            _cur=$(settings get global "$_nr_key" 2>/dev/null | tr -d ' \n\r')
-                            if ! nr_mode_is_valid_raw "$_cur" || ! nr_mode_is_nr_capable "$_cur"; then
-                                log -t pixel9pro_ctrl "WARNING: NR switch skipped invalid current mode ($_cur)"
-                            elif ! nr_mode_save_current "$NR_MODE_FILE" "$_cur"; then
-                                log -t pixel9pro_ctrl "WARNING: NR switch skipped because restore mode could not be persisted"
-                            else
-                                _lte_val=$(nr_mode_replace_slot0 "$_cur" "$_NR_LTE")
-                            fi
-                            if [ -n "${_lte_val:-}" ] && nr_mode_write_verified "$_nr_key" "$_lte_val"; then
-                                _nr_state="lte"
-                                log -t pixel9pro_ctrl "NR switch: off ${_elapsed}s, switched to LTE ($_lte_val)"
-                            elif [ -n "${_lte_val:-}" ]; then
-                                log -t pixel9pro_ctrl "WARNING: NR switch to LTE failed ($_lte_val)"
-                            fi
-                            _lte_val=""
-                        fi
-                    fi
-                fi
-            else
-                _nr_off_since=0
-                if [ "$_nr_state" = "lte" ]; then
-                    _nr_restore=$(nr_mode_read_saved "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" 2>/dev/null)
-                    if [ -n "$_nr_restore" ] && nr_mode_write_verified "$_nr_key" "$_nr_restore"; then
-                        _nr_state="5g"
-                        _nr_restored=$_now
-                        log -t pixel9pro_ctrl "NR switch: screen on, restored NR"
-                    else
-                        log -t pixel9pro_ctrl "WARNING: screen on but NR restore failed"
-                    fi
-                fi
-            fi
-        fi
-
-        # History uses the same epoch clock on both sides of a screen transition.
-        # Screen-off records only sysfs values. Android owns the durable
-        # BatteryStats history, which is exported on the next interactive cycle.
-        # Missing HAL-only values remain missing rather than a stale/zero sample.
-        _burst_until=$(cat "$THERMAL_BURST_FILE" 2>/dev/null | tr -d ' \n\r')
-        _burst_active=0
-        if [ -n "$_burst_until" ] && [ "$_burst_until" -gt "$_now" ] 2>/dev/null; then
-            _burst_active=1
-        fi
-        # 高频温度记录只允许亮屏。WebUI 进入后台时会清除 burst 标记；
-        # 即使标记因进程切换未及时清除，息屏也绝不进入 burst 采样路径。
-        _burst_effective=0
-        if [ "$_screen" = "on" ] && [ "$_burst_active" -eq 1 ]; then
-            _burst_effective=1
-        fi
-
-        _worker_mode="deep_standby"
-        [ "$_screen" = on ] && _worker_mode=screen_on
-        [ "$_burst_effective" -eq 1 ] && _worker_mode=thermal_burst
-        _vs_temp=""
-        _thermal_interval=$HISTORY_INTERVAL_OFF
-        [ "$_screen" = on ] && _thermal_interval=$HISTORY_INTERVAL_ON
-        [ "$_burst_effective" -eq 1 ] && _thermal_interval="$THERMAL_BURST_INTERVAL"
-        _history_due=0
-        [ "$_thermal_last_sample" -eq 0 ] 2>/dev/null && _history_due=1
-        [ $((_now - _thermal_last_sample)) -ge "$_thermal_interval" ] 2>/dev/null && _history_due=1
-        [ "$_screen" = on ] && [ "$_history_prev_screen" != on ] && _history_due=1
-        _control_due=0
-        [ "$_screen" = on ] && { [ "$_control_thermal_last_sample" -eq 0 ] || [ $((_now - _control_thermal_last_sample)) -ge 60 ] 2>/dev/null; } && _control_due=1
-        if [ "$_history_due" -eq 1 ] || [ "$_control_due" -eq 1 ]; then
-            [ "$_screen" = on ] && _worker_mode=screen_on
-            [ "$_burst_effective" -eq 1 ] && _worker_mode=thermal_burst
-            _thermal_source=sysfs
-            [ "$_screen" = on ] && _thermal_source=hal
-            _json=$(build_thermal_json "$_thermal_source" 2>/dev/null)
-            _thermal_valid=0
-            _thermal_quality=missing_source
-            _thermal_gap=0
-            _vs_temp=""
-            if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
-                if ! runtime_write_value "$THERMAL_CACHE" "$_json"; then
-                    log -t pixel9pro_ctrl "WARNING: failed to refresh thermal cache"
-                fi
-                _vs_temp=$(printf '%s' "$_json" | sed 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/')
-                case "$_vs_temp" in ''|*[!0-9]*) _vs_temp="" ;; *) _thermal_valid=1; _thermal_quality=ok ;; esac
-            fi
-            if [ "$_screen" != on ]; then
-                [ "$_thermal_valid" -eq 1 ] && _thermal_quality=screen_off_sample
-                [ "$_thermal_valid" -eq 0 ] && _thermal_quality=screen_off_missing
-            fi
-            if [ "${_thermal_last_uptime:-0}" -gt 0 ] 2>/dev/null && [ "$_uptime_now" -ge "$_thermal_last_uptime" ] 2>/dev/null \
-                && [ $((_uptime_now - _thermal_last_uptime)) -gt $((_thermal_interval * 2)) ] 2>/dev/null; then
-                _thermal_gap=$((_uptime_now - _thermal_last_uptime - _thermal_interval))
-                [ "$_thermal_quality" = ok ] && _thermal_quality=gap
-            fi
-            [ "$_screen" = on ] && _control_thermal_last_sample=$_now
-            if [ "$_analytics_enabled" = on ]; then
-                _compact_thermal_history_if_needed
-                if printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$_now" "$_vs_temp" "$SERVICE_BOOT_ID" "$HISTORY_SESSION_ID" \
-                    "$HISTORY_SOURCE" "$_thermal_valid" "$_thermal_gap" "$_thermal_quality" "$_screen" "$_uptime_now" >> "$THERMAL_HISTORY"; then
-                    _thermal_history_lines=$((_thermal_history_lines + 1))
-                    _thermal_last_sample=$_now
-                    _thermal_last_uptime=$_uptime_now
-                    _history_changed=1
-                else
-                    _history_write_error=thermal_write_failed
-                fi
-            fi
-        fi
-
-        # Isolate mode affects policy mutations, not the observability source.
-        [ "$_analytics_enabled" = on ] && _track_power_window
-        if [ "$_screen_off_isolate" -eq 1 ]; then
-            _worker_mode="idle_isolate"
-            _auto_hot_since=0
-            _auto_cool_since=0
-            _auto_charge_hot_since=0
-            _auto_charge_cool_since=0
-        else
-            if [ -z "$_vs_temp" ] && [ "$_screen" = "on" ]; then
-                _vs_temp=$(sed -n 's/.*VIRTUAL-SKIN","temp":\([0-9]*\).*/\1/p' "$THERMAL_CACHE" 2>/dev/null | head -1)
-                case "$_vs_temp" in
-                    ''|*[!0-9]*) _vs_temp="" ;;
-                esac
-            fi
-
-            # --- Slow auto profile policy ---
-            _profile_policy=$(profile_state_read_policy)
-            _manual_profile=$(profile_state_read_profile "$PROFILE_MANUAL_FILE" 'balanced')
-            _target_profile=""
-            _target_reason=""
-            _sev=""
-
-            if [ "$_sched_owner" = "external" ]; then
-                _auto_hot_since=0
-                _auto_cool_since=0
-                _auto_charge_hot_since=0
-                _auto_charge_cool_since=0
-                _active_profile=$(profile_state_read_profile "$PROFILE_FILE" "$_active_profile")
-            elif [ "$_profile_policy" = "manual" ]; then
-                _auto_hot_since=0
-                _auto_cool_since=0
-                _auto_charge_hot_since=0
-                _auto_charge_cool_since=0
-                if [ "$_screen" = "on" ]; then
-                    if apply_profile_state "$_manual_profile" "manual_policy" manual; then
-                        _active_profile="$_manual_profile"
-                    fi
-                fi
-            elif [ "$_screen" = "on" ]; then
-                if [ "${_p_is_charging:-0}" -eq 1 ] 2>/dev/null; then
-                    # 充电态: ADB/线充会抬高壳温, 单看系统 severity 反应偏晚。
-                    # 因此拆成两道闸: severity>=MODERATE 立即收口; VIRTUAL-SKIN 体感热只慢切换。
-                    _auto_hot_since=0
-                    _auto_cool_since=0
-                    _charging_thermal_dump=$(timeout -k 2 15 dumpsys -t 10 thermalservice 2>/dev/null) || _charging_thermal_dump=""
-                    _sev=$(printf '%s\n' "$_charging_thermal_dump" | grep "Thermal Status:" | head -1 | sed 's/.*Thermal Status:[[:space:]]*//' | tr -d ' \n\r')
-                    case "$_sev" in ''|*[!0-9]*) _sev=-1 ;; esac
-                    if [ "$_sev" -ge "$CPU_PROFILE_AUTO_CHARGING_THERMAL_STATUS_MIN" ] 2>/dev/null; then
-                        _auto_charge_cool_since=0
-                        _target_profile="battery"
-                        _target_reason="charging_thermal_mitigation"
-                    else
-                        if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$CPU_PROFILE_AUTO_CHARGING_HOT_TEMP_MC" ] 2>/dev/null; then
-                            [ "$_auto_charge_hot_since" -eq 0 ] && _auto_charge_hot_since=$_now
-                            _auto_charge_cool_since=0
-                        elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$CPU_PROFILE_AUTO_CHARGING_COOL_TEMP_MC" ] 2>/dev/null; then
-                            [ "$_auto_charge_cool_since" -eq 0 ] && _auto_charge_cool_since=$_now
-                            _auto_charge_hot_since=0
-                        else
-                            _auto_charge_hot_since=0
-                            _auto_charge_cool_since=0
-                        fi
-
-                        if [ "$_active_profile" = "battery" ] && [ "$_auto_charge_cool_since" -gt 0 ] && [ $((_now - _auto_charge_cool_since)) -ge "$CPU_PROFILE_AUTO_CHARGING_COOL_HOLD_S" ]; then
-                            _target_profile="balanced"
-                            _target_reason="charging_comfort_cooldown"
-                        elif [ "$_active_profile" = "battery" ]; then
-                            _target_profile="battery"
-                            _target_reason="charging_comfort_hot"
-                        elif [ "$_auto_charge_hot_since" -gt 0 ] && [ $((_now - _auto_charge_hot_since)) -ge "$CPU_PROFILE_AUTO_CHARGING_HOT_HOLD_S" ]; then
-                            _target_profile="battery"
-                            _target_reason="charging_comfort_hot"
-                        else
-                            _target_profile="balanced"
-                            _target_reason="charging_no_throttle"
-                        fi
-                    fi
-                else
-                    # Discharge uses the shared CPU profile contract. It enters
-                    # battery before the previous 40.8C/90s gate so a normal
-                    # long video/feed session does not first build a hot shell.
-                    _auto_charge_hot_since=0
-                    _auto_charge_cool_since=0
-                    if [ -n "$_vs_temp" ] && [ "$_vs_temp" -ge "$CPU_PROFILE_AUTO_DISCHARGE_HOT_TEMP_MC" ] 2>/dev/null; then
-                        [ "$_auto_hot_since" -eq 0 ] && _auto_hot_since=$_now
-                        _auto_cool_since=0
-                    elif [ -n "$_vs_temp" ] && [ "$_vs_temp" -le "$CPU_PROFILE_AUTO_DISCHARGE_COOL_TEMP_MC" ] 2>/dev/null; then
-                        [ "$_auto_cool_since" -eq 0 ] && _auto_cool_since=$_now
-                        _auto_hot_since=0
-                    else
-                        _auto_hot_since=0
-                        _auto_cool_since=0
-                    fi
-
-                    if [ "$_active_profile" = "battery" ] && [ "$_auto_cool_since" -gt 0 ] && [ $((_now - _auto_cool_since)) -ge "$CPU_PROFILE_AUTO_DISCHARGE_COOL_HOLD_S" ]; then
-                        _target_profile="balanced"
-                        _target_reason="hot_cooldown"
-                    elif [ "$_active_profile" = "battery" ]; then
-                        # Keep battery inside the configured hot/cool deadband;
-                        # otherwise one sample below the hot threshold would
-                        # bypass the cool hold and make the profile oscillate.
-                        _target_profile="battery"
-                        _target_reason="steady_hot_guard"
-                    elif [ "$_auto_hot_since" -gt 0 ] && [ $((_now - _auto_hot_since)) -ge "$CPU_PROFILE_AUTO_DISCHARGE_HOT_HOLD_S" ]; then
-                        _target_profile="battery"
-                        _target_reason="steady_hot_guard"
-                    else
-                        _target_profile="balanced"
-                        _target_reason="auto_balanced"
-                    fi
-                fi
-
-                if [ -n "$_target_profile" ]; then
-                    if apply_profile_state "$_target_profile" "$_target_reason" auto; then
-                        _active_profile="$_target_profile"
-                    fi
-                fi
-            else
-                # --- 息屏深度待机: 不做前台探测 / 自动调度 ---
-                if apply_profile_state "balanced" "deep_standby_reset" auto; then
-                    _active_profile="balanced"
-                fi
-                _auto_hot_since=0
-                _auto_cool_since=0
-                _auto_charge_hot_since=0
-                _auto_charge_cool_since=0
-            fi
-        fi
-
-        if [ "$_analytics_enabled" = on ] && { [ "$_history_changed" -eq 1 ] || [ "$_history_write_error" != none ]; }; then
-            _write_history_meta "$_now"
-        fi
-        _history_prev_screen="$_screen"
-        # Export the native history only while interactive. Its buffer includes
-        # the intervening standby window without periodic screen-off Binder work.
-        _power_rank_interval_s=$(system_history_dispatch_interval "$_screen")
-        if [ "$_analytics_enabled" = on ] \
-            && [ "$_screen" = on ] && [ "${DISPLAY_STATE_INTERACTIVE:-no}" = yes ] \
-            && [ -r "$MODDIR/scripts/power_rank_collect.sh" ] \
-            && { [ "$_power_rank_dispatch_at" -eq 0 ] 2>/dev/null \
-                || [ $((_now - _power_rank_dispatch_at)) -ge "$_power_rank_interval_s" ] 2>/dev/null; }; then
-            _start_power_rank_collector
-            _power_rank_dispatch_at=$_now
-        fi
-
-        _enforce_stop_after_leave
-
-        # --- Adaptive sleep ---
-        if [ "$_screen" = "on" ]; then
-            if [ "$_burst_effective" -eq 1 ]; then
-                _next_sleep_secs=5
-            else
-                _next_sleep_secs=15
-            fi
-        elif [ "$_screen_off_isolate" -eq 1 ]; then
-            _just_off=0
-            _next_sleep_secs=900
-        elif [ "$_just_off" -eq 1 ]; then
-            _just_off=0
-            _next_sleep_secs=900
-        elif [ "$_nr_state" = "lte" ]; then
-            _next_sleep_secs=$_NR_LTE_POLL
-        elif [ "$_nr_enabled" = "on" ] && [ "$_nr_off_since" -gt 0 ] 2>/dev/null; then
-            _next_sleep_secs=900
-        else
-            _next_sleep_secs=900
-        fi
-        if [ "$_screen" = on ] && [ "${_bg_stop_next_due:-0}" -gt 0 ] 2>/dev/null \
-            && [ "$_bg_stop_next_due" -lt "$_next_sleep_secs" ] 2>/dev/null; then
-            _next_sleep_secs="$_bg_stop_next_due"
-        fi
-        _diag_profile_policy=$(profile_state_read_policy)
-        _write_standby_diag_state "$_now" "$_screen" "$_worker_mode" "$_next_sleep_secs" "$_burst_effective" "$_nr_enabled" "$_nr_state" "$_diag_profile_policy" "$_active_profile" "$_idle_isolate" "$_sim2_auto" "$_cycle_count" \
-            || log -t pixel9pro_ctrl "WARNING: failed to persist standby diagnostics"
-        _sleep_until_worker_cycle "$_next_sleep_secs"
-    done
-) &
-log -t pixel9pro_ctrl "Unified background worker started (Doze-friendly)"
+background_tasks_start \
+    || log -t pixel9pro_ctrl "ERROR: background worker did not start"

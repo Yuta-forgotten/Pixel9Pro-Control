@@ -23,8 +23,10 @@ release-assets/
 # Local evidence, clean-source snapshots and device/build scratch; never ship
 # these private artifacts in the public module repository.
 work/
+/tmp/
 
 # Runtime state belongs to the installed module, never the source tree
+/.background_*
 /.arbiter_*
 /.bg_*
 /.cpu_sched_owner

@@ -66,6 +66,12 @@ if [ ! -r "$MODPATH/scripts/runtime_defaults_lib.sh" ]; then
     abort
 fi
 . "$MODPATH/scripts/runtime_defaults_lib.sh" || abort
+for _background_lib in background_tasks_lib.sh control_worker_lib.sh thermal_history_lib.sh; do
+    [ -r "$MODPATH/scripts/$_background_lib" ] || {
+        ui_print "  ✗ 缺少后台/温度共享组件: $_background_lib"
+        abort
+    }
+done
 if [ ! -r "$MODPATH/scripts/vm_profile_lib.sh" ] \
     || ! . "$MODPATH/scripts/vm_profile_lib.sh"; then
     ui_print "  ✗ 缺少 VM/ZRAM contract, 已中止安装"
@@ -375,50 +381,20 @@ if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     ui_print "  检测到已有配置, 正在迁移..."
     _migration_failed=0
     for _sf in .thermal_policy .thermal_offset .scheduler_mode \
-               .feature_nr .feature_sim2 .feature_vm .feature_power_export \
+               .feature_nr .feature_sim2 .feature_vm \
                .current_profile .profile_policy .profile_manual .profile_auto_reason .profile_history .nr_screen_switch \
                .sim2_auto_manage .idle_isolate_mode \
                .swap_mode .swap_custom .vm_reboot_required .vm_reboot_boot_id .zram_request_baseline .zram_request_last .zram_request_receipt .zram_restore_pending .vm_policy_ready .ntp_server .uecap_mode .uecap_manual_mode \
                .uecap_policy .uecap_reason .sim2_radio_off \
                .nr_saved_mode .webui_theme \
                .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .cpu_sched_owner .sched_owner_desired .game_handoff_policy .game_handoff_source \
-               .thermal_history .power_history .power_session .history.meta; do
+               .thermal_history; do
         if [ -f "$OLDDIR/$_sf" ]; then
             cp "$OLDDIR/$_sf" "$MODPATH/$_sf" 2>/dev/null \
                 && [ -f "$MODPATH/$_sf" ] \
                 && cmp -s "$OLDDIR/$_sf" "$MODPATH/$_sf" || _migration_failed=1
         fi
     done
-    # Keep completed telemetry sessions and attribution snapshots across a
-    # module upgrade. The old global worker state is deliberately not copied:
-    # its PID belongs to the previous installation and must be reconciled by
-    # the new service boot.
-    if [ -d "$OLDDIR/.telemetry/sessions" ]; then
-        mkdir -p "$MODPATH/.telemetry/sessions" 2>/dev/null \
-            && cp -R "$OLDDIR/.telemetry/sessions/." "$MODPATH/.telemetry/sessions/" 2>/dev/null \
-            || _migration_failed=1
-    fi
-    if [ -d "$OLDDIR/.power_rank/snapshots" ]; then
-        mkdir -p "$MODPATH/.power_rank/snapshots" 2>/dev/null \
-            && cp -R "$OLDDIR/.power_rank/snapshots/." "$MODPATH/.power_rank/snapshots/" 2>/dev/null \
-            || _migration_failed=1
-        [ -f "$OLDDIR/.power_rank/last_collect_ts" ] \
-            && cp "$OLDDIR/.power_rank/last_collect_ts" "$MODPATH/.power_rank/last_collect_ts" 2>/dev/null \
-            || true
-    fi
-    # Rebuild the persistent attribution ledger once during migration. The
-    # WebUI rank CGI can then read the collector-owned atomic ledger instead
-    # of concatenating every retained snapshot on the first long-window view.
-    if [ -d "$MODPATH/.power_rank/snapshots" ]; then
-        _rank_ledger_tmp="$MODPATH/.power_rank/.ledger.migrate.$$"
-        : > "$_rank_ledger_tmp" 2>/dev/null || _migration_failed=1
-        for _rank_snapshot in "$MODPATH/.power_rank/snapshots"/*; do
-            [ -f "$_rank_snapshot" ] || continue
-            cat "$_rank_snapshot" >> "$_rank_ledger_tmp" 2>/dev/null || _migration_failed=1
-        done
-        [ "$_migration_failed" -ne 0 ] || mv "$_rank_ledger_tmp" "$MODPATH/.power_rank/ledger.tsv" 2>/dev/null || _migration_failed=1
-        rm -f "$_rank_ledger_tmp" 2>/dev/null || true
-    fi
 if [ "$_migration_failed" -ne 0 ]; then
         ui_print "  ✗ 用户配置迁移不完整, 已中止安装"
         abort
@@ -740,20 +716,24 @@ if [ "$THERMAL_POLICY" = custom ]; then
     # thermal JSON or a snapshot from another SKU/build.
     mkdir -p "${OUT_JSON%/*}" || { ui_print "  ✗ 无法创建温控配置输出目录"; abort; }
     _cached_profile=$(thermal_policy_profile_cache_path "$device" "$offset" 2>/dev/null || true)
+    _thermal_output_tmp="$OUT_JSON.install.$$"
+    _thermal_output_ok=0
     if thermal_policy_profile_cache_valid "$device" "$THERMAL_POLICY_ROOT/payloads/thermal/$device/stock.json" \
         && [ -s "$_cached_profile" ]; then
-        cp -f "$_cached_profile" "$OUT_JSON" 2>/dev/null
+        cp -f "$_cached_profile" "$_thermal_output_tmp" 2>/dev/null && _thermal_output_ok=1
     else
-        thermal_generate_config "$THERMAL_POLICY_ROOT/payloads/thermal/$device/stock.json" "$OUT_JSON" "$offset"
+        thermal_generate_config "$THERMAL_POLICY_ROOT/payloads/thermal/$device/stock.json" "$_thermal_output_tmp" "$offset" \
+            && _thermal_output_ok=1
     fi
-    if [ ! -s "$OUT_JSON" ]; then
+    if [ "$_thermal_output_ok" -ne 1 ] || [ ! -s "$_thermal_output_tmp" ]; then
+        rm -f "$_thermal_output_tmp" 2>/dev/null
         thermal_policy_remove_overlay || abort
         installer_write "$THERMAL_POLICY_FILE" system
         installer_write "$OFFSET_FILE" 0
         THERMAL_POLICY=system
         offset=0
         ui_print "  ⚠ 当前 stock 基线无法生成合法 custom thermal, 已 fail closed 到系统默认"
-    elif ! chmod 0644 "$OUT_JSON" 2>/dev/null; then
+    elif ! mv "$_thermal_output_tmp" "$OUT_JSON" || ! chmod 0644 "$OUT_JSON" 2>/dev/null; then
         ui_print "  ✗ thermal source 权限无法设为 0644，已 fail closed 到系统默认"
         thermal_policy_remove_overlay || abort
         installer_write "$THERMAL_POLICY_FILE" system

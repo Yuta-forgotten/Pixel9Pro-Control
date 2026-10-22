@@ -20,7 +20,6 @@ install_state_init() {
     INSTALL_FEATURE_NR_FILE="$INSTALL_STATE_ROOT/.feature_nr"
     INSTALL_FEATURE_SIM2_FILE="$INSTALL_STATE_ROOT/.feature_sim2"
     INSTALL_FEATURE_VM_FILE="$INSTALL_STATE_ROOT/.feature_vm"
-    INSTALL_FEATURE_POWER_EXPORT_FILE="$INSTALL_STATE_ROOT/.feature_power_export"
     INSTALL_RECEIPT_FILE="$INSTALL_STATE_ROOT/.install_receipt"
 }
 
@@ -36,7 +35,6 @@ install_state_value_is_valid() {
         payload_state:verified|payload_state:stock|payload_state:candidate|payload_state:unverified) return 0 ;;
         feature_nr:on|feature_nr:off|feature_sim2:on|feature_sim2:off) return 0 ;;
         feature_vm:system|feature_vm:optimized|feature_vm:disabled) return 0 ;;
-        feature_power_export:on|feature_power_export:off) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -123,7 +121,6 @@ install_state_sync_legacy() {
         *) _is_vm=system ;;
     esac
     install_state_write feature_vm "$INSTALL_FEATURE_VM_FILE" "$_is_vm" || return 1
-    install_state_write feature_power_export "$INSTALL_FEATURE_POWER_EXPORT_FILE" on || return 1
 }
 
 install_receipt_write() {
@@ -159,7 +156,6 @@ install_receipt_write() {
         printf 'feature_nr=%s\n' "$(install_state_safe_value "$(install_state_read "$INSTALL_FEATURE_NR_FILE" off)")"
         printf 'feature_sim2=%s\n' "$(install_state_safe_value "$(install_state_read "$INSTALL_FEATURE_SIM2_FILE" on)")"
         printf 'feature_vm=%s\n' "$(install_state_safe_value "$(install_state_read "$INSTALL_FEATURE_VM_FILE" system)")"
-        printf 'feature_power_export=%s\n' "$(install_state_safe_value "$(install_state_read "$INSTALL_FEATURE_POWER_EXPORT_FILE" on)")"
         printf 'reboot_required=%s\n' "$_is_reboot"
     } > "$_is_tmp" 2>/dev/null \
         && mv "$_is_tmp" "$INSTALL_RECEIPT_FILE" 2>/dev/null \

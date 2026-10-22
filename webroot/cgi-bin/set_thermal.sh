@@ -206,6 +206,7 @@ thermal_tx_snapshot() {
 }
 
 thermal_tx_restore() {
+    THERMAL_RESTORE_RESULT=invalid_base
     [ -s "$THERMAL_TX_META" ] || return 1
     thermal_policy_transaction_load
     _tx_present="$THERMAL_TX_CACHE_PRESENT"
@@ -215,27 +216,110 @@ thermal_tx_restore() {
     if [ "$_tx_policy" = custom ]; then
         thermal_is_valid_offset "$_tx_offset" || return 1
     fi
+    case "$_tx_present" in 0|1) ;; *) return 1 ;; esac
     if [ "$_tx_present" = 1 ]; then
         [ -f "$THERMAL_TX_SOURCE" ] || return 1
-        mkdir -p "${THERMAL_SOURCE_FILE%/*}" || return 1
-        _tx_restore_tmp="$THERMAL_SOURCE_FILE.tmp.$$"
-        rm -f "$_tx_restore_tmp" 2>/dev/null
-        if ! ln "$THERMAL_TX_SOURCE" "$_tx_restore_tmp" 2>/dev/null; then
-            cp -f "$THERMAL_TX_SOURCE" "$_tx_restore_tmp" || return 1
-            _tx_context="$THERMAL_TX_CACHE_CONTEXT"
-            [ -n "$_tx_context" ] && [ "$_tx_context" != none ] \
-                && chcon "$_tx_context" "$_tx_restore_tmp" 2>/dev/null || true
-        fi
-        chmod 0644 "$_tx_restore_tmp" 2>/dev/null || return 1
-        mv -f "$_tx_restore_tmp" "$THERMAL_SOURCE_FILE" || return 1
-    else
-        rm -f "$THERMAL_SOURCE_FILE" || return 1
+        [ "$(sha256sum "$THERMAL_TX_SOURCE" 2>/dev/null | awk '{print $1}')" = "$THERMAL_TX_CACHE_HASH" ] || return 1
     fi
-    cgi_atomic_write "$THERMAL_POLICY_FILE" "$_tx_policy" \
+
+    # A cancel is a transaction too: retain the desired source and both state
+    # files until the old state and journal cleanup have all been read back.
+    _tr_current_present=0
+    _tr_current_hash=none
+    _tr_current_context=none
+    _tr_current_mode=644
+    _tr_policy_present=0
+    _tr_offset_present=0
+    [ ! -e "$THERMAL_POLICY_FILE" ] || _tr_policy_present=1
+    [ ! -e "$THERMAL_OFFSET_FILE" ] || _tr_offset_present=1
+    _tr_policy=$(cat "$THERMAL_POLICY_FILE" 2>/dev/null)
+    _tr_offset=$(cat "$THERMAL_OFFSET_FILE" 2>/dev/null)
+    _tr_meta=$(cat "$THERMAL_TX_META" 2>/dev/null) || return 1
+    _tr_current_backup="$THERMAL_TX_ROOT/restore_current.$$"
+    _tr_base_backup="$THERMAL_TX_ROOT/restore_base.$$"
+    _tx_restore_tmp="$THERMAL_SOURCE_FILE.tmp.$$"
+    thermal_tx_restore_link() {
+        rm -f "$2" 2>/dev/null || return 1
+        if ! ln "$1" "$2" 2>/dev/null; then
+            cp -p "$1" "$2" 2>/dev/null || return 1
+            [ -z "$3" ] || [ "$3" = none ] || chcon "$3" "$2" 2>/dev/null || true
+        fi
+    }
+    if [ -e "$THERMAL_SOURCE_FILE" ]; then
+        [ -f "$THERMAL_SOURCE_FILE" ] || return 1
+        _tr_current_present=1
+        _tr_current_hash=$(thermal_policy_source_hash)
+        _tr_current_context=$(thermal_policy_source_context)
+        _tr_current_mode=$(stat -c '%a' "$THERMAL_SOURCE_FILE" 2>/dev/null) || return 1
+        thermal_tx_restore_link "$THERMAL_SOURCE_FILE" "$_tr_current_backup" "$_tr_current_context" || return 1
+    fi
+    if [ "$_tx_present" = 1 ]; then
+        thermal_tx_restore_link "$THERMAL_TX_SOURCE" "$_tr_base_backup" "$THERMAL_TX_CACHE_CONTEXT" \
+            || { rm -f "$_tr_current_backup"; return 1; }
+    fi
+    _tr_applied=1
+    if [ "$_tx_present" = 1 ]; then
+        mkdir -p "${THERMAL_SOURCE_FILE%/*}" \
+            && thermal_tx_restore_link "$THERMAL_TX_SOURCE" "$_tx_restore_tmp" "$THERMAL_TX_CACHE_CONTEXT" \
+            && chmod 0644 "$_tx_restore_tmp" 2>/dev/null \
+            && mv -f "$_tx_restore_tmp" "$THERMAL_SOURCE_FILE" || _tr_applied=0
+    else
+        rm -f "$THERMAL_SOURCE_FILE" || _tr_applied=0
+    fi
+    if [ "$_tr_applied" = 1 ] \
+        && cgi_atomic_write "$THERMAL_POLICY_FILE" "$_tx_policy" \
         && cgi_atomic_write "$THERMAL_OFFSET_FILE" "$_tx_offset" \
-        && { [ "$_tx_present" != 1 ] || [ "$(sha256sum "$THERMAL_SOURCE_FILE" 2>/dev/null | awk '{print $1}')" = "$THERMAL_TX_CACHE_HASH" ]; } \
+        && [ "$(thermal_policy_source_hash)" = "$THERMAL_TX_CACHE_HASH" ] \
         && [ "$(thermal_policy_read)" = "$_tx_policy" ] \
-        && thermal_policy_transaction_clear
+        && [ "$(thermal_policy_offset_read)" = "$_tx_offset" ] \
+        && thermal_policy_transaction_clear; then
+        rm -f "$_tr_current_backup" "$_tr_base_backup" "$_tx_restore_tmp" 2>/dev/null
+        rmdir "$THERMAL_TX_ROOT" 2>/dev/null || true
+        THERMAL_RESTORE_RESULT=restored
+        return 0
+    fi
+
+    # Restore the cancellation's entry state. Keep the original journal
+    # retryable even if its cleanup failed after deleting only one file.
+    _tr_rollback=1
+    mkdir -p "$THERMAL_TX_ROOT" "${THERMAL_SOURCE_FILE%/*}" || _tr_rollback=0
+    if [ "$_tx_present" = 1 ]; then
+        thermal_tx_restore_link "$_tr_base_backup" "$THERMAL_TX_SOURCE" "$THERMAL_TX_CACHE_CONTEXT" || _tr_rollback=0
+    else
+        rm -f "$THERMAL_TX_SOURCE" || _tr_rollback=0
+    fi
+    cgi_atomic_write "$THERMAL_TX_META" "$_tr_meta" || _tr_rollback=0
+    if [ "$_tr_current_present" = 1 ]; then
+        thermal_tx_restore_link "$_tr_current_backup" "$_tx_restore_tmp" "$_tr_current_context" \
+            && chmod "$_tr_current_mode" "$_tx_restore_tmp" 2>/dev/null \
+            && mv -f "$_tx_restore_tmp" "$THERMAL_SOURCE_FILE" || _tr_rollback=0
+    else
+        rm -f "$THERMAL_SOURCE_FILE" || _tr_rollback=0
+    fi
+    cgi_restore_file "$THERMAL_POLICY_FILE" "$_tr_policy_present" "$_tr_policy" || _tr_rollback=0
+    cgi_restore_file "$THERMAL_OFFSET_FILE" "$_tr_offset_present" "$_tr_offset" || _tr_rollback=0
+    [ "$(thermal_policy_source_hash)" = "$_tr_current_hash" ] \
+        && [ "$(cat "$THERMAL_TX_META" 2>/dev/null)" = "$_tr_meta" ] \
+        && [ "$(cat "$THERMAL_POLICY_FILE" 2>/dev/null)" = "$_tr_policy" ] \
+        && [ "$(cat "$THERMAL_OFFSET_FILE" 2>/dev/null)" = "$_tr_offset" ] || _tr_rollback=0
+    if [ "$_tr_current_present" = 1 ]; then
+        [ "$(thermal_policy_source_context)" = "$_tr_current_context" ] \
+            && [ "$(stat -c '%a' "$THERMAL_SOURCE_FILE" 2>/dev/null)" = "$_tr_current_mode" ] || _tr_rollback=0
+    else
+        [ ! -e "$THERMAL_SOURCE_FILE" ] || _tr_rollback=0
+    fi
+    if [ "$_tx_present" = 1 ]; then
+        [ "$(sha256sum "$THERMAL_TX_SOURCE" 2>/dev/null | awk '{print $1}')" = "$THERMAL_TX_CACHE_HASH" ] || _tr_rollback=0
+    else
+        [ ! -e "$THERMAL_TX_SOURCE" ] || _tr_rollback=0
+    fi
+    if [ "$_tr_rollback" = 1 ]; then
+        rm -f "$_tr_current_backup" "$_tr_base_backup" "$_tx_restore_tmp" 2>/dev/null
+        THERMAL_RESTORE_RESULT=rolled_back
+        return 1
+    fi
+    THERMAL_RESTORE_RESULT=rollback_incomplete
+    return 2
 }
 
 if [ "$REQUEST_METHOD" = GET ]; then
@@ -286,8 +370,14 @@ if [ "$_action" = cancel_pending ]; then
         && [ "$(thermal_policy_offset_read)" = "$_tx_desired_offset" ] \
         && [ "$(thermal_policy_source_hash)" = "$_tx_desired_hash" ] \
         || { release_lock; json_error '409 Conflict' '当前 source 已变化，请刷新状态后再撤销'; }
-    thermal_tx_restore \
-        || { release_lock; json_error '500 Internal Server Error' '撤销失败，旧 source 未确认恢复'; }
+    if ! thermal_tx_restore; then
+        release_lock
+        case "$THERMAL_RESTORE_RESULT" in
+            rolled_back) json_error '500 Internal Server Error' 'THERMAL_CANCEL_FAILED_DESIRED_STATE_RESTORED' ;;
+            rollback_incomplete) json_error '500 Internal Server Error' 'THERMAL_CANCEL_ROLLBACK_INCOMPLETE' ;;
+            *) json_error '500 Internal Server Error' '撤销失败，旧 source 未确认恢复' ;;
+        esac
+    fi
     json_headers
     printf '{"ok":true,"canceled":true,'
     thermal_emit_cancelled_state "$_tx_policy" "$_tx_offset" \

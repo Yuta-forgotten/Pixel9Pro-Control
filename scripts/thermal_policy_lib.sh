@@ -127,12 +127,11 @@ thermal_policy_prepare_snapshot() {
     if [ "$_tpl_allow_vendor" = yes ]; then
         # Never relabel an old custom payload as stock. Missing provenance on
         # an upgrade is a diagnosis condition, not permission to recapture it.
-        _tpl_old_disabled=0
-        [ -f "$_tpl_old_root/disable" ] && _tpl_old_disabled=1
-        { [ ! -e "$_tpl_old_root/system/vendor/etc/thermal_info_config.json" ] \
-            || [ "$_tpl_old_disabled" -eq 1 ]; } || return 1
-        if [ "$_tpl_old_disabled" -ne 1 ] \
-            && [ "$(cat "$_tpl_old_root/.thermal_policy" 2>/dev/null)" = custom ]; then
+        [ ! -f "$_tpl_old_root/module.prop" ] || return 1
+        # A disable marker only changes the next boot. The old source can
+        # remain mounted in this namespace until reboot, so it is not stock.
+        [ ! -e "$_tpl_old_root/system/vendor/etc/thermal_info_config.json" ] || return 1
+        if [ "$(cat "$_tpl_old_root/.thermal_policy" 2>/dev/null)" = custom ]; then
             return 1
         fi
         if awk '$5 ~ /\/thermal_info_config[.]json$/ { found=1 } END { exit found ? 0 : 1 }' \
