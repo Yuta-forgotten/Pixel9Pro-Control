@@ -51,7 +51,7 @@ thermal_readback_receipt() {
     # effective mount: regular-module paths can legitimately carry an adb/data
     # label while /vendor readback must carry vendor_configs_file.
     _thermal_tmp="${MODDIR}/.thermal_runtime_receipt.tmp.$$"
-    {
+    _thermal_receipt_payload=$({
         printf 'schema=2\nboot_id=%s\nbackend=%s\nphase=post_mount\n' \
             "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')" \
             "${UECAP_BACKEND:-unknown}"
@@ -65,9 +65,13 @@ thermal_readback_receipt() {
             "$_thermal_config_name" "$_thermal_mount_observed"
         printf 'effective_context_status=%s\nstatus=%s\n' \
             "$_thermal_context_status" "$_thermal_status"
-    } > "$_thermal_tmp" 2>/dev/null \
-        && mv -f "$_thermal_tmp" "$MODDIR/.thermal_runtime_receipt" 2>/dev/null \
-        || rm -f "$_thermal_tmp" 2>/dev/null
+    })
+    if ! ( . "$MODDIR/scripts/state_io_lib.sh" \
+        && state_atomic_write "$MODDIR/.thermal_runtime_receipt" "$_thermal_receipt_payload" ); then
+        _thermal_status=receipt_commit_failed
+        log -t pixel9pro_ctrl 'WARNING: thermal receipt persistence failed; pending journal retained'
+        return 1
+    fi
     [ "$_thermal_status" = verified ]
 }
 

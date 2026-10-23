@@ -4,7 +4,7 @@
 
 本文档描述 Pixel9Pro-Control WebUI 的浏览器端请求层、CGI 边界和运行态状态合同，供前端、CGI、后台 worker 和问题定位使用。文档以当前源码中的 endpoint、字段和状态机为准，不记录某一次设备读回、发行包或安装环境的临时结果。
 
-接口没有独立的 `/v1` URL 前缀；`webroot/runtime.js` 中的 `API` 对象是路径注册表，CGI 脚本是字段和状态的最终校验者。新增字段应保持已有字段含义不变；改变字段含义或状态迁移规则时，应同步更新本文档和对应前端解析逻辑。
+接口没有独立的 `/v1` URL 前缀；`webroot/js/runtime.js` 中的 `API` 对象是路径注册表，CGI 脚本是字段和状态的最终校验者。新增字段应保持已有字段含义不变；改变字段含义或状态迁移规则时，应同步更新本文档和对应前端解析逻辑。
 
 ## 2. 运行时拓扑
 
@@ -13,8 +13,9 @@ WebView
   └─ app.js                 页面生命周期、标签页刷新、前后台切换
       └─ feature modules    network / thermal / profile / analytics / memory
           └─ common.js      Request Hub、认证、超时、取消、错误解析
-              └─ loopback httpd :6210
-                  └─ webroot/cgi-bin/*.sh
+              ├─ 管理器资源页 → ksu.spawn → scripts/cgi_dispatch.sh
+              └─ 普通浏览器 → loopback httpd :6210
+                  └─ webroot/cgi-bin/*.sh（两条路径共用）
                       └─ Android settings / dumpsys / sysfs / module state
 ```
 
@@ -33,17 +34,19 @@ WebView
 ### 3.1 地址和认证
 
 - HTTP server 只监听 `127.0.0.1:6210`；CGI 通过 `REMOTE_ADDR` 拒绝非 loopback 请求。
-- GET 读取接口不要求 token，但浏览器会在已有会话中附带 `X-PIXEL9PRO-TOKEN`。
+- GET 与 POST 都要求有效会话 token；普通浏览器通过 `X-PIXEL9PRO-TOKEN` 传递，管理器调用映射到同名 CGI 环境字段。
 - POST 必须同时满足 `Content-Type: application/json`、有效 `Content-Length` 和 `X-PIXEL9PRO-TOKEN`。
 - JSON body 必须是对象，并受各 CGI 的字节上限约束；缺失、截断或超限分别返回 `400` 或 `413`。
-- `auth.sh` 只提供当前 WebUI token 的 loopback 读取，不承担业务状态认证之外的授权。
+- 回环地址不是客户端身份。`auth.sh` 必须携带已有 token，仅返回会话有效性。管理器资源页保留在其可信资源 origin，通过异步 `ksu.spawn` 读取固定 token 并调用白名单 CGI；不把带 root bridge 的页面跳到本地 HTTP listener。APatch 的 `exec(...callback)` 仍有同步 Job.exec，不能仅凭 callback 把它当非阻塞接口。
+- `cgi_dispatch.sh` 选择 root 管理器 BusyBox，固定入口、变量单独 shell quote。GET 有 60 秒命令上限，前端排队/正文另有预算；已发出的写事务不因关闭页面或前端超时被杀。原生命令同时最多 3 个，取消后丢弃输出，仅保留有界 exit 回调，收到退出才释放实际槽位。
+- 普通浏览器默认以同源 JSON POST `auth.sh action=bootstrap` 一次性自动建立会话。后端从 BusyBox `REMOTE_PORT` 与内核 `/proc/net/tcp{,6}` 的连接四元组取客户端 UID，用 PackageManager 对应 `config/webui_browsers.tsv` 的 user 0 可信浏览器包；同时检查 Host、Origin、bootstrap header 和 Fetch Metadata。User-Agent 不作身份。没有手动 token UI、守护或定时配对。身份不能读取时返回明确错误，页面仅保留“重新连接”按钮，失败不后台循环。
 
 ### 3.2 状态码和错误对象
 
 成功读取或成功提交使用 HTTP `200`。错误响应统一为：
 
 ```json
-{"ok":false,"error":"错误原因"}
+{"ok":false,"error":"错误原因","error_code":"HTTP_503"}
 ```
 
 常见状态码：
@@ -61,6 +64,18 @@ WebView
 
 HTTP `200` 只表示 CGI 返回了成功响应；对 mutation 而言，前端还必须检查 `ok`、事务字段和随后 GET readback，不能只依据 HTTP 状态或文件存在判断生效。
 
+后端已在锁内写入、复读并提交的回执可以结束弹窗等待；独立补充 GET 在后台核对，失败保留领域提示，不自动重发 POST。关闭弹窗与撤销事务是两个不同操作。调度取消和温控取消遵循相同规则。
+
+### 3.3 配置、历史与恢复
+
+- `state_io_lib.sh` 为小状态文件提供私有随机临时文件、拒绝 symlink/非普通文件、mode、原子替换和复读；它在 subshell 内运行，不覆盖调用者 trap/变量。原子可见性不代表任意断电情况下 fsync 持久性。
+- profile history 使用同一有界 writer lock；worker 清理回执对应 `boot|pid|start_ticks` 的本次 run，不能复用旧 run 的成功。
+- NR 临时降级在写 Settings 之前保存 before/applied/key；恢复时比较 slot0，保留其它 SIM。持久 Settings 的恢复依据跨重启保留，没有 lease 时不把 33 当捕获的原值。没有额外轮询或新的驻留进程。
+- BG 策略固定 device owner user 0，最多 32 个包；CGI、worker、启动应用共用锁。POST 前捕获实际 bucket/AppOps 和受影响文件，失败恢复请求前值；中断 journal 要求显式 recover。自动 worker 遇到未完成 journal 暂停该策略，升级遇到未处理事务拒绝覆盖。
+- BG GET 只返回同 boot 的最后一次已验证观察并标注 `last_verified/observed_at`，不逐包调用 Binder/dumpsys。刷新是只读；恢复是单独显式 action。页面不得把保存成功、历史停止记录或旧观察显示为当前已生效。
+- 温度 GET 无本次有效样本返回 503；历史读取失败不是空历史。诊断仅展示同 boot/worker 的采样和 kernel last-failure 事实，不从设备名/errno推定 AOD、网络或基带根因。
+- 模块卡片 description 是从保存配置派生的单行摘要，仅在启动恢复和配置请求后更新，保留其它 module.prop 字段。`updateJson` 由维护者提供有效清单，APatch 不自动生成；当前未配置在线更新地址。
+
 ## 4. 浏览器请求调度
 
 ### 4.1 Request Hub
@@ -68,10 +83,11 @@ HTTP `200` 只表示 CGI 返回了成功响应；对 mutation 而言，前端还
 `common.js` 中的 Request Hub 对所有 `apiFetch()` 请求统一调度：
 
 - 最多同时运行 3 个请求。
+- 排队最多 24 个；超限返回 `REQUEST_QUEUE_FULL`，不自动重试写入。重复 GET 合并在容量检查之前进行。
 - 普通慢诊断 `diagnostic` GET 最多 1 个在途，避免同时占满通信槽；交互 readback 不受此限流影响，仍受全局并发和独立 deadline 约束。
 - 无 mutation 的 GET 默认可按完整 URL 合并；带自定义 `controller` 或 `dedupe:false` 的请求不合并。
 - `interactive` GET 优先级为 90，`interactive` POST 为 100，`normal` 为 50，`background` 为 10。
-- mutation 同时按 `scope` 和 CGI pathname 串行；不同按钮、scope 或 query 不能绕过同一资源的写入顺序；失败修改不自动重试。
+- mutation 同时按 `scope` 和 CGI pathname 串行并保持同资源的入队次序；写前取消同资源旧 GET、清除其去重项，写后的 GET 等先前写入终态，避免复用旧状态；失败修改不自动重试。
 - mutation 到达时取消可中断的低优先级 GET；已提交 mutation 不因页面隐藏而取消。
 - 共享请求类型为 `snapshot/thermalHistory/thermalLive/diagnostic/mutation/lifecycle`，领域可显式传 `requestClass`，不按按钮另建通信队列。兼容已有 `timeoutMs/priority/scope` 覆盖。
 - `queueTimeoutMs` 独立限制排队；真正发出后获得完整 `timeoutMs`，覆盖 HTTP header、body 和 JSON 解析。收到 header 不会提前解除 body 限时。
@@ -91,17 +107,19 @@ HTTP `200` 只表示 CGI 返回了成功响应；对 mutation 而言，前端还
 
 领域模块使用 `runFeatureTask()` 合并同一功能的重复刷新。页面隐藏会停止轮询、温度历史和临时 burst；恢复可见后重新读取当前标签页。
 
+自动读取连续失败时按领域指数退避，最长为基础周期与 60 秒中的较大值；成功后恢复原周期。主题保存只保留一个在途快照和最新未发送选择。提示仅保留一个活动项及有界定时器；连续相同异常合并计数，本页日志最多 80 条。
+
 ### 4.3 前端 deadline
 
 以下数值是当前前端的请求 deadline，表示“前端最多等待多久”，不是 CGI 的服务端 SLA：
 
 | 领域 | 读取 | mutation / readback |
 |---|---:|---:|
-| NR | 12s | 15s，提交后 GET 12s |
+| NR | 12s | 30s，包含后端 IPC 与失败回滚预算；GET 12s |
 | UECap | 30s | 30s；切换校验总窗口 60s，轮询间隔 2s |
 | 基带状态 | 20s | 只读 |
-| 待机守护 | 12s | POST 15s，GET readback 12s |
-| NTP | 12s | POST 15s，GET readback 12s |
+| 待机守护 | 12s | POST 30s，GET readback 12s |
+| NTP | 12s | POST 30s，GET readback 12s |
 | Thermal HAL | 14s | `fresh`/clear 同属 thermalLive；HAL 最多 6s + 1s kill grace，失败回退 sysfs |
 | 温度历史 | 8s | 只读本地文件，不触发 HAL、Binder 或采集 |
 | Thermal contract | 15s | transaction 30s，readback 15s |
@@ -186,6 +204,8 @@ POST 使用 `standby_guard` 锁，保存意愿后调用共享生命周期管理�
 
 服务器必须来自后端 allowlist。更新系统设置后会立即复读；持久化失败时恢复旧系统值和模块保存值。`refreshed:false` 表示服务器已切换但即时同步未完成，不等同于切换失败。
 
+GET 保留实际的未托管 host，`ntp_server_allowed` 表示是否在目录中。未设置显式服务器时 `ntp_server` 为空、`ntp_server_source=system_default`；目录默认值仍单独位于 `default_server`，不得当成已读回的系统实际值。
+
 ## 7. 温控接口
 
 ### 7.1 实时温度：`/cgi-bin/thermal.sh`
@@ -226,6 +246,10 @@ POST 请求：
 
 取消恢复本身也保存取消前的 desired source 和 markers；恢复或清理失败时补偿回原 desired 状态，保留可重试 journal。补偿失败明确返回 rollback incomplete，而不是把部分恢复当成完成。升级缺少同 build stock provenance 时拒绝从仍受覆盖的 vendor 路径重采；disable 标记不代表挂载已卸除。
 
+温控 POST 已在后端完成 source/marker 恢复与提交后，前端立即反馈并关闭等待；独立 GET 只在后台补充状态，不作为关闭条件。事务处理中允许关闭弹窗、返回和切换页面，仅禁止重复提交同一动作。回读失败保留状态说明，不强制重新打开弹窗、不重复 POST。若 POST 响应丢失，用户重试先 GET 判断当前 journal，再决定是否提交。补充读取绑定 mutation revision，旧响应不能覆盖新操作或关闭另一领域的弹窗。
+
+用户关闭保存进度后，后台完成不得自行重开弹窗。温控页提供待处理变更入口，用户可主动重新查看保存、撤销进度或待重启变更。
+
 ### 7.3 后台限制提交
 
 `bg_restrict.sh` POST 在事务提交后返回 compact `ok/committed/enabled/action`，不在响应末尾重新做完整 per-package Binder/pm 扫描。前端在独立 GET 完成前显示“已提交，回读未确认”并暂停继续写入；刷新只读回，不重复 POST。首次隐藏加载时，应用恢复可见后补完未完成的初始化数据阶段，不重复绑定 UI 事件。
@@ -249,11 +273,20 @@ POST 接受 profile、policy、`sched_owner`、`game_handoff`、`scheduler_mode=
 - `scheduler_boot.phase`：当前启动模式事务阶段。
 - `scheduler_health.status`：当前控制面健康状态；`deferred` 表示 owner transition lock 正在保护状态。
 
-Profile mutation 的前端顺序是 POST → `profile.sh?compact=1` →（确认后）后台 full GET。full GET 被取消或超时不应覆盖已经确认的 compact mutation state。
+profile/策略 POST 已在锁内提交并复读后，前端依据回执立即结束等待，compact/full GET 在后台补充，不作为按钮完成条件。full GET 被取消或超时不应覆盖已经确认的 mutation state。
+
+### 8.1 CPU策略与owner请求预算
+
+- CPU 自动/手动切换在同一策略下幂等返回；仅目标 profile 不同时应用一次 CPU 事务。不因策略切换修复系统后续合法回写。历史不再同步等待 Thermal HAL dump，history/description 的附加工作均脱离 CGI 标准流，提交确认不依赖第二次 GET。
+- `sbm_load_state/stg_load` 对每个文件单次 Shell read 解析；禁止重新退回每字段多进程 sed/head/tr 热路径。helper parser 变量不得覆盖上层 transition key。
+- `scheduler_action=retry`、`game_handoff` 与手动 owner tick 返回 `accepted=true/final=false`，由 `scheduler_async_worker.sh` 完成一次有限任务；不是常驻轮询。`scheduler_operation` 包含 id/kind/phase/pending/result_code。UI 显示已接受并允许离开，由既有 compact GET 查询结果；同一任务进行中拒绝新调度 mutation。
+- `queued/running` 绑定 boot 与实际 process owner，已死/重启后的任务显示 unconfirmed，不能伪完成或自动重放；success/failed/deferred 为可观察结果。失败/延后需要用户结合当前状态决定下一步。
+- Pixel/UGT staging/取消保留同步的持久状态事务；前台 APD 采用单次有界尝试，list/set 分别 2s/3s，回滚仍需读回。重新验证内部的90s观察预算不再计入前台请求等待。
+- POST 的 `duration_ms` 和低频策略事件用于定位用户真实点击；不自动反复切换策略来产出性能数字。参数未改变与历史缺测必须分别表示，不能把 exit 0 当权威 runtime。
 
 ### 8.3 fas-rs owner tick：`/cgi-bin/owner_arbiter.sh`
 
-POST `{"action":"tick"}` 需要 token、owner arbiter lock、fas-rs 检测结果、亮屏状态以及有效游戏 handoff 或 lease。成功返回 `screen`、`screen_source`、`output` 和 `state`；未检测到 fas-rs、屏幕未亮或没有有效 lease 时返回 `409`。息屏时不执行 owner arbiter tick。
+POST `{"action":"tick"}` 需要 token、owner arbiter lock、fas-rs 检测结果及有效游戏 handoff 或 lease。返回 `ok/accepted=true`、`final=false` 与 `scheduler_operation`，亮屏检查和协调在一次性后台任务执行。非交互态任务记为 deferred，不执行 owner mutation；未检测到 fas-rs 或没有 handoff/lease 仍为 `409`。结果通过既有 profile GET 读取，不增加专门轮询。
 
 ## 9. 温度历史生命周期
 
@@ -287,3 +320,14 @@ worker 和历史写入器共用 boot ID/PID/start ticks 身份校验。关闭总
 3. 任何 mutation 都必须有后端 owner、原子写入或 journal、失败恢复路径和可验证 readback。
 4. 日志记录 endpoint、phase、result、reason code 和耗时；不得记录 token、请求体、ADB 地址、IMEI/IMSI、完整 fingerprint 或原始 dumpsys。
 5. 源码审查、构建审查和设备回读分别记录；HTTP `200`、静态构建成功或 ADB 已连接都不能单独证明运行态功能已生效。
+
+## 11. 配置、运行态和日志的保存边界
+
+- `install_state_lib.sh` 是升级保留清单的唯一入口，将 preferences、recovery、history 分开；领域值、默认值与校验仍由原有领域库负责，不维护第二份参数表。
+- 升级逐文件在 staging 目录内原子复制并比较原始字节，拒绝 symlink、非普通文件、未知高版本 schema 和异常大文件；失败中止 staging，保留旧 active 目录。当前支持的 performance 用户选择不降级。
+- token、锁、PID、worker readiness、effective receipts 不迁移。恢复用旧状态只作 recovery 输入，不能冒充本 boot 的 effective 事实。温度历史有七天及行数双重边界，低频小文件同样执行过期清理。
+- 本轮保留现有模块路径 ABI 与管理器升级迁移入口，没有将所有文件搬入 `/dev`，也没有绕开 Hybrid Mount 改写当前 `/vendor`。有界原子 rename 防止读取半文件，不承诺任意断电下的完整持久性；常规策略/日志不执行全盘 `sync`。
+- `audit_log_lib.sh` 统一 event、clear、snapshot 的有界锁；锁身份包含 boot ID/PID/start ticks。私有目录 0700、文件 0600，单文件默认 256KiB、保留 3 个当前轮转及 4 个有大小上限的日期归档，单个字段与查询行数也有上限。
+- 审计接口普通 tail 最多 100 行，`all=1` 最多 2000 行。读取保持路径逐个引用；轮转、清理和读取使用同一锁，繁忙或无法读取返回 503，不回假空记录。
+- lifecycle、domain transaction、HTTP failure 使用受控 reason code；不写 raw request、token 或设备标识。CGI 补充审计及 reboot 子进程在外层重定向全部标准流，避免继承 HTTPD 管道而拖延响应。
+- `post-fs-data` 保持只读观测，不等待 Android framework、用户解锁或 WebUI；`service` 的开机等待是非阻塞启动阶段的有界等待。HTTPD 端口冲突不报成功，也不阻断独立后台策略；不强制 SELinux permissive、不修改根 cgroup 或 OOM 优先级。

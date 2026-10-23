@@ -578,12 +578,10 @@ GAME_MATCH="no"
 case "$SCREEN_STATE" in
     on) ;;
     *)
-        # Screen-off ticks still publish an observation receipt. They never
-        # mutate scheduler nodes, but stale owner timestamps make the control
-        # plane look dead after Doze and hide the real effective owner.
+        # Keep the last interactive owner receipt intact. A noninteractive
+        # tick is not a new owner decision and must not create state/history
+        # or perform the extra runtime probes used by write_state.
         APPLY_RESULT="screen_${SCREEN_STATE}_noop"
-        write_state >/dev/null 2>&1 || true
-        append_history >/dev/null 2>&1 || true
         printf '%s\n' "$APPLY_RESULT"
         exit 0
         ;;

@@ -68,6 +68,7 @@ const state = {
   gameHandoffBusy: false,
   ownerArbiterBusy: false,
   schedulerRetryBusy: false,
+  schedulerOperation: { id: '', kind: '', phase: 'none', pending: false, resultCode: 0 },
   cpuRows: null,
   homeCpuRows: null,
   lastClusters: null
@@ -254,7 +255,7 @@ function isVerifiedSchedulerBoot() {
 }
 
 function isCurrentStrategyBusy() {
-  return state.profileApplyBusy
+  return state.schedulerOperation.pending || state.profileApplyBusy
     || state.profilePolicyBusy
     || state.schedOwnerBusy
     || state.gameHandoffBusy
@@ -526,7 +527,27 @@ function describeAutoReason(reason) {
   }
 }
 
+function applySchedulerOperation(data) {
+  const operation = data?.scheduler_operation;
+  if (!operation || typeof operation !== 'object') return;
+  state.schedulerOperation = {
+    id: String(operation.id || ''), kind: String(operation.kind || ''),
+    phase: String(operation.phase || 'none'), pending: operation.pending === true,
+    resultCode: Number(operation.result_code) || 0
+  };
+  const notice = document.getElementById('scheduler-operation-notice');
+  if (!notice || !state.schedulerOperation.id) return;
+  notice.hidden = false;
+  const label = ({ retry: '重新验证', handoff: '游戏移交', tick: '调度协调' })[state.schedulerOperation.kind] || '调度操作';
+  notice.textContent = state.schedulerOperation.pending
+    ? `${label}已接受，后台正在处理；可以切换页面，稍后刷新查看结果。`
+    : state.schedulerOperation.phase === 'success' ? `${label}已完成。`
+      : state.schedulerOperation.phase === 'deferred' ? `${label}已延后；可在亮屏且调度空闲时手动重试。`
+        : `${label}未确认完成（${state.schedulerOperation.phase} / ${state.schedulerOperation.resultCode}），请刷新核对后再重试。`;
+}
+
 function applyProfileState(data) {
+  applySchedulerOperation(data);
   state.schedulerMode = ['active', 'off', 'observe'].includes(data.scheduler_mode) ? data.scheduler_mode : 'active';
   state.schedulerCapability = ['supported', 'partial', 'unsupported', 'unknown'].includes(data.scheduler_capability)
     ? data.scheduler_capability : 'unknown';
@@ -617,6 +638,7 @@ function applyProfileState(data) {
 }
 
 function applyProfileMutationState(data) {
+  applySchedulerOperation(data);
   latestProfileMutationState = data;
   profileMutationStateRevision += 1;
   if (['active', 'off', 'observe'].includes(data.scheduler_mode)) state.schedulerMode = data.scheduler_mode;
@@ -735,7 +757,7 @@ function ensureHomeCpuRows(clusters) {
     freq.className = 'home-cpu-freq';
     row.append(label, bar, freq);
     refs.homeCpuRows.appendChild(row);
-    return { fill, freq, maxHz: CLUSTERS[index]?.maxHz || 3105000 };
+    return { fill, freq };
   });
 }
 
@@ -765,7 +787,7 @@ function ensurePerfCpuRows(clusters) {
     params.className = 'cpu-params';
     row.append(head, track, params);
     refs.cpuRows.appendChild(row);
-    return { current, max, fill, params, maxHz: CLUSTERS[index]?.maxHz || 3105000 };
+    return { current, max, fill, params };
   });
 }
 
@@ -794,12 +816,30 @@ function refreshFullProfileState() {
 }
 
 async function confirmProfileMutation(expected) {
-  const data = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: SCHEDULER_READ_TIMEOUTS.compact, priority: 'interactive', scope: 'profile.mutation.readback' });
+  const data = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: SCHEDULER_READ_TIMEOUTS.compact, dedupe: false, priority: 'interactive', scope: 'profile.mutation.readback' });
   if (!data || data.ok === false) return false;
   applyProfileMutationState(data);
   const confirmed = typeof expected === 'function' ? expected() : true;
   if (confirmed) void refreshFullProfileState();
   return confirmed;
+}
+
+function reconcileProfileCommit(expected, message) {
+  const revision = profileMutationStateRevision;
+  const notice = document.getElementById('profile-operation-notice');
+  if (notice) { notice.hidden = false; notice.textContent = `${message}，正在后台补充读取。`; }
+  void apiFetch(`${API.profile}?compact=1`, { timeoutMs: SCHEDULER_READ_TIMEOUTS.compact,
+    dedupe: false, priority: 'normal', scope: 'profile.commit.readback' })
+    .then((readback) => {
+      if (revision !== profileMutationStateRevision) return;
+      if (!readback || readback.ok === false) throw new Error('状态响应无效');
+      applyProfileMutationState(readback);
+      const confirmed = expected();
+      if (notice) notice.textContent = confirmed ? message : `${message}；当前状态未对齐，请刷新核对。`;
+    })
+    .catch((error) => {
+      if (revision === profileMutationStateRevision && notice) notice.textContent = `${message}；补充读取${isCancelled(error) ? '已暂停' : '失败'}，可刷新核对。`;
+    });
 }
 
 async function loadSavedProfile() {
@@ -880,15 +920,17 @@ async function refreshCpuTask() {
     clusters.forEach((cluster, index) => {
       const perf = state.cpuRows[index];
       const home = state.homeCpuRows[index];
-      const maxHz = cluster.max > 0 ? cluster.max : perf.maxHz;
-      perf.current.textContent = !cluster.cur || Number.isNaN(cluster.cur) ? '—' : `${(cluster.cur / 1000).toFixed(0)} MHz`;
-      perf.max.textContent = ` / ${(maxHz / 1000).toFixed(0)} MHz`;
-      perf.fill.style.transform = `scaleX(${Math.min(cluster.cur / maxHz, 1).toFixed(3)})`;
+      const maxHz = Number.isFinite(cluster.max) && cluster.max > 0 ? cluster.max : null;
+      const current = Number.isFinite(cluster.cur) && cluster.cur > 0 ? cluster.cur : null;
+      const scale = maxHz && current ? Math.min(current / maxHz, 1) : 0;
+      perf.current.textContent = current ? `${(current / 1000).toFixed(0)} MHz` : '—';
+      perf.max.textContent = maxHz ? ` / ${(maxHz / 1000).toFixed(0)} MHz` : ' / —';
+      perf.fill.style.transform = `scaleX(${scale.toFixed(3)})`;
       const respText = typeof cluster.resp_ms_text === 'string' ? cluster.resp_ms_text : cluster.resp_ms;
       const downText = typeof cluster.down_us_text === 'string' ? cluster.down_us_text : cluster.down_us;
       perf.params.textContent = `resp=${formatSchedValue(respText, 'ms')} · down=${formatSchedValue(downText, 'µs')} · gov=${cluster.gov}`;
-      home.freq.textContent = !cluster.cur || Number.isNaN(cluster.cur) ? '—' : `${(cluster.cur / 1000).toFixed(0)} MHz`;
-      home.fill.style.transform = `scaleX(${!cluster.cur ? 0 : Math.min(cluster.cur / maxHz, 1).toFixed(3)})`;
+      home.freq.textContent = current ? `${(current / 1000).toFixed(0)} MHz` : '—';
+      home.fill.style.transform = `scaleX(${scale.toFixed(3)})`;
     });
     const mutationRevision = profileMutationStateRevision;
     try {
@@ -947,7 +989,8 @@ async function applyProfile(profile) {
     const data = await apiFetch(API.profile, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile }), timeoutMs: PROFILE_MUTATION_TIMEOUT_MS, priority: 'interactive', scope: 'profile.mutation' });
     if (data.ok) {
       applyProfileMutationState(data);
-      if (!await confirmProfileMutation(() => state.currentProfile === profile)) throw new Error('profile 已提交，但 GET readback 未确认目标档位');
+      if (data.final !== true || data.profile !== profile) throw new Error('后端未确认目标档位提交');
+      reconcileProfileCommit(() => state.currentProfile === profile, `已保存：${PROFILES[profile].name}`);
       const forcedManual = prevPolicy === 'auto' && data.policy === 'manual';
       showToast(forcedManual ? `已切回手动：${PROFILES[profile].name}` : `切换至：${PROFILES[profile].name}`);
       appendLog(forcedManual ? `自动已退出，手动切到 ${PROFILES[profile].name}` : `${PROFILES[profile].name} 已应用`, 'ok');
@@ -979,7 +1022,8 @@ async function setSchedulerMode(mode) {
     });
     if (data.ok) {
       applyProfileMutationState(data);
-      if (!await confirmProfileMutation(() => state.schedulerMode === mode)) throw new Error('调度模式已提交，但 GET readback 未确认');
+      if (data.final !== true || data.scheduler_mode !== mode) throw new Error('后端未确认调度模式提交');
+      reconcileProfileCommit(() => state.schedulerMode === mode, '调度模式已保存');
       const label = '本模块性能调度已关闭';
       showToast(data.reboot_required ? `${label}，重启后完成切换` : label);
       appendLog(`${label} · ${data.cleanup_result || 'state_committed'}`, data.reboot_required ? 'warn' : 'ok');
@@ -1022,7 +1066,8 @@ async function setProfilePolicy(policy) {
     });
     if (data.ok) {
       applyProfileMutationState(data);
-      if (!await confirmProfileMutation(() => state.profilePolicy === policy)) throw new Error('调度策略已提交，但 GET readback 未确认');
+      if (data.final !== true || data.policy !== policy) throw new Error('后端未确认策略提交');
+      reconcileProfileCommit(() => state.profilePolicy === policy, policy === 'auto' ? '自动策略已保存' : '手动策略已保存');
       showToast(policy === 'auto' ? '已启用自动调度' : `已切回手动：${PROFILES[state.currentProfile].name}`);
       appendLog(policy === 'auto'
         ? `自动调度已启用：${describeAutoReason(state.autoReason)}`
@@ -1090,6 +1135,9 @@ async function cancelSchedulerChange() {
   state.schedOwnerBusy = true;
   invalidateFullProfileStateRefresh();
   syncProfileUi();
+  const notice = document.getElementById('scheduler-operation-notice');
+  if (requireFeature('ui').getRebootContext() === 'scheduler') requireFeature('ui').setRebootBusy(true);
+  if (notice) { notice.hidden = false; notice.textContent = '正在提交取消请求，可以关闭弹窗或切换页面。'; }
   try {
     const data = await apiFetch(API.profile, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1097,19 +1145,36 @@ async function cancelSchedulerChange() {
     });
     if (data.scheduler_boot) applyProfileMutationState(data);
     if (data.ok) {
-      if (!await confirmProfileMutation(() => state.schedulerBoot.final === 'yes' && state.schedulerBoot.phase !== 'pending_reboot')) throw new Error('取消请求已提交，但调度启动状态 readback 未确认');
-      refs.rebootModal.classList.remove('open');
+      if (state.schedulerBoot.final !== 'yes' || state.schedulerBoot.phase !== 'success') throw new Error('取消回执未确认终态，请刷新核对');
+      if (requireFeature('ui').getRebootContext() === 'scheduler') {
+        requireFeature('ui').closeRebootModal('', { force: true, silent: true });
+      }
       showToast('已取消待重启切换');
       appendLog('调度启动模式已恢复到本次 boot 的状态', 'ok');
+      if (notice) notice.textContent = '取消已提交并由后端确认，正在后台补充读取。';
+      const revision = profileMutationStateRevision;
+      void apiFetch(`${API.profile}?compact=1`, { timeoutMs: SCHEDULER_READ_TIMEOUTS.compact, dedupe: false, priority: 'normal', scope: 'profile.cancel.readback' })
+        .then((readback) => {
+          if (revision !== profileMutationStateRevision) return;
+          applyProfileMutationState(readback);
+          const confirmed = state.schedulerBoot.final === 'yes' && state.schedulerBoot.phase === 'success';
+          if (notice) notice.textContent = confirmed ? '已取消待重启切换。' : '取消已提交，后续状态未确认；可刷新核对。';
+        })
+        .catch((error) => {
+          if (revision === profileMutationStateRevision && notice) notice.textContent = `取消已提交，补充读取${isCancelled(error) ? '已暂停' : '失败'}；可刷新核对，不会重新提交。`;
+        });
     } else {
       showToast(`取消失败：${data.error || data.scheduler_boot?.reason || '未知'}`);
       appendLog(data.error || '取消待重启切换失败', 'err');
     }
   } catch (err) {
+    if (notice) notice.textContent = `取消请求未确认：${err?.message || '服务未返回有效响应'}。请先刷新核对。`;
+    if (requireFeature('ui').getRebootContext() === 'scheduler') requireFeature('ui').setRebootError(notice?.textContent || String(err));
     showToast(`请求失败：${err?.message || '服务未返回有效响应'}`);
     appendLog(String(err), 'err');
   } finally {
     state.schedOwnerBusy = false;
+    if (requireFeature('ui').getRebootContext() === 'scheduler') requireFeature('ui').setRebootBusy(false);
     syncProfileUi();
     void refreshFullProfileState();
   }
@@ -1125,8 +1190,11 @@ async function retrySchedulerValidation() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scheduler_action: 'retry' }), timeoutMs: 45000, priority: 'interactive', scope: 'profile.mutation'
     });
-    if (data.scheduler_boot) applyProfileMutationState(data);
-    if (data.ok) {
+    if (data.scheduler_boot || data.scheduler_operation) applyProfileMutationState(data);
+    if (data.accepted && data.final === false) {
+      showToast('验证任务已接受，后台继续处理');
+      appendLog('调度验证已转为一次性后台任务，可离开页面', 'dim');
+    } else if (data.ok) {
       if (!await confirmProfileMutation(() => state.schedulerBoot.final === 'yes')) throw new Error('重试请求已提交，但调度终态 readback 未确认');
       showToast('调度控制面验证通过');
       appendLog(`调度终态：${data.scheduler_boot?.result || 'success'}`, 'ok');
@@ -1164,7 +1232,7 @@ async function toggleGameHandoff() {
       showToast('接管偏好已保存，等待调度状态同步');
       appendLog(data.pending_reason || '共享调度事务正在执行，后台将继续同步', 'warn');
     } else if (data.ok) {
-      if (!await confirmProfileMutation(() => state.gameHandoffPolicy === nextPolicy)) throw new Error('游戏接管偏好已提交，但 GET readback 未确认');
+      reconcileProfileCommit(() => state.gameHandoffPolicy === nextPolicy, '游戏移交偏好已保存');
       showToast(nextPolicy === 'fas_rs' ? 'fas-rs 游戏接管已启用' : 'fas-rs 游戏接管已关闭');
       appendLog(nextPolicy === 'fas_rs'
         ? 'fas-rs 保持常驻待机；命中游戏并建立有效 lease 后临时接管'
@@ -1197,7 +1265,11 @@ async function triggerOwnerArbiter() {
       body: JSON.stringify({ action: 'tick' }),
       timeoutMs: SCHEDULER_READ_TIMEOUTS.owner, priority: 'interactive', scope: 'profile.owner'
     });
-    if (data.ok) {
+    if (data.scheduler_operation) applySchedulerOperation(data);
+    if (data.accepted && data.final === false) {
+      showToast('调度协调任务已接受，后台继续处理');
+      appendLog('外部调度协调已转为一次性后台任务', 'dim');
+    } else if (data.ok) {
       showToast('调度状态已更新');
       appendLog('外部调度接管状态已更新', 'ok');
       await loadSavedProfile();
@@ -1212,6 +1284,7 @@ async function triggerOwnerArbiter() {
   } finally {
     state.ownerArbiterBusy = false;
     syncProfileUi();
+    void loadSavedProfile();
   }
 }
 
@@ -1220,6 +1293,7 @@ registerFeature('profile', {
   load: loadSavedProfile,
   refresh: refreshCpu,
   isRefreshing: () => state.cpuBusy,
+  isBusy: isCurrentStrategyBusy,
   syncOptionalModuleUi,
   getSchedulerBootTargetMode: () => state.schedulerBoot.targetMode,
   getThermalContext: () => ({

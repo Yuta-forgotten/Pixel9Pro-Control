@@ -85,14 +85,17 @@ thermal_generate_config() (
     _tp_stock="$1"
     _tp_out="$2"
     _tp_offset="$3"
-    _tp_tmp="${_tp_out}.tmp.$$"
 
     [ -f "$_tp_stock" ] || return 10
     [ -n "$_tp_out" ] || return 11
-    [ ! -d "$_tp_out" ] || return 11
+    [ ! -d "$_tp_out" ] && [ ! -L "$_tp_out" ] && [ ! -L "$_tp_stock" ] || return 11
     thermal_is_valid_offset "$_tp_offset" || return 12
 
-    rm -f "$_tp_tmp" 2>/dev/null
+    _tp_tmp=$(umask 077; mktemp "${_tp_out}.tmp.XXXXXX") || return 11
+    trap 'rm -f "$_tp_tmp"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     _tp_targets="|$(printf '%s' "$THERMAL_TARGET_SENSORS" | tr ' ' '|')|"
     awk -v off="$_tp_offset" -v targets="$_tp_targets" \
         -v expected_targets="$THERMAL_TARGET_SENSOR_COUNT" \

@@ -309,7 +309,7 @@
     view.summary.forEach((item, index) => {
       item.querySelector('strong').textContent = Number.isFinite(values[index]) ? `${values[index].toFixed(1)}°C` : '—';
     });
-    view.legend.textContent = `${stats?.validCount ?? 0} 个有效点 · 覆盖 ${model().formatDuration(stats?.coverageSec)} · 间断 ${stats?.gapCount ?? 0}`;
+    view.legend.textContent = `${stats?.validCount ?? 0} 个有效点 · 覆盖 ${model().formatDuration(stats?.coverageSec)} · 未覆盖 ${model().formatDuration(stats?.unknownSec)} · 间断 ${stats?.gapCount ?? 0}`;
     draw(view, stats);
   }
 

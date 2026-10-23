@@ -45,7 +45,11 @@ async function doFullRefresh() {
     // Request Hub and makes valid CGI responses expire while queued.
     const tasks = [
       ['CPU', () => appFeatures.profile.refresh()],
-      ['温控', () => appFeatures.thermal.refresh()],
+      ['温控', async () => {
+        const stateRead = await appFeatures.thermal.load();
+        if (stateRead === false) return false;
+        return appFeatures.thermal.refresh();
+      }],
       ['内存', () => appFeatures.memory.refresh()]
     ];
     const results = await Promise.allSettled(tasks.map(([, task]) => task()));
@@ -146,6 +150,7 @@ function pauseForegroundWork() {
   if (appFeatures.shell.isForegroundPaused()) return;
   appFeatures.shell.setForegroundPaused(true);
   stopPolling();
+  appFeatures.core.pauseReadRequests();
   appFeatures.analytics.pause();
   appFeatures.thermal.pause();
   appFeatures.network.stopDeviceClock();
@@ -250,6 +255,7 @@ function bindStaticEvents() {
   $('reboot-later-btn').addEventListener('click', appFeatures.ui.closeRebootModal);
   $('reboot-close-x').addEventListener('click', appFeatures.ui.closeRebootModal);
   $('reboot-cancel-btn').addEventListener('click', appFeatures.thermal.cancelPendingRebootChange);
+  $('thermal-pending-btn').addEventListener('click', appFeatures.thermal.openPendingChange);
   $('open-cpu-detail-btn').addEventListener('click', () => {
     const detailState = appFeatures.profile.getCpuDetailState();
     const contract = detailState.cpuContract;
@@ -267,7 +273,7 @@ function bindStaticEvents() {
       : `<b>cpuset 分配</b><br>${appFeatures.core.escapeHtml(cpuSet).replace(/\n/g, '<br>')}`;
     if (detailState.lastClusters && detailState.lastClusters.length) {
       detailState.lastClusters.forEach((cluster, index) => {
-        const maxHz = cluster.max > 0 ? cluster.max : (CLUSTERS[index]?.maxHz || 0);
+        const maxHz = Number.isFinite(cluster.max) && cluster.max > 0 ? cluster.max : 0;
         html += `<br><br><b>${CLUSTERS[index]?.label || `Cluster ${index}`}</b><br>`;
         html += `cur: ${cluster.cur ? `${(cluster.cur / 1000).toFixed(0)} MHz` : '—'} / max: ${maxHz ? `${(maxHz / 1000).toFixed(0)} MHz` : '—'}<br>`;
         const respText = typeof cluster.resp_ms_text === 'string' ? cluster.resp_ms_text : cluster.resp_ms;
@@ -341,9 +347,10 @@ function initializeData() {
 }
 
 async function init() {
+  if (!WEBUI_NATIVE_TRANSPORT && location.host !== '127.0.0.1:6210') return;
   const bootAt = Date.now();
   appFeatures.ui.initialize();
-  appFeatures.auth.initialize();
+  const pairing = appFeatures.auth.initialize();
   appFeatures.theme.initialize();
   appFeatures.profile.initialize();
   appFeatures.thermal.initialize();
@@ -353,7 +360,14 @@ async function init() {
   refs.topbarSubtitle.textContent = TAB_META[appFeatures.shell.getCurrentTab()];
   appFeatures.shell.setLastInteractionAt(bootAt);
   appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow'], bootAt);
-  await initializeData();
+  window.addEventListener('pixel9pro:paired', () => {
+    void appFeatures.theme.restoreFromServer();
+    void resumeForegroundWork();
+  });
+  if (await pairing) {
+    void appFeatures.theme.restoreFromServer();
+    await initializeData();
+  }
 }
 
 registerFeature('app', {

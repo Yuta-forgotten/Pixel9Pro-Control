@@ -26,16 +26,9 @@ stg_safe_field() {
 }
 
 stg_atomic_write() {
-    _stg_value="$1"
-    [ -n "$STG_FILE" ] && [ ! -d "$STG_FILE" ] || return 1
-    _stg_tmp="${STG_FILE}.tmp.$$"
-    if printf '%s' "$_stg_value" > "$_stg_tmp" 2>/dev/null \
-        && mv "$_stg_tmp" "$STG_FILE" 2>/dev/null \
-        && [ "$(cat "$STG_FILE" 2>/dev/null)" = "$_stg_value" ]; then
-        return 0
-    fi
-    rm -f "$_stg_tmp" 2>/dev/null
-    return 1
+    command -v state_atomic_write >/dev/null 2>&1 \
+        || . "${PIXEL9PRO_MODDIR:-${MODDIR:-/data/adb/modules/pixel9pro_control}}/scripts/state_io_lib.sh" || return 1
+    state_atomic_write "$STG_FILE" "$1"
 }
 
 stg_read_value() {
@@ -43,44 +36,52 @@ stg_read_value() {
     sed -n "s/^$1=//p" "$STG_FILE" 2>/dev/null | head -n 1 | tr -d '\r'
 }
 
+stg_read_state_file() {
+    [ -f "$1" ] && [ -r "$1" ] && [ ! -L "$1" ] || return 1
+    while IFS='=' read -r _stg_parse_key _stg_parse_value || [ -n "$_stg_parse_key" ]; do
+        _stg_parse_value=${_stg_parse_value%"$_stg_cr"}
+        case "$_stg_parse_key" in
+            key) STG_KEY="$_stg_parse_value" ;;
+            boot_id) STG_BOOT_ID="$_stg_parse_value" ;;
+            attempts) STG_ATTEMPTS="$_stg_parse_value" ;;
+            first_epoch) STG_FIRST_EPOCH="$_stg_parse_value" ;;
+            deadline_epoch) STG_DEADLINE_EPOCH="$_stg_parse_value" ;;
+            terminal) STG_TERMINAL="$_stg_parse_value" ;;
+            ok) STG_OK="$_stg_parse_value" ;;
+            result) STG_RESULT="$_stg_parse_value" ;;
+        esac
+    done < "$1"
+}
+
 stg_load() {
-    STG_KEY=$(stg_read_value key 2>/dev/null)
-    STG_BOOT_ID=$(stg_read_value boot_id 2>/dev/null)
-    STG_ATTEMPTS=$(stg_read_value attempts 2>/dev/null)
-    STG_FIRST_EPOCH=$(stg_read_value first_epoch 2>/dev/null)
-    STG_DEADLINE_EPOCH=$(stg_read_value deadline_epoch 2>/dev/null)
-    STG_TERMINAL=$(stg_read_value terminal 2>/dev/null)
-    STG_OK=$(stg_read_value ok 2>/dev/null)
-    STG_RESULT=$(stg_read_value result 2>/dev/null)
+    _stg_cr=$(printf '\r')
+    STG_KEY=''
+    STG_BOOT_ID=''
+    STG_ATTEMPTS=''
+    STG_FIRST_EPOCH=''
+    STG_DEADLINE_EPOCH=''
+    STG_TERMINAL=''
+    STG_OK=''
+    STG_RESULT=''
+    stg_read_state_file "$STG_FILE" || true
+    _stg_terminal_key=''; _stg_terminal_boot=''; _stg_terminal_flag=''
+    if [ -f "$STG_TERMINAL_FILE" ] && [ ! -L "$STG_TERMINAL_FILE" ]; then
+        while IFS='=' read -r _stg_parse_key _stg_parse_value || [ -n "$_stg_parse_key" ]; do
+            _stg_parse_value=${_stg_parse_value%"$_stg_cr"}
+            case "$_stg_parse_key" in key) _stg_terminal_key="$_stg_parse_value" ;;
+                boot_id) _stg_terminal_boot="$_stg_parse_value" ;; terminal) _stg_terminal_flag="$_stg_parse_value" ;; esac
+        done < "$STG_TERMINAL_FILE"
+    fi
+    if [ "$_stg_terminal_flag" = yes ] && [ -n "$_stg_terminal_key" ] \
+        && { [ -z "$STG_KEY" ] || { [ "$STG_KEY" = "$_stg_terminal_key" ] && [ "$STG_BOOT_ID" = "$_stg_terminal_boot" ]; }; }; then
+        stg_read_state_file "$STG_TERMINAL_FILE" || true
+    fi
     case "$STG_ATTEMPTS" in ''|*[!0-9]*) STG_ATTEMPTS=0 ;; esac
     case "$STG_FIRST_EPOCH" in ''|*[!0-9]*) STG_FIRST_EPOCH=0 ;; esac
     case "$STG_DEADLINE_EPOCH" in ''|*[!0-9]*) STG_DEADLINE_EPOCH=0 ;; esac
     case "$STG_TERMINAL" in yes|no) ;; *) STG_TERMINAL=no ;; esac
     case "$STG_OK" in yes|no|pending) ;; *) STG_OK=pending ;; esac
-
-    _stg_terminal_key=$(stg_read_file_value "$STG_TERMINAL_FILE" key 2>/dev/null)
-    _stg_terminal_boot=$(stg_read_file_value "$STG_TERMINAL_FILE" boot_id 2>/dev/null)
-    _stg_terminal_flag=$(stg_read_file_value "$STG_TERMINAL_FILE" terminal 2>/dev/null)
-    if [ "$_stg_terminal_flag" = "yes" ] \
-        && [ -n "$_stg_terminal_key" ] \
-        && { [ -z "$STG_KEY" ] \
-            || { [ "$STG_KEY" = "$_stg_terminal_key" ] \
-                && [ "$STG_BOOT_ID" = "$_stg_terminal_boot" ]; }; }; then
-        STG_KEY="$_stg_terminal_key"
-        STG_BOOT_ID="$_stg_terminal_boot"
-        STG_ATTEMPTS=$(stg_read_file_value "$STG_TERMINAL_FILE" attempts 2>/dev/null)
-        STG_FIRST_EPOCH=$(stg_read_file_value "$STG_TERMINAL_FILE" first_epoch 2>/dev/null)
-        STG_DEADLINE_EPOCH=$(stg_read_file_value "$STG_TERMINAL_FILE" deadline_epoch 2>/dev/null)
-        STG_TERMINAL=yes
-        STG_OK=$(stg_read_file_value "$STG_TERMINAL_FILE" ok 2>/dev/null)
-        STG_RESULT=$(stg_read_file_value "$STG_TERMINAL_FILE" result 2>/dev/null)
-        case "$STG_ATTEMPTS" in ''|*[!0-9]*) STG_ATTEMPTS=0 ;; esac
-        case "$STG_FIRST_EPOCH" in ''|*[!0-9]*) STG_FIRST_EPOCH=0 ;; esac
-        case "$STG_DEADLINE_EPOCH" in ''|*[!0-9]*) STG_DEADLINE_EPOCH=0 ;; esac
-        case "$STG_OK" in yes|no) ;; *) STG_OK=no ;; esac
-    fi
 }
-
 stg_read_file_value() {
     _stg_read_file="$1"
     _stg_read_key="$2"

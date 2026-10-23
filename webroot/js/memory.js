@@ -13,6 +13,7 @@ const state = {
   bgRestrictEnabled: 'on',
   bgRestrictBusy: false,
   bgRestrictReadbackPending: false,
+  bgRecoveryRequired: false,
   bgRestrictSuggestions: []
 };
 
@@ -183,7 +184,7 @@ function zramDraftToBackendValue(draft) {
   if (draft.unit === 'percent') return `${draft.value}%`;
   const mb = Number(draft.value);
   if (!Number.isFinite(mb)) return '';
-  return String(Math.round(mb * 1000000 / 4096) * 4096);
+  return String(Math.ceil(mb * 1000000 / 4096) * 4096);
 }
 
 function updateZramUnitUi(data) {
@@ -204,6 +205,8 @@ function updateZramUnitUi(data) {
 }
 
 function syncZramRequestControl(data = state.swapData) {
+  const vmReady = data?.vm_policy_ready === true;
+  [refs.swapToggleButton, refs.swapTuneButton].filter(Boolean).forEach((control) => { control.disabled = state.swapBusy || !vmReady; });
   const button = refs.swapZramSizeApply;
   if (!button) return;
   const policyReady = data?.vm_policy_ready !== false;
@@ -421,13 +424,13 @@ async function refreshSwap(force = false) {
     state.featureVm = ['system', 'optimized', 'disabled'].includes(data.feature_vm) ? data.feature_vm : 'system';
     state.swapData = data;
     const policyReady = data.vm_policy_ready !== false;
-    if (refs.swapToggleButton) refs.swapToggleButton.disabled = !policyReady;
-    if (refs.swapTuneButton) refs.swapTuneButton.disabled = !policyReady;
+    if (refs.swapToggleButton) refs.swapToggleButton.disabled = state.swapBusy || !policyReady;
+    if (refs.swapTuneButton) refs.swapTuneButton.disabled = state.swapBusy || !policyReady;
     if (refs.swapZramSizeNumber) {
       const limits = data.zram_size_limits || {};
       const zramRequestAllowed = policyReady && data.feature_vm === 'optimized' && data.zram_target_supported === true;
       const transactionPending = zramTransactionPending(data);
-      const zramCanEdit = zramRequestAllowed && !transactionPending;
+      const zramCanEdit = !state.swapBusy && zramRequestAllowed && !transactionPending;
       refs.swapZramSizeNumber.disabled = !zramCanEdit;
       if (refs.swapZramSizeUnit) refs.swapZramSizeUnit.disabled = !zramCanEdit;
       syncZramRequestControl(data);
@@ -435,7 +438,7 @@ async function refreshSwap(force = false) {
       const keepDraft = Boolean(state.zramDraft)
         && refs.swapTuneModal?.classList.contains('open')
         && !transactionPending;
-      if (!keepDraft || transactionPending) {
+      if (!state.swapBusy && (!keepDraft || transactionPending)) {
         state.zramDraft = zramRequestAllowed ? splitZramRequest(requested) : null;
         writeZramDraft(state.zramDraft || { value: '', unit: 'mb' });
       }
@@ -606,12 +609,13 @@ function syncBgDelayControl(policySelect, delaySelect) {
 }
 
 function syncBgRestrictControls() {
-  const busy = state.bgRestrictBusy || state.bgRestrictReadbackPending || !state.bgContract;
+  const busy = state.bgRestrictBusy || state.bgRestrictReadbackPending || state.bgRecoveryRequired || !state.bgContract;
   if (refs.bgRestrictToggleBtn) refs.bgRestrictToggleBtn.disabled = busy;
   if (refs.bgRestrictAddBtn) refs.bgRestrictAddBtn.disabled = busy;
   if (refs.bgRestrictPkgInput) refs.bgRestrictPkgInput.disabled = busy;
   if (refs.bgRestrictPolicySelect) refs.bgRestrictPolicySelect.disabled = busy;
   if (refs.bgRestrictDelaySelect) syncBgDelayControl(refs.bgRestrictPolicySelect, refs.bgRestrictDelaySelect);
+  if (refs.bgRestrictRefreshBtn) refs.bgRestrictRefreshBtn.disabled = state.bgRestrictBusy;
   document.querySelectorAll('#bg-restrict-rows .bg-policy-row').forEach((row) => {
     const policySelect = row.querySelector('.bg-policy-select');
     const delaySelect = row.querySelector('.bg-delay-select');
@@ -630,6 +634,7 @@ function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled, runtime = {
   const bgMode = String(opBg || '').toLowerCase();
   const anyMode = String(opAny || '').toLowerCase();
   const stopState = String(runtime.stopState || '');
+  if (stopState === 'failed') return { text: '停止未确认', cls: 'warn' };
   const rareOrLower = bucketText === '40' || bucketText === 'rare' || bucketText === '45' || bucketText === 'restricted';
   const restricted = bucketText === '45' || bucketText === 'restricted';
   const bgIgnored = bgMode === 'ignore';
@@ -668,12 +673,15 @@ function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled, runtime = {
 function renderBgRestrict(data) {
   applyBgContract(data);
   state.bgRestrictReadbackPending = false;
+  state.bgRecoveryRequired = data.recovery_required === true;
   state.bgRestrictEnabled = data.enabled === 'on' ? 'on' : 'off';
   const on = state.bgRestrictEnabled === 'on';
   refs.bgRestrictToggleLabel.textContent = on ? '关闭' : '开启';
   refs.bgRestrictDesc.textContent = on
     ? '已开启：应用离开前台后，将按所选策略限制后台活动。'
     : '已关闭：应用列表保留，后台设置已恢复。';
+    if (state.bgRecoveryRequired) refs.bgRestrictDesc.textContent = '存在未完成的后台策略事务。可点“恢复未完成事务”恢复请求前状态；其它页面可继续使用。';
+  if (refs.bgRestrictRefreshBtn) refs.bgRestrictRefreshBtn.textContent = state.bgRecoveryRequired ? '恢复未完成事务' : '刷新';
   refs.bgRestrictRows.replaceChildren();
   const packages = Array.isArray(data.packages) ? data.packages : [];
   renderBgRestrictSuggestions(data.suggestions, packages);
@@ -690,6 +698,12 @@ function renderBgRestrict(data) {
     const opAny = p.op_any || p.appops || '';
     const stopState = String(p.stop_state || '');
     const st = bgRestrictStatus(p.pkg, p.bucket, opBg, opAny, policy, on, { stopState });
+    if (on) {
+      if (p.runtime_freshness === 'last_verified') {
+        st.text = `上次确认：${st.text}`;
+        st.cls = st.cls === 'err' ? 'warn' : 'off';
+      } else { st.text = '已保存，运行态未回读'; st.cls = 'warn'; }
+    }
     const row = document.createElement('div');
     row.className = 'data-row bg-policy-row';
 
@@ -704,6 +718,8 @@ function renderBgRestrict(data) {
     const stopStateText = {
       pending: '倒计时进行中',
       force_stopped: '当前已休眠',
+      last_verified_stopped: '上次已确认停止，当前状态未读取',
+      failed: '停止未确认，回到前台后才重新计时',
       relaunched: '系统已重新启动应用',
       untracked: '首次离开前台后开始计时'
     }[stopState] || '';
@@ -783,11 +799,12 @@ async function refreshBgRestrict({ readback = false } = {}) {
 }
 
 async function forceRefreshBgRestrict() {
-  if (state.bgRestrictReadbackPending) return refreshBgRestrict({ readback: true });
-  return bgRestrictAction({ action: 'refresh' }, '已重新应用后台策略并回读');
+  if (state.bgRecoveryRequired) return bgRestrictAction({ action: 'recover' }, '已恢复请求前的后台策略');
+  return refreshBgRestrict({ readback: true });
 }
 
 async function bgRestrictAction(body, successText) {
+  if (state.bgRecoveryRequired && body.action !== 'recover') return false;
   if (state.bgRestrictBusy || state.bgRestrictReadbackPending) return false;
   state.bgRestrictBusy = true;
   syncBgRestrictControls();
@@ -886,6 +903,7 @@ function optimizedCandidateReadbackMatches(data) {
 async function toggleSwapMode() {
   if (state.swapBusy) return;
   state.swapBusy = true;
+  syncZramRequestControl();
   const newMode = state.featureVm === 'optimized' ? 'system' : 'optimized';
   appendLog(newMode === 'optimized' ? '正在应用模块 VM 优化…' : '正在切换系统默认观察模式…', 'dim');
   try {
@@ -909,12 +927,14 @@ async function toggleSwapMode() {
     appendLog(`VM 设置失败：${err?.message || '未知错误'}`, 'err');
   } finally {
     state.swapBusy = false;
+    syncZramRequestControl();
   }
 }
 
 async function applySwapCustom() {
   if (state.swapBusy) return;
   state.swapBusy = true;
+  syncZramRequestControl();
   appendLog('正在提交自定义 VM 参数…', 'dim');
   const values = getSwapTuneValues();
   closeSwapTuneModal();
@@ -934,6 +954,7 @@ async function applySwapCustom() {
     appendLog(`Swap 自定义参数失败：${err.message || '未知错误'}`, 'err');
   } finally {
     state.swapBusy = false;
+    syncZramRequestControl();
   }
 }
 

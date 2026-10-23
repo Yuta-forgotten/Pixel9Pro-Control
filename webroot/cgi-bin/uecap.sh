@@ -34,6 +34,7 @@ emit_staged_reboot() {
 
 case "$REQUEST_METHOD" in
     GET)
+        acquire_lock "uecap_profile"
         json_headers
         emit_status false
         ;;
@@ -45,10 +46,11 @@ case "$REQUEST_METHOD" in
         body="$JSON_BODY"
         uecap_is_available \
             || json_error '409 Conflict' "UECap 当前为只读状态: $(uecap_current_reason)"
-        mode=$(printf '%s' "$body" | sed -n 's/.*"mode" *: *"\([a-z]*\)".*/\1/p')
+        cgi_json_schema 'mode:string policy:string'
+        mode=$(cgi_json_field mode)
         uecap_is_valid_mode "$mode" \
             || json_error '400 Bad Request' 'invalid mode'
-        policy=$(printf '%s' "$body" | sed -n 's/.*"policy" *: *"\([a-z_]*\)".*/\1/p')
+        policy=$(cgi_json_field policy)
         _uecap_expected_policy=$(uecap_current_policy)
         case "$policy" in
             '') ;;

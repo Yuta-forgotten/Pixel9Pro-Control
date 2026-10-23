@@ -13,7 +13,8 @@ require_json_post
 require_token
 acquire_lock "owner_arbiter"
 read_json_body 128
-_action=$(printf '%s' "$JSON_BODY" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
+cgi_json_schema 'action:string'
+_action=$(cgi_json_field action)
 [ "$_action" = "tick" ] || json_error '400 Bad Request' 'invalid owner arbiter action'
 
 FAS_ROOT="${PIXEL9PRO_FAS_ROOT:-/data/adb/fas_rs}"
@@ -30,41 +31,20 @@ if [ ! -f "$MODDIR/scripts/owner_arbiter.sh" ]; then
     json_error '503 Service Unavailable' 'owner arbiter script missing'
 fi
 
-display_state_read >/dev/null 2>&1 || true
-_display_state="$DISPLAY_STATE"
-_display_source="$DISPLAY_STATE_SOURCE"
-_screen=$(display_state_legacy_screen)
 _handoff=$(cat "$MODDIR/.game_handoff_policy" 2>/dev/null | tr -d ' \n\r\t')
 _lease_state=$(cat "$FAS_ROOT/.owner_state" 2>/dev/null | tr -d '\r\n')
 _lease_active=0
 case "$_lease_state" in *fas-rs:game:*) _lease_active=1 ;; esac
-if [ "$_screen" != on ]; then
-    json_status_headers '409 Conflict'
-    printf '{"ok":false,"error":"屏幕未亮，owner arbiter 已暂停","screen":"%s","screen_source":"%s"}\n' \
-        "$(json_escape "$_display_state")" "$(json_escape "$_display_source")"
-    exit 0
-fi
 if [ "$_handoff" != fas_rs ] && [ "$_lease_active" -ne 1 ]; then
     json_status_headers '409 Conflict'
     printf '{"ok":false,"error":"未开启游戏移交且没有有效 lease，owner arbiter 不运行"}\n'
     exit 0
 fi
 
-_out=$(OWNER_ARBITER_FAS_ROOT="$FAS_ROOT" \
-    sh "$MODDIR/scripts/owner_arbiter.sh" apply-tick "$MODDIR" "$_screen" 2>&1)
-_rc=$?
-_state=$(cat "$FAS_ROOT/.arbiter_state" 2>/dev/null)
-
-if [ "$_rc" -eq 0 ]; then
-    [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event scheduler owner success OWNER_TICK 0 >/dev/null 2>&1 || true
-    json_headers
-    printf '{"ok":true,"screen":"%s","screen_source":"%s","output":"%s","state":"%s"}\n' \
-        "$(json_escape "$_display_state")" "$(json_escape "$_display_source")" \
-        "$(json_escape "$_out")" "$(json_escape "$_state")"
-else
-    [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event scheduler owner failure OWNER_TICK_FAILED 0 >/dev/null 2>&1 || true
-    json_status_headers '500 Internal Server Error'
-    printf '{"ok":false,"error":"owner arbiter tick failed","screen":"%s","screen_source":"%s","output":"%s","state":"%s"}\n' \
-        "$(json_escape "$_display_state")" "$(json_escape "$_display_source")" \
-        "$(json_escape "$_out")" "$(json_escape "$_state")"
-fi
+. "$MODDIR/scripts/scheduler_async_lib.sh" && scheduler_async_init "$MODDIR" \
+    || json_error '500 Internal Server Error' 'scheduler async contract unavailable'
+scheduler_async_start tick || json_error '409 Conflict' 'scheduler operation already running or could not start'
+json_headers
+printf '{"ok":true,"accepted":true,"final":false'
+scheduler_async_json
+printf '}\n'

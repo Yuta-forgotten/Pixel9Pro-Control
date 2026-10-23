@@ -2,6 +2,10 @@
 
 # Preferred-network-mode contract shared by the boot worker and NR CGI.
 # DSDS values retain every slot; screen-off switching changes slot 0 only.
+# RILConstants NETWORK_MODE_* ABI (AOSP frameworks/base, RILConstants.java):
+# legacy modes are 0..22 and NR-capable modes are 23..33.
+NR_MODE_MAX=33
+NR_MODE_NR_MIN=23
 
 nr_mode_lock_acquire() {
     _nr_lock_root="$1"
@@ -33,7 +37,7 @@ nr_mode_lock_acquire() {
             [ $(( $(date +%s) - _nr_lock_mtime )) -le 30 ] || _nr_stale=1
         fi
         [ "$_nr_stale" -eq 1 ] || return 75
-        rm -f "$NR_MODE_LOCK/owner" 2>/dev/null || return 1
+        rm -f "$NR_MODE_LOCK/owner" "$NR_MODE_LOCK/owner.tmp" 2>/dev/null || return 1
         rmdir "$NR_MODE_LOCK" 2>/dev/null && mkdir "$NR_MODE_LOCK" 2>/dev/null || return 75
     fi
     if ! module_lock_write_owner "$NR_MODE_LOCK"; then
@@ -83,7 +87,8 @@ nr_mode_replace_slot0() {
 nr_mode_is_nr_capable() {
     _nr_mode_slot=$(nr_mode_slot0 "$1")
     case "$_nr_mode_slot" in ''|null|*[!0-9]*) return 1 ;; esac
-    [ "$_nr_mode_slot" -ge 23 ] 2>/dev/null
+    [ "$_nr_mode_slot" -ge "$NR_MODE_NR_MIN" ] 2>/dev/null \
+        && [ "$_nr_mode_slot" -le "$NR_MODE_MAX" ] 2>/dev/null
 }
 
 nr_mode_is_valid_raw() {
@@ -94,7 +99,10 @@ nr_mode_is_valid_raw() {
             _nr_mode_rest=${1#*,}
             case "$_nr_mode_first" in ''|*[!0-9]*) return 1 ;; esac
             case "$_nr_mode_rest" in ''|*[!0-9]*) return 1 ;; esac
+            [ "$_nr_mode_first" -le "$NR_MODE_MAX" ] 2>/dev/null \
+                && [ "$_nr_mode_rest" -le "$NR_MODE_MAX" ] 2>/dev/null || return 1
             ;;
+        *) [ "$1" -le "$NR_MODE_MAX" ] 2>/dev/null || return 1 ;;
     esac
     return 0
 }
@@ -126,7 +134,8 @@ nr_mode_read_saved() {
         return 0
     fi
     nr_mode_is_valid_raw "$_nr_mode_fallback" && nr_mode_is_nr_capable "$_nr_mode_fallback" || return 1
-    runtime_write_value "$_nr_mode_file" "$_nr_mode_fallback" 2>/dev/null || return 1
+    # This accessor is also used by GET telemetry. A fallback
+    # is not a captured modem baseline and must never be persisted by a read.
     printf '%s' "$_nr_mode_fallback"
 }
 
@@ -135,4 +144,53 @@ nr_mode_save_current() {
     _nr_mode_current="$2"
     nr_mode_is_valid_raw "$_nr_mode_current" && nr_mode_is_nr_capable "$_nr_mode_current" || return 1
     runtime_write_value "$_nr_mode_file" "$_nr_mode_current"
+}
+
+# Caller holds nr_policy.lock. The journal precedes the persistent Settings
+# write, so it also survives reboot. Recovery compares slot 0 before restoring
+# its captured value, and never supplies a guessed default or changes another SIM.
+nr_mode_recover_temporary() {
+    NR_LEASE_RESULT=none
+    _nrl_path="$1/.nr_temporary_lease"
+    command -v state_read_entry >/dev/null 2>&1 \
+        || . "$1/scripts/state_io_lib.sh" || return 1
+    _nrl_text=$(state_read_entry "$_nrl_path") || return 1
+    [ -n "$_nrl_text" ] || return 0
+    _nrl_boot=''; _nrl_key=''; _nrl_before=''; _nrl_applied=''
+    while IFS='=' read -r _nrl_k _nrl_v || [ -n "$_nrl_k" ]; do
+        case "$_nrl_k" in boot_id) _nrl_boot="$_nrl_v" ;; key) _nrl_key="$_nrl_v" ;;
+            before) _nrl_before="$_nrl_v" ;; applied) _nrl_applied="$_nrl_v" ;; esac
+    done <<EOF
+$_nrl_text
+EOF
+    [ -n "$_nrl_boot" ] || return 1
+    case "$_nrl_key" in preferred_network_mode|preferred_network_mode1) ;; *) return 1 ;; esac
+    nr_mode_is_valid_raw "$_nrl_before" && nr_mode_is_valid_raw "$_nrl_applied" || return 1
+    nr_mode_is_nr_capable "$_nrl_before" || return 1
+    [ "$(nr_mode_slot0 "$_nrl_applied")" = "$NR_LTE_MODE" ] || return 1
+    _nrl_current=$(runtime_android_settings get global "$_nrl_key" 2>/dev/null | tr -d ' \r\n')
+    nr_mode_is_valid_raw "$_nrl_current" || return 1
+    if [ "$(nr_mode_slot0 "$_nrl_current")" = "$(nr_mode_slot0 "$_nrl_applied")" ]; then
+        nr_mode_restore_slot0_verified "$_nrl_key" "$_nrl_before" || { NR_LEASE_RESULT=restore_failed; return 1; }
+        NR_LEASE_RESULT=restored
+    else
+        NR_LEASE_RESULT=external_or_unchanged
+    fi
+    rm -f "$_nrl_path" && [ ! -e "$_nrl_path" ]
+}
+
+nr_mode_apply_temporary() {
+    _nrl_root="$1"; _nrl_apply_key="$2"; _nrl_apply_before="$3"; _nrl_apply_target="$4"
+    [ ! -e "$_nrl_root/.nr_temporary_lease" ] && [ ! -L "$_nrl_root/.nr_temporary_lease" ] || return 1
+    nr_mode_is_valid_raw "$_nrl_apply_before" && nr_mode_is_valid_raw "$_nrl_apply_target" || return 1
+    case "$_nrl_apply_key" in preferred_network_mode|preferred_network_mode1) ;; *) return 1 ;; esac
+    nr_mode_is_nr_capable "$_nrl_apply_before" || return 1
+    [ "$(nr_mode_slot0 "$_nrl_apply_target")" = "$NR_LTE_MODE" ] || return 1
+    runtime_write_value "$_nrl_root/.nr_temporary_lease" "boot_id=$(cat /proc/sys/kernel/random/boot_id)
+key=$_nrl_apply_key
+before=$_nrl_apply_before
+applied=$_nrl_apply_target" || return 1
+    nr_mode_write_verified "$_nrl_apply_key" "$_nrl_apply_target" && return 0
+    nr_mode_recover_temporary "$_nrl_root" || return 2
+    return 1
 }

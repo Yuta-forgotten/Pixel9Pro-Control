@@ -41,31 +41,26 @@ service_start_ticks() {
 }
 
 service_singleton_or_exit() {
-    if mkdir "$SERVICE_LOCK_DIR" 2>/dev/null; then
-        module_lock_write_owner "$SERVICE_LOCK_DIR" \
-            || { rm -f "$SERVICE_LOCK_DIR/owner"; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null; exit 1; }
-        trap 'rm -f "$SERVICE_LOCK_DIR/owner" 2>/dev/null; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null' EXIT
-        return 0
-    fi
-    _service_wait=0
-    while [ ! -s "$SERVICE_LOCK_DIR/owner" ] && [ "$_service_wait" -lt 3 ]; do
-        sleep 1
-        _service_wait=$((_service_wait + 1))
+    [ ! -L "$SERVICE_LOCK_DIR" ] || exit 1
+    _service_claim=0
+    while [ "$_service_claim" -lt 4 ]; do
+        if (umask 077; mkdir "$SERVICE_LOCK_DIR") 2>/dev/null; then
+            module_lock_write_owner "$SERVICE_LOCK_DIR" \
+                || { rm -f "$SERVICE_LOCK_DIR/owner" "$SERVICE_LOCK_DIR/owner.tmp"; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null; exit 1; }
+            trap 'rm -f "$SERVICE_LOCK_DIR/owner" "$SERVICE_LOCK_DIR/owner.tmp" 2>/dev/null; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null' EXIT
+            return 0
+        fi
+        module_lock_owner_alive "$SERVICE_LOCK_DIR" && exit 0
+        if module_lock_initializing "$SERVICE_LOCK_DIR"; then
+            sleep 1
+        else
+            rm -f "$SERVICE_LOCK_DIR/owner" "$SERVICE_LOCK_DIR/owner.tmp" "$SERVICE_LOCK_DIR/stopping" 2>/dev/null || exit 1
+            rmdir "$SERVICE_LOCK_DIR" 2>/dev/null || exit 1
+        fi
+        _service_claim=$((_service_claim + 1))
     done
-    if [ ! -s "$SERVICE_LOCK_DIR/owner" ]; then
-        rmdir "$SERVICE_LOCK_DIR" 2>/dev/null || exit 0
-        service_singleton_or_exit
-        return $?
-    fi
-    if module_lock_owner_alive "$SERVICE_LOCK_DIR"; then
-        exit 0
-    fi
-    rm -f "$SERVICE_LOCK_DIR/owner" "$SERVICE_LOCK_DIR/stopping" 2>/dev/null || true
-    rmdir "$SERVICE_LOCK_DIR" 2>/dev/null || exit 0
-    mkdir "$SERVICE_LOCK_DIR" 2>/dev/null || exit 0
-    module_lock_write_owner "$SERVICE_LOCK_DIR" \
-        || { rm -f "$SERVICE_LOCK_DIR/owner"; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null; exit 1; }
-    trap 'rm -f "$SERVICE_LOCK_DIR/owner" 2>/dev/null; rmdir "$SERVICE_LOCK_DIR" 2>/dev/null' EXIT
+    # A contender exits without recursion or stealing an initializing owner.
+    exit 75
 }
 
 service_singleton_or_exit
@@ -80,6 +75,17 @@ log -t pixel9pro_ctrl "service entry moddir=$MODDIR pid=$$"
 [ -r "$MODDIR/scripts/runtime_defaults_lib.sh" ] \
     && . "$MODDIR/scripts/runtime_defaults_lib.sh" 2>/dev/null \
     || { log -t pixel9pro_ctrl "ERROR: runtime defaults contract missing"; exit 1; }
+SERVICE_AUDIT_AVAILABLE=0
+if [ -r "$MODDIR/scripts/audit_log_lib.sh" ] \
+    && . "$MODDIR/scripts/audit_log_lib.sh" && audit_log_init "$MODDIR"; then
+    SERVICE_AUDIT_AVAILABLE=1
+fi
+service_audit_event() {
+    [ "$SERVICE_AUDIT_AVAILABLE" -eq 1 ] || return 0
+    audit_log_event lifecycle "$1" "$2" "$3" 0 >/dev/null 2>&1 \
+        || log -t pixel9pro_ctrl 'WARNING: structured lifecycle event could not be saved'
+}
+service_audit_event "$SERVICE_MODE" started SERVICE_ENTRY
 # The WebUI may start before slow modem work, but VM/ZRAM mutations remain
 # closed until the policy state has been normalized and readied below.
 [ "$SERVICE_MODE" != boot ] || runtime_write_value "$VM_POLICY_READY_FILE" false >/dev/null 2>&1 || true
@@ -220,7 +226,8 @@ start_webui_httpd() {
     for _webui_attempt in 1 2 3; do
         if "$_webui_bb" nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
             log -t pixel9pro_ctrl "WebUI port $PORT already in use; preserving existing listener"
-            return 0
+            # An unrelated listener is not a verified module control plane.
+            return 1
         fi
         "$_webui_bb" httpd -p "127.0.0.1:$PORT" -h "$MODDIR/webroot" >/dev/null 2>&1 || true
         for _webui_probe in 1 2 3 4 5; do
@@ -369,12 +376,7 @@ manage_sim2_radio() {
     esac
 }
 
-# ── 三层功耗方案: 参数定义 ──────────────────────────────
-# Power profile: balanced (默认) / battery (省电)
-# L1 (persistent): App Standby Bucket + AppOps + Freezer
-# L2 (volatile): vendor_sched 后台 CPU 限制
-# L3 (volatile, profile-time): response_time_ms (由 cpu_profile.sh 管理)
-#
+
 # AOSP 验证:
 #   - App Standby Bucket: UsageStatsService 持久化到 app_idle_stats.xml, 重启后保留
 #     am set-standby-bucket 设置 reason=FORCED_BY_USER, 只有用户交互才会提升
@@ -383,8 +385,12 @@ manage_sim2_radio() {
 
 VENDOR_SCHED="/proc/vendor_sched"
 
-apply_l1_persistent_limits() {
-    # L1: 官方 API 后台限制 — persistent, 从配置文件读取包名策略
+apply_l1_persistent_limits() (
+    . "$MODDIR/scripts/state_io_lib.sh" || exit 1
+    state_lock_acquire "$MODDIR/.locks/bg_policy.lock" 10 || exit 75
+    trap 'state_lock_release "$MODDIR/.locks/bg_policy.lock" >/dev/null 2>&1' EXIT
+    [ ! -d "$MODDIR/.bg_policy_tx" ] \
+        || { log -t pixel9pro_ctrl 'ERROR: background policy journal requires explicit recovery; policy restore skipped'; exit 1; }
     # 文件: .bg_restrict_list (pkg|policy|delay_min), .bg_restrict_enabled (on/off)
     #       .bg_restrict_baseline (限制前 bucket/appops 原值)
     BG_ENABLED_FILE="$MODDIR/.bg_restrict_enabled"
@@ -404,6 +410,8 @@ apply_l1_persistent_limits() {
             || { log -t pixel9pro_ctrl "WARNING: failed to initialize background restriction list"; return 1; }
     fi
     rm -f "$BG_STOP_STATE_FILE" 2>/dev/null
+    _bg_installed=$(timeout -k 1 8 /system/bin/pm list packages --user "$BG_USER_ID" 2>/dev/null) \
+        && runtime_write_value "$MODDIR/.bg_installed_packages" "$_bg_installed" || true
 
     _bg_enabled=$(cat "$BG_ENABLED_FILE" 2>/dev/null | tr -d ' \n\r\t')
     if [ "$_bg_enabled" != "on" ]; then
@@ -431,7 +439,7 @@ apply_l1_persistent_limits() {
 
     log -t pixel9pro_ctrl "L1: bg restrict applied=$_count failed=$_failed"
     [ "$_failed" -eq 0 ]
-}
+)
 
 valid_profile() {
     [ "$CPU_PROFILE_AVAILABLE" -eq 1 ] && cpu_profile_is_valid "$1"
@@ -656,11 +664,21 @@ apply_profile_state() {
 # ──────────────────────────────────────────────────────────
 # 1. 等待系统完全启动
 # ──────────────────────────────────────────────────────────
-start_control_plane() {
+service_wait_for_boot() {
+    # Boot should not leave an orphan service waiting forever after a failed
+    # framework start. The budget is monotonic and independent of wall time.
+    _svc_boot_started=$(service_uptime)
+    _svc_boot_polls=0
+    while [ "$(getprop sys.boot_completed)" != 1 ]; do
+        _svc_boot_now=$(service_uptime)
+        [ $((_svc_boot_now - _svc_boot_started)) -lt 600 ] && [ "$_svc_boot_polls" -lt 120 ] || return 1
+        sleep 5
+        _svc_boot_polls=$((_svc_boot_polls + 1))
+    done
+}
 
-until [ "$(getprop sys.boot_completed)" = "1" ]; do
-    sleep 5
-done
+start_control_plane() {
+service_wait_for_boot || { log -t pixel9pro_ctrl 'ERROR: boot completion wait exceeded 600 seconds'; return 1; }
 sleep 20
 
 # ──────────────────────────────────────────────────────────
@@ -688,7 +706,7 @@ export PIXEL9PRO_LOCKDIR_BASE="$LOCKDIR_BASE"
 # Start the control plane before optional radio/scheduler/VM work.  Those
 # operations may be slow or unavailable during early boot; they must not make
 # the local WebUI disappear.
-start_webui_httpd || true
+start_webui_httpd || return 69
 }
 
 # Boot restoration and recurring policies have the same managed owner. A
@@ -919,15 +937,39 @@ else
 fi
 background_worker_should_run || return 1
 runtime_write_value "$MODDIR/.background_boot_ready" "$SERVICE_BOOT_ID"
+(. "$MODDIR/scripts/module_metadata_lib.sh" && module_description_refresh "$MODDIR") >/dev/null 2>&1 || true
 }
 
 if [ "$SERVICE_MODE" = --background-worker ]; then
     . "$MODDIR/scripts/control_worker_lib.sh" || exit 1
     control_worker_main
-    exit $?
+    _service_worker_rc=$?
+    if [ "$_service_worker_rc" -eq 0 ]; then
+        service_audit_event worker stopped WORKER_STOPPED
+    else
+        service_audit_event worker failure WORKER_FAILED
+    fi
+    exit "$_service_worker_rc"
 fi
 start_control_plane
+_service_control_rc=$?
+case "$_service_control_rc" in
+    0) service_audit_event control_plane success CONTROL_PLANE_READY ;;
+    69)
+        service_audit_event control_plane failure HTTPD_UNAVAILABLE
+        log -t pixel9pro_ctrl 'ERROR: WebUI unavailable; independent background policy remains eligible'
+        ;;
+    *) service_audit_event control_plane failure CONTROL_PLANE_START_FAILED; exit 1 ;;
+esac
 if ! background_tasks_enabled; then
+    if [ -e "$MODDIR/.nr_temporary_lease" ]; then
+        if nr_mode_lock_acquire "$MODDIR"; then
+            nr_mode_recover_temporary "$MODDIR" \
+                || log -t pixel9pro_ctrl 'WARNING: paused boot NR recovery unconfirmed; journal retained'
+            nr_mode_lock_release || true
+        fi
+    fi
+    (. "$MODDIR/scripts/module_metadata_lib.sh" && module_description_refresh "$MODDIR") >/dev/null 2>&1 || true
     log -t pixel9pro_ctrl "All automatic module tasks are paused; WebUI remains available"
     exit 0
 fi
@@ -937,7 +979,7 @@ fi
 #    DRM disabled 直接判息屏；enabled 可能是 AOD，使用有界交互态查询
 #    亮屏 15s / 息屏 900s；已切换 LTE 时按既有 NR 恢复周期复查
 #    若已降到 LTE, 改为较短复查周期，避免亮屏后长期停留 LTE
-#    WiFi multicast: 仅在屏幕状态变化时切换，不轮询
+#    WiFi multicast: 由 Android/驱动管理，本模块不改全局接口 flag
 #    NR 降级: 集成防抖，仅在开启时生效
 #    温度历史: 亮屏 60s、息屏 900s；息屏只读 sysfs，前台读取共享同一限频写入器
 #    UECap: manual profile is applied only during boot or an explicit WebUI action

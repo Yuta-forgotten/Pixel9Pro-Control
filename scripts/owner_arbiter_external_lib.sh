@@ -2,6 +2,24 @@
 
 # UGT 与 fas-rs 外部调度器的受控生命周期。
 
+signal_verified_uperf_instances() {
+    _oa_signal_module=$(resolve_uperf_module_path) || return 1
+    _oa_signal_failed=0
+    for _oa_signal_pid in $(pidof uperf 2>/dev/null); do
+        case "$_oa_signal_pid" in ''|*[!0-9]*) return 1 ;; esac
+        _oa_signal_ticks=$(process_start_ticks "$_oa_signal_pid")
+        _oa_signal_exe=$(readlink -f "/proc/$_oa_signal_pid/exe" 2>/dev/null)
+        case "$_oa_signal_exe" in
+            "$_oa_signal_module/bin/uperf"|"$_oa_signal_module/uperf"|"$_oa_signal_module/system/bin/uperf") ;;
+            *) _oa_signal_failed=1; continue ;;
+        esac
+        case "$_oa_signal_ticks" in ''|*[!0-9]*) _oa_signal_failed=1; continue ;; esac
+        [ "$(process_start_ticks "$_oa_signal_pid")" = "$_oa_signal_ticks" ] \
+            && kill -TERM "$_oa_signal_pid" 2>/dev/null || _oa_signal_failed=1
+    done
+    [ "$_oa_signal_failed" -eq 0 ]
+}
+
 uperf_root_instance_count() {
     if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
         if [ -f "$TEST_RUNTIME_DIR/uperf_count" ]; then
@@ -41,6 +59,7 @@ uperf_root_instance_count() {
 }
 
 acquire_uperf_start_lock() {
+    [ ! -L "$UPERF_START_LOCK_DIR" ] || return 1
     for _oa_i in 1 2 3 4 5; do
         if mkdir "$UPERF_START_LOCK_DIR" 2>/dev/null; then
             if [ "$OWNER_ARBITER_TEST_MODE" = "1" ]; then
@@ -66,6 +85,12 @@ acquire_uperf_start_lock() {
         _oa_lock_pid=$(cat "$UPERF_START_LOCK_DIR/pid" 2>/dev/null | tr -d ' \r\n\t')
         _oa_lock_start=$(cat "$UPERF_START_LOCK_DIR/start_ticks" 2>/dev/null | tr -d ' \r\n\t')
         _oa_lock_boot=$(cat "$UPERF_START_LOCK_DIR/boot_id" 2>/dev/null | tr -d ' \r\n\t')
+        if [ -z "$_oa_lock_pid" ] || [ -z "$_oa_lock_start" ] || [ -z "$_oa_lock_boot" ]; then
+            _oa_lock_mtime=$(stat -c %Y "$UPERF_START_LOCK_DIR" 2>/dev/null) || return 1
+            _oa_lock_now=$(date +%s) || return 1
+            case "$_oa_lock_mtime:$_oa_lock_now" in *[!0-9:]*|:*|*:) return 1 ;; esac
+            if [ $((_oa_lock_now - _oa_lock_mtime)) -le 30 ]; then sleep 1; continue; fi
+        fi
         _oa_current_boot=$(so_current_boot_id 2>/dev/null)
         if [ "$OWNER_ARBITER_TEST_MODE" = "1" ] && pid_alive "$_oa_lock_pid"; then
             _oa_live_start=1
@@ -114,7 +139,7 @@ normalize_uperf_instances() {
         printf '1\n' > "$TEST_RUNTIME_DIR/uperf_alive" 2>/dev/null || return 1
         return 0
     fi
-    killall uperf 2>/dev/null || true
+    signal_verified_uperf_instances || return 1
     for _oa_i in 1 2 3 4 5; do
         sleep 1
         [ "$(uperf_root_instance_count)" -le 1 ] 2>/dev/null && return 0
@@ -264,7 +289,7 @@ stop_uperf() {
         return 0
     fi
     uperf_process_alive || return 0
-    killall uperf 2>/dev/null || true
+    signal_verified_uperf_instances || return 1
     for _oa_i in 1 2 3 4 5; do
         uperf_process_alive || return 0
         sleep 1
@@ -371,7 +396,7 @@ start_uperf() {
         # Runtime restore only calls UGT's process lifecycle helper.  Replaying
         # initsvc.sh would also rerun platform_special/miui_migt/powercfg_once
         # and append another router entry on every game exit.
-        sh -c '. "$0"; uperf_start' "$_oa_uperf_lib" >/dev/null 2>&1 &
+        sh -c '. "$0"; uperf_start' "$_oa_uperf_lib" >/dev/null 2>&1 </dev/null &
         for _oa_i in 1 2 3 4 5 6 7 8; do
             sleep 1
             if uperf_process_alive; then
@@ -493,7 +518,7 @@ start_fas_rs() {
 
     mkdir -p "$FAS_ROOT" 2>/dev/null || return 1
     write_fas_owner_state "fas-rs:starting-arbiter" || return 1
-    RUST_BACKTRACE=1 nohup "$_oa_fas_bin" run "$_oa_fas_std_conf" >>"$FAS_LOG_FILE" 2>&1 &
+    RUST_BACKTRACE=1 nohup "$_oa_fas_bin" run "$_oa_fas_std_conf" >>"$FAS_LOG_FILE" 2>&1 </dev/null &
     _oa_spawn_pid=$!
     case "$_oa_spawn_pid" in ''|*[!0-9]*) return 1 ;; esac
     FAS_STARTED_BY_TRANSACTION="yes"

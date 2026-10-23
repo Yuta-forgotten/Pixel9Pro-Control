@@ -137,7 +137,7 @@
         scope: 'thermal.history.read'
       });
       if (requestId !== state.requestId || !state.open) return;
-      if (!data || data.ok !== true || !Array.isArray(data.points)) {
+      if (!data || data.ok !== true || !Array.isArray(data.points) || data.sensor !== state.sensor) {
         throw new Error(data?.error || data?.reason || '历史响应无效');
       }
       const points = model().clip(

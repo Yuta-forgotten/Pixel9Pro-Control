@@ -4,7 +4,10 @@
 const state = {
   mode: 'system',
   paletteName: 'default',
-  paletteCustom: '#3aa6c2'
+  paletteCustom: '#3aa6c2',
+  preferenceRevision: 0,
+  pendingSave: null,
+  savePromise: null
 };
 const showToast = (...args) => requireFeature('core').showToast(...args);
 const readPreference = (key) => { try { return localStorage.getItem(key); } catch (_) { return null; } };
@@ -45,7 +48,7 @@ function syncThemeUi() {
 
 function applyTheme(mode, persist = true) {
   state.mode = normalizeThemeMode(mode);
-  if (persist) { writePreference(STORAGE_THEME_KEY, state.mode); saveThemeToServer(); }
+  if (persist) { state.preferenceRevision += 1; writePreference(STORAGE_THEME_KEY, state.mode); saveThemeToServer(); }
   syncThemeUi();
   // 自定义/预设主题色在明暗下取色不同, 切换模式时按新明暗重新派生
   if (state.paletteName && state.paletteName !== 'default') applyPalette(state.paletteName, false);
@@ -147,8 +150,9 @@ function normalizeHex(v) {
 }
 
 function applyPalette(name, persist = true) {
-  state.paletteName = name;
-  if (persist) { writePreference(STORAGE_PALETTE_KEY, name); saveThemeToServer(); }
+  state.paletteName = name === 'custom' || PALETTES.some((palette) => palette.name === name) ? name : 'default';
+  name = state.paletteName;
+  if (persist) { state.preferenceRevision += 1; writePreference(STORAGE_PALETTE_KEY, name); saveThemeToServer(); }
   const root = document.documentElement;
   let seed = null;
   if (name === 'custom') seed = state.paletteCustom;
@@ -215,32 +219,52 @@ function initPalette() {
   applyPalette(readPreference(STORAGE_PALETTE_KEY) || 'default', false);
 }
 
-// 服务端兜底: localStorage 为主存储, 此处仅在每次改主题时静默备份到 $MODDIR/.webui_theme,
-// 配合 customize.sh 迁移, 即使 WebView 清数据或模块更新也能回读 (失败静默, 不打扰用户)
+// Back up the complete preference snapshot and verify the server response.
 function saveThemeToServer() {
-  requireFeature('core').apiFetch(API.theme, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode: state.mode, palette: state.paletteName, custom: state.paletteCustom }),
-    timeoutMs: 5000, priority: 'interactive', scope: 'theme.mutation'
-  }).catch(() => {});
+  state.pendingSave = { snapshot: { mode: state.mode, palette: state.paletteName, custom: state.paletteCustom }, revision: state.preferenceRevision };
+  if (state.savePromise) return state.savePromise;
+  // Theme changes are idempotent desired snapshots. Retain only the latest
+  // unsent choice; unlike policy transactions, intermediate colors can merge.
+  state.savePromise = (async () => {
+    while (state.pendingSave) {
+      const { snapshot, revision } = state.pendingSave;
+      state.pendingSave = null;
+      try {
+        const data = await requireFeature('core').apiFetch(API.theme, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(snapshot), timeoutMs: 5000, priority: 'interactive', scope: 'theme.mutation'
+        });
+        if (data?.mode !== snapshot.mode || data?.palette !== snapshot.palette || data?.custom !== snapshot.custom) {
+          throw new Error(data?.error || '服务端主题回读不一致');
+        }
+      } catch (error) {
+        if (revision !== state.preferenceRevision) continue;
+        requireFeature('core').appendLog(`主题已在当前页面应用，但服务端备份未确认：${error.message || error}`, 'warn');
+        showToast('主题已应用，但跨更新备份未确认；可重新选择以重试', 4200, 'warn');
+      }
+    }
+  })().finally(() => { state.savePromise = null; });
+  return state.savePromise;
 }
 
 // 仅当 localStorage 完全无主题记录 (新装 / WebView 被清) 时, 回读服务端兜底并应用
 async function restoreThemeFromServerIfNeeded() {
   if (readPreference(STORAGE_THEME_KEY) || readPreference(STORAGE_PALETTE_KEY) || readPreference(STORAGE_PALETTE_CUSTOM_KEY)) return true;
+  const revision = state.preferenceRevision;
   try {
     const data = await requireFeature('core').apiFetch(API.theme, { timeoutMs: 5000, priority: 'background', scope: 'theme.read' });
-    if (!data) return true;
+    // A slow startup read may finish after a user changes a local preference.
+    if (revision !== state.preferenceRevision) return null;
+    if (!data || data.ok === false) throw new Error(data?.error || '主题备份响应无效');
     if (data.custom && isValidHex(data.custom)) {
       state.paletteCustom = normalizeHex(data.custom);
       writePreference(STORAGE_PALETTE_CUSTOM_KEY, state.paletteCustom);
     }
-    if (data.mode && data.mode !== 'system') {
+    if (['system', 'light', 'dark'].includes(data.mode)) {
       writePreference(STORAGE_THEME_KEY, data.mode);
       applyTheme(data.mode, false);
     }
-    if (data.palette && data.palette !== 'default') {
+    if (data.palette === 'custom' || PALETTES.some((palette) => palette.name === data.palette)) {
       writePreference(STORAGE_PALETTE_KEY, data.palette);
       applyPalette(data.palette, false);
     }
@@ -256,8 +280,8 @@ registerFeature('theme', {
     initTheme();
     renderPaletteSwatches();
     initPalette();
-    void restoreThemeFromServerIfNeeded();
   },
+  restoreFromServer: restoreThemeFromServerIfNeeded,
   applyCustomHex,
   applyPalette,
   applyTheme,

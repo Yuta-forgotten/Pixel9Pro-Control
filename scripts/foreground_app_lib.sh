@@ -1,6 +1,11 @@
 #!/system/bin/sh
 
 # 统一 WindowManager/ActivityTaskManager 的前台包名判定顺序。
+foreground_dump() {
+    # A stuck system service must not retain the policy worker indefinitely.
+    timeout -k 1 5 dumpsys "$@" 2>/dev/null
+}
+
 foreground_package_name() {
     if [ "${OWNER_ARBITER_TEST_MODE:-0}" = "1" ]; then
         if [ -n "${OWNER_ARBITER_TEST_FOREGROUND_COUNTER_PATH:-}" ]; then
@@ -12,7 +17,7 @@ foreground_package_name() {
         return
     fi
 
-    _fg_window_dump=$(dumpsys window 2>/dev/null)
+    _fg_window_dump=$(foreground_dump window) || _fg_window_dump=""
     _fg_pkg=""
     for _fg_prefix in "mFocusedApp=" "mCurrentFocus=" "mFocusedWindow=" "topResumedActivity=" "ResumedActivity:"; do
         _fg_pkg=$(printf '%s\n' "$_fg_window_dump" | awk -v prefix="$_fg_prefix" '
@@ -28,7 +33,7 @@ foreground_package_name() {
         [ -n "$_fg_pkg" ] && break
     done
     if [ -z "$_fg_pkg" ]; then
-        _fg_pkg=$(dumpsys activity top 2>/dev/null | sed -n 's/^  ACTIVITY \([^/ ][^/ ]*\)\/.*/\1/p' | head -n 1)
+        _fg_pkg=$(foreground_dump activity top | sed -n 's/^  ACTIVITY \([^/ ][^/ ]*\)\/.*/\1/p' | head -n 1)
     fi
     printf '%s' "$_fg_pkg" | tr -d ' \r\n\t'
 }

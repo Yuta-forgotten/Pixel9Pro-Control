@@ -48,7 +48,12 @@
     </div>
   </header>
 
+    <div id="webui-connection" class="surface-card" hidden>
+      <p id="webui-connection-status" role="status"></p>
+      <button id="webui-connection-retry" class="tiny-btn primary" type="button">重新连接</button>
+    </div>
   <main class="tab-pages" id="tab-pages">
+
     <div class="pull-ind" id="pull-ind" aria-hidden="true">
       <span class="pull-spinner" aria-hidden="true"></span>
       <span class="pull-text" id="pull-text">下拉刷新</span>
@@ -180,11 +185,13 @@
             <button class="seg-btn" id="profile-policy-auto-btn" type="button">自动</button>
           </div>
           <div class="section-sub" id="perf-policy-desc" style="margin-top:10px">读取当前调度策略…</div>
+          <p id="profile-operation-notice" role="status" hidden></p>
         </article>
         <article class="surface-card preference-card scheduler-card">
           <div class="panel-title">调度接管与协调</div>
           <div class="panel-desc">日常调度与游戏 lease 分离管理。</div>
           <div class="preference-group" id="external-scheduler-controls">
+            <p id="scheduler-operation-notice" role="status" hidden></p>
             <div class="ctrl-row" id="sched-owner-row" data-module-visible="ugt" hidden>
               <div class="ctrl-copy">
                 <div class="ctrl-label">调度接管</div>
@@ -263,6 +270,7 @@
           <div class="kicker">当前档位</div>
           <div class="summary-title" id="thermal-current-name">读取当前档位…</div>
           <div class="summary-desc" id="thermal-current-desc">正在读取温控阈值。</div>
+          <button class="tiny-btn tonal" id="thermal-pending-btn" type="button" hidden>查看待处理变更</button>
         </article>
 
         <div class="section-block">
@@ -293,10 +301,10 @@
               <div class="temp-bar-wrap">
                 <div class="temp-bar-track">
                   <div class="temp-bar-fill" id="temp-fill" style="width:0%"></div>
-                  <div class="temp-marker stock" id="mk-stock" style="left:0%"></div>
-                  <div class="temp-mlbl" id="mk-stock-lbl" style="left:0%">41°C</div>
-                  <div class="temp-marker mod" id="mk-mod" style="left:0%"></div>
-                  <div class="temp-mlbl mod" id="mk-mod-lbl" style="left:0%"></div>
+                  <div class="temp-marker stock" id="mk-stock" hidden></div>
+                  <div class="temp-mlbl" id="mk-stock-lbl" hidden></div>
+                  <div class="temp-marker mod" id="mk-mod" hidden></div>
+                  <div class="temp-mlbl mod" id="mk-mod-lbl" hidden></div>
                 </div>
               </div>
               <div class="sensor-grid" id="sensor-grid"></div>

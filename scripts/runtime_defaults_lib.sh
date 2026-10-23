@@ -22,26 +22,19 @@ OWNER_ARBITER_DEFAULT_PAUSE_POLL_S=300
 UNIFIED_SCREEN_WAKE_RECHECK_S=900
 CPU_PROFILE_HEALTH_SCREEN_ON_INTERVAL_S=300
 CPU_PROFILE_HEALTH_SCREEN_OFF_INTERVAL_S=900
+ANDROID_SETTINGS_TIMEOUT_S=3
+ANDROID_CMD_TIMEOUT_S=8
 
 runtime_write_value() {
-    _runtime_path="$1"
-    _runtime_value="$2"
-    [ -n "$_runtime_path" ] && [ ! -d "$_runtime_path" ] || return 1
-    _runtime_tmp="${_runtime_path}.tmp.$$"
-    if printf '%s' "$_runtime_value" > "$_runtime_tmp" 2>/dev/null \
-        && mv "$_runtime_tmp" "$_runtime_path" 2>/dev/null \
-        && [ -f "$_runtime_path" ]; then
-        _runtime_written=$(cat "$_runtime_path" 2>/dev/null)
-        [ "$_runtime_written" = "$_runtime_value" ] && return 0
-    fi
-    rm -f "$_runtime_tmp" 2>/dev/null
-    return 1
+    command -v state_atomic_write >/dev/null 2>&1 \
+        || . "${PIXEL9PRO_MODDIR:-${MODDIR:-/data/adb/modules/pixel9pro_control}}/scripts/state_io_lib.sh" || return 1
+    state_atomic_write "$1" "$2"
 }
 
 runtime_write_value_if_changed() {
     _runtime_path="$1"
     _runtime_value="$2"
-    if [ -f "$_runtime_path" ]; then
+    if [ -f "$_runtime_path" ] && [ ! -L "$_runtime_path" ]; then
         _runtime_current=$(cat "$_runtime_path" 2>/dev/null)
         [ "$_runtime_current" = "$_runtime_value" ] && return 0
     fi
@@ -63,7 +56,8 @@ runtime_android_settings() {
     if [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = "1" ]; then
         _runtime_bin="${PIXEL9PRO_ANDROID_SETTINGS:-settings}"
     fi
-    "$_runtime_bin" "$@"
+    command -v timeout >/dev/null 2>&1 || return 127
+    timeout -k 1 "$ANDROID_SETTINGS_TIMEOUT_S" "$_runtime_bin" "$@"
 }
 
 runtime_android_cmd() {
@@ -71,7 +65,8 @@ runtime_android_cmd() {
     if [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = "1" ]; then
         _runtime_bin="${PIXEL9PRO_ANDROID_CMD:-cmd}"
     fi
-    "$_runtime_bin" "$@"
+    command -v timeout >/dev/null 2>&1 || return 127
+    timeout -k 1 "$ANDROID_CMD_TIMEOUT_S" "$_runtime_bin" "$@"
 }
 
 # set-sim-count has no reliable readback on this build. Commit the marker only

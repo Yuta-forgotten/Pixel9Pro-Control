@@ -8,6 +8,8 @@ require_loopback
     || json_error '500 Internal Server Error' 'background restriction library not found'
 [ -r "$MODDIR/scripts/app_identity_lib.sh" ] && . "$MODDIR/scripts/app_identity_lib.sh" \
     || json_error '500 Internal Server Error' 'app identity library not found'
+. "$MODDIR/scripts/bg_transaction_lib.sh" \
+    || json_error '500 Internal Server Error' 'background transaction library not found'
 
 BG_ENABLED_FILE="$MODDIR/.bg_restrict_enabled"
 BG_LIST_FILE="$MODDIR/.bg_restrict_list"
@@ -28,40 +30,43 @@ read_stop_state() {
         ''|*[!0-9]*) ;;
         *) _stop_since="$2" ;;
     esac
-    [ "$3" = "1" ] && _stop_done=1
+    case "$3" in 1|2) _stop_done="$3" ;; esac
+    [ "$4" = "$(cat /proc/sys/kernel/random/boot_id)" ] || { _stop_since=0; _stop_done=0; }
 }
 
 read_package_stopped() {
-    _package_stopped=$(dumpsys package "$1" 2>/dev/null \
-        | sed -n 's/.*stopped=\([^ ]*\).*/\1/p' \
-        | head -n 1)
-    case "$_package_stopped" in
-        true|false) ;;
-        *) _package_stopped="unknown" ;;
-    esac
+    _package_stopped=$(bg_package_stopped "$1")
+    case "$_package_stopped" in true|false) ;; *) _package_stopped=unknown ;; esac
 }
-
 emit_pkg_status() {
     bg_parse_entry "$1"
     _pkg="$_bg_pkg"
     _policy="$_bg_policy"
     _delay="$_bg_delay"
-    _bucket=$(bg_read_standby_bucket "$_pkg")
-    _op_bg=$(bg_read_appop_mode "$_pkg" RUN_IN_BACKGROUND) || _op_bg="unknown"
-    _op_any=$(bg_read_appop_mode "$_pkg" RUN_ANY_IN_BACKGROUND) || _op_any="unknown"
+    _bucket=unknown; _op_bg=unknown; _op_any=unknown; _observed_at=0; _observed_boot=''; _observed_pkg=''
+    _observed_row=$(awk -F'|' -v pkg="$_pkg" '$1==pkg {print; exit}' "$MODDIR/.bg_restrict_observed" 2>/dev/null)
+    IFS='|' read -r _observed_pkg _observed_bucket _observed_bg _observed_any _observed_boot _observed_at <<EOF
+$_observed_row
+EOF
+    _runtime_freshness=unknown
+    if [ "$_observed_pkg" = "$_pkg" ] && [ "$_observed_boot" = "$(cat /proc/sys/kernel/random/boot_id)" ]; then
+        _bucket="$_observed_bucket"; _op_bg="$_observed_bg"; _op_any="$_observed_any"
+        _runtime_freshness=last_verified
+    fi
+    case "$_observed_at" in ''|*[!0-9]*) _observed_at=0 ;; esac
     read_stop_state "$_pkg"
-    read_package_stopped "$_pkg"
+    # A stored stop receipt is historical. Current process state is not
+    # inferred from it, and automatic GET never runs a per-package dumpsys.
+    _package_stopped=unknown
     app_identity_load_package "$_pkg" >/dev/null 2>&1 || true
 
     _stop_state="not_applicable"
     if [ "$_policy" = "stop_after_leave" ]; then
         if [ "$_stop_since" -gt 0 ] 2>/dev/null; then
-            if [ "$_stop_done" -eq 1 ]; then
-                if [ "$_package_stopped" = "true" ]; then
-                    _stop_state="force_stopped"
-                else
-                    _stop_state="relaunched"
-                fi
+            if [ "$_stop_done" -eq 2 ]; then
+                _stop_state=failed
+            elif [ "$_stop_done" -eq 1 ]; then
+                _stop_state=last_verified_stopped
             else
                 _stop_state="pending"
             fi
@@ -82,6 +87,7 @@ emit_pkg_status() {
     printf '{"pkg":"%s","label":"%s","category":"%s","restriction_tier":"%s",' \
         "$(json_escape "$_pkg")" "$(json_escape "$_identity_label")" \
         "$(json_escape "$_identity_category")" "$_identity_restriction_tier"
+    printf '"runtime_freshness":"%s","observed_at":%s,' "$_runtime_freshness" "$_observed_at"
     printf '"policy":"%s","delay":"%s","bucket":"%s","appops":"%s","op_bg":"%s","op_any":"%s",' \
         "$_policy" "$_delay" "$(json_escape "$_bucket")" "$_op_any" "$_op_bg" "$_op_any"
     printf '"stop_since":%s,"stop_done":%s,"package_stopped":%s,"stop_state":"%s"}' \
@@ -91,7 +97,7 @@ emit_pkg_status() {
 emit_identity_suggestions() {
     printf '"identity_source":"config/app_identities.tsv","suggestions":['
     if [ -s "$APP_IDENTITY_FILE" ]; then
-        _installed_packages="|$(pm list packages 2>/dev/null | sed 's/^package://; s/$/|/' | tr -d '\r\n')"
+        _installed_packages="|$(cat "$MODDIR/.bg_installed_packages" 2>/dev/null | sed 's/^package://; s/$/|/' | tr -d '\r\n')"
         awk -F'[|]' -v installed="$_installed_packages" '
             BEGIN { first=1 }
             function esc(value) {
@@ -112,33 +118,11 @@ emit_identity_suggestions() {
 }
 
 delete_pkg_line() {
-    _pkg="$1"
-    [ -s "$BG_LIST_FILE" ] || return 0
-    [ ! -d "$BG_LIST_FILE" ] || return 1
-    _bg_cgi_tmp="${BG_LIST_FILE}.tmp.$$"
-    if awk -F'|' -v p="$_pkg" '{ k=$1; gsub(/[ \t\r]/, "", k); if (k != p) print }' "$BG_LIST_FILE" > "$_bg_cgi_tmp" 2>/dev/null \
-        && mv "$_bg_cgi_tmp" "$BG_LIST_FILE" 2>/dev/null \
-        && [ -f "$BG_LIST_FILE" ]; then
-        return 0
-    fi
-    rm -f "$_bg_cgi_tmp" 2>/dev/null
-    return 1
+    bg_table_replace "$BG_LIST_FILE" "$1"
 }
-
 delete_stop_state() {
-    _pkg="$1"
-    [ -s "$BG_STOP_STATE_FILE" ] || return 0
-    [ ! -d "$BG_STOP_STATE_FILE" ] || return 1
-    _bg_cgi_tmp="${BG_STOP_STATE_FILE}.tmp.$$"
-    if awk -F'|' -v p="$_pkg" '{ k=$1; gsub(/[ \t\r]/, "", k); if (k != p) print }' "$BG_STOP_STATE_FILE" > "$_bg_cgi_tmp" 2>/dev/null \
-        && mv "$_bg_cgi_tmp" "$BG_STOP_STATE_FILE" 2>/dev/null \
-        && [ -f "$BG_STOP_STATE_FILE" ]; then
-        return 0
-    fi
-    rm -f "$_bg_cgi_tmp" 2>/dev/null
-    return 1
+    bg_table_replace "$BG_STOP_STATE_FILE" "$1"
 }
-
 clear_stop_state_file() {
     [ -e "$BG_STOP_STATE_FILE" ] || return 0
     [ ! -d "$BG_STOP_STATE_FILE" ] || return 1
@@ -155,21 +139,8 @@ write_pkg_entry() {
     _pkg="$1"
     _policy=$(bg_normalize_policy "$2")
     _delay=$(bg_normalize_delay "$3")
-    mkdir -p "${BG_LIST_FILE%/*}" 2>/dev/null || return 1
-    [ ! -d "$BG_LIST_FILE" ] || return 1
-    _bg_cgi_tmp="${BG_LIST_FILE}.tmp.$$"
-    if {
-        [ ! -s "$BG_LIST_FILE" ] || awk -F'|' -v p="$_pkg" '{ k=$1; gsub(/[ \t\r]/, "", k); if (k != p) print }' "$BG_LIST_FILE"
-        bg_format_entry "$_pkg" "$_policy" "$_delay"
-    } > "$_bg_cgi_tmp" 2>/dev/null \
-        && mv "$_bg_cgi_tmp" "$BG_LIST_FILE" 2>/dev/null \
-        && [ -f "$BG_LIST_FILE" ]; then
-        return 0
-    fi
-    rm -f "$_bg_cgi_tmp" 2>/dev/null
-    return 1
+    bg_table_replace "$BG_LIST_FILE" "$_pkg" "$(bg_format_entry "$_pkg" "$_policy" "$_delay")"
 }
-
 validate_pkg_policy_request() {
     bg_is_valid_policy "$1" \
         || json_error '400 Bad Request' 'invalid background policy'
@@ -187,6 +158,9 @@ emit_state() {
     _enabled=$(bg_read_enabled)
     printf '"enabled":"%s","bg_contract":' "$_enabled"
     bg_print_ui_contract_json
+    _bg_recovery_required=false
+    [ ! -d "$MODDIR/.bg_policy_tx" ] || _bg_recovery_required=true
+    printf ',"recovery_required":%s,"policy_user_id":%s' "$_bg_recovery_required" "$BG_USER_ID"
     printf ',"packages":['
     _first=1
     if [ -s "$BG_LIST_FILE" ]; then
@@ -203,6 +177,12 @@ emit_state() {
 }
 
 if [ "$REQUEST_METHOD" = "GET" ]; then
+    . "$MODDIR/scripts/state_io_lib.sh" || json_error '500 Internal Server Error' 'state I/O unavailable'
+    state_lock_acquire "$MODDIR/.locks/bg_policy.lock" 2 || json_error '409 Conflict' 'background policy changing; retry later'
+    trap 'state_lock_release "$MODDIR/.locks/bg_policy.lock" >/dev/null 2>&1' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     json_headers
     printf '{'
     emit_state
@@ -212,130 +192,77 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
     require_token
     acquire_lock "bg_restrict"
+    . "$MODDIR/scripts/state_io_lib.sh" || json_error '500 Internal Server Error' 'state I/O unavailable'
+    state_lock_acquire "$MODDIR/.locks/bg_policy.lock" 10 || json_error '409 Conflict' 'background policy busy'
+    trap 'bg_tx_rollback >/dev/null 2>&1; state_lock_release "$MODDIR/.locks/bg_policy.lock" >/dev/null 2>&1; release_lock' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     read_json_body 1024
     body="$JSON_BODY"
 
-    action=$(printf '%s' "$body" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
-    pkg=$(printf '%s' "$body" | sed -n 's/.*"package"[[:space:]]*:[[:space:]]*"\([a-zA-Z0-9._]*\)".*/\1/p')
-    policy=$(printf '%s' "$body" | sed -n 's/.*"policy"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
-    delay=$(printf '%s' "$body" | sed -n 's/.*"delay"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+    cgi_json_schema 'action:string package:string policy:string delay:number'
+    action=$(cgi_json_field action)
+    pkg=$(cgi_json_field package)
+    policy=$(cgi_json_field policy)
+    delay=$(cgi_json_field delay)
+    case "$action" in add|update|remove) validate_package_name "$pkg" ;; toggle|refresh|recover) ;;
+        *) json_error '400 Bad Request' 'unknown background action' ;; esac
+    if [ "$action" = recover ]; then
+        bg_tx_recover || json_error '500 Internal Server Error' 'background recovery incomplete; journal retained'
+    else
+        bg_tx_begin "$action" "$pkg" || json_error '409 Conflict' 'background state cannot be snapshotted, or an interrupted transaction requires recovery'
+    fi
 
     case "$action" in
+        recover) ;;
         toggle)
-            cur=$(bg_read_enabled)
-            if [ "$cur" = "on" ]; then
-                bg_remove_all || json_error '500 Internal Server Error' 'failed to restore one or more app restrictions'
-                if ! cgi_atomic_write "$BG_ENABLED_FILE" off; then
-                    if bg_apply_all >/dev/null 2>&1; then
-                        json_error '500 Internal Server Error' 'failed to persist background restriction state; restrictions restored'
-                    fi
-                    json_error '500 Internal Server Error' 'failed to persist background restriction state and rollback was incomplete'
-                fi
-                if ! clear_stop_state_file; then
-                    if cgi_atomic_write "$BG_ENABLED_FILE" on >/dev/null 2>&1 \
-                        && bg_apply_all >/dev/null 2>&1; then
-                        json_error '500 Internal Server Error' 'failed to clear background timers; restrictions restored'
-                    fi
-                    json_error '500 Internal Server Error' 'failed to clear background timers and rollback was incomplete'
-                fi
+            if [ "$(bg_read_enabled)" = on ]; then
+                bg_remove_all || json_error '500 Internal Server Error' 'one or more app baselines could not be restored'
+                cgi_atomic_write "$BG_ENABLED_FILE" off \
+                    && clear_stop_state_file || json_error '500 Internal Server Error' 'cannot save disabled background policy'
             else
-                clear_stop_state_file \
-                    || json_error '500 Internal Server Error' 'failed to clear background timers'
-                if ! bg_apply_all; then
-                    if bg_remove_all >/dev/null 2>&1; then
-                        json_error '500 Internal Server Error' 'failed to apply one or more app restrictions; previous state restored'
-                    fi
-                    json_error '500 Internal Server Error' 'failed to apply restrictions and rollback was incomplete'
-                fi
-                if ! cgi_atomic_write "$BG_ENABLED_FILE" on; then
-                    if bg_remove_all >/dev/null 2>&1; then
-                        json_error '500 Internal Server Error' 'failed to persist background restriction state; previous state restored'
-                    fi
-                    json_error '500 Internal Server Error' 'failed to persist background restriction state and rollback was incomplete'
-                fi
+                clear_stop_state_file && bg_apply_all \
+                    && cgi_atomic_write "$BG_ENABLED_FILE" on \
+                    || json_error '500 Internal Server Error' 'cannot apply and save background policy'
             fi
             ;;
         refresh)
-            cur=$(bg_read_enabled)
-            if [ "$cur" = "on" ]; then
-                bg_apply_all || json_error '500 Internal Server Error' 'failed to refresh one or more app restrictions'
-            fi
+            [ "$(bg_read_enabled)" != on ] || bg_apply_all \
+                || json_error '500 Internal Server Error' 'one or more app policies could not be applied'
             ;;
-        add)
-            validate_package_name "$pkg"
+        add|update)
             validate_pkg_policy_request "$policy" "$delay"
-            if pkg_exists "$pkg"; then
-                json_error '400 Bad Request' 'package already in list'
+            if [ "$action" = add ]; then
+                pkg_exists "$pkg" && json_error '400 Bad Request' 'package already in list'
+                _bg_count=$(awk -F'|' '$0 !~ /^#/ && $1!="" {n++} END {print n+0}' "$BG_LIST_FILE" 2>/dev/null) || _bg_count=0
+                [ "$_bg_count" -lt "$BG_MAX_PACKAGES" ] || json_error '409 Conflict' 'background policy list is full (32 owner-user packages)'
+            else
+                pkg_exists "$pkg" || json_error '400 Bad Request' 'package not in list'
             fi
-            write_pkg_entry "$pkg" "$policy" "$delay" \
-                || json_error '500 Internal Server Error' 'failed to persist package entry'
-            if ! delete_stop_state "$pkg"; then
-                if delete_pkg_line "$pkg" >/dev/null 2>&1; then
-                    json_error '500 Internal Server Error' 'failed to clear stale package timer; package entry removed'
-                fi
-                json_error '500 Internal Server Error' 'failed to clear stale package timer and rollback was incomplete'
-            fi
-            cur=$(bg_read_enabled)
-            if [ "$cur" = "on" ] && ! bg_apply_policy "$pkg" "$policy"; then
-                if delete_pkg_line "$pkg" >/dev/null 2>&1 \
-                    && bg_remove_restrict "$pkg" >/dev/null 2>&1; then
-                    json_error '500 Internal Server Error' 'failed to apply package restriction; package entry removed'
-                fi
-                json_error '500 Internal Server Error' 'failed to apply package restriction and rollback was incomplete'
-            fi
-            ;;
-        update)
-            validate_package_name "$pkg"
-            validate_pkg_policy_request "$policy" "$delay"
-            pkg_exists "$pkg" || json_error '400 Bad Request' 'package not in list'
-            _old_entry=$(awk -F'|' -v p="$pkg" '$1 == p { print; exit }' "$BG_LIST_FILE" 2>/dev/null)
-            bg_parse_entry "$_old_entry"
-            _old_policy="$_bg_policy"
-            _old_delay="$_bg_delay"
-            write_pkg_entry "$pkg" "$policy" "$delay" \
-                || json_error '500 Internal Server Error' 'failed to persist package entry'
-            if ! delete_stop_state "$pkg"; then
-                if write_pkg_entry "$pkg" "$_old_policy" "$_old_delay" >/dev/null 2>&1; then
-                    json_error '500 Internal Server Error' 'failed to clear stale package timer; previous entry restored'
-                fi
-                json_error '500 Internal Server Error' 'failed to clear stale package timer and rollback was incomplete'
-            fi
-            cur=$(bg_read_enabled)
-            if [ "$cur" = "on" ] && ! bg_apply_policy "$pkg" "$policy"; then
-                if write_pkg_entry "$pkg" "$_old_policy" "$_old_delay" >/dev/null 2>&1 \
-                    && bg_apply_policy "$pkg" "$_old_policy" >/dev/null 2>&1; then
-                    json_error '500 Internal Server Error' 'failed to update package restriction; previous policy restored'
-                fi
-                json_error '500 Internal Server Error' 'failed to update package restriction and rollback was incomplete'
-            fi
+            write_pkg_entry "$pkg" "$policy" "$delay" && delete_stop_state "$pkg" \
+                || json_error '500 Internal Server Error' 'cannot save package policy'
+            [ "$(bg_read_enabled)" != on ] || bg_apply_policy "$pkg" "$policy" \
+                || json_error '500 Internal Server Error' 'cannot apply package policy'
             ;;
         remove)
-            validate_package_name "$pkg"
-            _old_entry=$(awk -F'|' -v p="$pkg" '$1 == p { print; exit }' "$BG_LIST_FILE" 2>/dev/null)
-            bg_parse_entry "$_old_entry"
-            _old_policy="$_bg_policy"
-            _old_delay="$_bg_delay"
-            bg_remove_restrict "$pkg" \
-                || json_error '500 Internal Server Error' 'failed to restore package baseline'
-            if ! delete_pkg_line "$pkg"; then
-                if bg_apply_policy "$pkg" "$_old_policy" >/dev/null 2>&1; then
-                    json_error '500 Internal Server Error' 'failed to remove package entry; restriction reapplied'
-                fi
-                json_error '500 Internal Server Error' 'failed to remove package entry and rollback was incomplete'
+            pkg_exists "$pkg" || json_error '400 Bad Request' 'package not in list'
+            if [ "$(bg_read_enabled)" = on ]; then
+                bg_package_presence "$pkg"
+                _bg_presence=$?
+                case "$_bg_presence" in
+                    0) bg_remove_restrict "$pkg" || json_error '500 Internal Server Error' 'cannot restore package baseline' ;;
+                    1) bg_delete_baseline "$pkg" || json_error '500 Internal Server Error' 'cannot remove uninstalled package baseline' ;;
+                    *) json_error '503 Service Unavailable' 'package presence is unreadable' ;;
+                esac
             fi
-            if ! delete_stop_state "$pkg"; then
-                if write_pkg_entry "$pkg" "$_old_policy" "$_old_delay" >/dev/null 2>&1 \
-                    && bg_apply_policy "$pkg" "$_old_policy" >/dev/null 2>&1; then
-                    json_error '500 Internal Server Error' 'failed to clear package timer; package entry and restriction restored'
-                fi
-                json_error '500 Internal Server Error' 'failed to clear package timer and rollback was incomplete'
-            fi
+            delete_pkg_line "$pkg" && delete_stop_state "$pkg" \
+                || json_error '500 Internal Server Error' 'cannot remove package policy'
             ;;
-        *)
-            json_error '400 Bad Request' 'unknown action (toggle/refresh/add/update/remove)'
-            ;;
+        *) json_error '400 Bad Request' 'unknown background action' ;;
     esac
 
+    [ "$action" = recover ] || bg_tx_commit || json_error '500 Internal Server Error' 'background transaction commit failed'
     json_headers
     printf '{"ok":true,'
     # Mutation completion cannot depend on a per-package Binder/pm scan.

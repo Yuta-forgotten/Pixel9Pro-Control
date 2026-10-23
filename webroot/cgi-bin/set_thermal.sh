@@ -131,6 +131,7 @@ thermal_emit_state() {
         _ts_current_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')
         if [ -n "$_ts_tx_boot" ] && [ "$_ts_tx_boot" = "$_ts_current_boot" ]; then
             _ts_effective_state=pending_reboot
+            [ "$THERMAL_TX_CACHE_PHASE" != repair_pending ] || _ts_effective_state=repair_pending
         else
             _ts_effective_state=degraded
         fi
@@ -142,6 +143,10 @@ thermal_emit_state() {
     _ts_repair=false
     [ "$_ts_policy" = custom ] && [ "$_ts_source_hash" = none ] && _ts_repair=true
     [ "$_ts_policy" = system ] && [ "$_ts_source_hash" != none ] && _ts_repair=true
+    if [ "$THERMAL_TX_CACHE_PHASE" = repair_failed ]; then
+        _ts_effective_state=degraded
+        _ts_repair=true
+    fi
     _ts_pending=false
     _ts_pending_id=""
     _ts_cancel_supported=false
@@ -388,17 +393,91 @@ if [ "$_action" = cancel_pending ]; then
     exit 0
 fi
 if [ "$_action" = repair_system ]; then
-    { thermal_policy_remove_overlay || [ ! -e "$THERMAL_SOURCE_FILE" ]; } \
-        && cgi_atomic_write "$THERMAL_POLICY_FILE" system \
-        && cgi_atomic_write "$THERMAL_OFFSET_FILE" 0 \
-        && thermal_policy_transaction_clear >/dev/null 2>&1 || {
-            release_lock
-            json_error '500 Internal Server Error' 'thermal repair failed'
-        }
+    # Keep the accepted repair across independent GETs/reboot. Reuse the same
+    # journal owner as policy staging; a second write cannot erase its evidence.
+    thermal_policy_transaction_load
+    if thermal_policy_transaction_pending; then
+        [ "$THERMAL_TX_CACHE_PHASE" = repair_pending ] \
+            && [ "$THERMAL_TX_CACHE_BOOT_ID" = "$(cat /proc/sys/kernel/random/boot_id)" ] \
+            && [ "$(cat "$THERMAL_POLICY_FILE" 2>/dev/null)" = system ] \
+            && [ "$(cat "$THERMAL_OFFSET_FILE" 2>/dev/null)" = 0 ] \
+            && [ "$(thermal_policy_source_hash)" = none ] \
+            || json_error '409 Conflict' 'THERMAL_PENDING_TRANSACTION_REQUIRES_RECONCILIATION'
+    else
+        [ ! -L "$THERMAL_SOURCE_FILE" ] && [ ! -d "$THERMAL_SOURCE_FILE" ] \
+            || json_error '409 Conflict' 'thermal repair source is not a regular file'
+        _repair_policy_present=0; _repair_offset_present=0
+        [ ! -e "$THERMAL_POLICY_FILE" ] || _repair_policy_present=1
+        [ ! -e "$THERMAL_OFFSET_FILE" ] || _repair_offset_present=1
+        _repair_policy_before=''; _repair_offset_before=''
+        if [ "$_repair_policy_present" = 1 ]; then
+            _repair_policy_before=$(cat "$THERMAL_POLICY_FILE") \
+                || json_error '503 Service Unavailable' 'cannot read thermal repair entry policy'
+        fi
+        if [ "$_repair_offset_present" = 1 ]; then
+            _repair_offset_before=$(cat "$THERMAL_OFFSET_FILE") \
+                || json_error '503 Service Unavailable' 'cannot read thermal repair entry offset'
+        fi
+        _repair_source_mode=644
+        [ ! -e "$THERMAL_SOURCE_FILE" ] || _repair_source_mode=$(stat -c '%a' "$THERMAL_SOURCE_FILE") \
+            || json_error '500 Internal Server Error' 'cannot snapshot thermal repair source mode'
+        thermal_tx_snapshot || json_error '500 Internal Server Error' 'cannot snapshot thermal repair'
+        thermal_policy_transaction_cache_reset
+        thermal_policy_transaction_load
+        _repair_meta=$(cat "$THERMAL_TX_META")
+        _repair_present="$THERMAL_TX_CACHE_PRESENT"
+        _repair_hash="$THERMAL_TX_CACHE_HASH"
+        _repair_context="$THERMAL_TX_CACHE_CONTEXT"
+        _repair_pending_meta=$(printf '%s\n' "$_repair_meta" | sed 's/^phase=staged$/phase=repair_pending/')
+        _repair_pending_meta=$(printf '%s\ndesired_policy=system\ndesired_offset=0\ndesired_hash=none' "$_repair_pending_meta")
+        if ! { cgi_atomic_write "$THERMAL_TX_META" "$_repair_pending_meta" \
+            && thermal_policy_remove_overlay \
+            && cgi_atomic_write "$THERMAL_POLICY_FILE" system \
+            && cgi_atomic_write "$THERMAL_OFFSET_FILE" 0 \
+            && [ "$(cat "$THERMAL_POLICY_FILE")" = system ] \
+            && [ "$(cat "$THERMAL_OFFSET_FILE")" = 0 ] \
+            && [ "$(thermal_policy_source_hash)" = none ]; }; then
+            _repair_rollback=1
+            if [ "$_repair_present" = 1 ]; then
+                _repair_tmp="$THERMAL_SOURCE_FILE.repair.$$"
+                mkdir -p "${THERMAL_SOURCE_FILE%/*}" \
+                    && cp -p "$THERMAL_TX_SOURCE" "$_repair_tmp" \
+                    && chmod "$_repair_source_mode" "$_repair_tmp" \
+                    && { [ "$_repair_context" = none ] || chcon "$_repair_context" "$_repair_tmp"; } \
+                    && mv "$_repair_tmp" "$THERMAL_SOURCE_FILE" || _repair_rollback=0
+                rm -f "$_repair_tmp" 2>/dev/null
+            else
+                thermal_policy_remove_overlay || _repair_rollback=0
+            fi
+            cgi_restore_file "$THERMAL_POLICY_FILE" "$_repair_policy_present" "$_repair_policy_before" || _repair_rollback=0
+            cgi_restore_file "$THERMAL_OFFSET_FILE" "$_repair_offset_present" "$_repair_offset_before" || _repair_rollback=0
+            [ "$(thermal_policy_source_hash)" = "$_repair_hash" ] || _repair_rollback=0
+            [ "$(cat "$THERMAL_POLICY_FILE" 2>/dev/null)" = "$_repair_policy_before" ] || _repair_rollback=0
+            [ "$(cat "$THERMAL_OFFSET_FILE" 2>/dev/null)" = "$_repair_offset_before" ] || _repair_rollback=0
+            if [ "$_repair_present" = 1 ]; then
+                [ "$(stat -c '%a' "$THERMAL_SOURCE_FILE")" = "$_repair_source_mode" ] \
+                    && [ "$(thermal_policy_source_context)" = "$_repair_context" ] || _repair_rollback=0
+            fi
+            if [ "$_repair_rollback" = 1 ] && thermal_policy_transaction_clear; then
+                json_error '500 Internal Server Error' 'THERMAL_REPAIR_FAILED_ENTRY_STATE_RESTORED'
+            fi
+            _repair_failed_meta=$(printf '%s\n' "$_repair_pending_meta" | sed 's/^phase=repair_pending$/phase=repair_failed/')
+            cgi_atomic_write "$THERMAL_TX_META" "$_repair_failed_meta" >/dev/null 2>&1 || true
+            json_error '500 Internal Server Error' 'THERMAL_REPAIR_ROLLBACK_INCOMPLETE'
+        fi
+        thermal_policy_transaction_cache_reset
+        thermal_policy_transaction_load
+    fi
+    _repair_id="$THERMAL_TX_CACHE_ID"
     release_lock
     audit_log_event_async thermal repair success THERMAL_REPAIR_SYSTEM 0
     json_headers
-    printf '{"ok":true,"repaired":true,"reboot_required":true,"effective_state":"repair_pending"}\n'
+    printf '{"ok":true,"repaired":true,"policy":"system","offset":0,"repair_required":false,'
+    printf '"pending":true,"pending_id":"%s","cancel_supported":false,"reboot_required":true,"effective_state":"repair_pending",' "$(json_escape "$_repair_id")"
+    printf '"mount_backend":"%s","metamodule_active":%s,"reinstall_required":false,"thermal_contract":' \
+        "$THERMAL_MOUNT_BACKEND" "$([ "$THERMAL_METAMODULE_ACTIVE" = 1 ] && printf true || printf false)"
+    thermal_emit_contract
+    printf '}\n'
     exit 0
 fi
 [ -z "$_action" ] || { release_lock; json_error '400 Bad Request' 'invalid thermal action'; }
@@ -486,7 +565,7 @@ if [ "$policy" = custom ]; then
     thermal_policy_stock_provenance_valid "$STOCK_JSON" \
         || json_error '409 Conflict' 'THERMAL_STOCK_MISSING_OR_FOREIGN'
     _cached_profile=$(thermal_policy_profile_cache_path "$DEVICE" "$offset" 2>/dev/null || true)
-    if thermal_policy_profile_cache_valid "$DEVICE" "$STOCK_JSON" \
+    if thermal_policy_profile_cache_valid "$DEVICE" "$STOCK_JSON" "$offset" \
         && [ -s "$_cached_profile" ]; then
         cp -f "$_cached_profile" "$TS_CANDIDATE" 2>/dev/null \
             || json_error '500 Internal Server Error' 'THERMAL_PROFILE_CACHE_COPY_FAILED'

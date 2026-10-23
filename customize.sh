@@ -18,16 +18,29 @@ DEVICE_FILE="$MODPATH/.device_variant"
 OLDDIR="/data/adb/modules/pixel9pro_control"
 INSTALL_TRACE_FILE="$MODPATH/.install_trace"
 install_trace() { printf '%s stage=%s rc=%s\n' "$(date +%s)" "$1" "${2:-0}" >> "$INSTALL_TRACE_FILE" 2>/dev/null || true; }
-trap 'install_trace failed "$?"' EXIT
+installer_cleanup() {
+    _installer_exit_rc="$1"
+    [ -z "${EVENT_FILE:-}" ] || rm -f "$EVENT_FILE" 2>/dev/null
+    if [ "$_installer_exit_rc" -eq 0 ]; then
+        install_trace complete 0
+    else
+        install_trace failed "$_installer_exit_rc"
+    fi
+}
+trap 'installer_cleanup "$?"' EXIT
 install_trace enter 0
 
 # APD extraction can normalize executable ZIP entries to 0644. Restore
 # runtime permissions explicitly before the module is activated.
-chmod 755 "$MODPATH/service.sh" "$MODPATH/post-fs-data.sh" "$MODPATH/post-mount.sh" "$MODPATH/scripts/"*.sh "$MODPATH/webroot/cgi-bin/"*.sh 2>/dev/null || true
+chmod 755 "$MODPATH/service.sh" "$MODPATH/post-fs-data.sh" "$MODPATH/post-mount.sh" "$MODPATH/scripts/"*.sh "$MODPATH/webroot/cgi-bin/"*.sh 2>/dev/null || {
+    ui_print "  ✗ 无法恢复模块启动脚本或 CGI 执行权限，已中止安装"
+    abort
+}
 
 # Thermal HAL may select an LPM-specific top-level config at runtime.  The
 # selected filename is authoritative; never generate a sibling file that HAL
 # will ignore.  LPM stock is read-only from the current device vendor tree.
+. "$MODPATH/scripts/state_io_lib.sh" || abort 'Control state I/O library missing'
 THERMAL_CONFIG_NAME=$(getprop vendor.thermal.config 2>/dev/null)
 [ -n "$THERMAL_CONFIG_NAME" ] || THERMAL_CONFIG_NAME=thermal_info_config.json
 case "$THERMAL_CONFIG_NAME" in
@@ -66,6 +79,7 @@ if [ ! -r "$MODPATH/scripts/runtime_defaults_lib.sh" ]; then
     abort
 fi
 . "$MODPATH/scripts/runtime_defaults_lib.sh" || abort
+. "$MODPATH/scripts/install_state_lib.sh" || { ui_print '  ✗ 缺少配置迁移合同'; abort; }
 for _background_lib in background_tasks_lib.sh control_worker_lib.sh thermal_history_lib.sh; do
     [ -r "$MODPATH/scripts/$_background_lib" ] || {
         ui_print "  ✗ 缺少后台/温度共享组件: $_background_lib"
@@ -130,9 +144,8 @@ mkdir -p "$TMPDIR" 2>/dev/null || {
     abort
 }
 EVENT_FILE="$TMPDIR/pixel9pro_control_events.$$"
-trap 'rm -f "$EVENT_FILE" 2>/dev/null' EXIT
-trap 'rm -f "$EVENT_FILE" 2>/dev/null; exit 130' INT
-trap 'rm -f "$EVENT_FILE" 2>/dev/null; exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 _flush_keys() { timeout 1 getevent -qlc 1 >/dev/null 2>&1; }
 
@@ -379,35 +392,19 @@ _is_upgrade=0
 if [ -d "$OLDDIR" ] && [ -f "$OLDDIR/module.prop" ]; then
     _is_upgrade=1
     ui_print "  检测到已有配置, 正在迁移..."
-    _migration_failed=0
-    for _sf in .thermal_policy .thermal_offset .scheduler_mode \
-               .feature_nr .feature_sim2 .feature_vm \
-               .current_profile .profile_policy .profile_manual .profile_auto_reason .profile_history .nr_screen_switch \
-               .sim2_auto_manage .idle_isolate_mode \
-               .swap_mode .swap_custom .vm_reboot_required .vm_reboot_boot_id .zram_request_baseline .zram_request_last .zram_request_receipt .zram_restore_pending .vm_policy_ready .ntp_server .uecap_mode .uecap_manual_mode \
-               .uecap_policy .uecap_reason .sim2_radio_off \
-               .nr_saved_mode .webui_theme \
-               .bg_restrict_list .bg_restrict_enabled .bg_restrict_baseline .cpu_sched_owner .sched_owner_desired .game_handoff_policy .game_handoff_source \
-               .thermal_history; do
-        if [ -f "$OLDDIR/$_sf" ]; then
-            cp "$OLDDIR/$_sf" "$MODPATH/$_sf" 2>/dev/null \
-                && [ -f "$MODPATH/$_sf" ] \
-                && cmp -s "$OLDDIR/$_sf" "$MODPATH/$_sf" || _migration_failed=1
-        fi
-    done
-if [ "$_migration_failed" -ne 0 ]; then
-        ui_print "  ✗ 用户配置迁移不完整, 已中止安装"
+if ! install_state_migrate "$OLDDIR" "$MODPATH"; then
+        ui_print "  ✗ 配置不可读取或存在未处理事务，已中止升级；请先在现有 WebUI 完成撤销、恢复或重启后再安装"
         abort
 fi
 install_trace migration 0
 ui_print "  ✓ 已迁移用户配置"
-    # Retired light/responsive/performance selections migrate to the current
-    # balanced daily baseline. default remains a selectable stock profile.
+    # Only retired profile names migrate. The current explicit performance
+    # choice remains valid and must survive an upgrade.
     _profile_migrated=0
     for _mf in "$MODPATH/.current_profile" "$MODPATH/.profile_manual"; do
         [ -f "$_mf" ] || continue
         case "$(cat "$_mf" 2>/dev/null | tr -d ' \n\r\t')" in
-            light|responsive|performance)
+            light|responsive)
                 installer_write "$_mf" balanced
                 _profile_migrated=1
                 ;;
@@ -577,7 +574,7 @@ else
     [ -f "$PROFILE_FILE" ] || installer_write "$PROFILE_FILE" balanced
     if [ ! -f "$PROFILE_MANUAL_FILE" ]; then
         _profile_for_manual=$(cat "$PROFILE_FILE" 2>/dev/null | tr -d ' \n\r\t')
-        case "$_profile_for_manual" in balanced|battery|default) ;;
+        case "$_profile_for_manual" in balanced|battery|default|performance) ;;
             *) _profile_for_manual=balanced ;;
         esac
         installer_write "$PROFILE_MANUAL_FILE" "$_profile_for_manual"
@@ -762,6 +759,7 @@ if [ -r "$MODPATH/scripts/thermal_policy_lib.sh" ] \
 fi
 
 ui_print "  温控偏移: $(thermal_format_offset "$offset")"
+installer_write "$MODPATH/.state_schema" "$INSTALL_STATE_SCHEMA"
 ui_print ""
 ui_print "  安装完成, 重启生效"
 ui_print "  WebUI: http://127.0.0.1:6210"

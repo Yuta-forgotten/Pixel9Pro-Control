@@ -2,25 +2,33 @@
 'use strict';
 (() => {
   const LOG_STORAGE_KEY = 'pixel9pro_runtime_log_v2';
-  const state = { entries: [], maxEntries: 80, auditSession: null, auditClearPending: false };
+  const state = { entries: [], maxEntries: 80, persistenceAvailable: true, auditSession: null, auditClearPending: false, lastPersistAt: 0 };
+  const logText = (value, limit) => String(value ?? '').slice(0, limit);
+  const logType = (value) => ['err', 'warn', 'ok', 'dim'].includes(value) ? value : '';
 
   function loadStoredLogs() {
     try {
       const raw = JSON.parse(localStorage.getItem(LOG_STORAGE_KEY) || '[]');
       if (!Array.isArray(raw)) return;
-      state.entries = raw.slice(-state.maxEntries).map((entry) => ({
-        ts: new Date(Number(entry.ts) || Date.now()),
-        text: String(entry.text || '—'), type: String(entry.type || ''), detail: String(entry.detail || '')
-      }));
-    } catch (_) { state.entries = []; }
+      state.entries = raw.filter((entry) => entry && typeof entry === 'object'
+        && Number.isFinite(Number(entry.ts)) && Number(entry.ts) > 0
+        && !Number.isNaN(new Date(Number(entry.ts)).getTime()))
+        .slice(-state.maxEntries).map((entry) => ({
+          ts: new Date(Number(entry.ts)), text: logText(entry.text || '—', 1024),
+          type: logType(entry.type), detail: logText(entry.detail, 8192),
+          count: Math.min(1000000, Math.max(1, Number(entry.count) || 1))
+        }));
+    } catch (_) { state.entries = []; state.persistenceAvailable = false; }
   }
 
   function persistLogs() {
     try {
       localStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(state.entries.map((entry) => ({
-        ts: entry.ts.getTime(), text: entry.text, type: entry.type, detail: entry.detail
+        ts: entry.ts.getTime(), text: entry.text, type: entry.type, detail: entry.detail, count: entry.count || 1
       }))));
-    } catch (_) {}
+      state.persistenceAvailable = true;
+      state.lastPersistAt = Date.now();
+    } catch (_) { state.persistenceAvailable = false; }
   }
 
   function errorBlock(msg) {
@@ -43,14 +51,15 @@
       empty.className = 'log-dim'; empty.textContent = '等待操作…';
       refs.logInner.appendChild(empty);
       if (refs.logPreview) refs.logPreview.textContent = '暂无操作';
-      if (refs.logMeta) refs.logMeta.textContent = '本地记录 · 最多保留 80 条';
+      if (refs.logMeta) refs.logMeta.textContent = state.persistenceAvailable ? '本地记录 · 最多保留 80 条' : '当前页面记录 · 浏览器持久化不可用';
       return;
     }
     state.entries.forEach((entry) => {
       const row = document.createElement('div');
       row.className = `log-entry${entry.type ? ` log-${entry.type}` : ''}`;
       const time = document.createElement('time'); time.textContent = entry.ts.toLocaleTimeString();
-      const copy = document.createElement('span'); copy.textContent = entry.text;
+      time.dateTime = entry.ts.toISOString(); time.title = entry.ts.toLocaleString();
+      const copy = document.createElement('span'); copy.textContent = entry.text + (entry.count > 1 ? `（重复 ${entry.count} 次）` : '');
       row.append(time, copy);
       if (entry.type === 'err' && entry.detail) {
         const details = document.createElement('details');
@@ -64,15 +73,26 @@
     if (refs.logPreview) refs.logPreview.textContent = `${last.type === 'err' ? '失败' : last.type === 'warn' ? '需注意' : '最近'} · ${last.text}`;
     if (refs.logMeta) {
       const errors = state.entries.filter((entry) => entry.type === 'err').length;
-      refs.logMeta.textContent = `本次会话 · ${state.entries.length} 条${errors ? ` · ${errors} 条失败` : ''}`;
+      refs.logMeta.textContent = `${state.persistenceAvailable ? '本地记录' : '当前页面记录 · 无法持久化'} · ${state.entries.length} 条${errors ? ` · ${errors} 条失败` : ''}`;
     }
     refs.logInner.scrollTop = refs.logInner.scrollHeight;
   }
 
   function appendLog(text, type = '', detail = '') {
+    const last = state.entries[state.entries.length - 1];
+    const normalizedText = logText(text ?? '—', 1024);
+    const normalizedType = logType(type);
+    if (last && ['err', 'warn'].includes(normalizedType) && last.type === normalizedType
+      && last.text === normalizedText && Date.now() - last.ts.getTime() < 60000) {
+      last.count = Math.min(1000000, (last.count || 1) + 1);
+      last.ts = new Date();
+      if (Date.now() - state.lastPersistAt > 30000) persistLogs();
+      renderLogs();
+      return;
+    }
     state.entries.push({
-      ts: new Date(), text: String(text ?? '—'), type: String(type || ''),
-      detail: String(detail || (type === 'err' ? text : ''))
+      ts: new Date(), text: normalizedText, type: normalizedType, count: 1,
+      detail: logText(detail || (type === 'err' ? text : ''), 8192)
     });
     if (state.entries.length > state.maxEntries) state.entries.splice(0, state.entries.length - state.maxEntries);
     persistLogs();

@@ -21,6 +21,8 @@ SBM_LOGCAT_MAX_LINES="${SBM_LOGCAT_MAX_LINES:-2000}"
 SBM_EXPECTED_CPUFREQ_MODE="${SBM_EXPECTED_CPUFREQ_MODE:-664}"
 SBM_EXPECTED_CPUFREQ_UID="${SBM_EXPECTED_CPUFREQ_UID:-1000}"
 SBM_EXPECTED_CPUFREQ_GID="${SBM_EXPECTED_CPUFREQ_GID:-1000}"
+SBM_APD_LIST_TIMEOUT_S="${SBM_APD_LIST_TIMEOUT_S:-5}"
+SBM_APD_SET_TIMEOUT_S="${SBM_APD_SET_TIMEOUT_S:-8}"
 
 sbm_init() {
     SBM_MODDIR="${1:-/data/adb/modules/pixel9pro_control}"
@@ -62,17 +64,9 @@ sbm_state_value() {
 }
 
 sbm_atomic_write() {
-    _sbm_file="$1"
-    _sbm_value="$2"
-    [ -n "$_sbm_file" ] && [ ! -d "$_sbm_file" ] || return 1
-    _sbm_tmp="${_sbm_file}.tmp.$$"
-    if printf '%s' "$_sbm_value" > "$_sbm_tmp" 2>/dev/null \
-        && mv "$_sbm_tmp" "$_sbm_file" 2>/dev/null \
-        && [ "$(cat "$_sbm_file" 2>/dev/null)" = "$_sbm_value" ]; then
-        return 0
-    fi
-    rm -f "$_sbm_tmp" 2>/dev/null
-    return 1
+    command -v state_atomic_write >/dev/null 2>&1 \
+        || . "$SBM_MODDIR/scripts/state_io_lib.sh" || return 1
+    state_atomic_write "$1" "$2"
 }
 
 sbm_owner_to_mode() {
@@ -83,23 +77,79 @@ sbm_mode_to_owner() {
     case "$1" in ugt) printf 'external' ;; pixel) printf 'pixel' ;; *) return 1 ;; esac
 }
 
+sbm_read_state_file() {
+    [ -f "$1" ] && [ -r "$1" ] && [ ! -L "$1" ] || return 1
+    while IFS='=' read -r _sbm_key _sbm_value || [ -n "$_sbm_key" ]; do
+        _sbm_value=${_sbm_value%"$_sbm_cr"}
+        case "$_sbm_key" in
+            transition_id) SBM_TRANSITION_ID="$_sbm_value" ;;
+            target_mode) SBM_TARGET_MODE="$_sbm_value" ;;
+            effective_mode) SBM_EFFECTIVE_MODE="$_sbm_value" ;;
+            phase) SBM_PHASE="$_sbm_value" ;;
+            final) SBM_FINAL="$_sbm_value" ;;
+            ok) SBM_OK="$_sbm_value" ;;
+            result) SBM_RESULT="$_sbm_value" ;;
+            reason) SBM_REASON="$_sbm_value" ;;
+            attempts) SBM_ATTEMPTS="$_sbm_value" ;;
+            deadline_epoch) SBM_DEADLINE_EPOCH="$_sbm_value" ;;
+            staged_boot_id) SBM_STAGED_BOOT_ID="$_sbm_value" ;;
+            observed_boot_id) SBM_OBSERVED_BOOT_ID="$_sbm_value" ;;
+            previous_desired) SBM_PREVIOUS_DESIRED="$_sbm_value" ;;
+            previous_module_state) SBM_PREVIOUS_MODULE_STATE="$_sbm_value" ;;
+            auto_repair_used) SBM_AUTO_REPAIR_USED="$_sbm_value" ;;
+            reboot_required) SBM_REBOOT_REQUIRED="$_sbm_value" ;;
+        esac
+    done < "$1"
+}
+
+sbm_clear_loaded_state() {
+    SBM_TRANSITION_ID=''
+    SBM_TARGET_MODE=''
+    SBM_EFFECTIVE_MODE=''
+    SBM_PHASE=''
+    SBM_FINAL=''
+    SBM_OK=''
+    SBM_RESULT=''
+    SBM_REASON=''
+    SBM_ATTEMPTS=''
+    SBM_DEADLINE_EPOCH=''
+    SBM_STAGED_BOOT_ID=''
+    SBM_OBSERVED_BOOT_ID=''
+    SBM_PREVIOUS_DESIRED=''
+    SBM_PREVIOUS_MODULE_STATE=''
+    SBM_AUTO_REPAIR_USED=''
+    SBM_REBOOT_REQUIRED=''
+}
+
 sbm_load_state() {
-    SBM_TRANSITION_ID=$(sbm_state_value "$SBM_STATE_FILE" transition_id 2>/dev/null)
-    SBM_TARGET_MODE=$(sbm_state_value "$SBM_STATE_FILE" target_mode 2>/dev/null)
-    SBM_EFFECTIVE_MODE=$(sbm_state_value "$SBM_STATE_FILE" effective_mode 2>/dev/null)
-    SBM_PHASE=$(sbm_state_value "$SBM_STATE_FILE" phase 2>/dev/null)
-    SBM_FINAL=$(sbm_state_value "$SBM_STATE_FILE" final 2>/dev/null)
-    SBM_OK=$(sbm_state_value "$SBM_STATE_FILE" ok 2>/dev/null)
-    SBM_RESULT=$(sbm_state_value "$SBM_STATE_FILE" result 2>/dev/null)
-    SBM_REASON=$(sbm_state_value "$SBM_STATE_FILE" reason 2>/dev/null)
-    SBM_ATTEMPTS=$(sbm_state_value "$SBM_STATE_FILE" attempts 2>/dev/null)
-    SBM_DEADLINE_EPOCH=$(sbm_state_value "$SBM_STATE_FILE" deadline_epoch 2>/dev/null)
-    SBM_STAGED_BOOT_ID=$(sbm_state_value "$SBM_STATE_FILE" staged_boot_id 2>/dev/null)
-    SBM_OBSERVED_BOOT_ID=$(sbm_state_value "$SBM_STATE_FILE" observed_boot_id 2>/dev/null)
-    SBM_PREVIOUS_DESIRED=$(sbm_state_value "$SBM_STATE_FILE" previous_desired 2>/dev/null)
-    SBM_PREVIOUS_MODULE_STATE=$(sbm_state_value "$SBM_STATE_FILE" previous_module_state 2>/dev/null)
-    SBM_AUTO_REPAIR_USED=$(sbm_state_value "$SBM_STATE_FILE" auto_repair_used 2>/dev/null)
-    SBM_REBOOT_REQUIRED=$(sbm_state_value "$SBM_STATE_FILE" reboot_required 2>/dev/null)
+    # Read each small snapshot once in this shell. Per-field sed/head/tr
+    # pipelines amplified the first request's process and storage latency.
+    _sbm_cr=$(printf '\r')
+    sbm_clear_loaded_state
+    sbm_read_state_file "$SBM_STATE_FILE" || true
+    _sbm_terminal_transition=''; _sbm_terminal_phase=''; _sbm_terminal_boot=''
+    if [ -f "$SBM_TERMINAL_FILE" ] && [ ! -L "$SBM_TERMINAL_FILE" ]; then
+        while IFS='=' read -r _sbm_key _sbm_value || [ -n "$_sbm_key" ]; do
+            _sbm_value=${_sbm_value%"$_sbm_cr"}
+            case "$_sbm_key" in
+                transition_id) _sbm_terminal_transition="$_sbm_value" ;;
+                phase) _sbm_terminal_phase="$_sbm_value" ;;
+                observed_boot_id) _sbm_terminal_boot="$_sbm_value" ;;
+            esac
+        done < "$SBM_TERMINAL_FILE"
+    fi
+    _sbm_use_terminal=no
+    case "$_sbm_terminal_phase" in success|failed|blocked)
+        if [ -n "$_sbm_terminal_transition" ] \
+            && { [ "$_sbm_terminal_transition" = "$SBM_TRANSITION_ID" ] \
+                || { [ -z "$SBM_TRANSITION_ID" ] && [ "$_sbm_terminal_boot" = "$(sbm_boot_id)" ]; }; }; then
+            _sbm_use_terminal=yes
+        fi ;;
+    esac
+    if [ "$_sbm_use_terminal" = yes ]; then
+        sbm_clear_loaded_state
+        sbm_read_state_file "$SBM_TERMINAL_FILE" || true
+    fi
     case "$SBM_TARGET_MODE" in pixel|ugt) ;; *) SBM_TARGET_MODE=pixel ;; esac
     case "$SBM_EFFECTIVE_MODE" in pixel|ugt|unknown) ;; *) SBM_EFFECTIVE_MODE=unknown ;; esac
     case "$SBM_FINAL" in yes|no) ;; *) SBM_FINAL=no ;; esac
@@ -107,39 +157,7 @@ sbm_load_state() {
     case "$SBM_ATTEMPTS" in ''|*[!0-9]*) SBM_ATTEMPTS=0 ;; esac
     case "$SBM_AUTO_REPAIR_USED" in yes|no) ;; *) SBM_AUTO_REPAIR_USED=no ;; esac
     case "$SBM_REBOOT_REQUIRED" in yes|no) ;; *) SBM_REBOOT_REQUIRED=no ;; esac
-
-    _sbm_terminal_transition=$(sbm_state_value "$SBM_TERMINAL_FILE" transition_id 2>/dev/null)
-    _sbm_terminal_phase=$(sbm_state_value "$SBM_TERMINAL_FILE" phase 2>/dev/null)
-    _sbm_terminal_boot=$(sbm_state_value "$SBM_TERMINAL_FILE" observed_boot_id 2>/dev/null)
-    _sbm_use_terminal=no
-    case "$_sbm_terminal_phase" in success|failed|blocked)
-        if [ -n "$_sbm_terminal_transition" ] \
-            && { [ "$_sbm_terminal_transition" = "$SBM_TRANSITION_ID" ] \
-                || { [ -z "$SBM_TRANSITION_ID" ] && [ "$_sbm_terminal_boot" = "$(sbm_boot_id)" ]; }; }; then
-            _sbm_use_terminal=yes
-        fi
-        ;;
-    esac
-    if [ "$_sbm_use_terminal" = "yes" ]; then
-        SBM_TRANSITION_ID="$_sbm_terminal_transition"
-        SBM_TARGET_MODE=$(sbm_state_value "$SBM_TERMINAL_FILE" target_mode 2>/dev/null)
-        SBM_EFFECTIVE_MODE=$(sbm_state_value "$SBM_TERMINAL_FILE" effective_mode 2>/dev/null)
-        SBM_PHASE="$_sbm_terminal_phase"
-        SBM_FINAL=$(sbm_state_value "$SBM_TERMINAL_FILE" final 2>/dev/null)
-        SBM_OK=$(sbm_state_value "$SBM_TERMINAL_FILE" ok 2>/dev/null)
-        SBM_RESULT=$(sbm_state_value "$SBM_TERMINAL_FILE" result 2>/dev/null)
-        SBM_REASON=$(sbm_state_value "$SBM_TERMINAL_FILE" reason 2>/dev/null)
-        SBM_ATTEMPTS=$(sbm_state_value "$SBM_TERMINAL_FILE" attempts 2>/dev/null)
-        SBM_DEADLINE_EPOCH=$(sbm_state_value "$SBM_TERMINAL_FILE" deadline_epoch 2>/dev/null)
-        SBM_STAGED_BOOT_ID=$(sbm_state_value "$SBM_TERMINAL_FILE" staged_boot_id 2>/dev/null)
-        SBM_OBSERVED_BOOT_ID="$_sbm_terminal_boot"
-        SBM_PREVIOUS_DESIRED=$(sbm_state_value "$SBM_TERMINAL_FILE" previous_desired 2>/dev/null)
-        SBM_PREVIOUS_MODULE_STATE=$(sbm_state_value "$SBM_TERMINAL_FILE" previous_module_state 2>/dev/null)
-        SBM_AUTO_REPAIR_USED=$(sbm_state_value "$SBM_TERMINAL_FILE" auto_repair_used 2>/dev/null)
-        SBM_REBOOT_REQUIRED=$(sbm_state_value "$SBM_TERMINAL_FILE" reboot_required 2>/dev/null)
-    fi
 }
-
 sbm_state_payload() {
     _sbm_now=$(sbm_now)
     printf '%s\n' \
@@ -227,7 +245,7 @@ sbm_apd_module_state() {
     if [ "$SBM_TEST_MODE" = "1" ]; then
         _sbm_apd_json=$(sh "$SBM_APD_BIN" module list 2>/dev/null) || return 2
     elif [ -x "$SBM_APD_BIN" ]; then
-        _sbm_apd_json=$("$SBM_APD_BIN" module list 2>/dev/null) || return 2
+        _sbm_apd_json=$(timeout -k 1 "$SBM_APD_LIST_TIMEOUT_S" "$SBM_APD_BIN" module list 2>/dev/null) || return 2
     else
         _sbm_module_path="$SBM_MODULES_ROOT/$SBM_UPERF_ID"
         [ -d "$_sbm_module_path" ] || _sbm_module_path="$SBM_MODULES_UPDATE_ROOT/$SBM_UPERF_ID"
@@ -269,7 +287,7 @@ sbm_apd_set_state() {
         sh "$SBM_APD_BIN" module "$_sbm_apd_action" "$SBM_UPERF_ID" >/dev/null 2>&1
     else
         [ -x "$SBM_APD_BIN" ] || return 2
-        "$SBM_APD_BIN" module "$_sbm_apd_action" "$SBM_UPERF_ID" >/dev/null 2>&1
+        timeout -k 1 "$SBM_APD_SET_TIMEOUT_S" "$SBM_APD_BIN" module "$_sbm_apd_action" "$SBM_UPERF_ID" >/dev/null 2>&1
     fi
 }
 
@@ -476,7 +494,7 @@ sbm_powerhal_failure_count() {
         return
     fi
     [ -x "$SBM_LOGCAT_BIN" ] || { printf 'unknown'; return; }
-    "$SBM_LOGCAT_BIN" -b all -d -t "$SBM_LOGCAT_MAX_LINES" -v brief 2>/dev/null | awk '
+    timeout -k 1 5 "$SBM_LOGCAT_BIN" -b all -d -t "$SBM_LOGCAT_MAX_LINES" -v brief 2>/dev/null | awk '
         /Failed to write to node/ && /hal_power_default|power-service|libperfmgr/ { failures++ }
         /hal_power_default/ && /dac_override/ { failures++ }
         END { print failures + 0 }

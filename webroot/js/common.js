@@ -1,10 +1,12 @@
 // 通用请求、轮询、导航和系统信息功能。
 'use strict';
 (() => {
-const authState = { webuiToken: '' };
+const authState = { webuiToken: '', bootstrap: null, callbackId: 0, bootstrapAttempted: false, pairing: null };
+const nativeCommands = new Map();
 const requestHub = {
   active: 0,
   maxConcurrent: 3,
+  maxQueued: 24,
   queue: [],
   pendingGets: new Map(),
   mutationScopes: new Set(),
@@ -23,6 +25,9 @@ const REQUEST_POLICIES = Object.freeze({
   lifecycle: Object.freeze({ timeoutMs: 45000, queueTimeoutMs: 15000, priority: 'interactive' })
 });
 const featureTasks = new Map();
+let toastTimer = null;
+let toastRemovalTimer = null;
+let lastToast = { message: '', at: 0 };
 const shellState = {
   currentTab: 'home',
   deviceModel: '',
@@ -31,6 +36,7 @@ const shellState = {
     timer: null,
     running: false,
     inFlight: false,
+    failures: { cpu: 0, thermal: 0, optim: 0, slow: 0 },
     lastInteractionAt: 0,
     lastRun: { cpu: 0, thermal: 0, optim: 0, slow: 0 }
   },
@@ -48,6 +54,11 @@ function escapeHtml(value) {
 
 function showToast(msg, dur = 2500, type = '') {
   if (!refs.toastWrap) return;
+  const message = String(msg);
+  if (lastToast.message === message && Date.now() - lastToast.at < 4000) return;
+  lastToast = { message, at: Date.now() };
+  clearTimeout(toastTimer);
+  clearTimeout(toastRemovalTimer);
   // Keep transient feedback bounded so rapid taps cannot build an overlay wall.
   refs.toastWrap.querySelectorAll('.toast').forEach((toast) => toast.remove());
   const el = document.createElement('div');
@@ -60,10 +71,11 @@ function showToast(msg, dur = 2500, type = '') {
   refs.toastWrap.setAttribute('aria-atomic', 'true');
   refs.toastWrap.appendChild(el);
   requireFeature('ui').updateOverlayLayout();
-  window.setTimeout(() => {
+  toastTimer = window.setTimeout(() => {
+    toastTimer = null;
     el.classList.add('out');
     el.addEventListener('animationend', () => el.remove(), { once: true });
-    window.setTimeout(() => { if (el.isConnected) el.remove(); }, 400);
+    toastRemovalTimer = window.setTimeout(() => { toastRemovalTimer = null; if (el.isConnected) el.remove(); }, 400);
   }, dur);
 }
 
@@ -75,13 +87,35 @@ function setWebuiToken(token) {
   const clean = String(token || '').trim();
   if (!/^[A-Za-z0-9._:-]{8,128}$/.test(clean)) return false;
   authState.webuiToken = clean;
-  sessionStorage.setItem(STORAGE_TOKEN_KEY, clean);
+  try { sessionStorage.setItem(STORAGE_TOKEN_KEY, clean); } catch (_) { /* Keep the validated token usable for this page. */ }
   return true;
 }
 
 function clearWebuiToken() {
   authState.webuiToken = '';
-  sessionStorage.removeItem(STORAGE_TOKEN_KEY);
+  try { sessionStorage.removeItem(STORAGE_TOKEN_KEY); } catch (_) {}
+  showConnectionError('连接已失效。可点“重新连接”，无需输入配对信息。');
+}
+
+function showConnectionError(message) {
+  const panel = document.getElementById('webui-connection');
+  const status = document.getElementById('webui-connection-status');
+  if (status) status.textContent = message;
+  if (panel) panel.hidden = false;
+}
+
+async function validatePairing() {
+  if (!authState.webuiToken) return false;
+  try {
+    const result = await rawApiFetch(API.auth, { timeoutMs: 6000 });
+    if (result.paired !== true) throw new Error('配对未确认');
+    const panel = document.getElementById('webui-connection');
+    if (panel) panel.hidden = true;
+    return true;
+  } catch (_) {
+    clearWebuiToken();
+    return false;
+  }
 }
 
 function loadWebuiTokenFromSession() {
@@ -90,44 +124,168 @@ function loadWebuiTokenFromSession() {
     history.replaceState(null, '', `${location.pathname}${location.search}`);
     return;
   }
-  const saved = sessionStorage.getItem(STORAGE_TOKEN_KEY);
+  let saved = '';
+  try { saved = sessionStorage.getItem(STORAGE_TOKEN_KEY); } catch (_) {}
   if (saved) setWebuiToken(saved);
 }
 
-async function fetchWebuiTokenForPrompt() {
+async function readManagerToken() {
+  if (authState.bootstrap) return authState.bootstrap;
+  if (authState.bootstrapAttempted) return '';
+  authState.bootstrapAttempted = true;
+  // KernelSU and APatch expose this asynchronous API only inside their
+  // trusted module WebView. A normal loopback client cannot use the bridge.
+  const bridge = window.ksu;
+  if (!bridge || typeof bridge.spawn !== 'function') return '';
+  authState.bootstrap = nativeRunCommand('cat /data/adb/modules/pixel9pro_control/.webui_token', { timeoutMs: 4000, maxBytes: 256 })
+    .then(({ code, stdout }) => code === 0 ? stdout.trim() : '').catch(() => '');
+  try { return await authState.bootstrap; } finally { authState.bootstrap = null; }
+}
+
+async function browserAutoSession() {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort('REQUEST_TIMEOUT'), 8000);
   try {
-    const data = await apiFetch(API.auth, { timeoutMs: 4000 });
-    const token = String(data?.token || '').trim();
-    return /^[A-Za-z0-9._:-]{8,128}$/.test(token) ? token : '';
-  } catch (_) {
-    return '';
-  }
+    const response = await fetch(API.auth, {
+      method: 'POST', cache: 'no-store', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-PIXEL9PRO-BOOTSTRAP': '1' },
+      body: JSON.stringify({ action: 'bootstrap' }), signal: controller.signal
+    });
+    const text = await response.text();
+    if (text.length > 4096) throw new Error('自动连接响应无效');
+    const data = JSON.parse(text);
+    if (!response.ok || data?.paired !== true || !setWebuiToken(data.token)) {
+      throw new Error(data?.error || '自动连接未完成，请重试');
+    }
+    return true;
+  } finally { clearTimeout(timer); }
+}
+
+function connectAutomatically({ retry = false } = {}) {
+  if (authState.pairing) return authState.pairing;
+  authState.pairing = (async () => {
+    try {
+      if (authState.webuiToken && await validatePairing()) return true;
+      if (WEBUI_NATIVE_TRANSPORT) {
+        if (retry) authState.bootstrapAttempted = false;
+        const token = await readManagerToken();
+        if (!token || !setWebuiToken(token) || !await validatePairing()) throw new Error('管理器连接未完成，请重试');
+      } else await browserAutoSession();
+      const panel = document.getElementById('webui-connection');
+      if (panel) panel.hidden = true;
+      return true;
+    } catch (error) {
+      authState.webuiToken = '';
+      try { sessionStorage.removeItem(STORAGE_TOKEN_KEY); } catch (_) {}
+      showConnectionError(error?.name === 'AbortError' ? '自动连接超时，请重试。' : `自动连接未完成：${error?.message || '请重试'}`);
+      return false;
+    }
+  })().finally(() => { authState.pairing = null; });
+  return authState.pairing;
 }
 
 async function ensureWebuiToken(signal) {
   if (signal?.aborted) throw requestAbortError(signal);
   if (authState.webuiToken) return true;
-  // auth.sh 经 loopback 自由提供 token（能 POST 必能 GET），读到即静默采用，不弹窗。
-  const serverToken = await fetchWebuiTokenForPrompt();
-  // The shared auth GET can outlive a caller that timed out or closed its view.
+  const connected = await connectAutomatically();
   if (signal?.aborted) throw requestAbortError(signal);
-  if (authState.webuiToken) return true;
-  if (serverToken && setWebuiToken(serverToken)) return true;
-  // 仅当 auth.sh 取不到 token 时（token 文件缺失/服务异常）才回退手动输入。
-  const message = '无法自动读取 WebUI token，请手动输入\n\n获取方式: root shell 执行\ncat /data/adb/modules/pixel9pro_control/.webui_token\n\n也可打开 http://127.0.0.1:6210/#token=<token> 完成会话配对';
-  const token = window.prompt(message, '');
-  if (!setWebuiToken(token)) {
-    showToast('缺少或无效的 WebUI token');
-    return false;
-  }
-  return true;
+  return connected;
 }
 
-// 会话无 token 时后台静默预取（auth.sh loopback），使首个写操作零延迟、零弹窗。
-function prefetchWebuiToken() {
-  fetchWebuiTokenForPrompt()
-    .then((t) => { if (t && !authState.webuiToken) setWebuiToken(t); })
-    .catch(() => {});
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+function nativeRunCommand(command, { signal, timeoutMs, maxBytes = 4 * 1024 * 1024 }) {
+  // APatch exec(...callback) still calls Job.exec synchronously inside the
+  // JavaScript bridge. spawn enqueues and returns, keeping close/navigation
+  // available while the bounded CGI finishes in its own root shell.
+  if (typeof window.ksu?.spawn !== 'function') return Promise.reject(new Error('管理器缺少异步 spawn 接口，请更新管理器后重试'));
+  const now = Date.now();
+  if (nativeCommands.size >= 3) {
+    const error = new Error('管理器仍有未完成命令，请稍后手动刷新');
+    error.code = 'NATIVE_BUSY'; error.cancelled = true;
+    return Promise.reject(error);
+  }
+  const commandId = `${now}_${authState.callbackId++}`;
+  nativeCommands.set(commandId, true);
+  return new Promise((resolve, reject) => {
+    const callback = `pixel9pro_job_${Date.now()}_${authState.callbackId++}`;
+    let settled = false;
+    let stdout = '';
+    let stderr = '';
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (nativeCommands.has(commandId)) {
+        // A cancelled view does not kill an accepted transaction. Retain only
+        // a tiny exit listener, discard output and keep the real native slot
+        // occupied until it exits. At most three such listeners can exist.
+        stdout = ''; stderr = '';
+        window[callback] = {
+          stdout: { emit() {} }, stderr: { emit() {} },
+          emit(event) {
+            if (event === 'exit' || event === 'error') { nativeCommands.delete(commandId); delete window[callback]; }
+          }
+        };
+      } else delete window[callback];
+      if (error) reject(error); else resolve(value);
+    };
+    const onAbort = () => finish(requestAbortError(signal));
+    const timer = window.setTimeout(() => finish(requestAbortError(null, 'REQUEST_TIMEOUT')), timeoutMs);
+    if (signal?.aborted) { nativeCommands.delete(commandId); onAbort(); return; }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    window[callback] = {
+      stdout: { emit: (event, chunk) => {
+        if (event !== 'data' || settled) return;
+        stdout += `${String(chunk || '')}\n`;
+        if (stdout.length > maxBytes) finish(new Error('模块接口响应过大'));
+      } },
+      stderr: { emit: (event, chunk) => { if (event === 'data' && stderr.length < 2048) stderr += String(chunk || '').slice(0, 2048 - stderr.length); } },
+      emit: (event, value) => {
+        if (event === 'exit') { nativeCommands.delete(commandId); finish(null, { code: Number(value), stdout, stderr }); }
+        else if (event === 'error') { nativeCommands.delete(commandId); finish(new Error('管理器命令执行失败')); }
+      }
+    };
+    try { window.ksu.spawn(command, '[]', '{}', callback); } catch (error) { nativeCommands.delete(commandId); finish(error); }
+  });
+}
+
+// A manager WebView stays on its trusted module assets. Never navigate a
+// root-enabled WebView to an unauthenticated loopback HTTP server. Only fixed
+// CGI entry points are executable; request data is shell-quoted separately.
+function nativeApiFetch(path, request) {
+  const url = new URL(path, 'http://127.0.0.1:6210');
+  const allowed = new Set(Object.values(API).map((value) => new URL(value, url).pathname));
+  if (!allowed.has(url.pathname) || !/^\/cgi-bin\/[A-Za-z0-9_.-]+[.]sh$/.test(url.pathname)) {
+    return Promise.reject(new Error('不允许的模块接口'));
+  }
+  const method = (request.method || 'GET').toUpperCase();
+  if (!['GET', 'POST'].includes(method)) return Promise.reject(new Error('不支持的请求方法'));
+  const body = method === 'POST' ? String(request.body || '') : '';
+  const bytes = new TextEncoder().encode(body).length;
+  if (bytes > 4096) return Promise.reject(new Error('请求正文过大'));
+  const token = String(request.headers['X-PIXEL9PRO-TOKEN'] || '');
+  const fields = {
+    REMOTE_ADDR: '127.0.0.1', REQUEST_METHOD: method,
+    HTTP_X_PIXEL9PRO_TOKEN: token, QUERY_STRING: url.search.slice(1),
+    CONTENT_TYPE: method === 'POST' ? 'application/json' : '', CONTENT_LENGTH: String(bytes)
+  };
+  const environment = Object.entries(fields).map(([key, value]) => `${key}=${shellQuote(value)}`).join(' ');
+  const program = `/system/bin/sh /data/adb/modules/pixel9pro_control/scripts/cgi_dispatch.sh ${shellQuote(url.pathname.split('/').pop())}`;
+  const command = `printf '%s' ${shellQuote(body)} | env ${environment} ${program}`;
+  return nativeRunCommand(command, { signal: request.signal, timeoutMs: request.timeoutMs }).then(({ code: errno, stdout }) => {
+      const output = String(stdout || '');
+      const separator = /\r?\n\r?\n/.exec(output);
+      if (!separator) throw new Error(`模块接口未返回有效响应（退出码 ${Number(errno)}）`);
+      const headers = output.slice(0, separator.index);
+      const statusMatch = /^Status:\s*(\d{3})/im.exec(headers);
+      const status = statusMatch ? Number(statusMatch[1]) : Number(errno) === 0 ? 200 : 500;
+      const payload = output.slice(separator.index + separator[0].length);
+      return new Response(payload, { status, headers: { 'Content-Type': 'application/json' } });
+  });
 }
 
 async function rawApiFetch(path, opts = {}) {
@@ -148,8 +306,10 @@ async function rawApiFetch(path, opts = {}) {
     delete request.timeoutMs;
     delete request.controller;
     delete request._tokenReady;
-    const response = await fetch(path, request);
-    if (response.status === 403 && method !== 'GET'
+    const response = WEBUI_NATIVE_TRANSPORT
+      ? await nativeApiFetch(path, { ...request, timeoutMs })
+      : await fetch(path, request);
+    if (response.status === 403
       && authState.webuiToken === headers['X-PIXEL9PRO-TOKEN']) clearWebuiToken();
     // Keep the same AbortController active while the CGI body is consumed.
     // BusyBox httpd can send headers before a slow shell/awk pipeline finishes;
@@ -192,16 +352,27 @@ async function rawApiFetch(path, opts = {}) {
   }
 }
 
-function cancelBackgroundRequests() {
+function cancelReadRequests(reason, matches) {
   [...requestHub.queue].forEach((job) => {
-    if (job.mutation || job.priority >= 90 || !job.supersedeAllowed) return;
-    rejectQueuedRequest(job, requestAbortError(null, 'REQUEST_SUPERSEDED'));
+    if (job.mutation || !matches(job)) return;
+    rejectQueuedRequest(job, requestAbortError(null, reason));
   });
   requestHub.activeJobs.forEach((job) => {
-    if (!job.mutation && job.priority < 90 && job.supersedeAllowed) {
-      job.controller.abort('REQUEST_SUPERSEDED');
+    if (!job.mutation && matches(job)) {
+      if (job.key && requestHub.pendingGets.get(job.key) === job.promise) requestHub.pendingGets.delete(job.key);
+      job.controller.abort(reason);
     }
   });
+}
+
+function cancelBackgroundRequests(resource) {
+  cancelReadRequests('REQUEST_SUPERSEDED', (job) => job.resource === resource || (job.priority < 90 && job.supersedeAllowed));
+}
+
+function pauseReadRequests() {
+  // Token discovery can belong to an explicitly requested write, which must
+  // retain its completion path when the WebView leaves the foreground.
+  cancelReadRequests('PAGE_HIDDEN', (job) => job.resource !== API.auth);
 }
 
 function requestHubKey(path, opts, method) {
@@ -300,8 +471,11 @@ function pumpRequestHub() {
     const diagnosticBusy = [...requestHub.activeJobs].some(isLimitedDiagnostic);
     const jobIndex = requestHub.queue.findIndex((candidate) =>
       (!diagnosticBusy || !isLimitedDiagnostic(candidate))
-      && (!candidate.mutation || (!requestHub.mutationScopes.has(candidate.scope)
-        && !requestHub.mutationResources.has(candidate.resource))));
+      && !requestHub.queue.some((pending) => pending.mutation && pending.id < candidate.id
+        && (pending.resource === candidate.resource || (candidate.mutation && pending.scope === candidate.scope)))
+      && (candidate.mutation
+        ? (!requestHub.mutationScopes.has(candidate.scope) && !requestHub.mutationResources.has(candidate.resource))
+        : !requestHub.mutationResources.has(candidate.resource)));
     if (jobIndex < 0) break;
     const [job] = requestHub.queue.splice(jobIndex, 1);
     clearQueueWait(job);
@@ -342,6 +516,12 @@ function pumpRequestHub() {
 function apiFetch(path, opts = {}) {
   const method = (opts.method || 'GET').toUpperCase();
   const policy = resolveRequestPolicy(path, opts);
+  if (method === 'GET' && !authState.webuiToken) {
+    const error = new Error('连接尚未建立，数据读取已暂停');
+    error.code = 'AUTH_REQUIRED';
+    error.cancelled = true;
+    return Promise.reject(error);
+  }
   if (opts.controller?.signal.aborted) return Promise.reject(requestAbortError(opts.controller.signal));
   if (method !== 'GET' && opts._tokenReady !== true && !authState.webuiToken) {
     const controller = opts.controller || new AbortController();
@@ -367,6 +547,11 @@ function apiFetch(path, opts = {}) {
   if (key) {
     const existing = requestHub.pendingGets.get(key);
     if (existing) return existing;
+  }
+  if (requestHub.queue.length >= requestHub.maxQueued) {
+    const error = new Error('请求繁忙，请等待当前操作完成后重试');
+    error.code = 'REQUEST_QUEUE_FULL';
+    return Promise.reject(error);
   }
   const options = { ...opts, timeoutMs: policy.timeoutMs };
   delete options.priority;
@@ -404,7 +589,7 @@ function apiFetch(path, opts = {}) {
     pumpRequestHub();
   };
   job.signal.addEventListener('abort', job.onQueuedAbort, { once: true });
-  if (mutation) cancelBackgroundRequests();
+  if (mutation) cancelBackgroundRequests(policy.resource);
   pumpRequestHub();
   return promise;
 }
@@ -448,7 +633,7 @@ function noteUserActivity() {
 }
 
 function isWebUiActive() {
-  return document.visibilityState === 'visible' && !document.hidden && !shellState.foregroundPaused;
+  return Boolean(authState.webuiToken) && document.visibilityState === 'visible' && !document.hidden && !shellState.foregroundPaused;
 }
 
 function isAnyModalOpen() {
@@ -460,6 +645,11 @@ function isPollingRelaxed() {
 }
 
 function getPollInterval(key) {
+  const base = getBasePollInterval(key);
+  return base ? Math.min(Math.max(base, base * (2 ** shellState.poller.failures[key])), Math.max(base, 60000)) : 0;
+}
+
+function getBasePollInterval(key) {
   const relaxed = isPollingRelaxed();
   switch (key) {
     case 'cpu':
@@ -532,11 +722,12 @@ async function runPollCycle() {
       jobs.push({
         key: 'slow',
         run: async () => {
-          await network.refresh();
+          const networkResult = await network.refresh();
           if (!isWebUiActive()) return;
-          await memory.refreshRestrictions();
+          const memoryResult = await memory.refreshRestrictions();
           if (!isWebUiActive()) return;
-          await loadInfo();
+          const infoResult = await loadInfo();
+          return networkResult !== false && memoryResult !== false && infoResult !== false;
         }
       });
     }
@@ -546,7 +737,14 @@ async function runPollCycle() {
       // Keep the single CGI listener from serving several expensive dumpsys
       // requests at once. A failed job is handled by its feature and does not
       // block the other scheduled jobs.
-      await Promise.allSettled(jobs.map((job) => job.run()));
+      const outcomes = await Promise.allSettled(jobs.map((job) => job.run()));
+      outcomes.forEach((outcome, index) => {
+        const key = jobs[index].key;
+        if (outcome.status === 'rejected' && isRequestCancelled(outcome.reason)) return;
+        if (outcome.status === 'fulfilled' && outcome.value === null) return;
+        shellState.poller.failures[key] = outcome.status === 'rejected' || outcome.value === false
+          ? Math.min(4, shellState.poller.failures[key] + 1) : 0;
+      });
     }
   } finally {
     shellState.poller.inFlight = false;
@@ -713,6 +911,7 @@ function buildInfoRow(label, value, badgeClass = '') {
 
 function fmtBytes(bytes) {
   const value = Number(bytes);
+  if (!Number.isFinite(value)) return '—';
   if (value <= 0) return '0';
   if (value < 1048576) return `${(value / 1024).toFixed(0)}KB`;
   if (value < 1073741824) return `${(value / 1048576).toFixed(0)}MB`;
@@ -722,6 +921,7 @@ function fmtBytes(bytes) {
 async function loadInfoInternal() {
   try {
     const data = await apiFetch(API.info);
+    if (Array.isArray(data) || data.ok === false) throw new Error(data.error || '系统信息响应无效');
     const deviceModel = data.model || '—';
     const network = requireFeature('network');
     const profile = requireFeature('profile');
@@ -767,14 +967,21 @@ async function loadInfoInternal() {
       if (refs.rtUptimeDetail) refs.rtUptimeDetail.textContent = '设备启动后';
     }
     const vc = data.version_code || '';
-    if (vc && localStorage.getItem('_modVC') !== vc) {
-      localStorage.setItem('_modVC', vc);
+    try {
+      if (vc && localStorage.getItem('_modVC') !== vc) {
+        localStorage.setItem('_modVC', vc);
       // Version discovery is informational. Never force location.reload() from
       // a background poll: it destroys pending reboot/rollback confirmation
       // and is unnecessary because a new page load gets the current assets.
-      sessionStorage.removeItem('_reloaded');
-    }
-  } catch (_) {}
+        sessionStorage.removeItem('_reloaded');
+      }
+    } catch (_) { /* Version cache must not invalidate authoritative system info. */ }
+    return true;
+  } catch (err) {
+    if (isRequestCancelled(err)) return null;
+    appendLog(`系统信息读取失败：${err?.message || err}`, 'err');
+    return false;
+  }
 }
 
 let loadInfoPromise = null;
@@ -786,9 +993,17 @@ async function loadInfo() {
 }
 
 registerFeature('auth', {
-  initialize() {
+  async initialize() {
+    const retry = document.getElementById('webui-connection-retry');
+    retry?.addEventListener('click', async () => {
+      if (authState.pairing) return;
+      retry.disabled = true;
+      try {
+        if (await connectAutomatically({ retry: true })) window.dispatchEvent(new Event('pixel9pro:paired'));
+      } finally { retry.disabled = false; }
+    });
     loadWebuiTokenFromSession();
-    if (!authState.webuiToken) prefetchWebuiToken();
+    return connectAutomatically();
   },
   ensureToken: ensureWebuiToken,
   hasToken: () => Boolean(authState.webuiToken)
@@ -833,6 +1048,7 @@ registerFeature('core', {
   isWebUiActive,
   markPollFresh,
   noteUserActivity,
+  pauseReadRequests,
   queueNextPoll,
   requestHubState,
   resolveRequestPolicy,

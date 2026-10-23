@@ -8,14 +8,23 @@ require_loopback
 THEME_FILE="$MODDIR/.webui_theme"
 
 read_theme_field() {
-    sed -n "s/^$1=//p" "$THEME_FILE" 2>/dev/null | head -1 | tr -d ' \n\r'
+    printf '%s\n' "$_theme_snapshot" | sed -n "s/^$1=//p" | head -1 | tr -d ' \n\r'
 }
 
 emit_theme() {
-    json_headers
+    _theme_snapshot=''
+    if [ -e "$THEME_FILE" ] || [ -L "$THEME_FILE" ]; then
+        [ -f "$THEME_FILE" ] && [ ! -L "$THEME_FILE" ] \
+            || json_error '503 Service Unavailable' 'theme state is not a regular file'
+        _theme_snapshot=$(head -c 1025 "$THEME_FILE" 2>/dev/null) \
+            || json_error '503 Service Unavailable' 'cannot read persisted theme'
+        _theme_bytes=$(printf '%s' "$_theme_snapshot" | wc -c | tr -d ' \r\n')
+        [ "$_theme_bytes" -le 1024 ] || json_error '503 Service Unavailable' 'persisted theme exceeds size bound'
+    fi
     mode=$(read_theme_field mode)
     palette=$(read_theme_field palette)
     custom=$(read_theme_field custom)
+    json_headers
     printf '{"mode":"%s","palette":"%s","custom":"%s"}' \
         "$(json_escape "$mode")" "$(json_escape "$palette")" "$(json_escape "$custom")"
 }
@@ -26,30 +35,29 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     acquire_lock "theme"
     read_json_body 256
     body="$JSON_BODY"
-    mode=$(printf '%s' "$body" | sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([a-zA-Z]*\)".*/\1/p')
-    palette=$(printf '%s' "$body" | sed -n 's/.*"palette"[[:space:]]*:[[:space:]]*"\([a-zA-Z0-9_]*\)".*/\1/p')
-    # custom: 仅接受 #RRGGBB, 捕获 6 位十六进制, 落盘时补回 #
-    custom=$(printf '%s' "$body" | sed -n 's/.*"custom"[[:space:]]*:[[:space:]]*"#\([0-9a-fA-F]\{6\}\)".*/\1/p')
+    cgi_json_schema 'mode:string palette:string custom:string'
+    mode=$(cgi_json_field mode)
+    palette=$(cgi_json_field palette)
+    custom=$(cgi_json_field custom)
+    case "$custom" in
+        '') ;;
+        \#[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) custom=${custom#\#} ;;
+        *) json_error '400 Bad Request' 'invalid custom theme color' ;;
+    esac
     case "$mode" in system|light|dark) ;; *) json_error '400 Bad Request' 'invalid theme mode' ;; esac
     case "$palette" in
         ''|*[!a-zA-Z0-9_]*) json_error '400 Bad Request' 'invalid theme palette' ;;
         *) ;;
     esac
+    [ "$palette" != custom ] || [ -n "$custom" ] || json_error '400 Bad Request' 'custom palette requires a color'
     [ ! -d "$THEME_FILE" ] \
         || json_error '500 Internal Server Error' 'theme state path is not a file'
-    _theme_tmp="${THEME_FILE}.tmp.$$"
-    if {
+    _theme_value=$({
         printf 'mode=%s\n' "$mode"
         printf 'palette=%s\n' "$palette"
         [ -z "$custom" ] || printf 'custom=#%s\n' "$custom"
-    } > "$_theme_tmp" 2>/dev/null \
-        && mv "$_theme_tmp" "$THEME_FILE" 2>/dev/null \
-        && [ -f "$THEME_FILE" ]; then
-        :
-    else
-        rm -f "$_theme_tmp" 2>/dev/null
-        json_error '500 Internal Server Error' 'failed to persist theme'
-    fi
+    })
+    cgi_atomic_write "$THEME_FILE" "$_theme_value" || json_error '500 Internal Server Error' 'failed to persist theme'
     emit_theme
 elif [ "$REQUEST_METHOD" = "GET" ]; then
     emit_theme

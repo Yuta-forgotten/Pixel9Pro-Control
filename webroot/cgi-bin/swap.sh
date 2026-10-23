@@ -299,12 +299,18 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     [ -e "$VM_REBOOT_FILE" ] && _old_reboot_existed=1
     [ -e "$VM_REBOOT_BOOT_FILE" ] && _old_reboot_boot_existed=1
     [ -e "$ZRAM_RESTORE_PENDING_FILE" ] && _old_restore_pending_existed=1
-    _old_mode=$(cat "$SWAP_MODE_FILE" 2>/dev/null)
-    _old_custom=$(cat "$SWAP_CUSTOM_FILE" 2>/dev/null)
-    _old_feature=$(cat "$VM_FEATURE_FILE" 2>/dev/null)
-    _old_reboot=$(cat "$VM_REBOOT_FILE" 2>/dev/null)
-    _old_reboot_boot=$(cat "$VM_REBOOT_BOOT_FILE" 2>/dev/null)
-    _old_restore_pending=$(cat "$ZRAM_RESTORE_PENDING_FILE" 2>/dev/null)
+    _old_mode=$(cgi_read_entry "$SWAP_MODE_FILE") \
+        || json_error '500 Internal Server Error' 'cannot snapshot existing state before mutation'
+    _old_custom=$(cgi_read_entry "$SWAP_CUSTOM_FILE") \
+        || json_error '500 Internal Server Error' 'cannot snapshot existing state before mutation'
+    _old_feature=$(cgi_read_entry "$VM_FEATURE_FILE") \
+        || json_error '500 Internal Server Error' 'cannot snapshot existing state before mutation'
+    _old_reboot=$(cgi_read_entry "$VM_REBOOT_FILE") \
+        || json_error '500 Internal Server Error' 'cannot snapshot existing state before mutation'
+    _old_reboot_boot=$(cgi_read_entry "$VM_REBOOT_BOOT_FILE") \
+        || json_error '500 Internal Server Error' 'cannot snapshot existing state before mutation'
+    _old_restore_pending=$(cgi_read_entry "$ZRAM_RESTORE_PENDING_FILE") \
+        || json_error '500 Internal Server Error' 'cannot snapshot existing state before mutation'
     _old_mmd_zram_size=$(vm_zram_property_value "$VM_MMD_ZRAM_SIZE_PROPERTY")
     _old_vendor_zram_size=$(vm_zram_property_value "$VM_ZRAM_SIZE_PROPERTY")
     _old_vendor_zram_algo=$(vm_zram_property_value persist.vendor.zram_comp_algorithm)
@@ -325,6 +331,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             fi
             ;;
         system|stock)
+            CGI_VM_POLICY_TX_ACTIVE=1
             # System mode is observe-only. If this request leaves a module VM
             # profile active, the kernel baseline becomes effective at reboot;
             # do not guess stock sysctl values and do not touch mmd/Scene ZRAM.
@@ -349,6 +356,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                 rm -f "$VM_REBOOT_BOOT_FILE" 2>/dev/null || true
             fi
             [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event_async vm policy success VM_SYSTEM_OBSERVE_ONLY 0 || true
+            CGI_VM_POLICY_TX_ACTIVE=0
             json_headers
             printf '{"ok":true,"mode":"system","feature_vm":"system","vm_reboot_required":%s,"message":"system observe-only submitted"}\n' "$VM_POLICY_REBOOT_REQUIRED"
             ;;
@@ -373,15 +381,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             else
                 [ ! -d "$SWAP_CUSTOM_FILE" ] \
                     || json_error '500 Internal Server Error' 'custom VM state path is not a file'
-                _custom_tmp="${SWAP_CUSTOM_FILE}.tmp.$$"
-                if {
-                        printf 'swappiness=%s\n' "$sw"
-                        printf 'min_free_kbytes=%s\n' "$mfk"
-                        printf 'watermark_scale_factor=%s\n' "$wsf"
-                        printf 'vfs_cache_pressure=%s\n' "$vcp"
-                    } > "$_custom_tmp" 2>/dev/null \
-                    && mv "$_custom_tmp" "$SWAP_CUSTOM_FILE" 2>/dev/null \
-                    && [ -f "$SWAP_CUSTOM_FILE" ] \
+                _custom_value=$(printf 'swappiness=%s\nmin_free_kbytes=%s\nwatermark_scale_factor=%s\nvfs_cache_pressure=%s\n' "$sw" "$mfk" "$wsf" "$vcp")
+                if persist_value "$SWAP_CUSTOM_FILE" "$_custom_value" \
                     && persist_value "$VM_FEATURE_FILE" optimized \
                     && persist_value "$SWAP_MODE_FILE" custom \
                     && vm_write_params "$sw" "$mfk" "$wsf" "$vcp" \
@@ -391,12 +392,12 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                     json_headers
                     printf '{"ok":true,"mode":"custom","feature_vm":"optimized","message":"custom VM submitted"}\n'
                 else
-                    rm -f "$_custom_tmp" 2>/dev/null
                     vm_write_error
                 fi
             fi
             ;;
         disabled)
+            CGI_VM_POLICY_TX_ACTIVE=1
             case "$_old_mode:$_old_feature" in
                 optimized:*|custom:*|*:optimized) VM_POLICY_REBOOT_REQUIRED=true ;;
             esac
@@ -418,6 +419,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                 rm -f "$VM_REBOOT_BOOT_FILE" 2>/dev/null || true
             fi
             [ "$AUDIT_LOG_AVAILABLE" -eq 1 ] && audit_log_event_async vm policy success VM_DISABLED_OBSERVE_ONLY 0 || true
+            CGI_VM_POLICY_TX_ACTIVE=0
             json_headers
             printf '{"ok":true,"mode":"disabled","feature_vm":"disabled","vm_reboot_required":%s,"message":"module writes disabled"}\n' "$VM_POLICY_REBOOT_REQUIRED"
             ;;
@@ -428,7 +430,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             if [ -n "$_capacity" ] || [ -n "$_unit" ]; then
                 [ -z "$_legacy_size" ] || json_error '400 Bad Request' 'use capacity/unit or size_bytes, not both'
                 _zram_requested=$(vm_zram_normalize_capacity "$_capacity" "$_unit") \
-                    || json_error '400 Bad Request' 'capacity requires MB (1024..16384) or percent (10..100)'
+                    || json_error '400 Bad Request' "capacity requires MB ($VM_ZRAM_MB_MIN..$VM_ZRAM_MB_MAX) or percent ($VM_ZRAM_PERCENT_MIN..$VM_ZRAM_PERCENT_MAX)"
             else
                 _zram_requested="$_legacy_size"
             fi
@@ -449,6 +451,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             # Re-submitting an already effective request must be idempotent and
             # must not create a fresh rollback journal for an external owner.
             if [ "$(vm_zram_property_value "$VM_MMD_ZRAM_SIZE_PROPERTY")" = "$_zram_requested" ] \
+                && [ "$(vm_zram_property_value "$VM_ZRAM_SIZE_PROPERTY")" = "$_zram_requested" ] \
                 && vm_zram_is_active \
                 && [ "$(vm_zram_read_disksize)" = "$_zram_requested_bytes" ]; then
                 json_headers

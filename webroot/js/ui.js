@@ -70,6 +70,7 @@ function initRefs() {
   refs.profileList = $('profile-list');
   refs.thermalCurrentName = $('thermal-current-name');
   refs.thermalCurrentDesc = $('thermal-current-desc');
+  refs.thermalPendingBtn = $('thermal-pending-btn');
   refs.thModBadge = $('th-mod-badge');
   refs.thermalSkel = $('thermal-skel');
   refs.thermalContent = $('thermal-content');
@@ -122,6 +123,7 @@ function initRefs() {
   refs.standbyDiagRows = $('standby-diag-rows');
   refs.bgRestrictDesc = $('bg-restrict-desc');
   refs.bgRestrictToggleBtn = $('bg-restrict-toggle-btn');
+  refs.bgRestrictRefreshBtn = $('bg-restrict-refresh-btn');
   refs.bgRestrictToggleLabel = $('bg-restrict-toggle-label');
   refs.bgRestrictRows = $('bg-restrict-rows');
   refs.bgRestrictAddBtn = $('bg-restrict-add-btn');
@@ -296,14 +298,6 @@ function handlePopState() {
     }
     return;
   }
-  const active = activeModalRecord();
-  if (active?.name === 'reboot' && state.rebootContext === 'thermal'
-    && requireFeature('thermal').isCancelBusy?.()) {
-    // Do not let Back dismiss a modal while the cancellation transaction is
-    // in flight. Restore the history entry so a late response can be retried.
-    history.pushState({ modal: 'reboot' }, '');
-    return;
-  }
   state.handlingPopState = true;
   try { closeTopModal(); } finally { state.handlingPopState = false; }
 }
@@ -384,8 +378,9 @@ function closeThemeSheet(){
 
 function setRebootBusy(busy) {
   const disabled = Boolean(busy);
-  [refs.rebootNowBtn, refs.rebootLaterBtn, refs.rebootCloseBtn, refs.rebootCancelBtn]
+  [refs.rebootNowBtn, refs.rebootCancelBtn]
     .filter(Boolean).forEach((button) => { button.disabled = disabled; });
+  [refs.rebootLaterBtn, refs.rebootCloseBtn].filter(Boolean).forEach((button) => { button.disabled = false; });
   refs.rebootModal?.classList.toggle('cancel-pending', disabled);
 }
 
@@ -434,8 +429,6 @@ function openRebootModal(pending, prev, context = 'thermal') {
 function closeRebootModal(message = '', options = {}) {
   const normalizedMessage = typeof message === 'string' ? message : '';
   const normalizedOptions = options && typeof options === 'object' ? options : {};
-  if (!normalizedOptions.force && state.rebootContext === 'thermal'
-    && requireFeature('thermal').isCancelBusy?.()) return false;
   if (!normalizedOptions.force && !normalizedOptions.silent && state.rebootContext === 'thermal') {
     requireFeature('thermal').dismissPendingModal?.();
   }
@@ -449,7 +442,9 @@ function closeRebootModal(message = '', options = {}) {
   if (refs.rebootCancelBtn) refs.rebootCancelBtn.hidden = false;
   setRebootError('');
   if (!normalizedOptions.silent) {
-    core.showToast(normalizedMessage || (state.rebootContext === 'scheduler' ? '切换已提交，重启后验证' : '策略已保存，重启后验证'));
+    core.showToast(normalizedMessage || (state.rebootContext === 'scheduler'
+      ? '切换已提交，重启后验证'
+      : requireFeature('thermal').isCancelBusy?.() ? '撤销正在后台处理，可继续使用页面' : '策略已保存，重启后验证'));
   }
   return true;
 }

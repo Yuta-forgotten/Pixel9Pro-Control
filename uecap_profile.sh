@@ -762,28 +762,27 @@ uecap_last_switch() {
 }
 
 uecap_json_escape() {
-    case "$1" in
-        *[\\\"]*) ;;
-        *) printf '%s' "$1"; return 0 ;;
-    esac
-    printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\r//g;s/\n/\\n/g'
+    # The sentinel preserves a final newline without adding it to the value.
+    printf '%s\034' "$1" | awk '
+        BEGIN {
+            for (i=1; i<32; i++) escape[sprintf("%c",i)]=sprintf("\\u%04x",i)
+            escape["\\"]="\\\\"; escape["\""]="\\\""
+        }
+        function emit(value, i, c) {
+            for (i=1; i<=length(value); i++) {
+                c=substr(value,i,1)
+                printf "%s", (c in escape ? escape[c] : c)
+            }
+        }
+        { if (NR>1) { emit(previous); printf "\\n" }; previous=$0 }
+        END { emit(substr(previous,1,length(previous)-1)) }'
 }
 
 uecap_atomic_write() {
-    _uecap_file="$1"
-    _uecap_value="$2"
-    [ -n "$_uecap_file" ] && [ ! -d "$_uecap_file" ] || return 1
-    _uecap_tmp="${_uecap_file}.tmp.$$"
-    if printf '%s' "$_uecap_value" > "$_uecap_tmp" 2>/dev/null \
-        && mv "$_uecap_tmp" "$_uecap_file" 2>/dev/null \
-        && [ -f "$_uecap_file" ]; then
-        _uecap_written=$(cat "$_uecap_file" 2>/dev/null)
-        [ "$_uecap_written" = "$_uecap_value" ] && return 0
-    fi
-    rm -f "$_uecap_tmp" 2>/dev/null
-    return 1
+    command -v state_atomic_write >/dev/null 2>&1 \
+        || . "$MODDIR/scripts/state_io_lib.sh" || return 1
+    state_atomic_write "$1" "$2"
 }
-
 uecap_receipt_value() {
     # The receipt is a deliberately small key/value file.  Strip separators
     # before writing so CGI JSON cannot be confused by command output.
@@ -835,40 +834,42 @@ uecap_capture_radio_snapshot() {
         return 0
     fi
 
-    _uecap_radio_dump="$MODDIR/.uecap_telephony.$$"
-    timeout 5 dumpsys telephony.registry > "$_uecap_radio_dump" 2>/dev/null || {
-        rm -f "$_uecap_radio_dump" 2>/dev/null
+    _uecap_radio_full=$(umask 077; mktemp "$MODDIR/.uecap_telephony.XXXXXX") || return 1
+    _uecap_radio_dump=$(umask 077; mktemp "$MODDIR/.uecap_slot0.XXXXXX") \
+        || { rm -f "$_uecap_radio_full"; return 1; }
+    if ! timeout -k 1 5 dumpsys telephony.registry > "$_uecap_radio_full" 2>/dev/null \
+        || ! awk '
+            /^[[:space:]]*Phone Id=/ { in_slot=($0 ~ /Phone Id=0[[:space:]]*$/); if (in_slot) seen=1; next }
+            in_slot && /^[[:space:]]*m(ServiceState|TelephonyDisplayInfo|CellInfo|PhysicalChannelConfigs)=/ { print }
+            END { if (!seen) exit 1 }
+        ' "$_uecap_radio_full" > "$_uecap_radio_dump"; then
+        rm -f "$_uecap_radio_full" "$_uecap_radio_dump"
         return 1
-    }
-    _uecap_radio_text=$(tr '\n' ' ' < "$_uecap_radio_dump" 2>/dev/null)
-    UECAP_RADIO_ACTUAL_RAT=$(printf '%s' "$_uecap_radio_text" | sed -n 's/.*mTelephonyDisplayInfo=.*network=\([^,} ]*\).*/\1/p' | head -n 1)
-    _uecap_ril_radio=$(printf '%s' "$_uecap_radio_text" | sed -n 's/.*\(getRilDataRadioTechnology\|mRilDataRadioTechnology\)=\([^ ,})]*\).*/\2/p' | head -n 1)
-    UECAP_RADIO_NR_AVAILABLE=$(grep -o 'isNrAvailable[[:space:]]*=[[:space:]]*[A-Za-z]*' "$_uecap_radio_dump" | head -n 1 | sed 's/.*=[[:space:]]*//')
-    UECAP_RADIO_ENDC_AVAILABLE=$(grep -o 'isEnDcAvailable[[:space:]]*=[[:space:]]*[A-Za-z]*' "$_uecap_radio_dump" | head -n 1 | sed 's/.*=[[:space:]]*//')
-    _uecap_nr_identity=$(grep -o 'CellIdentityNr[^}]*' "$_uecap_radio_dump" | head -n 1)
-    case "$_uecap_nr_identity" in
-        ''|*null*|*none*) UECAP_RADIO_NR_REGISTERED=false ;;
-        *) UECAP_RADIO_NR_REGISTERED=true ;;
-    esac
-    UECAP_RADIO_NR_BAND=$(printf '%s' "$_uecap_nr_identity" | sed -n 's/.*mBands=\[\([^]]*\)\].*/\1/p')
-    UECAP_RADIO_NR_ARFCN=$(printf '%s' "$_uecap_nr_identity" | sed -n 's/.*mNrarfcn=\([^ ]*\).*/\1/p')
-    # Prefer an explicit RAT token. In particular, NR_SA is valid with
-    # isEnDcAvailable=false; that field describes EN-DC capability and must
-    # never downgrade an explicit SA registration to an NSA failure.
-    _uecap_radio_upper=$(printf '%s %s' "$_uecap_radio_text" "$_uecap_ril_radio" | tr '[:lower:]' '[:upper:]')
-    case "$_uecap_radio_upper" in
-        *NR_SA*|*NR-SA*|*NR\ SA*) UECAP_RADIO_ACTUAL_RAT=NR_SA ;;
-        *NR_NSA*|*NR-NSA*|*EN-DC*|*ENDC*) UECAP_RADIO_ACTUAL_RAT=NR_NSA ;;
-        *NR*)
-            case "$_uecap_ril_radio:$UECAP_RADIO_ENDC_AVAILABLE" in
-                20\(*:true|20:true|*:true) UECAP_RADIO_ACTUAL_RAT=NR_NSA ;;
-                20\(*:false|20:false|20\(*:unknown|20:unknown) UECAP_RADIO_ACTUAL_RAT=NR_SA ;;
-                *) UECAP_RADIO_ACTUAL_RAT=unknown ;;
-            esac
-            ;;
-        *LTE*|*:13:*|*:13\(*:*) UECAP_RADIO_ACTUAL_RAT=LTE ;;
+    fi
+    rm -f "$_uecap_radio_full"
+    _uecap_display=$(sed -n 's/^[[:space:]]*mTelephonyDisplayInfo=//p' "$_uecap_radio_dump")
+    _uecap_network=$(printf '%s' "$_uecap_display" | sed -n 's/.*network=\([^,} ]*\).*/\1/p' | tr '[:lower:]' '[:upper:]')
+    _uecap_override=$(printf '%s' "$_uecap_display" | sed -n 's/.*overrideNetwork=\([^,} ]*\).*/\1/p' | tr '[:lower:]' '[:upper:]')
+    case "$_uecap_network:$_uecap_override" in
+        NR:*|NR_SA:*|20:*) UECAP_RADIO_ACTUAL_RAT=NR_SA ;;
+        LTE:NR_NSA|LTE:NR_ADVANCED|13:NR_NSA|13:NR_ADVANCED) UECAP_RADIO_ACTUAL_RAT=NR_NSA ;;
+        LTE:*|13:*) UECAP_RADIO_ACTUAL_RAT=LTE ;;
         *) UECAP_RADIO_ACTUAL_RAT=unknown ;;
     esac
+    UECAP_RADIO_NR_AVAILABLE=$(grep -o 'isNrAvailable[[:space:]]*=[[:space:]]*[A-Za-z]*' "$_uecap_radio_dump" | head -n 1 | sed 's/.*=[[:space:]]*//')
+    UECAP_RADIO_ENDC_AVAILABLE=$(grep -o 'isEnDcAvailable[[:space:]]*=[[:space:]]*[A-Za-z]*' "$_uecap_radio_dump" | head -n 1 | sed 's/.*=[[:space:]]*//')
+    # Cell identity may describe a measured neighbour. Leave registration
+    # unknown unless this phone's current service state explicitly says connected.
+    if grep -Eq '^[[:space:]]*mServiceState=.*nrState=CONNECTED([ ,}]|$)' "$_uecap_radio_dump"; then
+        UECAP_RADIO_NR_REGISTERED=true
+    fi
+    _uecap_nr_identity=$(sed -n '/^[[:space:]]*mCellInfo=/p' "$_uecap_radio_dump" | grep -o 'CellIdentityNr[^}]*' | head -n 1)
+    UECAP_RADIO_NR_BAND=unknown
+    UECAP_RADIO_NR_ARFCN=unknown
+    if [ "$UECAP_RADIO_NR_REGISTERED" = true ]; then
+        UECAP_RADIO_NR_BAND=$(printf '%s' "$_uecap_nr_identity" | sed -n 's/.*mBands=\[\([^]]*\)\].*/\1/p')
+        UECAP_RADIO_NR_ARFCN=$(printf '%s' "$_uecap_nr_identity" | sed -n 's/.*mNrarfcn=\([^ ]*\).*/\1/p')
+    fi
     [ -n "$UECAP_RADIO_NR_AVAILABLE" ] || UECAP_RADIO_NR_AVAILABLE=unknown
     [ -n "$UECAP_RADIO_ENDC_AVAILABLE" ] || UECAP_RADIO_ENDC_AVAILABLE=unknown
     [ -n "$UECAP_RADIO_NR_BAND" ] || UECAP_RADIO_NR_BAND=unknown
@@ -963,7 +964,7 @@ uecap_write_runtime_receipt() {
         UECAP_PAYLOAD_BYTES=0
         UECAP_PAYLOAD_SHA=""
     }
-    {
+    _uecap_receipt_payload=$({
         printf 'schema=3\n'
         printf 'boot_id=%s\n' "$(uecap_receipt_value "$(uecap_boot_id)")"
         printf 'updated_at=%s\n' "$_uecap_receipt_now"
@@ -1011,12 +1012,8 @@ uecap_write_runtime_receipt() {
         printf 'lte_anchor=%s\n' "$(uecap_receipt_value "${UECAP_RADIO_LTE_ANCHOR:-unknown}")"
         printf 'nsa_status=%s\n' "$(uecap_receipt_value "${UECAP_NSA_STATUS:-not_applicable}")"
         printf 'nsa_reason=%s\n' "$(uecap_receipt_value "${UECAP_NSA_REASON:-no_confirmed_nsa_cell}")"
-    } > "$_uecap_receipt_tmp" 2>/dev/null \
-        && mv "$_uecap_receipt_tmp" "$UECAP_RECEIPT_FILE" 2>/dev/null \
-        && [ -f "$UECAP_RECEIPT_FILE" ]
-    _uecap_receipt_rc=$?
-    [ "$_uecap_receipt_rc" -eq 0 ] || rm -f "$_uecap_receipt_tmp" 2>/dev/null
-    return "$_uecap_receipt_rc"
+    }) || return 1
+    uecap_atomic_write "$UECAP_RECEIPT_FILE" "$_uecap_receipt_payload"
 }
 
 uecap_classify_radio_state() {
@@ -1205,16 +1202,18 @@ uecap_commit_state() {
     case "$_uecap_commit_reason" in ''|*[!A-Za-z0-9_.:-]*) return 1 ;; esac
     case "$_uecap_commit_time" in ''|*[!0-9]*) return 1 ;; esac
 
+    command -v state_read_entry >/dev/null 2>&1 \
+        || . "$MODDIR/scripts/state_io_lib.sh" || return 1
     _uecap_mode_existed=0; [ -e "$UECAP_MODE_FILE" ] && _uecap_mode_existed=1
     _uecap_manual_existed=0; [ -e "$UECAP_MANUAL_MODE_FILE" ] && _uecap_manual_existed=1
     _uecap_policy_existed=0; [ -e "$UECAP_POLICY_FILE" ] && _uecap_policy_existed=1
     _uecap_reason_existed=0; [ -e "$UECAP_REASON_FILE" ] && _uecap_reason_existed=1
     _uecap_switch_existed=0; [ -e "$UECAP_SWITCH_FILE" ] && _uecap_switch_existed=1
-    _uecap_mode_old=$(cat "$UECAP_MODE_FILE" 2>/dev/null)
-    _uecap_manual_old=$(cat "$UECAP_MANUAL_MODE_FILE" 2>/dev/null)
-    _uecap_policy_old=$(cat "$UECAP_POLICY_FILE" 2>/dev/null)
-    _uecap_reason_old=$(cat "$UECAP_REASON_FILE" 2>/dev/null)
-    _uecap_switch_old=$(cat "$UECAP_SWITCH_FILE" 2>/dev/null)
+    _uecap_mode_old=$(state_read_entry "$UECAP_MODE_FILE") || return 1
+    _uecap_manual_old=$(state_read_entry "$UECAP_MANUAL_MODE_FILE") || return 1
+    _uecap_policy_old=$(state_read_entry "$UECAP_POLICY_FILE") || return 1
+    _uecap_reason_old=$(state_read_entry "$UECAP_REASON_FILE") || return 1
+    _uecap_switch_old=$(state_read_entry "$UECAP_SWITCH_FILE") || return 1
 
     UECAP_STATE_ROLLBACK_RESULT="not_needed"
     if uecap_set_mode "$_uecap_commit_mode" \

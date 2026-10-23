@@ -1,8 +1,10 @@
 // WebUI 运行时常量、DOM 引用与功能注册表；加载顺序由 index.html 统一约束。
 'use strict';
 
-if (location.host !== '127.0.0.1:6210') {
-  location.replace('http://127.0.0.1:6210');
+const WEBUI_NATIVE_TRANSPORT = location.host !== '127.0.0.1:6210'
+  && Boolean(window.ksu && (typeof window.ksu.spawn === 'function' || typeof window.ksu.exec === 'function'));
+if (!WEBUI_NATIVE_TRANSPORT && location.host !== '127.0.0.1:6210') {
+  location.replace(`http://127.0.0.1:6210/${location.hash}`);
 }
 
 const API = {
@@ -61,14 +63,13 @@ const TAB_META = {
   system: '系统',
 };
 const CLUSTERS = [
-  { label: '小核 · cpu0-3', maxHz: 1950000 },
-  { label: '中核 · cpu4-6', maxHz: 2600000 },
-  { label: '大核 · cpu7', maxHz: 3105000 },
+  { label: '小核 · cpu0-3' },
+  { label: '中核 · cpu4-6' },
+  { label: '大核 · cpu7' },
 ];
 const HOME_CPU_LABELS = ['小核', '中核', '大核'];
 const TEMP_MIN = 25;
 const TEMP_MAX = 60;
-const THRESH_STOCK = 37;
 
 const THEME_ICONS = {
   system: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M4 5h16v10H4zm0 12h16v2H4z"/></svg>',
@@ -136,26 +137,26 @@ const PROFILES = {
 const THERMAL_PRESETS = {
   [-2]: {
     name: '提前介入',
-    summary: '出厂 -2°C；HINT 35°C，VIRTUAL-SKIN 37°C。',
-    detail: '<b>提前介入</b><br><br>比出厂提前 2°C，最早 35°C 介入。<br><br>HINT 35°C / VIRTUAL-SKIN 37°C / CPU-HIGH 39°C；数值型 SHUTDOWN 仍保持出厂 55/59°C。',
+    summary: '相对本机出厂配置提前介入。',
+    detail: '<b>提前介入</b><br><br>以本机出厂配置为基线，按所选负偏移提前前置阈值。各传感器的实际阈值以生成配置为准；最终 SHUTDOWN 保留出厂值。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M9.37 5.51A7 7 0 0018.49 14.63 9 9 0 119.37 5.51z"/></svg>'
   },
   2: {
     name: '轻度放宽',
-    summary: '出厂 +2°C；HINT 39°C，VIRTUAL-SKIN 41°C。',
-    detail: '<b>轻度放宽</b><br><br>出厂 +2°C；39°C 是最早 HINT 介入点，不是机身硬限温。<br><br>HINT 39°C / VIRTUAL-SKIN 41°C / CPU-HIGH 43°C。',
+    summary: '相对本机出厂配置轻度放宽。',
+    detail: '<b>轻度放宽</b><br><br>以本机出厂配置为基线，按所选正偏移调整前置阈值，并保留 hysteresis 约束及最终 SHUTDOWN。此偏移不等于机身硬限温。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82z"/></svg>'
   },
   4: {
     name: '日常放宽',
-    summary: '出厂 +4°C；HINT 41°C，VIRTUAL-SKIN 43°C。',
-    detail: '<b>日常放宽</b><br><br>显式 custom 档：前置阈值目标 +4°C，最早 41°C 介入。<br><br>HINT 41°C / VIRTUAL-SKIN 43°C / CPU-HIGH 45°C；靠近 55/59°C SHUTDOWN 时会向前限幅，保持至少 0.5°C 间隔。',
+    summary: '相对本机出厂配置调整前置阈值。',
+    detail: '<b>日常放宽</b><br><br>以本机出厂配置为基线生成所选偏移；靠近后续阈值时按原厂 hysteresis 收窄偏移，并保持最终 SHUTDOWN。各传感器的实际阈值以生成配置为准。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67z"/></svg>'
   },
   6: {
     name: '最大放宽',
-    summary: '出厂 +6°C；HINT 43°C，VIRTUAL-SKIN 45°C。',
-    detail: '<b>最大放宽</b><br><br>前置阈值目标 +6°C，最早 43°C 介入。<br><br>HINT 43°C / VIRTUAL-SKIN 45°C / CPU-HIGH 47°C；靠近 55/59°C SHUTDOWN 时会向前限幅，不会整体推高最后安全阈值。',
+    summary: '使用当前支持的最大前置阈值偏移。',
+    detail: '<b>最大放宽</b><br><br>以本机出厂配置为基线生成所选偏移；靠近后续阈值时按原厂 hysteresis 收窄偏移，不会整体推高最终 SHUTDOWN。各传感器的实际阈值以生成配置为准。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>'
   }
 };

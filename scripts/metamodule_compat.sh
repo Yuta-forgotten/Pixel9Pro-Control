@@ -8,15 +8,19 @@ meta_module_hash() {
     sha256sum "$1" 2>/dev/null | awk '{print $1}'
 }
 
-meta_module_check_tree() {
+meta_module_check_tree() (
     _mm_src="$1"
     _mm_dst="$2"
     [ -d "$_mm_src" ] && [ -d "$_mm_dst" ] || return 1
-    find "$_mm_src" -type f -print | while IFS= read -r _mm_file; do
+    _mm_list=$(mktemp "$_mm_dst/.control-verification.XXXXXX") || exit 1
+    trap 'rm -f "$_mm_list"' EXIT
+    find "$_mm_src" -type f -print > "$_mm_list" || exit 1
+    while IFS= read -r _mm_file; do
         _mm_rel=${_mm_file#"$_mm_src/"}
         _mm_copy="$_mm_dst/$_mm_rel"
         [ -f "$_mm_copy" ] || exit 1
-        [ "$(meta_module_hash "$_mm_file")" = "$(meta_module_hash "$_mm_copy")" ] || exit 1
+        _mm_expected_hash=$(meta_module_hash "$_mm_file")
+        [ -n "$_mm_expected_hash" ] && [ "$_mm_expected_hash" = "$(meta_module_hash "$_mm_copy")" ] || exit 1
         case "${_mm_src##*/}/$_mm_rel" in
             vendor/etc/thermal_info_config.json|system/vendor/etc/thermal_info_config.json)
                 _mm_ctx=u:object_r:vendor_configs_file:s0 ;;
@@ -26,9 +30,9 @@ meta_module_check_tree() {
         esac
         chcon "$_mm_ctx" "$_mm_copy" 2>/dev/null || exit 1
         [ "$(ls -Zd "$_mm_copy" 2>/dev/null | awk '{print $1}')" = "$_mm_ctx" ] || exit 1
-        chmod 0644 "$_mm_copy" || exit 1
-    done
-}
+        chmod 0644 "$_mm_copy" && [ "$(stat -c %a "$_mm_copy")" = 644 ] || exit 1
+    done < "$_mm_list"
+)
 
 meta_module_copy_content() (
     [ "${MODID:-}" = pixel9pro_control ] || return 1
@@ -50,10 +54,14 @@ meta_module_copy_content() (
         meta_module_check_tree "$MODPATH/$_mm_partition" "$_mm_work/$_mm_partition" || return 1
     done
     find "$_mm_work" -type d -exec chmod 0755 '{}' \; || return 1
-    find "$_mm_work" -type l -print | while IFS= read -r _mm_link; do
+    _mm_links=$(find "$_mm_work" -type l -print) || return 1
+    while IFS= read -r _mm_link; do
+        [ -n "$_mm_link" ] || continue
         [ "$_mm_link" = "$_mm_work/system/vendor" ] \
             && [ "$(readlink "$_mm_link")" = ../vendor ] || exit 1
-    done || return 1
+    done <<EOF
+$_mm_links
+EOF
     for _mm_vendor in "$_mm_work/vendor" "$_mm_work/system/vendor"; do
         [ -d "$_mm_vendor" ] || continue
         chcon u:object_r:vendor_file:s0 "$_mm_vendor" || return 1
@@ -106,7 +114,9 @@ meta_module_prepare_hook() {
     META_HOOK_PREVIOUS="$_mm_hook.previous.$$"
     META_HOOK_PATH="$_mm_hook"
     META_HOOK_EXPECTED_HASH="$_mm_expected_hash"
-    cp -ap "$_mm_backup" "$META_HOOK_PREVIOUS" || { rm -f "$_mm_tmp"; return 1; }
+    # Roll back to the hook observed at entry, including a previously accepted
+    # adapter revision. The pristine backup is only the generation baseline.
+    cp -ap "$_mm_hook" "$META_HOOK_PREVIOUS" || { rm -f "$_mm_tmp"; return 1; }
     mv "$_mm_tmp" "$_mm_hook" || { rm -f "$_mm_tmp"; return 1; }
     [ "$(meta_module_hash "$_mm_hook")" = "$_mm_expected_hash" ] || return 1
     # The old hook may already be sourced by the installer in this process.

@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import stat
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -33,7 +34,7 @@ ROOT_FILES: Final = frozenset(
 )
 ROOT_DIRS: Final = frozenset({"META-INF", "config", "payloads", "scripts", "system", "webroot"})
 TEXT_SUFFIXES: Final = frozenset({".awk", ".css", ".html", ".js", ".json", ".prop", ".sh", ".tsv", ".xml"})
-REQUIRED_ENTRIES: Final = frozenset(
+REQUIRED_ENTRY_POINTS: Final = frozenset(
     {
         "META-INF/com/google/android/update-binary",
         "META-INF/com/google/android/updater-script",
@@ -63,6 +64,29 @@ REQUIRED_ENTRIES: Final = frozenset(
         "config/uecap_devices.tsv",
         "config/uecap_payloads.tsv",
     }
+)
+# These are the production source/CLI dependency closure. A package that only
+# contains its entry points can pass ZIP integrity yet fail closed at boot.
+REQUIRED_ENTRIES: Final = REQUIRED_ENTRY_POINTS.union(
+    f"scripts/{name}.sh" for name in (
+        "app_identity_lib", "audit_log_lib", "background_tasks_lib", "bg_restrict_lib",
+        "control_worker_lib", "cpu_profile", "cpu_profile_lib", "display_state_lib", "bg_transaction_lib",
+        "foreground_app_lib", "install_state_lib", "metamodule_compat", "nr_mode_lib",
+        "ntp_config_lib", "owner_arbiter", "owner_arbiter_cpufreq_lib",
+        "owner_arbiter_external_lib", "owner_arbiter_observation_lib", "owner_arbiter_state_lib",
+        "profile_state_lib", "runtime_defaults_lib", "scheduler_boot_mode_lib",
+        "scheduler_capability_lib", "scheduler_detect_lib", "scheduler_owner_lib",
+        "scheduler_reconcile", "scheduler_transition_guard_lib", "scheduler_async_lib", "scheduler_async_worker", "thermal_history_lib",
+        "thermal_policy_lib", "thermal_profile", "vm_profile_lib", "state_io_lib",
+        "module_metadata_lib", "cgi_dispatch", "browser_session_lib",
+    )
+).union({"config/app_identities.tsv", "config/ntp_servers.tsv", "config/webui_browsers.tsv"}).union(
+    f"webroot/cgi-bin/{name}.sh" for name in (
+        "_common", "_baseband_status", "_thermal_cache", "audit_log", "auth",
+        "bg_restrict", "check_baseband", "info", "nr_switch", "ntp", "optimize",
+        "owner_arbiter", "profile", "reboot", "set_thermal", "standby_guard",
+        "status", "swap", "theme", "thermal", "uecap",
+    )
 )
 EXCLUDED_PARTS: Final = frozenset(
     {".git", "docs", "logs", "modules", "node_modules", "scratch", "tests", "tmp", "tools"}
@@ -124,7 +148,9 @@ def _mode_for(path: str) -> int:
 
 def _validate_archive_path(path: str) -> None:
     pure = PurePosixPath(path)
-    if not path or "\\" in path or pure.is_absolute() or ".." in pure.parts:
+    if (not path or "\\" in path or pure.is_absolute() or ".." in pure.parts
+            or path != pure.as_posix() or ":" in path
+            or any(ord(character) < 32 for character in path)):
         raise _error(f"unsafe archive path: {path!r}")
     if pure.parts[0] not in ROOT_DIRS and path not in ROOT_FILES:
         raise _error(f"path is outside the runtime allowlist: {path}")
@@ -143,6 +169,10 @@ def validate_runtime_text(path: str, data: bytes) -> str:
         raise _error(f"UTF-8 BOM is forbidden: {path}")
     if b"\r" in data:
         raise _error(f"CR/CRLF is forbidden: {path}")
+    if b"\0" in data:
+        raise _error(f"NUL is forbidden in runtime text: {path}")
+    if path.endswith(".tsv") and not data.endswith(b"\n"):
+        raise _error(f"TSV must end with LF for Android shell readers: {path}")
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -166,10 +196,30 @@ def _read_properties(data: bytes, path: str) -> dict[str, str]:
         if not line or line.startswith("#"):
             continue
         key, separator, value = line.partition("=")
-        if not separator or not key or key in values:
+        if not separator or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", key) or key in values:
             raise _error(f"invalid or duplicate property in {path}: {raw_line!r}")
         values[key] = value
     return values
+
+
+def _validate_metadata(entries: dict[str, bytes]) -> None:
+    module = _read_properties(entries["module.prop"], "module.prop")
+    if module.get("id") != "pixel9pro_control":
+        raise _error("module.prop id must be pixel9pro_control")
+    if not re.fullmatch(r"[1-9][0-9]*", module.get("versionCode", "")):
+        raise _error("module.prop versionCode must be a positive integer")
+    if not re.fullmatch(r"[A-Za-z0-9._+-]+", module.get("version", "")) or not module.get("name", "").strip():
+        raise _error("module.prop name/version is missing or invalid")
+    versions = _read_properties(entries["versions.prop"], "versions.prop")
+    for component in ("webui", "scheduler", "core"):
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", versions.get(component, "")):
+            raise _error(f"versions.prop {component} is missing or invalid")
+    # Components have independent versions; every HTML cache stamp must use
+    # the declared WebUI component, rather than the module's release version.
+    index = entries["webroot/index.html"].decode("utf-8")
+    stamps = re.findall(r'(?:src|href)="/(?:js/|css/|app\.)[^"?]+\?v=([^"&]+)', index)
+    if not stamps or any(stamp != versions["webui"] for stamp in stamps):
+        raise _error("WebUI asset cache stamp does not match versions.prop")
 
 
 def _transform(root: Path, archive_path: str, data: bytes) -> bytes:
@@ -187,11 +237,14 @@ def _transform(root: Path, archive_path: str, data: bytes) -> bytes:
 
 
 def collect_runtime_files(root: Path) -> tuple[RuntimeFile, ...]:
+    root = root.resolve()
     if not root.is_dir():
         raise _error(f"source directory does not exist: {root}")
     candidates = [root / name for name in ROOT_FILES]
     for directory in sorted(ROOT_DIRS):
         base = root / directory
+        if base.is_symlink():
+            raise _error(f"symbolic runtime directories are forbidden: {base}")
         if base.exists():
             for path in base.rglob("*"):
                 if not (path.is_file() or path.is_symlink()):
@@ -202,8 +255,10 @@ def collect_runtime_files(root: Path) -> tuple[RuntimeFile, ...]:
     files: list[RuntimeFile] = []
     seen: set[str] = set()
     for source in sorted(candidates, key=lambda item: item.as_posix()):
-        if source.is_symlink():
+        if source.is_symlink() or any(parent.is_symlink() for parent in source.parents if parent != root and root in parent.parents):
             raise _error(f"symbolic links are forbidden in release input: {source}")
+        if not source.resolve().is_relative_to(root):
+            raise _error(f"runtime source escapes the source directory: {source}")
         if not source.is_file():
             raise _error(f"required runtime file is missing: {source}")
         archive_path = source.relative_to(root).as_posix()
@@ -211,6 +266,8 @@ def collect_runtime_files(root: Path) -> tuple[RuntimeFile, ...]:
         if archive_path in seen:
             raise _error(f"duplicate runtime path: {archive_path}")
         seen.add(archive_path)
+        if source.stat().st_size > MAX_FILE_BYTES:
+            raise _error(f"runtime file exceeds {MAX_FILE_BYTES} bytes: {archive_path}")
         data = _transform(root, archive_path, source.read_bytes())
         if len(data) > MAX_FILE_BYTES:
             raise _error(f"runtime file exceeds {MAX_FILE_BYTES} bytes: {archive_path}")
@@ -223,6 +280,7 @@ def collect_runtime_files(root: Path) -> tuple[RuntimeFile, ...]:
     if missing:
         raise _error(f"required runtime entries are missing: {', '.join(sorted(missing))}")
     entries = {item.archive_path: item.data for item in files}
+    _validate_metadata(entries)
     _validate_web_assets(entries)
     from uecap_manifest import audit_payloads
     audit_payloads(entries)
@@ -241,6 +299,11 @@ def _validate_web_assets(entries: dict[str, bytes]) -> None:
         entry = 'webroot' + asset
         if entry not in entries:
             raise _error(f'WebUI referenced asset is missing: {entry}')
+    for path, data in entries.items():
+        if path.startswith('webroot/') and path.endswith('.js'):
+            for route in re.findall(r'["\x27](/cgi-bin/[A-Za-z0-9_.-]+[.]sh)', data.decode('utf-8')):
+                if 'webroot' + route not in entries:
+                    raise _error(f'WebUI API dependency is missing: {path} -> {route}')
 
 
 def source_fingerprint(files: tuple[RuntimeFile, ...]) -> str:
@@ -257,17 +320,20 @@ def source_fingerprint(files: tuple[RuntimeFile, ...]) -> str:
 
 def write_deterministic_zip(files: tuple[RuntimeFile, ...], output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(f".{output.name}.tmp")
-    temporary.unlink(missing_ok=True)
-    with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for item in files:
-            info = zipfile.ZipInfo(item.archive_path, FIXED_ZIP_TIME)
-            # APD compatibility: do not emit Unix file-type/symlink metadata.
-            info.create_system = 0
-            info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = item.mode
-            archive.writestr(info, item.data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
-    temporary.replace(output)
+    with tempfile.NamedTemporaryFile(prefix=f".{output.name}.", suffix=".tmp", dir=output.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+    try:
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+            for item in files:
+                info = zipfile.ZipInfo(item.archive_path, FIXED_ZIP_TIME)
+                # APD compatibility: do not emit Unix file-type/symlink metadata.
+                info.create_system = 0
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = item.mode
+                archive.writestr(info, item.data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+        temporary.replace(output)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def audit_zip(path: Path) -> AuditReport:
@@ -294,8 +360,10 @@ def audit_zip(path: Path) -> AuditReport:
                 raise _error(f"wrong ZIP permission {mode:o}: {info.filename}")
             if info.file_size > MAX_FILE_BYTES:
                 raise _error(f"oversized ZIP entry: {info.filename}")
+            total += info.file_size
+            if total > MAX_ARCHIVE_BYTES:
+                raise _error(f"ZIP exceeds {MAX_ARCHIVE_BYTES} uncompressed bytes")
             data = archive.read(info)
-            total += len(data)
             if _is_text(info.filename):
                 validate_runtime_text(info.filename, data)
             entries[info.filename] = data
@@ -312,6 +380,7 @@ def audit_zip(path: Path) -> AuditReport:
     from uecap_manifest import audit_payloads
 
     _validate_web_assets(entries)
+    _validate_metadata(entries)
     payload_devices = audit_payloads(entries)
     return AuditReport(
         archive=str(path),

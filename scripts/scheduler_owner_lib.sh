@@ -54,18 +54,9 @@ so_read_handoff_source() {
 }
 
 so_atomic_write() {
-    _so_file="$1"
-    _so_value="$2"
-    [ -n "$_so_file" ] && [ ! -d "$_so_file" ] || return 1
-    _so_tmp="${_so_file}.$$"
-    if printf '%s\n' "$_so_value" > "$_so_tmp" 2>/dev/null \
-        && mv "$_so_tmp" "$_so_file" 2>/dev/null \
-        && [ -f "$_so_file" ]; then
-        _so_written=$(cat "$_so_file" 2>/dev/null | tr -d '\r\n')
-        [ "$_so_written" = "$_so_value" ] && return 0
-    fi
-    rm -f "$_so_tmp" 2>/dev/null
-    return 1
+    command -v state_atomic_write >/dev/null 2>&1 \
+        || . "$SO_MODDIR/scripts/state_io_lib.sh" || return 1
+    state_atomic_write "$1" "$2"
 }
 
 so_write_desired_owner() {
@@ -100,8 +91,10 @@ so_write_handoff_preference() {
     _so_pref_source_existed=0
     [ -e "$SO_HANDOFF_FILE" ] && _so_pref_policy_existed=1
     [ -e "$SO_HANDOFF_SOURCE_FILE" ] && _so_pref_source_existed=1
-    _so_pref_old_policy=$(cat "$SO_HANDOFF_FILE" 2>/dev/null)
-    _so_pref_old_source=$(cat "$SO_HANDOFF_SOURCE_FILE" 2>/dev/null)
+    command -v state_read_entry >/dev/null 2>&1 \
+        || . "$SO_MODDIR/scripts/state_io_lib.sh" || return 1
+    _so_pref_old_policy=$(state_read_entry "$SO_HANDOFF_FILE") || return 1
+    _so_pref_old_source=$(state_read_entry "$SO_HANDOFF_SOURCE_FILE") || return 1
     SO_HANDOFF_PREFERENCE_ROLLBACK_OK=no
 
     if so_write_handoff_policy "$_so_new_policy" \
@@ -359,6 +352,7 @@ so_acquire_transition_lock() {
             continue
         fi
         if so_reclaim_transition_lock; then
+            _so_attempt=$((_so_attempt + 1))
             continue
         fi
         _so_attempt=$((_so_attempt + 1))

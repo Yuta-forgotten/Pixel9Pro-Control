@@ -15,7 +15,8 @@ case "$REQUEST_METHOD" in
         require_json_post
         require_token
         read_json_body 128
-        _action=$(printf '%s' "$JSON_BODY" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
+        cgi_json_schema 'action:string'
+        _action=$(cgi_json_field action)
         [ "$_action" = "clear" ] || json_error '400 Bad Request' 'invalid thermal action'
         acquire_lock "thermal_cache"
         [ ! -d "$THERMAL_CACHE" ] \
@@ -54,14 +55,16 @@ case "$QUERY_STRING" in *history=1*)
     esac
     [ "$_start" -le "$_end" ] 2>/dev/null || json_error '400 Bad Request' 'start_ts is after end_ts'
     [ $((_end - _start)) -le 604800 ] 2>/dev/null || json_error '400 Bad Request' 'history range exceeds 7 days'
-    [ -f "$HIST_FILE" ] || HIST_FILE=/dev/null
+    [ ! -L "$HIST_FILE" ] || json_error '503 Service Unavailable' 'history path is not a regular file'
+    if [ -e "$HIST_FILE" ]; then
+        [ -f "$HIST_FILE" ] && [ -r "$HIST_FILE" ] || json_error '503 Service Unavailable' 'history is unreadable'
+    else HIST_FILE=/dev/null; fi
     _updated=$(stat -c %Y "$HIST_FILE" 2>/dev/null || printf 0)
     case "$_updated" in ''|*[!0-9]*) _updated=0 ;; esac
     _recording_enabled=false
     background_tasks_enabled && _recording_enabled=true
     _recording_state=$(background_tasks_state)
-    json_headers
-    awk -F, -v start="$_start" -v end="$_end" -v selected="$_sensor" -v updated="$_updated" \
+    _history_json=$(awk -F, -v start="$_start" -v end="$_end" -v selected="$_sensor" -v updated="$_updated" \
         -v enabled="$_recording_enabled" -v recording="$_recording_state" '
     function clean(value) { gsub(/[^A-Za-z0-9_.-]/, "", value); return value }
     BEGIN { printf "{\"points\":["; first=1; raw=0; valid=0; gaps=0; covered=0; first_ts=0; last_ts=0; previous_ts=0; previous_interval=0 }
@@ -96,13 +99,14 @@ case "$QUERY_STRING" in *history=1*)
         quality=(valid == 0 ? "no_data" : gaps > 0 ? "partial" : "available")
         print "],\"ok\":true,\"schema\":1,\"source\":\"module_thermal_history\",\"sensor\":\"" selected "\",\"recording_enabled\":" enabled ",\"recording_state\":\"" recording "\",\"time_unit\":\"unix_seconds\",\"temperature_unit\":\"millidegree_celsius\",\"start_ts\":" start ",\"end_ts\":" end ",\"raw_samples\":" raw ",\"valid_samples\":" valid ",\"count\":" valid ",\"coverage_sec\":" elapsed ",\"coverage_ratio\":" coverage ",\"gap_count\":" gaps ",\"quality\":\"" quality "\",\"updated_at\":" updated ",\"data_revision\":\"" updated ":" selected ":" start ":" end "\"}"
     }
-    ' "$HIST_FILE" 2>/dev/null
+    ' "$HIST_FILE" 2>/dev/null) || json_error '503 Service Unavailable' 'cannot read temperature history'
+    json_headers
+    printf '%s\n' "$_history_json"
     exit 0
     ;;
 esac
 
 # --- 实时模式 ---
-json_headers
 # The service refreshes the foreground cache on a 60-second cadence. Keep a
 # foreground read can also record a real sample while the service is asleep.
 _cache_max_age=60
@@ -146,6 +150,7 @@ if [ -s "$THERMAL_CACHE" ]; then
     if [ "$_fresh" -ne 1 ] && [ "$_cache_valid" -eq 1 ] && [ "$_cache_age" -lt "$_cache_max_age" ] 2>/dev/null; then
         _cached_json=$(cat "$THERMAL_CACHE" 2>/dev/null)
         thermal_history_record "$_cached_json" "$_mtime" on cache >/dev/null 2>&1 || true
+        json_headers
         printf '%s' "$_cached_json"
         exit 0
     fi
@@ -155,16 +160,11 @@ build_thermal_json >/dev/null 2>&1
 _json="$THERMAL_BUILD_JSON"
 if [ -n "$_json" ] && [ "$_json" != "[]" ]; then
     _now=$(date +%s 2>/dev/null || printf 0)
-    _tmp="${THERMAL_CACHE}.$$.$_now.tmp"
-    if [ -d "$THERMAL_CACHE" ] \
-        || ! printf '%s' "$_json" > "$_tmp" 2>/dev/null \
-        || ! mv "$_tmp" "$THERMAL_CACHE" 2>/dev/null \
-        || [ ! -f "$THERMAL_CACHE" ]; then
-        rm -f "$_tmp" 2>/dev/null
-    fi
+    cgi_atomic_write "$THERMAL_CACHE" "$_json" || true
     thermal_history_record "$_json" "$_now" on "$THERMAL_BUILD_SOURCE" >/dev/null 2>&1 || true
+    json_headers
     printf '%s' "$_json"
     exit 0
 fi
 
-[ -s "$THERMAL_CACHE" ] && cat "$THERMAL_CACHE" || printf '[]'
+json_error '503 Service Unavailable' 'no current thermal sample; historical cache not presented as live'

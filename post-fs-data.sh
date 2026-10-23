@@ -22,8 +22,7 @@ _thermal_config_name=$(getprop vendor.thermal.config 2>/dev/null | tr -d ' \n\r\
     && _thermal_source_context=$(ls -Zd "$_thermal_source" 2>/dev/null | awk '{print $1}')
 [ -f "$_thermal_effective" ] && _thermal_effective_hash=$(sha256sum "$_thermal_effective" 2>/dev/null | awk '{print $1}')
 [ -e "$_thermal_effective" ] && _thermal_effective_context=$(ls -Zd "$_thermal_effective" 2>/dev/null | awk '{print $1}')
-_thermal_receipt_tmp="$MODDIR/.thermal_runtime_receipt.tmp.$$"
-{
+_thermal_receipt_payload=$({
     printf 'schema=2\nboot_id=%s\nbackend=%s\nphase=post_fs_data_observed\n' \
         "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')" \
         "${UECAP_BACKEND:-unknown}"
@@ -35,6 +34,6 @@ _thermal_receipt_tmp="$MODDIR/.thermal_runtime_receipt.tmp.$$"
         "$_thermal_effective" "$_thermal_effective_hash" "$_thermal_effective_context"
     printf 'selected_config=%s\n' "$_thermal_config_name"
     printf 'status=post_fs_data_observed\n'
-} > "$_thermal_receipt_tmp" 2>/dev/null \
-    && mv -f "$_thermal_receipt_tmp" "$MODDIR/.thermal_runtime_receipt" 2>/dev/null \
-    || rm -f "$_thermal_receipt_tmp" 2>/dev/null
+})
+(. "$MODDIR/scripts/state_io_lib.sh" \
+    && state_atomic_write "$MODDIR/.thermal_runtime_receipt" "$_thermal_receipt_payload") >/dev/null 2>&1 || true

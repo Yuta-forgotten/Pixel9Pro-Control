@@ -46,15 +46,9 @@ Thermal source 在安装、WebUI staging 和撤销恢复时固定为 `0644`；po
 
 偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前置 severity 先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。靠近 SHUTDOWN 时，生成器按 stock `HotHysteresis` 从后向前收窄，并额外保留 `0.1°C` 的严格间隔，保证“前一档阈值 `<` 下一档阈值减下一档 hysteresis”；只检查阈值递增并不足以保证 Pixel Thermal HAL 接受配置。
 
-WebUI 温度优先读取后台 worker 维护的 `.thermal_cache.json`，普通读取复用 60 秒内的温度。前台已经读取的温度与后台采样共用同一限频记录器；温度历史可按 30 分钟、2/8 小时、1/3/7 天或自定义范围查看机身与电池温度、最低/平均/最高值及采样间断。缺失的传感器不补零。
-
-温控档位提交后进入模块私有 `.thermal_tx` journal。同一 boot 且 backend 返回
-`cancel_supported=true` 时，“放弃本次修改”会携带 `pending_id` 原子恢复旧 source、policy
-和 offset；跨 boot 或 readback degraded 状态不会显示撤销按钮。WebUI 会先显示正在保存的目标档位；POST 提交后直接返回已提交的 staged contract，避免重复全量状态扫描，CGI 复用同一 boot 的 mount backend cache，并在单个请求内一次解析 thermal journal；审计写入不再阻塞响应，但实际 current state 仍以后端 journal 确认结果为准，失败会自动恢复旧显示。待重启期间禁止再次选择其他档位，避免覆盖同一 source。
 安装阶段会从当前设备的 fingerprint/hash 校验 stock 一次并预生成四个 custom profile，运行时只复制经过同一 provenance 校验的 profile；缓存失效时才回退到生成器。
 Journal 在同一模块文件系统上优先保存 source hard-link，跨文件系统或链接被拒绝时自动回退原子 copy，不改变 SELinux 或挂载所有权。
 
-WebUI 的所有 API 请求经过统一 Request Hub，按快照、温度历史、实时温度、慢诊断、修改和生命周期分类调度。最多三个请求并发；排队与 HTTP/body 读取分别限时，同一 CGI 的修改即使来自不同按钮也顺序执行。页面隐藏取消读取，不取消已提交的修改；失败修改不自动重试。
 
 ### ZRAM / 内存优化
 
@@ -62,9 +56,6 @@ WebUI 的所有 API 请求经过统一 Request Hub，按快照、温度历史、
 - 容量：WebUI 同时显示 effective `disksize`、平台管理者、active swap、逻辑/压缩/实际 RAM 成本；APatch 0.13.8 + Hybrid Mount 下由 mmd 独占 ZRAM，Control 的 system/disabled 模式只读观察，绝不覆盖平台请求。
 - VM 参数：模块优化是显式 opt-in，默认候选为 `swappiness=100`、`min_free_kbytes=65536`、`watermark_scale_factor=100`、`vfs_cache_pressure=100`；system 模式不写任何 `/proc/sys/vm/*`。
 - WebUI 的“平台参考”按钮只是可比较的 VM preset，不代表模块能够推断设备当前平台 sysctl；真正的 system 模式以重启后的平台 readback 为准。
-- 首次安装和升级默认 `feature_vm=system`。system/disabled 只保存模块私有意图并记录 owner/effective readback；如果之前启用了模块 VM 策略，切回 system 会报告 `vm_reboot_required`，重启后由平台恢复 VM 基线。
-- WebUI 的 ZRAM 容量请求与 VM 策略分离，只在 optimized 模式下由用户显式提交；active swap 不 reset/swapoff/resize，返回 `pending_reboot`。模块不内置固定容量。
-- 容量输入使用整数 MB 或 RAM 百分比；前端转换为 bytes，后端按 4 KiB 对齐并 readback。
 
 ### 待机与 modem 策略（以 Google 默认机制为主）
 
@@ -87,9 +78,8 @@ WebUI 的所有 API 请求经过统一 Request Hub，按快照、温度历史、
 - 亮屏时恢复保存的 NR 模式
 - 热点开启时跳过切换
 - 息屏 worker 使用 900 秒低频 recorder 窗口；owner arbiter 在息屏完全停止，避免 30 秒轮询阻止 Doze
-- 温度历史亮屏约每 60 秒记录；息屏 worker 每 900 秒只读取 thermal_zone/battery sysfs。系统休眠可延后采样；机身传感器不可读时仍可记录电池温度。功耗统计、BatteryStats 导入、功耗排行和临时功耗记录已移除。
-- 屏幕状态先读 DRM sysfs；只有 connector 仍 enabled 或 sysfs 不可用时才用 `cmd deviceidle` / `dumpsys power` 兜底。sysfs 的 inotify 事件在不同 Android/SELinux policy 上并不保证，不能作为唯一唤醒源。
-- CGI 保留 Android 固定 `/system/bin/sh` shebang，由 BusyBox `httpd` 按脚本 shebang 执行；硬编码某个 Root 实现下的 BusyBox `ash` 路径会在 APatch/KernelSU/Magisk 间失效并可能触发 SELinux，未作为运行时依赖引入。
+- 温度历史亮屏约每 60 秒记录；息屏 worker 每 900 秒只读取 thermal_zone/battery sysfs。系统休眠可延后采样；机身传感器不可读时仍可记录电池温度。
+
 
 ### UE 网络能力 / UECap 切换
 
@@ -106,19 +96,19 @@ UECap 告诉基站“手机支持哪些载波组合”。**不直接影响功耗
 
 UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 `balanced/special/universal` 三档；`komodo` 只有 `stock/candidate` 两态，默认 stock，只有用户明确选择后才 bind
-`PLATFORM_6287228797510365516.binarypb`。XL 文件由用户提供
+`PLATFORM_6287228797510365516.binarypb`。
 
 两个 `PLATFORM_*` 文件属于不同 SKU，不能改名或交叉替换。
 
 ### 独立模块与外部调度协同
 
-本项目按“控制模块 + 基带模块 + 第三方外部调度模块”协同使用。三者都可独立安装和工作；其中 `pixel9pro_control` 与 `pixel9pro_baseband_trial` 由本项目维护，Uperf Game Turbo / fas-rs 等外部调度项目由各自上游维护。本项目不打包、不替代第三方模块。
+本项目按“控制模块 + 基带模块 + 第三方外部调度模块”协同使用。三者都可独立安装和工作；其中 `pixel9pro_control` 与 `pixel9pro_baseband_trial` 由本项目维护，Uperf Game Turbo / fas-rs 等外部调度项目由各自上游维护。
 
 | 模块 | 归属 | 详情 |
 |------|------|------|
 | `pixel9pro_control` | 本项目 | 可选温控、ZRAM、caiman 三档/komodo candidate UECap、NR 降级、SIM2 管理、后台限制、WebUI；未关闭或让出时管理 Pixel 原厂 CPU 调度 |
 | `pixel9pro_baseband_trial` | 本项目可选基带模块 | 支持 caiman/komodo 的 CarrierSettings、APN、China MCFG 与 VoLTE/WFC properties；不携带、不写入任何 UECap `binarypb` |
-| Uperf Game Turbo / fas-rs / 其它外部调度器 | 第三方或独立外部调度模块 | CPU scene 调度、输入/前台/游戏线程调度、frame-aware 调度、per-app 性能模式；由各自上游独立维护 |
+| Uperf Game Turbo / fas-rs / 其它外部调度器 | 第三方或独立外部调度模块 | CPU scene 调度、输入/前台/游戏线程调度、frame-aware 调度、per-app 性能模式； |
 
 - 只安装控制模块：温控/ZRAM/NR/SIM2/UECap/WebUI 正常工作；CPU 调度由本模块管理
 - 只安装基带模块：单独安装当前明确发布的基带 ZIP，CarrierSettings/APN/IMS 配置按 manifest 生效，UECap 保持由 Control 或系统原生路径负责
@@ -129,7 +119,7 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 
 **基带模块兼容性**：`pixel9pro_baseband_trial` 只允许 `caiman` / `komodo`，两机共用 CarrierSettings、APN、China MCFG 和 IMS properties，但不携带 UECap payload。Control 的 UECap binarypb 按 SKU 独立 staging：`caiman` 使用 `PLATFORM_9055801516233416490.binarypb` 三档，`komodo` 使用独立的 `PLATFORM_6287228797510365516.binarypb` candidate；不能交叉解析或改名替代。
 
-**基带模块升级规则**：升级的是普通基带模块时，不要求卸载 APatch Manager，也不应由普通模块删除 `/data/adb/modules`、修改 `modules.img` 或自行写入 MetaModule content image。若旧模块的 active source、MetaModule content image、effective overlay、source/content/effective hash 及同一 boot 的 runtime receipt 都能复读确认，可以直接安装新版并在重启后复读；只有这些证据缺失、为空、冲突、跨 boot 或失败时，才进入 clean reinstall：Root Manager 卸载旧的普通基带模块 → 重启 → 安装新版 → 再重启 → 复读 active module、MetaModule content image、effective path、mount 和 runtime receipt。
+**基带模块升级规则**：若旧模块的 active source、MetaModule content image、effective overlay、source/content/effective hash 及同一 boot 的 runtime receipt 都能复读确认，可以直接安装新版并在重启后复读；只有这些证据缺失、为空、冲突、跨 boot 或失败时，才进入 clean reinstall：Root Manager 卸载旧的普通基带模块 → 重启 → 安装新版 → 再重启 → 复读 active module、MetaModule content image、effective path、mount 和 runtime receipt。
 
 
 ### NTP 服务器选择
@@ -138,13 +128,9 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 
 ### WebUI 控制台
 
-端口 6210，`http://127.0.0.1:6210`（仅绑定本机回环地址）。采用 Material 3 设计，提供状态、性能温控、网络和系统四个页面。
+普通浏览器地址为 `http://127.0.0.1:6210`（仅绑定本机回环地址）；APatch / KernelSU 内的 WebUI 使用管理器异步接口。采用 Material 3 设计，提供状态、性能温控、网络和系统四个页面。
 
-温度历史记录机身与电池温度，亮屏约每分钟、息屏约每 15 分钟采样。采样使用可挂起的普通 sleep，不持有唤醒锁或注册唤醒闹钟；系统休眠时允许延后，不为补齐曲线唤醒内核。息屏采样只读取 sysfs，不读取 BatteryStats 或软件功耗排行。
-
-“模块后台总开关”统一控制温度记录、启动恢复及自动策略；关闭后停止 worker，前台读取也不再写入历史。WebUI、明确的手动操作和已有历史查询/导出仍可使用；关闭后台不等于卸载模块，也不会撤销已选择的静态配置或第三方模块策略。正在提交的事务先完成验证/回滚，页面如实显示“正在停止”，不会强制杀断。
-
-区间切换只读取本地温度文件；页面前台每分钟刷新，隐藏或缩小时暂停读取。最多保留 20,160 行，查询最近七天区间；没有记录时显示为空，间断不连成连续曲线。可将当前传感器和区间导出为 CSV 或 JSON；导出包含 UTC 时间、摄氏度、来源、屏幕状态和间断信息，JSON 另含区间、记录开关及统计元数据。平均值是采样均值，不是连续温度积分。
+“模块后台总开关”统一控制温度记录、启动恢复及自动策略；关闭后停止 worker，前台读取也不再写入历史。WebUI、明确的手动操作和已有历史查询/导出仍可使用；关闭后台不等于卸载模块，也不会撤销已选择的静态配置或第三方模块策略。
 
 网络、温控和调度的字段、readback、耗时边界及 Request Hub 分阶段读取见 [`docs/webui_transport_contract.md`](docs/webui_transport_contract.md)。
 
@@ -172,16 +158,24 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 2. 通过 Root 管理器选择模块 ZIP 安装；首次安装时，音量键向导依次配置温控、CPU 调度、UECap、NR、SIM2、VM/ZRAM 和 NTP，并在最终摘要处再次确认。
 3. 默认策略为不写入温控覆盖、关闭 NR 息屏降级、VM/ZRAM 使用 system no-write；调度能力不完整时自动停用写入，`komodo` 的 UECap 默认保持 stock。
 4. `meta-overlayfs` 使用 content image，温控或 UECap 变更可能要求卸载、重启后重新安装；`Hybrid Mount` 使用单一 regular module source，变更写入 source 并在重启后复读有效 `/vendor`。两种 backend 都不执行运行期动态 bind。
-5. **升级安装**：Control 自动迁移已有设置（旧 performance 调度档并入均衡，系统默认档保留）；
+5. **升级安装**：Control 自动迁移已有设置和温度历史，保留当前支持的手动性能、均衡、省电与系统默认选择；只有已退役的档位名称转换为均衡。
 若旧配置缺少启动模式状态，则按 UGT 模块在下次 boot 是否启用选择 UGT 或 Pixel；已安装 fas-rs 时保留或默认启用游戏临时接管，并在退出后恢复同一 baseline。
 若 MetaModule content image 仍有旧 Control 内容，安装器会拒绝覆盖并要求先卸载旧 Control、重启，再安装新包，避免 stale thermal/UECap 文件残留。
 6. 独立普通基带模块按其当前发行说明判断升级或 clean reinstall，不因 Control 更新自动卸载 Root 管理器。
 7. 重启设备；打开 `http://127.0.0.1:6210`，确认模块版本、effective readback 和 WebUI 状态。
 
+APatch / KernelSU 内页面和支持的本机浏览器默认自动连接，不要求输入 token。浏览器打开页面时一次性建立会话，后端根据实际连接 UID 与本机浏览器包确认身份；连接失败可点“重新连接”，不会常驻配对或持续重试。管理器需要提供 `spawn` 异步接口。
+
+管理器模块卡片在启动恢复或配置保存后显示已选功能摘要，待重启配置会单独标注。后台应用限制作用于设备主用户（user 0），最多保存 32 个应用；列表显示上次已验证状态，刷新不会重新应用限制。存在未完成事务时可通过“恢复未完成事务”处理；升级前先完成现有事务。
+
+当前未配置模块在线更新清单。APatch 通过模块 `updateJson` 指定的地址检查更新；维护者提供有效清单和下载包后才可启用该入口。
+
+温控设置与撤销在后端确认提交后即可结束等待，状态回读在后台完成。处理中可关闭弹窗、返回或切换页面；关闭页面不会中断已提交事务。后台回读失败会保留可刷新的状态说明，不会自动重复提交。
+
 ## 兼容性
 
 - `Pixel 9 Pro (caiman)` / `Pixel 9 Pro XL (komodo)`
-- `Android 17 QPR2 Beta4  (SDK 37)` 当前验证基线
+- `Android 17 QPR2 Beta7.1  (SDK 37)` 当前验证基线
 - APatch 0.13.8 bundled KernelPatch + `Hybrid Mount` 采用 regular source 挂载；安装后必须以同一 boot 的 effective readback receipt 为准
 - `KernelSU 0.9+` 代码兼容
 - `Magisk v27+` 普通功能代码兼容；UECap managed profiles 明确停用

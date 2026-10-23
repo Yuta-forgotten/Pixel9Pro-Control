@@ -215,7 +215,7 @@ process_start_ticks() {
         printf '%s' "$_oa_test_ticks"
         return 0
     fi
-    sed 's/^[^)]*) //' "/proc/$_oa_pid/stat" 2>/dev/null | awk '{print $20}'
+    sed 's/^.*) //' "/proc/$_oa_pid/stat" 2>/dev/null | awk '{print $20}'
 }
 
 uperf_process_alive() {

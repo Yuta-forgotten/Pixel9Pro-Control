@@ -18,9 +18,9 @@ build_thermal_json() {
     append_zone() {
         _tz_name="$1"
         _tz_temp="$2"
-        case "$_tz_temp" in
-            ''|*[!0-9-]*) return ;;
-        esac
+        _tz_digits="$_tz_temp"
+        case "$_tz_digits" in -*) _tz_digits=${_tz_digits#-} ;; esac
+        case "$_tz_digits" in ''|*[!0-9]*) return ;; esac
         case "$seen" in *"|${_tz_name}|"*) return ;; esac
         out="${out}${sep}{\"zone\":\"${_tz_name}\",\"temp\":${_tz_temp}}"
         sep=","
@@ -44,7 +44,7 @@ build_thermal_json() {
             name = ""; val = ""
             if (match($0, /mName=[^,}]*/)) name = substr($0, RSTART + 6, RLENGTH - 6)
             if (match($0, /mValue=[-0-9.]+/)) val = substr($0, RSTART + 7, RLENGTH - 7)
-            if (name != "" && val ~ /^-?[0-9.]+$/) printf "%s %d\n", name, val * 1000
+            if (name != "" && val ~ /^-?[0-9]+([.][0-9]+)?$/) printf "%s %d\n", name, val * 1000
         }
     ')
 

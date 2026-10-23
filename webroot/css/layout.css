@@ -51,3 +51,6 @@
   .tab-pages{flex:1 0 25dvh}
   .app-shell{overflow-y:auto}
 }
+
+#webui-connection{flex:0 0 auto;max-height:25dvh;overflow:auto;margin:8px 16px;padding:12px;overflow-wrap:anywhere}
+#webui-connection[hidden]{display:none}

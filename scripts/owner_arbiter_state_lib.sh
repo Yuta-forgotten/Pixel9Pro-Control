@@ -155,7 +155,7 @@ write_state() {
     refresh_uclamp_state
     _oa_tmp="${ARB_STATE_FILE}.$$"
     [ ! -d "$ARB_STATE_FILE" ] || return 1
-    {
+    _oa_payload=$({
         printf 'state=%s\n' "$NEW_STATE"
         printf 'target_pkg=%s\n' "$NEW_TARGET_PKG"
         printf 'target_pid=%s\n' "$NEW_TARGET_PID"
@@ -190,17 +190,18 @@ write_state() {
         printf 'uclamp_cap_expected=%s\n' "$UCLAMP_CAP_EXPECTED"
         printf 'uclamp_cap_verified=%s\n' "$UCLAMP_CAP_VERIFIED"
         printf 'dry_run=%s\n' "$DRY_RUN_FLAG"
-    } > "$_oa_tmp" 2>/dev/null \
-        && mv "$_oa_tmp" "$ARB_STATE_FILE" 2>/dev/null \
-        && [ -f "$ARB_STATE_FILE" ] && return 0
-    rm -f "$_oa_tmp" 2>/dev/null
-    return 1
+    }) || return 1
+    command -v state_atomic_write >/dev/null 2>&1 \
+        || . "$MODDIR/scripts/state_io_lib.sh" || return 1
+    state_atomic_write "$ARB_STATE_FILE" "$_oa_payload
+"
 }
 
 append_history() {
     if [ ! -s "$ARB_HISTORY_FILE" ]; then
         printf '%s\n' 'epoch|screen|state|focus_pkg|focus_pid|target_pkg|target_pid|game_match|game_source|effective_owner_before|proposed_owner|reason|ugt_detected|ugt_enabled|fas_detected|fas_active|fas_alive|fas_owner_state|fas_mode|external_kind|external_active|apply_enabled|apply_result|cpufreq_lowfreq_present|cpufreq_thermal_cooling_active|cpufreq_restored|cpufreq_restore_verified|cpufreq_restore_failed|cpufreq_restore_skipped|cpufreq_restore_lease|cpufreq_restore_epoch|dry_run|desired_owner|effective_owner_after|game_handoff_policy|uclamp_cap_current|uclamp_cap_expected|uclamp_cap_verified' > "$ARB_HISTORY_FILE" 2>/dev/null
-    elif ! head -n 1 "$ARB_HISTORY_FILE" 2>/dev/null | grep -q 'cpufreq_restore_epoch'; then
+    elif ! head -n 1 "$ARB_HISTORY_FILE" 2>/dev/null | grep -q 'cpufreq_restore_epoch' \
+        && ! grep -q '^# schema_update: cpufreq_restore fields appended' "$ARB_HISTORY_FILE" 2>/dev/null; then
         printf '%s\n' '# schema_update: cpufreq_restore fields appended to rows after this marker' >> "$ARB_HISTORY_FILE" 2>/dev/null
     fi
     if ! head -n 1 "$ARB_HISTORY_FILE" 2>/dev/null | grep -q 'desired_owner' && ! grep -q '^# schema_update: desired_owner fields appended' "$ARB_HISTORY_FILE" 2>/dev/null; then

@@ -29,6 +29,8 @@ SCHEDULER_INVENTORY_PATH="${SCHEDULER_INVENTORY_PATH:-$MODDIR/.scheduler_invento
     || json_error '500 Internal Server Error' 'scheduler capability contract not found'
 scheduler_owner_init "$MODDIR" "$FAS_ROOT"
 sbm_init "$MODDIR" "$FAS_ROOT"
+. "$MODDIR/scripts/scheduler_async_lib.sh" && scheduler_async_init "$MODDIR" \
+    || json_error '500 Internal Server Error' 'scheduler async contract unavailable'
 
 PROFILE_SCHEDULER_LOCKED=0
 PROFILE_REQUEST_LOCK_MAX_ATTEMPTS="${PROFILE_REQUEST_LOCK_MAX_ATTEMPTS:-3}"
@@ -110,17 +112,6 @@ read_arbiter_value() {
     sed -n "s/^$1=//p" "$ARBITER_STATE_FILE" 2>/dev/null | head -n 1 | tr -d '\r'
 }
 
-reconcile_owner_now() {
-    if [ "${PIXEL9PRO_CGI_TEST_MODE:-0}" = "1" ] \
-        && [ -n "${PIXEL9PRO_TEST_RECONCILE_RC:-}" ]; then
-        case "$PIXEL9PRO_TEST_RECONCILE_RC" in 0|1|75|78) return "$PIXEL9PRO_TEST_RECONCILE_RC" ;; esac
-        return 1
-    fi
-    [ -f "$MODDIR/scripts/owner_arbiter.sh" ] || return 1
-    SO_TRANSITION_LOCK_MAX_ATTEMPTS=1 SO_TRANSITION_LOCK_RETRY_SLEEP_S=0 \
-        sh "$MODDIR/scripts/owner_arbiter.sh" apply-tick "$MODDIR" on >/dev/null 2>&1
-}
-
 commit_profile_state() {
     profile_state_commit "$1" "$2" "$3" "$4"
     _profile_commit_rc=$?
@@ -152,12 +143,15 @@ append_profile_history() {
     case "$_ph_vs" in
         ''|*[!0-9]*) _ph_vs=0 ;;
     esac
-    _ph_sev=$(dumpsys thermalservice 2>/dev/null | grep "Thermal Status:" | head -1 | sed 's/.*Thermal Status:[[:space:]]*//' | tr -d ' \n\r')
-    case "$_ph_sev" in
-        ''|*[!0-9]*) _ph_sev=-1 ;;
-    esac
-    profile_state_append_observation "$_ph_profile" "$_ph_reason" "$_ph_epoch" \
-        "$_ph_owner" "$_ph_charging" "$_ph_vs" "$_ph_sev"
+    # History must not hold the shared scheduler lock on a fresh HAL Binder
+    # dump. No matching severity snapshot is available here; record missing.
+    _ph_sev=-1
+    _ph_cap=$(profile_state_read_uclamp_cap)
+    _ph_response=$(profile_state_read_response_triplet)
+    _ph_policy=$(profile_state_read_policy)
+    ( profile_state_append_history "$_ph_profile" "$_ph_reason" "$_ph_epoch" "$_ph_policy" \
+        "$_ph_owner" "$_ph_charging" "$_ph_vs" "$_ph_sev" "$_ph_cap" "$_ph_response" ) \
+        >/dev/null 2>&1 </dev/null &
 }
 
 # Mutation responses only publish state that has already been verified and
@@ -188,6 +182,7 @@ emit_profile_transition_state() {
         "$(json_escape "$STG_KEY")" "${STG_ATTEMPTS:-0}" \
         "$(json_escape "$STG_FIRST_EPOCH")" "$(json_escape "$STG_DEADLINE_EPOCH")" \
         "$(json_escape "$STG_TERMINAL")" "$(json_escape "$STG_OK")" "$(json_escape "$STG_RESULT")"
+    scheduler_async_json
 }
 
 emit_profile_arbiter_state() {
@@ -331,17 +326,25 @@ emit_profile_state() {
 }
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
+    IFS=' ' read -r _profile_request_uptime _profile_unused < /proc/uptime
+    case "$_profile_request_uptime" in ''|*[!0-9.]*) _profile_request_uptime=0 ;; esac
     require_json_post
     require_token
     acquire_lock "profile"
     read_json_body 512
     body="$JSON_BODY"
-    newprof=$(printf '%s' "$body" | sed -n 's/.*"profile"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
-    newpolicy=$(printf '%s' "$body" | sed -n 's/.*"policy"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
-    newowner=$(printf '%s' "$body" | sed -n 's/.*"sched_owner"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
-    newhandoff=$(printf '%s' "$body" | sed -n 's/.*"game_handoff"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
-    scheduler_action=$(printf '%s' "$body" | sed -n 's/.*"scheduler_action"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
-    requested_scheduler_mode=$(printf '%s' "$body" | sed -n 's/.*"scheduler_mode"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
+    cgi_json_schema 'profile:string policy:string sched_owner:string game_handoff:string scheduler_action:string scheduler_mode:string'
+    newprof=$(cgi_json_field profile)
+    newpolicy=$(cgi_json_field policy)
+    newowner=$(cgi_json_field sched_owner)
+    newhandoff=$(cgi_json_field game_handoff)
+    scheduler_action=$(cgi_json_field scheduler_action)
+    requested_scheduler_mode=$(cgi_json_field scheduler_mode)
+    _profile_actions=0
+    for _profile_action in "$newprof" "$newpolicy" "$newowner" "$newhandoff" "$scheduler_action" "$requested_scheduler_mode"; do
+        [ -z "$_profile_action" ] || _profile_actions=$((_profile_actions + 1))
+    done
+    [ "$_profile_actions" -le 1 ] || json_error '400 Bad Request' 'submit one scheduler mutation at a time'
 
     case "$newprof" in
         ''|balanced|battery|default) ;;
@@ -369,6 +372,15 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         active) json_error '409 Conflict' 're-enable scheduler through the module installer and reboot' ;;
         *) json_error '400 Bad Request' 'invalid scheduler mode' ;;
     esac
+
+    scheduler_async_load
+    [ "$SA_PENDING" != true ] || json_error '409 Conflict' 'a scheduler operation is already running; read current state before another mutation'
+    # Fast APD staging/cancel uses one bounded attempt. Slow validation and
+    # owner reconciliation run as explicit finite jobs below.
+    SBM_MAX_WRITE_ATTEMPTS=1
+    SBM_APD_LIST_TIMEOUT_S=2
+    SBM_APD_SET_TIMEOUT_S=3
+    SBM_STATE_COMMIT_ATTEMPTS=1
 
     if [ -n "$requested_scheduler_mode" ]; then
         acquire_scheduler_mode_lock
@@ -413,7 +425,9 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     if [ "$scheduler_action" = "cancel_pending" ]; then
         acquire_profile_scheduler_lock
-        if sbm_cancel_pending; then
+        _cancel_rc=0
+        sbm_cancel_pending || _cancel_rc=$?
+        if [ "$_cancel_rc" -eq 0 ]; then
             release_profile_scheduler_lock
             json_headers
             printf '{"ok":true,"accepted":true,"final":true,'
@@ -422,7 +436,6 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             printf '}\n'
             exit 0
         fi
-        _cancel_rc=$?
         release_profile_scheduler_lock
         json_status_headers '500 Internal Server Error'
         printf '{"ok":false,"accepted":false,"final":true,"error":"cancel failed (rc=%s)",' "$_cancel_rc"
@@ -432,22 +445,12 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         exit 0
     fi
 
-    if [ "$scheduler_action" = "retry" ]; then
+    if [ "$scheduler_action" = retry ]; then
         sbm_load_state
         case "$SBM_PHASE" in failed|blocked) ;; *) json_error '409 Conflict' 'scheduler retry requires a terminal failed state' ;; esac
-        _retry_rc=0
-        sh "$MODDIR/scripts/scheduler_reconcile.sh" retry "$MODDIR" >/dev/null 2>&1 || _retry_rc=$?
-        sbm_load_state
-        if [ "$_retry_rc" -eq 0 ] && [ "$SBM_PHASE" = "success" ]; then
-            json_headers
-            printf '{"ok":true,"accepted":true,"final":true,'
-        elif [ "$_retry_rc" -eq 75 ]; then
-            json_status_headers '409 Conflict'
-            printf '{"ok":false,"accepted":false,"final":true,"error":"scheduler transition busy",'
-        else
-            json_status_headers '500 Internal Server Error'
-            printf '{"ok":false,"accepted":true,"final":true,"error":"scheduler retry reached terminal failure",'
-        fi
+        scheduler_async_start retry || json_error '409 Conflict' 'scheduler job could not be accepted'
+        json_headers
+        printf '{"ok":true,"accepted":true,"final":false,'
         emit_profile_mutation_state
         emit_scheduler_boot_state
         printf '}\n'
@@ -507,24 +510,10 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             json_error '500 Internal Server Error' 'failed to reset game handoff retry state and rollback was incomplete'
         fi
         release_profile_scheduler_lock
-        _reconcile_rc=0
-        reconcile_owner_now || _reconcile_rc=$?
-        _apply_result=$(read_arbiter_value apply_result)
-        if [ "$_reconcile_rc" -eq 75 ] || [ "$_apply_result" = "transition_busy" ]; then
-            json_headers
-            printf '{"ok":true,"accepted":true,"final":false,"pending_reason":"scheduler transition busy",'
-        elif [ "$_reconcile_rc" -eq 0 ]; then
-            case "$_apply_result" in
-                failed_*|transition_latched:*)
-                    json_status_headers '500 Internal Server Error'
-                    printf '{"ok":false,"accepted":true,"final":true,"error":"scheduler handoff reached terminal failure",'
-                    ;;
-                *) json_headers; printf '{"ok":true,"accepted":true,"final":true,' ;;
-            esac
-        else
-            json_status_headers '500 Internal Server Error'
-            printf '{"ok":false,"accepted":true,"final":true,"error":"scheduler handoff reached terminal failure (rc=%s)",' "$_reconcile_rc"
-        fi
+        scheduler_async_start handoff \
+            || json_error '500 Internal Server Error' 'handoff preference saved; reconciliation could not start; refresh and retry the owner check'
+        json_headers
+        printf '{"ok":true,"accepted":true,"committed":true,"final":false,"pending_reason":"handoff preference saved; owner reconciliation is running",'
         emit_profile_mutation_state
         emit_profile_arbiter_state
         printf '}\n'
@@ -554,6 +543,15 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     acquire_profile_scheduler_lock
     require_locked_pixel_scheduler
+
+    if [ -n "$newpolicy" ] && [ "$(profile_state_read_policy)" = "$newpolicy" ]; then
+        release_profile_scheduler_lock
+        json_headers
+        printf '{"ok":true,"accepted":true,"committed":true,"idempotent":true,"final":true,'
+        emit_profile_mutation_state
+        printf '}\n'
+        exit 0
+    fi
 
     if [ -n "$newprof" ]; then
         reset_auto_profile_guard
@@ -596,8 +594,10 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                 balanced|battery) _target="$_active" ;;
                 *) _target="balanced" ;;
             esac
-            _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_target" "$MODDIR" 2>/dev/null)
-            [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
+            if [ "$_target" != "$_old_active" ]; then
+                _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_target" "$MODDIR" 2>/dev/null)
+                [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
+            fi
             if ! commit_profile_state "$_target" "$_manual" auto auto_enabled; then
                 rollback_profile_runtime_or_error "$_old_active"
             fi
@@ -607,8 +607,10 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             reset_auto_profile_guard
             _manual=$(profile_state_read_profile "$PROFILE_MANUAL_FILE" 'balanced')
             _old_active=$(profile_state_read_profile "$PROFILE_FILE" balanced)
-            _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_manual" "$MODDIR" 2>/dev/null)
-            [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
+            if [ "$_manual" != "$_old_active" ]; then
+                _result=$(sh "$MODDIR/scripts/cpu_profile.sh" "$_manual" "$MODDIR" 2>/dev/null)
+                [ "$?" -eq 0 ] || json_error '500 Internal Server Error' 'profile script failed'
+            fi
             if ! commit_profile_state "$_manual" "$_manual" manual manual_policy; then
                 rollback_profile_runtime_or_error "$_old_active"
             fi
@@ -619,8 +621,10 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             ;;
     esac
     release_profile_scheduler_lock
+    _profile_duration_ms=$(awk -v start="$_profile_request_uptime" 'BEGIN { getline < "/proc/uptime"; duration=($1-start)*1000; printf "%.0f",duration<0?0:duration }')
+    audit_log_event_async scheduler policy success "POLICY_$newpolicy" "$_profile_duration_ms"
     json_headers
-    printf '{"ok":true,"accepted":true,"final":true,'
+    printf '{"ok":true,"accepted":true,"committed":true,"final":true,"duration_ms":%s,' "$_profile_duration_ms"
     emit_profile_mutation_state
     printf '}\n'
 elif [ "$REQUEST_METHOD" = "GET" ]; then

@@ -19,7 +19,6 @@ scheduler_capability_init() {
 $SCHED_CAP_CPU4/sched_pixel/response_time_ms
 $SCHED_CAP_CPU7/sched_pixel/response_time_ms
 $SCHED_CAP_CPUSET/top-app/cpus
-$SCHED_CAP_CPUSET/foreground/cpus
 $SCHED_CAP_CPUSET/background/cpus
 $SCHED_CAP_CPUSET/system-background/cpus
 $SCHED_CAP_UCLAMP
@@ -51,19 +50,9 @@ scheduler_capability_read() {
 }
 
 scheduler_capability_atomic_write() {
-    _sc_path="$1"
-    _sc_value="$2"
-    [ -n "$_sc_path" ] && [ ! -d "$_sc_path" ] || return 1
-    if command -v runtime_write_value >/dev/null 2>&1; then
-        runtime_write_value "$_sc_path" "$_sc_value"
-        return $?
-    fi
-    _sc_tmp="${_sc_path}.tmp.$$"
-    printf '%s' "$_sc_value" > "$_sc_tmp" 2>/dev/null \
-        && mv "$_sc_tmp" "$_sc_path" 2>/dev/null \
-        && [ "$(cat "$_sc_path" 2>/dev/null)" = "$_sc_value" ] && return 0
-    rm -f "$_sc_tmp" 2>/dev/null
-    return 1
+    command -v state_atomic_write >/dev/null 2>&1 \
+        || . "$SCHED_CAP_ROOT/scripts/state_io_lib.sh" || return 1
+    state_atomic_write "$1" "$2"
 }
 
 scheduler_mode_write() {
@@ -108,7 +97,9 @@ scheduler_capability_probe() {
     done
     IFS="$_sc_old_ifs"
 
-    if [ "$SCHED_CAP_TOTAL" -eq 10 ] \
+    # Foreground cpuset is owned by framework. It is neither written by the
+    # verify probe nor required to be writable for this module's capability.
+    if [ "$SCHED_CAP_TOTAL" -eq 9 ] \
         && [ "$SCHED_CAP_READABLE" -eq "$SCHED_CAP_TOTAL" ] \
         && [ "$SCHED_CAP_WRITABLE" -eq "$SCHED_CAP_TOTAL" ] \
         && [ "$SCHED_CAP_VERIFIED" -eq "$SCHED_CAP_TOTAL" ]; then
@@ -117,7 +108,7 @@ scheduler_capability_probe() {
     elif [ "$SCHED_CAP_READABLE" -gt 0 ]; then
         SCHED_CAPABILITY=partial
         SCHED_CAP_REASON=incomplete_control_plane
-    elif [ "$SCHED_CAP_TOTAL" -eq 10 ]; then
+    elif [ "$SCHED_CAP_TOTAL" -eq 9 ]; then
         SCHED_CAPABILITY=unsupported
         SCHED_CAP_REASON=no_scheduler_nodes
     else
@@ -130,7 +121,7 @@ scheduler_capability_commit() {
     scheduler_capability_is_valid "$SCHED_CAPABILITY" || return 1
     scheduler_capability_atomic_write "$SCHED_CAP_FILE" "$SCHED_CAPABILITY" || return 1
     _sc_receipt_tmp="${SCHED_CAP_RECEIPT_FILE}.tmp.$$"
-    {
+    _sc_payload=$({
         printf 'schema=1\n'
         printf 'updated_at=%s\n' "$(date +%s 2>/dev/null || printf 0)"
         printf 'mode=%s\n' "$(scheduler_mode_read)"
@@ -141,12 +132,8 @@ scheduler_capability_commit() {
         printf 'writable=%s\n' "$SCHED_CAP_WRITABLE"
         printf 'verified=%s\n' "$SCHED_CAP_VERIFIED"
         printf 'missing=%s\n' "$(printf '%s' "$SCHED_CAP_MISSING" | tr '\r\n=|' '    ')"
-    } > "$_sc_receipt_tmp" 2>/dev/null \
-        && mv "$_sc_receipt_tmp" "$SCHED_CAP_RECEIPT_FILE" 2>/dev/null \
-        && chmod 600 "$SCHED_CAP_RECEIPT_FILE" 2>/dev/null \
-        && return 0
-    rm -f "$_sc_receipt_tmp" 2>/dev/null
-    return 1
+    }) || return 1
+    scheduler_capability_atomic_write "$SCHED_CAP_RECEIPT_FILE" "$_sc_payload"
 }
 
 scheduler_capability_enforce_mode() {

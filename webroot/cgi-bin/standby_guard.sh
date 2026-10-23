@@ -31,20 +31,15 @@ read_state_value() {
 }
 
 sleep_error_human() {
-    case "$1:$2" in
-        *19470000.drmdecon:-16*) printf '显示设备在 AOD/atomic commit 尚未完成 hibernation，内核暂缓 suspend。' ;;
-        *wlan*:*|*dhdpcie*:*|*cp2ap_wakeup*:*) printf 'Wi-Fi/网络唤醒源仍有活动，系统进入 suspend 后被网络事件唤醒。' ;;
-        *s5100*:*|*rmnet*:*|*cpif*:*) printf '基带/蜂窝 modem 唤醒源仍有活动，suspend 回调暂未完成。' ;;
-        *:-16*) printf '设备仍处于活动提交或唤醒状态，suspend 回调返回 EBUSY。' ;;
-        *) printf '当前没有可归类的 suspend 失败原因；请结合同一 boot 的 kernel log 复核。' ;;
+    case "$2" in
+        -16) printf '内核记录的最后一次 suspend 回调返回 EBUSY（-16）；设备名和错误码不能单独确定原因，也不代表刚刚发生。' ;;
+        ''|0) printf '没有可用的最后一次 suspend 失败记录；这不等同于整个时间窗口没有失败。' ;;
+        *) printf '下方为内核最后一次 suspend 失败记录；原因需结合同一 boot、同一时间段的日志核对。' ;;
     esac
 }
 
 sleep_error_code() {
     case "$1:$2" in
-        *19470000.drmdecon:-16*) printf DISPLAY_HIBERNATION_BUSY ;;
-        *wlan*:*|*dhdpcie*:*|*cp2ap_wakeup*:*) printf NETWORK_WAKEUP ;;
-        *s5100*:*|*rmnet*:*|*cpif*:*) printf MODEM_WAKEUP ;;
         *:-16*) printf DEVICE_SUSPEND_EBUSY ;;
         *) printf SUSPEND_REASON_UNKNOWN ;;
     esac
@@ -60,6 +55,7 @@ emit_state() {
     case "$_background_state" in starting|stopping|stopped) _background_final=false ;; esac
     _background_cleanup=none
     [ "$_background_state" != paused ] || _background_cleanup=$(background_tasks_cleanup_state)
+    [ "$_background_cleanup" != unconfirmed ] || _background_final=false
     _sleep_mode=$(cat /sys/power/mem_sleep 2>/dev/null | tr -d '\r\n')
     _sleep_failed_dev=$(cat /sys/power/suspend_stats/last_failed_dev 2>/dev/null | tr -d ' \r\n')
     _sleep_failed_errno=$(cat /sys/power/suspend_stats/last_failed_errno 2>/dev/null | tr -d ' \r\n')
@@ -80,7 +76,9 @@ emit_state() {
     diag_active_profile="unknown"
     diag_cycle_count="0"
 
-    if [ -f "$STANDBY_DIAG_FILE" ]; then
+    if [ -f "$STANDBY_DIAG_FILE" ] \
+        && [ "$(read_state_value "$STANDBY_DIAG_FILE" boot_id '')" = "$(cat /proc/sys/kernel/random/boot_id)" ] \
+        && [ "$(read_state_value "$STANDBY_DIAG_FILE" worker_id '')" = "$(cat "$MODDIR/.background_run" 2>/dev/null)" ]; then
         diag_updated_at=$(read_state_value "$STANDBY_DIAG_FILE" updated_at "")
         diag_screen=$(read_state_value "$STANDBY_DIAG_FILE" screen "unknown")
         diag_worker_mode=$(read_state_value "$STANDBY_DIAG_FILE" worker_mode "unknown")
@@ -133,8 +131,9 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
     read_json_body 512
     body="$JSON_BODY"
 
-    new_sim2=$(printf '%s' "$body" | sed -n 's/.*"sim2_auto_manage"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
-    new_isolate=$(printf '%s' "$body" | sed -n 's/.*"idle_isolate_mode"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
+    cgi_json_schema 'sim2_auto_manage:string idle_isolate_mode:string'
+    new_sim2=$(cgi_json_field sim2_auto_manage)
+    new_isolate=$(cgi_json_field idle_isolate_mode)
 
     case "$new_sim2" in
         ''|on|off) ;;
@@ -151,8 +150,10 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
     _isolate_existed=0
     [ -e "$SIM2_AUTO_FILE" ] && _sim2_existed=1
     [ -e "$IDLE_ISOLATE_FILE" ] && _isolate_existed=1
-    _sim2_old=$(cat "$SIM2_AUTO_FILE" 2>/dev/null)
-    _isolate_old=$(cat "$IDLE_ISOLATE_FILE" 2>/dev/null)
+    _sim2_old=$(cgi_read_entry "$SIM2_AUTO_FILE") \
+        || json_error '500 Internal Server Error' 'cannot snapshot existing state before mutation'
+    _isolate_old=$(cgi_read_entry "$IDLE_ISOLATE_FILE") \
+        || json_error '500 Internal Server Error' 'cannot snapshot existing state before mutation'
     if { [ -z "$new_sim2" ] || cgi_atomic_write "$SIM2_AUTO_FILE" "$new_sim2"; } \
         && { [ -z "$new_isolate" ] || cgi_atomic_write "$IDLE_ISOLATE_FILE" "$new_isolate"; }; then
         :
@@ -191,10 +192,11 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
         fi
     fi
 
+    _cleanup_state=$(background_tasks_cleanup_state)
     if [ "$new_isolate" = on ] && [ "$(background_tasks_state)" = paused ] \
-        && [ "$(background_tasks_cleanup_state)" = failed ]; then
+        && { [ "$_cleanup_state" = failed ] || [ "$_cleanup_state" = unconfirmed ]; }; then
         json_status_headers '500 Internal Server Error'
-        printf '{"ok":false,"committed":true,"error":"background stopped; temporary policy restoration failed; pause intent retained",'
+        printf '{"ok":false,"committed":true,"error":"background stopped; temporary policy restoration failed or is unconfirmed; pause intent retained",'
         emit_state
         printf '}\n'
         exit 1

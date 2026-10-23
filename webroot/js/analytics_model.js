@@ -26,9 +26,10 @@
     return values.map((item) => {
       if (Array.isArray(item)) {
         const ts = number(item[0]);
-        const tempC = number(item[1]);
-        if (ts === null || ts <= 0 || tempC === null) return null;
-        return { ts, tempC: Math.abs(tempC) > 180 ? tempC / 1000 : tempC, sensor: 'module', expectedIntervalSec: 60 };
+        const raw = number(item[1]);
+        const tempC = raw === null ? null : Math.abs(raw) > 180 ? raw / 1000 : raw;
+        if (ts === null || ts <= 0 || tempC === null || tempC < -20 || tempC > 120) return null;
+        return { ts, tempC, sensor: 'module', expectedIntervalSec: 60 };
       }
       if (!item || typeof item !== 'object' || item.valid === false) return null;
       const ts = number(item.ts);
@@ -129,7 +130,7 @@
   function exportHistory(payload, format) {
     if (!payload || payload.ok !== true || !Array.isArray(payload.points)) throw new Error('尚无可导出的历史响应');
     if (!['json', 'csv'].includes(format)) throw new Error('不支持的导出格式');
-    const points = normalizeThermal(payload).filter((point) => point.sensor === payload.sensor);
+    const points = clip(normalizeThermal(payload).filter((point) => point.sensor === payload.sensor), payload.start_ts, payload.end_ts);
     const stats = temperatureStats(points, {
       startTs: payload.start_ts, endTs: payload.end_ts, backendGapCount: payload.gap_count
     });

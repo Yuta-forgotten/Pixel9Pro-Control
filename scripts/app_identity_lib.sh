@@ -6,16 +6,11 @@ APP_IDENTITY_FILE="${APP_IDENTITY_FILE:-$MODDIR/config/app_identities.tsv}"
 
 app_identity_parse_row() {
     _identity_raw=$(printf '%s' "$1" | tr -d '\r')
-    _identity_old_ifs="$IFS"
-    IFS='|'
-    set -- $_identity_raw
-    IFS="$_identity_old_ifs"
-    _identity_kind="$1"
-    _identity_key="$2"
-    _identity_label="$3"
-    _identity_category="$4"
-    _identity_restriction_tier="$5"
-    _identity_canonical="$6"
+    # read preserves empty catalog fields and never expands wildcard labels.
+    IFS='|' read -r _identity_kind _identity_key _identity_label \
+        _identity_category _identity_restriction_tier _identity_canonical <<EOF
+$_identity_raw
+EOF
 }
 
 app_identity_lookup_row() {

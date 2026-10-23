@@ -36,7 +36,24 @@ module_lock_write_owner() {
     MODULE_OWNER_BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null) || return 1
     MODULE_OWNER_TICKS=$(sed 's/^.*) //' "/proc/$MODULE_OWNER_PID/stat" 2>/dev/null | cut -d' ' -f20)
     [ -n "$MODULE_OWNER_TICKS" ] || return 1
-    printf 'pid=%s\nboot_id=%s\nstart_ticks=%s\n' "$MODULE_OWNER_PID" "$MODULE_OWNER_BOOT" "$MODULE_OWNER_TICKS" > "$1/owner"
+    [ ! -e "$1/owner.tmp" ] && [ ! -L "$1/owner.tmp" ] || return 1
+    if ( umask 077; set -C
+         printf 'pid=%s\nboot_id=%s\nstart_ticks=%s\n' "$MODULE_OWNER_PID" "$MODULE_OWNER_BOOT" "$MODULE_OWNER_TICKS" > "$1/owner.tmp" \
+             && mv "$1/owner.tmp" "$1/owner" ); then return 0; fi
+    rm -f "$1/owner.tmp" 2>/dev/null
+    return 1
+}
+
+module_lock_initializing() {
+    # mkdir and owner publication are separate operations. A contender must not
+    # steal a freshly-created lock while its owner is publishing its identity.
+    [ -d "$1" ] && [ ! -L "$1" ] && [ ! -s "$1/owner" ] || return 1
+    _bg_init_mtime=$(stat -c %Y "$1" 2>/dev/null) || return 1
+    _bg_init_now=$(date +%s 2>/dev/null) || return 1
+    case "$_bg_init_mtime:$_bg_init_now" in *[!0-9:]*|:*|*:) return 1 ;; esac
+    _bg_init_age=$((_bg_init_now - _bg_init_mtime))
+    # A backward wall-clock correction cannot authorize stealing a new lock.
+    [ "$_bg_init_age" -le 30 ]
 }
 
 background_worker_alive() {
@@ -55,14 +72,14 @@ background_history_writer_busy() {
     _bg_history_lock="$_bg_root/.thermal_history.lock"
     [ -d "$_bg_history_lock" ] || return 1
     module_lock_owner_alive "$_bg_history_lock" && return 0
-    [ ! -f "$_bg_history_lock/owner" ] || return 1
+    [ ! -s "$_bg_history_lock/owner" ] || return 1
     # A just-created lock may not have published its owner yet. Old locks
     # cannot keep the master switch pending forever.
     _bg_history_boot=$(cat "$_bg_history_lock/boot" 2>/dev/null)
     [ -z "$_bg_history_boot" ] || [ "$_bg_history_boot" = "$(cat /proc/sys/kernel/random/boot_id)" ] || return 1
     _bg_history_mtime=$(stat -c %Y "$_bg_history_lock" 2>/dev/null) || return 1
     _bg_history_age=$(( $(date +%s) - _bg_history_mtime ))
-    [ "$_bg_history_age" -ge 0 ] && [ "$_bg_history_age" -le 30 ]
+    [ "$_bg_history_age" -le 30 ]
 }
 
 background_tasks_state() {
@@ -83,14 +100,17 @@ background_tasks_state() {
 
 background_tasks_cleanup_state() {
     _bg_root="${PIXEL9PRO_MODDIR:-${MODDIR:-/data/adb/modules/pixel9pro_control}}"
-    _bg_cleanup_boot=""; _bg_cleanup_result=""
-    if [ -r "$_bg_root/.background_cleanup_state" ]; then
-        IFS='|' read -r _bg_cleanup_boot _bg_cleanup_result < "$_bg_root/.background_cleanup_state" || true
-    fi
-    if [ "$_bg_cleanup_boot" = "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" ]; then
-        case "$_bg_cleanup_result" in ok|failed) printf '%s' "$_bg_cleanup_result"; return ;; esac
-    fi
-    printf none
+    if [ -e "$_bg_root/.nr_temporary_lease" ] || [ -L "$_bg_root/.nr_temporary_lease" ]; then printf unconfirmed; return; fi
+    _bg_run=$(cat "$_bg_root/.background_run" 2>/dev/null)
+    _bg_cleanup=$(cat "$_bg_root/.background_cleanup_state" 2>/dev/null)
+    _bg_current_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+    case "$_bg_run" in "$_bg_current_boot"'|'*) ;;
+        *) printf none; return ;; esac
+    case "$_bg_cleanup" in
+        "$_bg_run|ok") printf ok ;;
+        "$_bg_run|failed") printf failed ;;
+        *) printf unconfirmed ;;
+    esac
 }
 
 background_tasks_start() {
@@ -103,7 +123,7 @@ background_tasks_start() {
         _bg_start_attempt=$((_bg_start_attempt + 1))
     done
     background_worker_alive && return 0
-    sh "$_bg_root/service.sh" --background-worker >/dev/null 2>&1 &
+    sh "$_bg_root/service.sh" --background-worker >/dev/null 2>&1 </dev/null &
     _bg_start_attempt=0
     while [ "$_bg_start_attempt" -lt 30 ]; do
         background_worker_alive && return 0

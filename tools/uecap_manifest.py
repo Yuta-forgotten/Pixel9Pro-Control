@@ -67,9 +67,12 @@ def audit_payloads(entries: dict[str, bytes]) -> tuple[str, ...]:
         return ()
     specs = _parse_manifest(manifest)
     actual_modes: dict[str, set[str]] = {device: set() for device in EXPECTED_MODES}
+    seen_sources: set[str] = set()
     for spec in specs:
         if spec.device not in actual_modes or spec.target != EXPECTED_TARGETS[spec.device]:
             raise _error(f"invalid UECap device/target contract: {spec.device}/{spec.target}")
+        if spec.mode in actual_modes[spec.device] or spec.source in seen_sources:
+            raise _error(f"duplicate UECap mode or source: {spec.device}/{spec.mode}")
         if not spec.source.startswith(f"payloads/uecap/{spec.device}/"):
             raise _error(f"cross-SKU UECap source path: {spec.source}")
         payload = entries.get(spec.source)
@@ -80,6 +83,7 @@ def audit_payloads(entries: dict[str, bytes]) -> tuple[str, ...]:
         if spec.state not in {"candidate", "verified"} or not spec.source_build:
             raise _error(f"invalid UECap provenance: {spec.source}")
         actual_modes[spec.device].add(spec.mode)
+        seen_sources.add(spec.source)
     if actual_modes != EXPECTED_MODES:
         raise _error(f"incomplete UECap mode contract: {actual_modes}")
     declared = {spec.source for spec in specs}

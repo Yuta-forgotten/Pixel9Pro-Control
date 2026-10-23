@@ -2,6 +2,9 @@
 
 # profile 持久状态的文件名、合法值与兜底读取统一由本契约维护。
 PROFILE_STATE_HISTORY_MAX="${PROFILE_STATE_HISTORY_MAX:-500}"
+case "$PROFILE_STATE_HISTORY_MAX" in ''|*[!0-9]*) PROFILE_STATE_HISTORY_MAX=500 ;; esac
+[ "$PROFILE_STATE_HISTORY_MAX" -ge 1 ] 2>/dev/null && [ "$PROFILE_STATE_HISTORY_MAX" -le 5000 ] 2>/dev/null \
+    || PROFILE_STATE_HISTORY_MAX=500
 
 profile_state_init() {
     _ps_root="$1"
@@ -56,20 +59,10 @@ profile_state_reason_is_valid() {
 }
 
 profile_state_atomic_write() {
-    _ps_write_path="$1"
-    _ps_write_value="$2"
-    [ -n "$_ps_write_path" ] && [ ! -d "$_ps_write_path" ] || return 1
-    _ps_write_tmp="${_ps_write_path}.tmp.$$"
-    if printf '%s' "$_ps_write_value" > "$_ps_write_tmp" 2>/dev/null \
-        && mv "$_ps_write_tmp" "$_ps_write_path" 2>/dev/null \
-        && [ -f "$_ps_write_path" ] \
-        && [ "$(cat "$_ps_write_path" 2>/dev/null)" = "$_ps_write_value" ]; then
-        return 0
-    fi
-    rm -f "$_ps_write_tmp" 2>/dev/null
-    return 1
+    command -v state_atomic_write >/dev/null 2>&1 \
+        || . "${PROFILE_FILE%/*}/scripts/state_io_lib.sh" || return 1
+    state_atomic_write "$1" "$2"
 }
-
 profile_state_restore_file() {
     _ps_restore_path="$1"
     _ps_restore_existed="$2"
@@ -80,6 +73,12 @@ profile_state_restore_file() {
         rm -f "$_ps_restore_path" 2>/dev/null \
             && [ ! -e "$_ps_restore_path" ]
     fi
+}
+
+profile_state_read_entry() {
+    [ ! -L "$1" ] || return 1
+    [ -e "$1" ] || return 0
+    [ -f "$1" ] && cat "$1" 2>/dev/null
 }
 
 profile_state_commit() {
@@ -100,10 +99,11 @@ profile_state_commit() {
     _ps_manual_existed=0; [ -e "$PROFILE_MANUAL_FILE" ] && _ps_manual_existed=1
     _ps_policy_existed=0; [ -e "$PROFILE_POLICY_FILE" ] && _ps_policy_existed=1
     _ps_reason_existed=0; [ -e "$PROFILE_AUTO_REASON_FILE" ] && _ps_reason_existed=1
-    _ps_old_active=$(cat "$PROFILE_FILE" 2>/dev/null)
-    _ps_old_manual=$(cat "$PROFILE_MANUAL_FILE" 2>/dev/null)
-    _ps_old_policy=$(cat "$PROFILE_POLICY_FILE" 2>/dev/null)
-    _ps_old_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null)
+    PROFILE_STATE_COMMIT_RESULT=entry_read_failed
+    _ps_old_active=$(profile_state_read_entry "$PROFILE_FILE") || return 1
+    _ps_old_manual=$(profile_state_read_entry "$PROFILE_MANUAL_FILE") || return 1
+    _ps_old_policy=$(profile_state_read_entry "$PROFILE_POLICY_FILE") || return 1
+    _ps_old_reason=$(profile_state_read_entry "$PROFILE_AUTO_REASON_FILE") || return 1
 
     if profile_state_atomic_write "$PROFILE_FILE" "$_ps_new_active" \
         && profile_state_atomic_write "$PROFILE_MANUAL_FILE" "$_ps_new_manual" \
@@ -139,8 +139,9 @@ profile_state_commit_active_reason() {
 
     _ps_active_existed=0; [ -e "$PROFILE_FILE" ] && _ps_active_existed=1
     _ps_reason_existed=0; [ -e "$PROFILE_AUTO_REASON_FILE" ] && _ps_reason_existed=1
-    _ps_old_active=$(cat "$PROFILE_FILE" 2>/dev/null)
-    _ps_old_reason=$(cat "$PROFILE_AUTO_REASON_FILE" 2>/dev/null)
+    PROFILE_STATE_COMMIT_RESULT=entry_read_failed
+    _ps_old_active=$(profile_state_read_entry "$PROFILE_FILE") || return 1
+    _ps_old_reason=$(profile_state_read_entry "$PROFILE_AUTO_REASON_FILE") || return 1
 
     if profile_state_atomic_write "$PROFILE_FILE" "$_ps_new_active" \
         && profile_state_atomic_write "$PROFILE_AUTO_REASON_FILE" "$_ps_new_reason"; then
@@ -164,7 +165,16 @@ profile_state_safe_csv_field() {
     printf '%s' "$1" | tr ',\r\n' '___'
 }
 
-profile_state_append_history() {
+profile_state_append_history() (
+    . "${PROFILE_FILE%/*}/scripts/state_io_lib.sh" || exit 1
+    _ps_history_lock="${PROFILE_HISTORY_FILE}.lock"
+    state_lock_acquire "$_ps_history_lock" 10 || exit 75
+    _ps_hist_tmp=''; _ps_hist_trimmed=''
+    trap 'rm -f "$_ps_hist_tmp" "$_ps_hist_trimmed"; state_lock_release "$_ps_history_lock" >/dev/null 2>&1' EXIT
+    state_read_entry "$PROFILE_HISTORY_FILE" >/dev/null || exit 1
+    _ps_hist_tmp=$(mktemp "${PROFILE_HISTORY_FILE}.append.XXXXXX") || exit 1
+    _ps_hist_trimmed=$(mktemp "${PROFILE_HISTORY_FILE}.trim.XXXXXX") || exit 1
+    if [ -e "$PROFILE_HISTORY_FILE" ]; then cat "$PROFILE_HISTORY_FILE" > "$_ps_hist_tmp" || exit 1; fi
     _ps_hist_profile="$1"
     _ps_hist_reason="$2"
     _ps_hist_epoch="$3"
@@ -193,16 +203,11 @@ profile_state_append_history() {
         "$(profile_state_safe_csv_field "$_ps_hist_reason")" \
         "$_ps_hist_charging" "$_ps_hist_vs" "$_ps_hist_sev" "$_ps_hist_cap" \
         "$(profile_state_safe_csv_field "$_ps_hist_response")" \
-        >> "$PROFILE_HISTORY_FILE" 2>/dev/null || return 1
+        >> "$_ps_hist_tmp" 2>/dev/null || exit 1
 
-    _ps_hist_lines=$(wc -l < "$PROFILE_HISTORY_FILE" 2>/dev/null)
-    case "$_ps_hist_lines" in ''|*[!0-9]*) return 1 ;; esac
-    if [ "$_ps_hist_lines" -gt "$PROFILE_STATE_HISTORY_MAX" ] 2>/dev/null; then
-        _ps_hist_trim=$((_ps_hist_lines - PROFILE_STATE_HISTORY_MAX))
-        sed -i "1,${_ps_hist_trim}d" "$PROFILE_HISTORY_FILE" 2>/dev/null || return 1
-    fi
-    return 0
-}
+    tail -n "$PROFILE_STATE_HISTORY_MAX" "$_ps_hist_tmp" > "$_ps_hist_trimmed" \
+        && state_atomic_from_file "$PROFILE_HISTORY_FILE" "$_ps_hist_trimmed"
+)
 
 profile_state_read_uclamp_cap() {
     _ps_cap=$(cat /proc/sys/kernel/sched_util_clamp_min 2>/dev/null | tr -d ' \n\r\t')

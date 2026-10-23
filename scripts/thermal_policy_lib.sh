@@ -101,9 +101,10 @@ thermal_policy_stock_record_provenance() {
     _tpl_sha=$(sha256sum "$_tpl_stock" 2>/dev/null | awk '{print $1}')
     [ -n "$_tpl_fingerprint" ] && [ -n "$_tpl_sha" ] || return 1
     _tpl_meta="$_tpl_stock.meta"
-    { printf 'fingerprint=%s\n' "$_tpl_fingerprint"; printf 'sha256=%s\n' "$_tpl_sha"; } \
-        > "$_tpl_meta.tmp.$$" && chmod 600 "$_tpl_meta.tmp.$$" \
-        && mv "$_tpl_meta.tmp.$$" "$_tpl_meta"
+    command -v state_atomic_write >/dev/null 2>&1 \
+        || . "$THERMAL_POLICY_ROOT/scripts/state_io_lib.sh" || return 1
+    state_atomic_write "$_tpl_meta" "fingerprint=$_tpl_fingerprint
+sha256=$_tpl_sha"
 }
 
 thermal_policy_prepare_snapshot() {
@@ -179,9 +180,15 @@ thermal_policy_profile_cache_valid() {
         && [ "$_tpl_cache_recorded_fingerprint" = "$_tpl_cache_fingerprint" ] \
         && [ "$_tpl_cache_recorded_hash" = "$(sha256sum "$_tpl_cache_stock" 2>/dev/null | awk '{print $1}')" ] \
         || return 1
-    for _tpl_cache_offset in $THERMAL_UI_OFFSETS; do
+    # Install admission checks all profiles. A runtime request only needs the
+    # selected profile, avoiding repeated hashing of unrelated cached payloads.
+    _tpl_cache_offsets="${3:-$THERMAL_UI_OFFSETS}"
+    for _tpl_cache_offset in $_tpl_cache_offsets; do
         _tpl_cache_file=$(thermal_policy_profile_cache_path "$_tpl_cache_device" "$_tpl_cache_offset") || return 1
         [ -s "$_tpl_cache_file" ] || return 1
+        _tpl_cache_expected=$(sed -n "s/^profile_${_tpl_cache_offset}_sha256=//p" "$_tpl_cache_meta" 2>/dev/null)
+        [ -n "$_tpl_cache_expected" ] \
+            && [ "$_tpl_cache_expected" = "$(sha256sum "$_tpl_cache_file" 2>/dev/null | awk '{print $1}')" ] || return 1
     done
 }
 
@@ -197,17 +204,25 @@ thermal_policy_profile_cache_prepare() {
         rm -f "$_tpl_cache_tmp" 2>/dev/null
         thermal_generate_config "$_tpl_cache_stock" "$_tpl_cache_tmp" "$_tpl_cache_offset" \
             || { rm -f "$_tpl_cache_tmp"; return 1; }
-        mv -f "$_tpl_cache_tmp" "$_tpl_cache_file" 2>/dev/null \
+        chmod 600 "$_tpl_cache_tmp" 2>/dev/null \
+            && mv -f "$_tpl_cache_tmp" "$_tpl_cache_file" 2>/dev/null \
             || { rm -f "$_tpl_cache_tmp"; return 1; }
-        chmod 600 "$_tpl_cache_file" 2>/dev/null || true
     done
     _tpl_cache_fingerprint=$(getprop ro.build.fingerprint 2>/dev/null)
     _tpl_cache_hash=$(sha256sum "$_tpl_cache_stock" 2>/dev/null | awk '{print $1}')
     _tpl_cache_meta=$(thermal_policy_profile_cache_meta "$_tpl_cache_device") || return 1
-    printf 'fingerprint=%s\nsha256=%s\n' "$_tpl_cache_fingerprint" "$_tpl_cache_hash" \
-        > "$_tpl_cache_meta.tmp.$$" \
+    {
+        printf 'fingerprint=%s\nsha256=%s\n' "$_tpl_cache_fingerprint" "$_tpl_cache_hash"
+        for _tpl_cache_offset in $THERMAL_UI_OFFSETS; do
+            _tpl_cache_file=$(thermal_policy_profile_cache_path "$_tpl_cache_device" "$_tpl_cache_offset") || return 1
+            _tpl_cache_profile_hash=$(sha256sum "$_tpl_cache_file" 2>/dev/null | awk '{print $1}')
+            [ -n "$_tpl_cache_profile_hash" ] || return 1
+            printf 'profile_%s_sha256=%s\n' "$_tpl_cache_offset" "$_tpl_cache_profile_hash"
+        done
+    } > "$_tpl_cache_meta.tmp.$$" \
         && chmod 600 "$_tpl_cache_meta.tmp.$$" \
-        && mv -f "$_tpl_cache_meta.tmp.$$" "$_tpl_cache_meta"
+        && mv -f "$_tpl_cache_meta.tmp.$$" "$_tpl_cache_meta" \
+        && thermal_policy_profile_cache_valid "$_tpl_cache_device" "$_tpl_cache_stock"
 }
 
 thermal_policy_source_hash() {

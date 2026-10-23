@@ -19,16 +19,6 @@ control_worker_main() {
     SO_TRANSITION_LOCK_MAX_ATTEMPTS=1
     SO_TRANSITION_LOCK_RETRY_SLEEP_S=0
 
-    _multicast_write_verified() {
-        case "$1" in on|off) ;; *) return 1 ;; esac
-        ip link set wlan0 multicast "$1" 2>/dev/null || return 1
-        IFS= read -r _mc_readback < /sys/class/net/wlan0/flags 2>/dev/null || return 1
-        case "$_mc_readback" in 0x[0-9a-fA-F]*) ;; *) return 1 ;; esac
-        _mc_actual=off
-        [ $((_mc_readback & 4096)) -eq 0 ] || _mc_actual=on
-        [ "$_mc_actual" = "$1" ]
-    }
-
     _cleanup_nr() {
         [ "${_worker_cleaned:-0}" -eq 0 ] || return 0
         _worker_cleaned=1
@@ -39,30 +29,21 @@ control_worker_main() {
             kill -TERM "$_worker_sleep_pid" 2>/dev/null || true
             wait "$_worker_sleep_pid" 2>/dev/null || true
         fi
-        if [ "${_nr_owned:-0}" -eq 1 ] && [ -n "$_nr_key" ]; then
-            _nr_restore=$(nr_mode_read_saved "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" 2>/dev/null)
-            if nr_mode_lock_acquire "$MODDIR" \
-                && [ -n "$_nr_restore" ] && nr_mode_restore_slot0_verified "$_nr_key" "$_nr_restore"; then
-                _nr_owned=0
-                log -t pixel9pro_ctrl "NR switch: worker exit, restored NR"
-            else
+        if [ -e "$MODDIR/.nr_temporary_lease" ] || [ -L "$MODDIR/.nr_temporary_lease" ]; then
+            if ! nr_mode_lock_acquire "$MODDIR" || ! nr_mode_recover_temporary "$MODDIR"; then
                 _worker_cleanup_result=failed
-                log -t pixel9pro_ctrl "WARNING: worker exit NR restore failed"
+                log -t pixel9pro_ctrl 'WARNING: worker temporary NR restore failed; journal retained'
             fi
-            nr_mode_lock_release || _worker_cleanup_result=failed
         fi
         nr_mode_lock_release || _worker_cleanup_result=failed
-        if [ "${_mc_changed:-0}" -eq 1 ]; then
-            if ! _multicast_write_verified "$_mc_original"; then
-                _worker_cleanup_result=failed
-                log -t pixel9pro_ctrl "WARNING: multicast flag restore failed on worker exit"
-            fi
-        fi
-        runtime_write_value "$MODDIR/.background_cleanup_state" "$SERVICE_BOOT_ID|$_worker_cleanup_result" \
-            || log -t pixel9pro_ctrl "WARNING: worker cleanup receipt could not be saved"
+        runtime_write_value "$MODDIR/.background_cleanup_state" "$WORKER_RUN_ID|$_worker_cleanup_result" \
+            || log -t pixel9pro_ctrl 'WARNING: worker cleanup receipt unconfirmed; this run cannot report successful cleanup'
         rm -f "$SERVICE_LOCK_DIR/owner" "$SERVICE_LOCK_DIR/stopping" 2>/dev/null
         rmdir "$SERVICE_LOCK_DIR" 2>/dev/null || true
     }
+    module_lock_owner_alive "$SERVICE_LOCK_DIR" || return 1
+    WORKER_RUN_ID="$MODULE_OWNER_BOOT|$MODULE_OWNER_PID|$MODULE_OWNER_TICKS"
+    runtime_write_value "$MODDIR/.background_run" "$WORKER_RUN_ID" || return 1
     trap '_cleanup_nr' EXIT
     _worker_signal() {
         _worker_stop_requested=1
@@ -75,6 +56,13 @@ control_worker_main() {
     trap '_worker_signal 130' INT
     trap '_worker_signal 143' TERM
     trap '_worker_signal 129' HUP
+    if [ -e "$MODDIR/.nr_temporary_lease" ] || [ -L "$MODDIR/.nr_temporary_lease" ]; then
+        nr_mode_lock_acquire "$MODDIR" || return 1
+        _nr_recovery_rc=0
+        nr_mode_recover_temporary "$MODDIR" || _nr_recovery_rc=$?
+        nr_mode_lock_release || return 1
+        [ "$_nr_recovery_rc" -eq 0 ] || return 1
+    fi
     if [ "$(cat "$MODDIR/.background_boot_ready" 2>/dev/null)" != "$SERVICE_BOOT_ID" ]; then
         restore_boot_policies || return 1
     fi
@@ -83,7 +71,8 @@ control_worker_main() {
     _write_standby_diag_state() {
         _diag_tmp="${STANDBY_DIAG_FILE}.tmp.$$"
         [ ! -d "$STANDBY_DIAG_FILE" ] || return 1
-        {
+        _diag_payload=$({
+            printf 'boot_id=%s\nworker_id=%s\n' "$SERVICE_BOOT_ID" "$WORKER_RUN_ID"
             printf 'updated_at=%s\n' "$1"
             printf 'screen=%s\n' "$2"
             printf 'worker_mode=%s\n' "$3"
@@ -97,11 +86,8 @@ control_worker_main() {
             printf 'sim2_auto_manage=%s\n' "${11}"
             printf 'cycle_count=%s\n' "${12}"
             printf 'wake_recheck_secs=%s\n' "$UNIFIED_SCREEN_WAKE_RECHECK_S"
-        } > "$_diag_tmp" 2>/dev/null \
-            && mv "$_diag_tmp" "$STANDBY_DIAG_FILE" 2>/dev/null \
-            && [ -f "$STANDBY_DIAG_FILE" ] && return 0
-        rm -f "$_diag_tmp" 2>/dev/null
-        return 1
+        }) || return 1
+        runtime_write_value "$STANDBY_DIAG_FILE" "$_diag_payload"
     }
 
     _sleep_until_worker_cycle() {
@@ -152,32 +138,17 @@ control_worker_main() {
         set -- $_bg_stop_line
         IFS="$_old_ifs"
         case "$2" in ''|*[!0-9]*) _bg_stop_since=0 ;; *) _bg_stop_since="$2" ;; esac
-        case "$3" in 1) _bg_stop_done=1 ;; *) _bg_stop_done=0 ;; esac
+        case "$3" in 1|2) _bg_stop_done="$3" ;; *) _bg_stop_done=0 ;; esac
+        [ "$4" = "$SERVICE_BOOT_ID" ] || { _bg_stop_since=0; _bg_stop_done=0; }
     }
 
     _bg_stop_state_set() {
-        _bg_stop_pkg="$1"
-        _bg_stop_since="$2"
-        _bg_stop_done="$3"
-        mkdir -p "${BG_STOP_STATE_FILE%/*}" 2>/dev/null || return 1
-        [ ! -d "$BG_STOP_STATE_FILE" ] || return 1
-        _bg_state_tmp="${BG_STOP_STATE_FILE}.tmp.$$"
-        if [ -s "$BG_STOP_STATE_FILE" ]; then
-            awk -F'|' -v p="$_bg_stop_pkg" '$1 != p' "$BG_STOP_STATE_FILE" > "$_bg_state_tmp" 2>/dev/null \
-                || { rm -f "$_bg_state_tmp" 2>/dev/null; return 1; }
-        else
-            : > "$_bg_state_tmp" 2>/dev/null \
-                || return 1
-        fi
-        printf '%s|%s|%s\n' "$_bg_stop_pkg" "$_bg_stop_since" "$_bg_stop_done" >> "$_bg_state_tmp" 2>/dev/null \
-            && mv "$_bg_state_tmp" "$BG_STOP_STATE_FILE" 2>/dev/null \
-            && [ -f "$BG_STOP_STATE_FILE" ] && return 0
-        rm -f "$_bg_state_tmp" 2>/dev/null
-        return 1
+        bg_table_replace "$BG_STOP_STATE_FILE" "$1" "$1|$2|$3|$SERVICE_BOOT_ID"
     }
 
-    _enforce_stop_after_leave() {
+    _enforce_stop_after_leave_locked() {
         _bg_stop_next_due=0
+        [ ! -d "$MODDIR/.bg_policy_tx" ] || return 0
         [ "$(bg_read_enabled)" = "on" ] || return 0
         [ "${_screen_off_isolate:-0}" -eq 1 ] 2>/dev/null && return 0
         [ -s "$BG_LIST_FILE" ] || return 0
@@ -207,11 +178,17 @@ control_worker_main() {
             _delay_sec=$((_bg_delay * 60))
             _elapsed=$((_now - _bg_stop_since))
             if [ "$_elapsed" -ge "$_delay_sec" ] 2>/dev/null; then
-                if [ "$_bg_stop_done" -ne 1 ]; then
-                    am force-stop "$_bg_pkg" 2>/dev/null
-                    _bg_stop_state_set "$_bg_pkg" "$_now" 1 \
-                        || log -t pixel9pro_ctrl "WARNING: failed to persist background-stop completion for $_bg_pkg"
-                    log -t pixel9pro_ctrl "L1: force-stopped $_bg_pkg after ${_bg_delay}m away from foreground"
+                if [ "$_bg_stop_done" -eq 0 ]; then
+                    if bg_force_stop_verified "$_bg_pkg"; then
+                        _bg_stop_state_set "$_bg_pkg" "$_now" 1 \
+                            || log -t pixel9pro_ctrl "WARNING: background-stop completed but receipt failed for $_bg_pkg"
+                        log -t pixel9pro_ctrl "L1: owner-user force-stop verified for $_bg_pkg"
+                    else
+                        # One failed attempt per foreground departure; do not
+                        # issue the same failed Binder request every 15s.
+                        _bg_stop_state_set "$_bg_pkg" "$_now" 2 || true
+                        log -t pixel9pro_ctrl "WARNING: background-stop unconfirmed for $_bg_pkg"
+                    fi
                 fi
             else
                 _due=$((_delay_sec - _elapsed))
@@ -222,6 +199,13 @@ control_worker_main() {
             fi
         done < "$BG_LIST_FILE"
     }
+
+    _enforce_stop_after_leave() (
+        . "$MODDIR/scripts/state_io_lib.sh" || exit 1
+        state_lock_acquire "$MODDIR/.locks/bg_policy.lock" 2 || exit 0
+        trap 'state_lock_release "$MODDIR/.locks/bg_policy.lock" >/dev/null 2>&1' EXIT
+        _enforce_stop_after_leave_locked
+    )
 
     # NR is optional: do not issue Settings IPC or rewrite its lock while off.
     _nr_key=""
@@ -239,25 +223,9 @@ control_worker_main() {
     fi
 
     _NR_LTE="$NR_LTE_MODE"
-    _mc_state=""
-    _mc_changed=0
-    _mc_original=""
-    _mc_flags=$(cat /sys/class/net/wlan0/flags 2>/dev/null)
-    case "$_mc_flags" in
-        0x[0-9a-fA-F]*)
-            if [ $((_mc_flags & 4096)) -ne 0 ]; then _mc_original=on; else _mc_original=off; fi ;;
-    esac
-    _cur_slot0=$(nr_mode_slot0 "$_cur")
-    case "$_cur_slot0" in
-        ''|null|*[!0-9-]*) _nr_state="unknown" ;;
-        *)
-            if [ "$_cur_slot0" -lt "$_NR_LTE" ] 2>/dev/null || [ "$_cur_slot0" -eq "$_NR_LTE" ] 2>/dev/null; then
-                _nr_state="lte"
-            else
-                _nr_state="5g"
-            fi
-            ;;
-    esac
+    if nr_mode_is_nr_capable "$_cur"; then _nr_state=5g
+    elif nr_mode_is_valid_raw "$_cur"; then _nr_state=lte
+    else _nr_state=unknown; fi
     _nr_off_since=0
     _nr_owned=0
     _nr_restored=0
@@ -272,9 +240,9 @@ control_worker_main() {
     # _NR_LTE_POLL: 切换到 LTE 后,worker 多久醒一次检查屏幕状态。
     # 60s 节奏会让 alarmtimer.4.auto 与 suspend 流程挤兑(实测 71 次 failed_suspend)。
     # 300s 把 wakeup 密度降到 12 次/h,给 kernel 真正的 deep suspend 窗口。
-    # 代价:屏幕点亮后 NR 恢复最多滞后 5 分钟(用户体感可接受,RIL 数据通道不受影响)。
+    # 屏幕点亮后在下次既有低频检查恢复；不为恢复增加高频待机检查。
     _NR_LTE_POLL="$NR_LTE_RECHECK_S"
-    _thermal_last_sample=$(tail -n 1 "$THERMAL_HISTORY" 2>/dev/null | cut -d, -f1)
+    _thermal_last_sample=0
     _control_thermal_last_sample=0
     _thermal_status=""
     case "$_thermal_last_sample" in ''|*[!0-9]*) _thermal_last_sample=0 ;; esac
@@ -291,7 +259,8 @@ control_worker_main() {
 
     while true; do
         background_worker_should_run || break
-        _now=$(date +%s 2>/dev/null || echo 0)
+        _epoch_now=$(date +%s 2>/dev/null || echo 0)
+        _now=$(service_uptime)
         _uptime_now=$(service_uptime)
         if [ "$_late_settings_due" -gt 0 ] && [ "$_uptime_now" -ge "$_late_settings_due" ]; then
             apply_keep5g_standby_settings \
@@ -328,17 +297,6 @@ control_worker_main() {
         if [ "$_idle_isolate" != "$_idle_isolate_prev" ]; then
             log -t pixel9pro_ctrl "Idle isolate: $_idle_isolate"
             _idle_isolate_prev="$_idle_isolate"
-        fi
-
-        # --- WiFi multicast: state-transition only ---
-        if [ -n "$_mc_original" ] && [ "$_screen" != "$_mc_state" ]; then
-            _mc_changed=1
-            if [ "$_screen" = "off" ]; then
-                _multicast_write_verified off || log -t pixel9pro_ctrl "WARNING: multicast off readback failed"
-            else
-                _multicast_write_verified on || log -t pixel9pro_ctrl "WARNING: multicast on readback failed"
-            fi
-            _mc_state="$_screen"
         fi
 
         # --- Screen transition tracking ---
@@ -392,7 +350,7 @@ control_worker_main() {
         # --- NR screen-off switch ---
         background_worker_should_run || break
         _nr_enabled=$(read_onoff_file "$NR_SWITCH_FILE" "$NR_SCREEN_SWITCH_DEFAULT")
-        if { [ "$_nr_enabled" = on ] || [ "$_nr_owned" -eq 1 ]; } && nr_mode_lock_acquire "$MODDIR"; then
+        if { [ "$_nr_enabled" = on ] || [ "$_nr_owned" -eq 1 ] || [ -e "$MODDIR/.nr_temporary_lease" ]; } && nr_mode_lock_acquire "$MODDIR"; then
         # CGI and worker serialize the complete decision, not only Settings.
         _nr_enabled=$(read_onoff_file "$NR_SWITCH_FILE" "$NR_SCREEN_SWITCH_DEFAULT")
         if { [ -z "$_nr_key" ] || [ "$_nr_state" = unknown ]; } && [ "$_nr_enabled" = on ]; then
@@ -412,8 +370,7 @@ control_worker_main() {
         else
             if [ "$_nr_enabled" != "on" ]; then
                 if [ "$_nr_owned" -eq 1 ]; then
-                    _nr_restore=$(nr_mode_read_saved "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" 2>/dev/null)
-                    if [ -n "$_nr_restore" ] && nr_mode_restore_slot0_verified "$_nr_key" "$_nr_restore"; then
+                    if nr_mode_recover_temporary "$MODDIR"; then
                         _nr_state="5g"
                         _nr_owned=0
                         _nr_restored=$_now
@@ -449,12 +406,16 @@ control_worker_main() {
                             else
                                 _lte_val=$(nr_mode_replace_slot0 "$_cur" "$_NR_LTE")
                             fi
-                            if [ -n "${_lte_val:-}" ] && nr_mode_write_verified "$_nr_key" "$_lte_val"; then
+                            if [ -n "${_lte_val:-}" ] && nr_mode_apply_temporary "$MODDIR" "$_nr_key" "$_cur" "$_lte_val"; then
                                 _nr_state="lte"
                                 _nr_owned=1
                                 log -t pixel9pro_ctrl "NR switch: off ${_elapsed}s, switched to LTE ($_lte_val)"
                             elif [ -n "${_lte_val:-}" ]; then
                                 log -t pixel9pro_ctrl "WARNING: NR switch to LTE failed ($_lte_val)"
+                                if [ -e "$MODDIR/.nr_temporary_lease" ]; then
+                                    _nr_owned=1
+                                    _nr_state=lte
+                                fi
                             fi
                             _lte_val=""
                         fi
@@ -463,8 +424,7 @@ control_worker_main() {
             else
                 _nr_off_since=0
                 if [ "$_nr_owned" -eq 1 ]; then
-                    _nr_restore=$(nr_mode_read_saved "$NR_MODE_FILE" "$NR_SAVED_MODE_DEFAULT" 2>/dev/null)
-                    if [ -n "$_nr_restore" ] && nr_mode_restore_slot0_verified "$_nr_key" "$_nr_restore"; then
+                    if nr_mode_recover_temporary "$MODDIR"; then
                         _nr_state="5g"
                         _nr_owned=0
                         _nr_restored=$_now
@@ -513,7 +473,7 @@ control_worker_main() {
             fi
             [ "$_screen" = on ] && _control_thermal_last_sample=$_now
             if [ "$_history_due" -eq 1 ]; then
-                thermal_history_record "$_json" "$_now" "$_screen" "$_thermal_source" \
+                thermal_history_record "$_json" "$_epoch_now" "$_screen" "$_thermal_source" \
                     || log -t pixel9pro_ctrl "WARNING: failed to append temperature history"
                 _thermal_last_sample=$_now
             fi
@@ -678,7 +638,7 @@ control_worker_main() {
             _next_sleep_secs="$_bg_stop_next_due"
         fi
         _diag_profile_policy=$(profile_state_read_policy)
-        _write_standby_diag_state "$_now" "$_screen" "$_worker_mode" "$_next_sleep_secs" 0 "$_nr_enabled" "$_nr_state" "$_diag_profile_policy" "$_active_profile" "$_idle_isolate" "$_sim2_auto" "$_cycle_count" \
+        _write_standby_diag_state "$_epoch_now" "$_screen" "$_worker_mode" "$_next_sleep_secs" 0 "$_nr_enabled" "$_nr_state" "$_diag_profile_policy" "$_active_profile" "$_idle_isolate" "$_sim2_auto" "$_cycle_count" \
             || log -t pixel9pro_ctrl "WARNING: failed to persist standby diagnostics"
         _sleep_until_worker_cycle "$_next_sleep_secs"
     done

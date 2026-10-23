@@ -10,6 +10,7 @@
 BASEBAND_STATUS_MODULE_ID="${BASEBAND_STATUS_MODULE_ID:-pixel9pro_baseband_trial}"
 BASEBAND_STATUS_ACTIVE_ROOT="${BASEBAND_STATUS_ACTIVE_ROOT:-/data/adb/modules}"
 BASEBAND_STATUS_UPDATE_ROOT="${BASEBAND_STATUS_UPDATE_ROOT:-/data/adb/modules_update}"
+BASEBAND_STATUS_BOOT_ID_PATH="${BASEBAND_STATUS_BOOT_ID_PATH:-/proc/sys/kernel/random/boot_id}"
 BASEBAND_STATUS_DIR=""
 BASEBAND_STATUS_MODULE_DIR_STATE="missing"
 BASEBAND_STATUS_SOURCE=""
@@ -165,6 +166,28 @@ baseband_status_emit_json() {
     _bb_status_extra_allowed=$(baseband_status_get "$BASEBAND_STATUS_RECEIPT" effective_extra_files_allowed yes)
     _bb_status_migration=$(baseband_status_get "$BASEBAND_STATUS_RECEIPT" migration_state unknown)
     _bb_status_boot=$(baseband_status_get "$BASEBAND_STATUS_RECEIPT" boot_id unknown)
+    _bb_status_current_boot=$(cat "$BASEBAND_STATUS_BOOT_ID_PATH" 2>/dev/null | baseband_status_trim)
+    if [ "$BASEBAND_STATUS_SOURCE" = active ] && [ "$BASEBAND_STATUS_ENABLED" = true ] \
+        && [ "$_bb_status_has_receipt" = true ] && [ "$_bb_status_schema" -eq 3 ] 2>/dev/null; then
+        _bb_status_boot_error=""
+        if [ -z "$_bb_status_current_boot" ]; then
+            _bb_status_runtime_status=UNVERIFIED_BOOT
+            _bb_status_current_freshness=unknown_boot
+            _bb_status_runtime_freshness=unknown_boot
+            _bb_status_boot_error=boot_id_unavailable
+        elif [ "$_bb_status_boot" != "$_bb_status_current_boot" ]; then
+            _bb_status_runtime_status=STALE_BOOT
+            _bb_status_current_freshness=stale_boot
+            _bb_status_runtime_freshness=stale_boot
+            _bb_status_boot_error=receipt_boot_mismatch
+        fi
+        if [ -n "$_bb_status_boot_error" ]; then
+            case "$_bb_status_errors" in
+                ''|none) _bb_status_errors="$_bb_status_boot_error" ;;
+                *) _bb_status_errors="$_bb_status_errors,$_bb_status_boot_error" ;;
+            esac
+        fi
+    fi
     _bb_status_content_image=$(baseband_status_get "$BASEBAND_STATUS_RECEIPT" content_image missing)
     _bb_status_source_path=$(baseband_status_get "$BASEBAND_STATUS_RECEIPT" source_path "$BASEBAND_STATUS_DIR/system")
     _bb_status_effective_path=$(baseband_status_get "$BASEBAND_STATUS_RECEIPT" effective_path /product,/vendor)

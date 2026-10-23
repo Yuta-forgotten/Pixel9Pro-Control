@@ -1,6 +1,6 @@
 id=pixel9pro_control
 name=Pixel 9 Pro 温控调度控制台
-version=v4.6.24-thermalonly.1-preview
-versionCode=189
+version=v4.6.24
+versionCode=190
 author=Yuta
-description=温控零覆盖默认 · 可关闭 Pixel 调度 · ZRAM/VM 策略 · 双 SKU UECap · NR/SIM2 · WebUI
+description=WebUI · 首次启动后显示已选配置摘要

@@ -17,8 +17,8 @@ VM_ZRAM_SIZE_MAX_BYTES=17179869184
 # Requests are accepted on the kernel ZRAM page boundary; Scene/mmd may use
 # finer values than the old UI slider step.
 VM_ZRAM_SIZE_STEP_BYTES=4096
-VM_ZRAM_MB_MIN=1024
-VM_ZRAM_MB_MAX=16384
+VM_ZRAM_MB_MIN=$(( (VM_ZRAM_SIZE_MIN_BYTES + 999999) / 1000000 ))
+VM_ZRAM_MB_MAX=$(( VM_ZRAM_SIZE_MAX_BYTES / 1000000 ))
 VM_ZRAM_PERCENT_MIN=10
 VM_ZRAM_PERCENT_MAX=100
 
@@ -86,6 +86,13 @@ vm_write_params() {
     vm_params_match "$_vm_sw" "$_vm_mfk" "$_vm_wsf" "$_vm_vcp" && return 0
 
     _vm_old=$(vm_current_params)
+    # Refuse a partial/unreadable baseline before touching any sysctl. Without
+    # four actual values a failed write cannot be rolled back safely.
+    set -- $_vm_old
+    [ "$#" -eq 4 ] || return 1
+    for _vm_old_value in "$@"; do
+        case "$_vm_old_value" in ''|*[!0-9]*) return 1 ;; esac
+    done
     if ! vm_write_params_raw "$_vm_sw" "$_vm_mfk" "$_vm_wsf" "$_vm_vcp" \
         || ! vm_params_match "$_vm_sw" "$_vm_mfk" "$_vm_wsf" "$_vm_vcp"; then
         set -- $_vm_old
@@ -240,14 +247,10 @@ vm_zram_state_field() {
 }
 
 vm_zram_atomic_state_write() {
-    _vm_state_path="$1"
-    _vm_state_value="$2"
-    _vm_state_tmp="${_vm_state_path}.tmp.$$"
-    printf '%s\n' "$_vm_state_value" > "$_vm_state_tmp" 2>/dev/null \
-        && mv "$_vm_state_tmp" "$_vm_state_path" 2>/dev/null \
-        && [ "$(cat "$_vm_state_path" 2>/dev/null)" = "$_vm_state_value" ]
+    command -v state_atomic_write >/dev/null 2>&1 \
+        || . "${MODDIR:-${MODPATH:-/data/adb/modules/pixel9pro_control}}/scripts/state_io_lib.sh" || return 1
+    state_atomic_write "$1" "$2"
 }
-
 vm_zram_record_receipt() {
     _vm_receipt_txid="$1"
     _vm_receipt_phase="$2"

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
@@ -44,9 +45,19 @@ def run() -> int:
     if args.output is None:
         raise ContractError(detail="--output is required unless --validate-only or --fingerprint is used")
     output = args.output.resolve()
-    write_deterministic_zip(files, output)
-    report = audit_zip(output)
+    if output.suffix.lower() != ".zip" or any(output == item.source_path.resolve() for item in files):
+        raise ContractError(detail="--output must be a ZIP path outside the runtime source files")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(prefix=f".{output.name}.", suffix=".candidate", dir=output.parent, delete=False) as handle:
+        candidate = Path(handle.name)
+    try:
+        write_deterministic_zip(files, candidate)
+        report = audit_zip(candidate)
+        candidate.replace(output)
+    finally:
+        candidate.unlink(missing_ok=True)
     result = asdict(report)
+    result["archive"] = str(output)
     result["source_fingerprint"] = fingerprint
     result["ok"] = True
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

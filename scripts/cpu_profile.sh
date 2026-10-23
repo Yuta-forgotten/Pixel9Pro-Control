@@ -60,10 +60,13 @@ UCLAMP_CAP_MIN="${CPU_PROFILE_UCLAMP_PATH:-/proc/sys/kernel/sched_util_clamp_min
 SCHED_OWNER_FILE="$MODDIR/.cpu_sched_owner"
 
 if [ "${CPU_PROFILE_TEST_MODE:-0}" = "1" ]; then
-    case "$CPU0:$CPU4:$CPU7:$CPUSET_ROOT:$VENDOR_SCHED:$UCLAMP_CAP_MIN" in
-        /sdcard/Download/Pixel9Pro-Control-TestLab/runtime/*|/tmp/pixel9pro_* ) ;;
-        *) echo "cpu_profile: unsafe test fixture paths" >&2; exit 64 ;;
-    esac
+    for _cpu_fixture_path in "$CPU0" "$CPU4" "$CPU7" "$CPUSET_ROOT" "$VENDOR_SCHED" "$UCLAMP_CAP_MIN"; do
+        case "$_cpu_fixture_path" in
+            /sdcard/Download/Pixel9Pro-Control-TestLab/runtime/*|/tmp/pixel9pro_*) ;;
+            *) echo "cpu_profile: unsafe test fixture paths" >&2; exit 64 ;;
+        esac
+        case "/$_cpu_fixture_path/" in */../*|*/./*) echo "cpu_profile: unsafe test fixture paths" >&2; exit 64 ;; esac
+    done
 fi
 
 write_required_value() {
@@ -394,7 +397,7 @@ case "$PROFILE" in
         printf "foreground_owner=%s (observe-only; framework may rewrite)\n" "$(cpu_profile_owner foreground_cpus)"
         echo ""
         echo "=== Thermal ==="
-        dumpsys thermalservice 2>/dev/null | grep "Thermal Status:" | head -1
+        timeout -k 1 6 dumpsys -t 5 thermalservice 2>/dev/null | grep "Thermal Status:" | head -1
         ;;
 
     *)

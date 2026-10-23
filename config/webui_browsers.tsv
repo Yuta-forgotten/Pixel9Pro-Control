@@ -1,0 +1,15 @@
+# package|label
+# Trusted browser apps for one-shot loopback session bootstrap on user 0.
+# Package UID is resolved by PackageManager; User-Agent is never an identity.
+com.android.chrome|Chrome
+com.chrome.beta|Chrome Beta
+com.chrome.dev|Chrome Dev
+com.chrome.canary|Chrome Canary
+org.chromium.chrome|Chromium
+org.mozilla.firefox|Firefox
+org.mozilla.firefox_beta|Firefox Beta
+org.mozilla.fenix|Firefox Nightly
+com.microsoft.emmx|Edge
+com.brave.browser|Brave
+com.sec.android.app.sbrowser|Samsung Internet
+com.android.browser|System Browser

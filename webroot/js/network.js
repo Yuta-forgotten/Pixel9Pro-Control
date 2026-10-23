@@ -7,6 +7,7 @@ const state = {
   nrSwitch: 'off',
   nrContract: null,
   nrBusy: false,
+  nrRecoveryPending: false,
   sim2AutoManage: 'off',
   idleIsolateMode: 'off',
   standbyGuardBusy: false,
@@ -30,6 +31,9 @@ const state = {
 };
 
 const UECAP_REINSTALL_NOTICE = '更改配置需卸载本模块、重启后重新安装并在向导选择';
+// Include bounded Android IPC plus failure rollback; this is request patience,
+// never a modal lifetime or a reason to prevent navigation.
+const NETWORK_WRITE_TIMEOUT_MS = 30000;
 const NETWORK_READ_TIMEOUTS = Object.freeze({
   nr: 12000,
   uecap: 30000,
@@ -74,10 +78,11 @@ function buildNrSwitchDetail() {
   return `<b>NR 息屏降级</b><br><br>息屏超过 <b>${seconds(delay)}</b> 后，将 DSDS slot 0 切换为 LTE mode ${lteMode}；亮屏恢复已保存的 NR mode，slot 1 不变。<br><br><b>时序参数</b><br>息屏延迟：${seconds(delay)}<br>恢复冷却：${seconds(cooldown)}<br>LTE 复查：${seconds(recheck)}<br><br><b>限制</b><br>mode 无效、恢复值无法持久化或热点启用时跳过切换；切换可能短暂中断蜂窝数据。`;
 }
 function renderNrSwitchRows(data) {
+  state.nrRecoveryPending = data.nr_recovery_pending === true && data.nr_switch !== 'on';
   refs.nrSwitchRows.replaceChildren();
   const isOn = data.nr_switch === 'on';
-  const slot0Raw = data.current_slot0 || String(data.current_mode || '').split(',')[0];
-  const modeNum = Number(slot0Raw);
+  const slot0Raw = data.current_slot0 ?? String(data.current_mode || '').split(',')[0];
+  const modeNum = String(slot0Raw).trim() === '' ? NaN : Number(slot0Raw);
   const settingLte = !Number.isNaN(modeNum) && modeNum < 23;
   const actualRat = String(data.actual_rat || '').toUpperCase();
   const actualKnown = actualRat && actualRat !== 'UNKNOWN';
@@ -98,6 +103,10 @@ function renderNrSwitchRows(data) {
   refs.nrSwitchDesc.textContent = isOn
     ? `已开启：息屏 ${delayText} 后切换至 LTE，亮屏自动恢复 5G。`
     : `息屏 ${delayText} 后切换至 LTE，亮屏自动恢复。`;
+  if (state.nrRecoveryPending) {
+    refs.nrSwitchToggleLabel.textContent = '重试恢复';
+    refs.nrSwitchDesc.textContent = 'NR 策略已关闭，仍有临时模式待恢复；点击可按保存的原值重试恢复。';
+  }
 }
 
 function syncStandbyGuardButtons() {
@@ -173,7 +182,7 @@ function renderStandbyGuard(data) {
   [
     { label: '后台总开关', value: isolateOn ? '已关闭（不再记录温度）' : '已开启', cls: isolateOn ? 'warn' : 'good' },
     { label: '实际进程', value: workerLabel, cls: data.final === false ? 'warn' : 'off' },
-    { label: '临时策略收尾', value: data.background_cleanup === 'failed' ? '后台已停止，但临时策略恢复失败；请查看模块日志' : data.background_cleanup === 'ok' ? '已完成' : '暂无本次停止记录', cls: data.background_cleanup === 'failed' ? 'warn' : 'off' },
+    { label: '临时策略收尾', value: data.background_cleanup === 'failed' ? '后台已停止，但临时策略恢复失败；请查看模块日志' : data.background_cleanup === 'unconfirmed' ? '本次 worker 的清理回执缺失，尚未确认恢复' : data.background_cleanup === 'ok' ? '已完成' : '暂无本次停止记录', cls: ['failed', 'unconfirmed'].includes(data.background_cleanup) ? 'warn' : 'off' },
     { label: '温度记录', value: isolateOn ? '已暂停；已有历史仍可查看和导出' : '亮屏约 60 秒，息屏约 15 分钟；不主动唤醒休眠内核', cls: isolateOn ? 'off' : 'good' },
   ].forEach((row) => refs.idleIsolateRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
@@ -438,9 +447,9 @@ function renderUecapRows(data) {
   if (containers.some((container) => !container.isConnected)) refs.uecapRows.replaceChildren(...containers);
 }
 
-async function refreshNrSwitch() {
+async function refreshNrSwitch({ readback = false } = {}) {
   try {
-    const data = await apiFetch(API.nrSwitch, { timeoutMs: NETWORK_READ_TIMEOUTS.nr, priority: 'normal', scope: 'network.nr.read' });
+    const data = await apiFetch(API.nrSwitch, { timeoutMs: NETWORK_READ_TIMEOUTS.nr, dedupe: !readback, priority: readback ? 'interactive' : 'normal', scope: 'network.nr.read' });
     state.nrSwitch = data.nr_switch || 'off';
     state.nrContract = {
       screenOffDelayS: Number(data.screen_off_delay_s),
@@ -519,10 +528,10 @@ async function setStandbyGuard(update, successText, logText) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(update),
-      requestClass: 'lifecycle', timeoutMs: 15000, scope: 'network.standby'
+      requestClass: 'lifecycle', timeoutMs: NETWORK_WRITE_TIMEOUT_MS, scope: 'network.standby'
     });
     if (data.ok) {
-      const readback = await apiFetch(API.standbyGuard, { timeoutMs: NETWORK_READ_TIMEOUTS.standby, priority: 'interactive', scope: 'network.standby.readback' });
+      const readback = await apiFetch(API.standbyGuard, { timeoutMs: NETWORK_READ_TIMEOUTS.standby, dedupe: false, priority: 'interactive', scope: 'network.standby.readback' });
       const mismatch = Object.keys(update).find((key) => String(readback?.[key] ?? '') !== String(update[key]));
       if (readback?.ok === false || mismatch) throw new Error(mismatch ? `状态回读不一致：${mismatch}` : (readback?.error || '状态回读失败'));
       renderStandbyGuard(readback);
@@ -593,12 +602,13 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
 
   await sleep(1800);
 
-  while (state.uecapVerifyNonce === nonce && Date.now() < deadline) {
+  while (state.uecapVerifyNonce === nonce && Date.now() < deadline && core().isWebUiActive()) {
     state.uecapVerifyState = 'verifying';
     if (lastData) renderUecapRows(lastData);
 
     try {
-      const data = await apiFetch(API.uecap, { timeoutMs: NETWORK_READ_TIMEOUTS.uecap, priority: 'normal', scope: 'network.uecap.read' });
+      const data = await apiFetch(API.uecap, { timeoutMs: Math.min(NETWORK_READ_TIMEOUTS.uecap, Math.max(1, deadline - Date.now())), dedupe: false, priority: 'normal', scope: 'network.uecap.read' });
+      if (state.uecapVerifyNonce !== nonce) return;
       lastData = data;
       state.uecapMode = data.requested_mode || mode;
       state.uecapActiveMode = data.active_mode || 'custom';
@@ -621,7 +631,10 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
         return;
       }
     } catch (err) {
-      if (requireFeature('core').isRequestCancelled?.(err)) return;
+      if (requireFeature('core').isRequestCancelled?.(err)) {
+        lastErr = '校验已暂停，请手动刷新确认';
+        break;
+      }
       lastErr = err.message || 'request failed';
     }
 
@@ -629,17 +642,18 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
   }
 
   if (state.uecapVerifyNonce !== nonce) return;
+  if (!core().isWebUiActive()) lastErr = '页面已进入后台，校验暂停，请手动刷新确认';
 
   state.uecapBusy = false;
   state.uecapPendingMode = '';
   state.uecapExpectedHash = '';
   state.uecapVerifyState = 'failed';
   state.uecapVerifyMessage = lastErr
-    ? `${Math.round(UECAP_VERIFY_TIMEOUT_MS / 1000)} 秒内未确认（${lastErr}）`
+    ? `未确认（${lastErr}）`
     : `${Math.round(UECAP_VERIFY_TIMEOUT_MS / 1000)} 秒内未确认，请手动刷新复查`;
 
   if (lastData) renderUecapRows(lastData);
-  showToast(`${label} 已提交切换，但 ${Math.round(UECAP_VERIFY_TIMEOUT_MS / 1000)} 秒内未完成校验，请手动刷新复查`, 4200);
+  showToast(`${label} 已提交切换，但${state.uecapVerifyMessage}`, 4200, 'warn');
   appendLog(`UE 配置待复查: ${label}`, 'warn');
 }
 
@@ -647,10 +661,12 @@ async function toggleNrSwitch() {
   if (state.nrBusy) return;
   state.nrBusy = true;
   try {
-    const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'toggle' }), timeoutMs: 15000, priority: 'interactive', scope: 'network.nr' });
+    const request = state.nrRecoveryPending ? { action: 'set', enabled: 'off' } : { action: 'toggle' };
+    const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), timeoutMs: NETWORK_WRITE_TIMEOUT_MS, priority: 'interactive', scope: 'network.nr' });
     if (data.ok) {
+      state.nrRecoveryPending = false;
       state.nrSwitch = data.nr_switch;
-      const readback = await refreshNrSwitch();
+      const readback = await refreshNrSwitch({ readback: true });
       if (!readback || state.nrSwitch !== data.nr_switch) {
         showToast('NR 设置已提交，但状态回读未确认');
         appendLog('NR 息屏降级提交后状态回读未确认', 'warn');
@@ -662,6 +678,12 @@ async function toggleNrSwitch() {
       showToast('操作失败');
     }
   } catch (err) {
+    if (err?.payload?.committed && err.payload.nr_switch === 'off') {
+      state.nrRecoveryPending = true;
+      state.nrSwitch = 'off';
+      refs.nrSwitchToggleLabel.textContent = '重试恢复';
+      refs.nrSwitchDesc.textContent = 'NR 策略已关闭，临时网络模式恢复尚未确认；恢复记录已保留，可刷新核对。';
+    }
     const message = err?.message || String(err);
     if (!requireFeature('core').isRequestCancelled?.(err)) showToast(`请求失败：${message}`);
     appendLog(`NR 息屏降级请求失败：${message}`, 'err');
@@ -891,8 +913,10 @@ function renderNtpCard(data) {
     return;
   }
   state.ntpServers = servers;
-  const requested = data.ntp_server || data.current || data.server || data.default_server || servers[0].id;
-  const current = servers.some((server) => server.id === requested) ? requested : servers[0].id;
+  // Empty is an authoritative unset system value, not permission to select
+  // the module catalog default or suppress the user's first explicit choice.
+  const current = String(data.ntp_server ?? data.current ?? data.server ?? '');
+  const managed = data.ntp_server_allowed !== false && servers.some((server) => server.id === current);
   state.ntpServer = current;
   servers.forEach((srv) => {
     const card = document.createElement('button');
@@ -922,15 +946,20 @@ function renderNtpCard(data) {
   const deviceTimeVal = deviceTimeRow.querySelector('.data-val');
   if (deviceTimeVal) deviceTimeVal.id = 'ntp-device-time';
   refs.ntpInfoRows.appendChild(deviceTimeRow);
-  refs.ntpInfoRows.appendChild(buildInfoRow('自动同步', data.auto_time === '1' ? '已开启' : '已关闭', data.auto_time === '1' ? 'good' : 'warn'));
+  if (!managed) refs.ntpInfoRows.appendChild(buildInfoRow('当前服务器', data.ntp_server_source === 'system_default'
+    ? '系统默认（未设置显式服务器）' : current ? `${current}（不在模块目录中）` : '未读取到有效配置', 'warn'));
+  const autoTime = String(data.auto_time);
+  refs.ntpInfoRows.appendChild(buildInfoRow('自动同步', autoTime === '1' ? '已开启' : autoTime === '0' ? '已关闭' : '状态未确认', autoTime === '1' ? 'good' : 'warn'));
   startDeviceClock();
   const ntpLabel = servers.find((s) => s.id === current)?.name || current;
-  refs.ntpDesc.textContent = `当前: ${ntpLabel} (${current})`;
+  refs.ntpDesc.textContent = data.ntp_server_source === 'system_default'
+    ? '当前: 系统默认（未设置显式服务器）；选择目录项后才会修改'
+    : managed ? `当前: ${ntpLabel} (${current})` : `当前: ${current || '未知'} · 未托管，选择目录项后才会修改`;
 }
 
-async function refreshNtp() {
+async function refreshNtp({ readback = false } = {}) {
   try {
-    const data = await apiFetch(API.ntp, { timeoutMs: NETWORK_READ_TIMEOUTS.ntp, priority: 'normal', scope: 'network.ntp.read' });
+    const data = await apiFetch(API.ntp, { timeoutMs: NETWORK_READ_TIMEOUTS.ntp, dedupe: !readback, priority: readback ? 'interactive' : 'normal', scope: 'network.ntp.read' });
     renderNtpCard(data);
     return true;
   } catch (err) {
@@ -948,11 +977,11 @@ async function setNtpServer(server) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ server }),
-      timeoutMs: 15000, priority: 'interactive', scope: 'network.ntp'
+      timeoutMs: NETWORK_WRITE_TIMEOUT_MS, priority: 'interactive', scope: 'network.ntp'
     });
     if (data.ok) {
       const label = state.ntpServers.find((s) => s.id === server)?.name || server;
-      const readback = await refreshNtp();
+      const readback = await refreshNtp({ readback: true });
       if (!readback || state.ntpServer !== server) {
         showToast(`NTP 已提交，但 ${label} 状态回读未确认`);
         appendLog(`NTP: ${server}（状态回读未确认）`, 'warn');
@@ -960,7 +989,7 @@ async function setNtpServer(server) {
         showToast(`NTP 已切换为 ${label}，即时同步未完成`);
         appendLog(`NTP: ${server}（即时同步未完成）`, 'warn');
       } else {
-        showToast(`NTP 已切换为 ${label} 并同步`);
+        showToast(`NTP 已切换为 ${label}，系统已接受校时请求`);
         appendLog(`NTP: ${server}`, 'ok');
       }
     } else {
@@ -986,16 +1015,16 @@ async function syncNtp() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'sync' }),
-      timeoutMs: 15000, priority: 'interactive', scope: 'network.ntp'
+      timeoutMs: NETWORK_WRITE_TIMEOUT_MS, priority: 'interactive', scope: 'network.ntp'
     });
     if (data.ok) {
-      const readback = await refreshNtp();
+      const readback = await refreshNtp({ readback: true });
       if (!readback) {
         showToast('时间同步已提交，但状态回读未确认');
         appendLog('NTP 同步提交后状态回读未确认', 'warn');
       } else {
-        showToast('时间已同步');
-        appendLog(`NTP 同步完成: ${data.device_time}`, 'ok');
+        showToast('系统已接受校时请求');
+        appendLog(`校时请求已接受，设备当前时间: ${data.device_time}`, 'ok');
       }
     } else {
       showToast('同步失败');

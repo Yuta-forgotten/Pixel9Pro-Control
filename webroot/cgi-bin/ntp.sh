@@ -37,18 +37,24 @@ restore_system_ntp() {
 }
 
 emit_ntp_state() {
-    server=$(runtime_android_settings get global ntp_server 2>/dev/null | tr -d ' \n\r')
-    server=$(ntp_server_normalize "$server" 2>/dev/null) \
-        || json_error '500 Internal Server Error' 'NTP default is missing'
+    server=$(runtime_android_settings get global ntp_server 2>/dev/null) \
+        || json_error '503 Service Unavailable' 'cannot read the system NTP server'
+    server=$(printf '%s' "$server" | tr -d ' \n\r')
     default_server=$(ntp_server_default 2>/dev/null) \
         || json_error '500 Internal Server Error' 'NTP default is missing'
-    auto_time=$(runtime_android_settings get global auto_time 2>/dev/null | tr -d ' \n\r')
+    server_source=explicit
+    case "$server" in ''|null) server=''; server_source=system_default ;; esac
+    server_allowed=false
+    ntp_server_is_allowed "$server" && server_allowed=true
+    auto_time=$(runtime_android_settings get global auto_time 2>/dev/null) || auto_time=unknown
+    auto_time=$(printf '%s' "$auto_time" | tr -d ' \n\r')
+    case "$auto_time" in 0|1) ;; *) auto_time=unknown ;; esac
     dev_time=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
     servers=$(ntp_servers_json)
     json_headers
-    printf '{"ntp_server":"%s","default_server":"%s","auto_time":"%s","device_time":"%s","servers":%s}' \
+    printf '{"ntp_server":"%s","default_server":"%s","auto_time":"%s","device_time":"%s","servers":%s,"ntp_server_allowed":%s,"ntp_server_source":"%s"}' \
         "$(json_escape "$server")" "$(json_escape "$default_server")" \
-        "$(json_escape "${auto_time:-1}")" "$(json_escape "$dev_time")" "${servers:-[]}"
+        "$(json_escape "$auto_time")" "$(json_escape "$dev_time")" "${servers:-[]}" "$server_allowed" "$server_source"
 }
 
 if [ "$REQUEST_METHOD" = "GET" ]; then
@@ -61,8 +67,11 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
     read_json_body 512
     body="$JSON_BODY"
 
-    action=$(printf '%s' "$body" | sed -n 's/.*"action" *: *"\([^"]*\)".*/\1/p')
-    server=$(printf '%s' "$body" | sed -n 's/.*"server" *: *"\([^"]*\)".*/\1/p')
+    cgi_json_schema 'action:string server:string'
+    action=$(cgi_json_field action)
+    server=$(cgi_json_field server)
+    case "$action" in ''|sync) ;; *) json_error '400 Bad Request' 'invalid NTP action' ;; esac
+    [ -z "$action" ] || [ -z "$server" ] || json_error '400 Bad Request' 'use server or action, not both'
 
     if [ "$action" = "sync" ]; then
         runtime_android_cmd network_time_update_service force_refresh >/dev/null 2>&1 \
@@ -73,10 +82,15 @@ elif [ "$REQUEST_METHOD" = "POST" ]; then
     elif [ -n "$server" ]; then
         ntp_server_is_allowed "$server" \
             || json_error '400 Bad Request' 'unsupported server'
+        [ ! -d "$NTP_SAVE" ] && [ ! -L "$NTP_SAVE" ] \
+            || json_error '500 Internal Server Error' 'NTP state path is not a regular file'
         _save_existed=0
         [ -e "$NTP_SAVE" ] && _save_existed=1
-        _save_old=$(cat "$NTP_SAVE" 2>/dev/null)
-        _system_old=$(runtime_android_settings get global ntp_server 2>/dev/null | tr -d ' \n\r')
+        _save_old=$(cgi_read_entry "$NTP_SAVE") \
+            || json_error '503 Service Unavailable' 'cannot read the saved NTP configuration'
+        _system_old=$(runtime_android_settings get global ntp_server 2>/dev/null) \
+            || json_error '503 Service Unavailable' 'cannot read the previous system NTP server'
+        _system_old=$(printf '%s' "$_system_old" | tr -d ' \n\r')
         if ! runtime_android_settings put global ntp_server "$server" 2>/dev/null \
             || [ "$(runtime_android_settings get global ntp_server 2>/dev/null | tr -d ' \n\r')" != "$server" ]; then
             if restore_system_ntp "$_system_old"; then
