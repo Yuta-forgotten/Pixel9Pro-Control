@@ -2,6 +2,8 @@
 *.zip
 dist/
 /docs/
+/output/
+/logs/
 /modules/
 /DESIGN.md
 /20??-??-??*.md

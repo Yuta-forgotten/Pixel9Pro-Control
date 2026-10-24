@@ -132,8 +132,6 @@ UECap 的设备边界必须与实际状态分开理解：`caiman` 使用
 
 “模块后台总开关”统一控制温度记录、启动恢复及自动策略；关闭后停止 worker，前台读取也不再写入历史。WebUI、明确的手动操作和已有历史查询/导出仍可使用；关闭后台不等于卸载模块，也不会撤销已选择的静态配置或第三方模块策略。
 
-网络、温控和调度的字段、readback、耗时边界及 Request Hub 分阶段读取见 [`docs/webui_transport_contract.md`](docs/webui_transport_contract.md)。
-
 ### 隐私安全审计日志
 
 - 路径：`/data/adb/pixel9pro_control/logs/events.log`，目录 `0700`、文件 `0600`。
