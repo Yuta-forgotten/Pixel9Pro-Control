@@ -39,9 +39,9 @@ function describeSwappiness(v) {
   return '高换页倾向；后台驻留优先，页面换入频率可能增加。';
 }
 function describeMinFree(kb) {
-  if (kb <= 32768) return '低空闲内存阈值；可用内存较多，但突发分配更易触发 direct reclaim。';
+  if (kb <= 32768) return '预留空闲内存较少，突发分配时可能需要等待内存回收。';
   if (kb <= 65536) return '偏低阈值；回收启动较晚，可用内存较多。';
-  if (kb <= 131072) return '中高阈值；提前唤醒 kswapd，降低 direct reclaim 概率。';
+  if (kb <= 131072) return '预留空闲内存较多，提前启动后台回收，减少分配时等待回收的可能。';
   if (kb <= 196608) return '高阈值；更早启动回收，代价是预留内存增加。';
   return '极高阈值；优先保证分配余量，实际可用内存减少。';
 }
@@ -52,17 +52,17 @@ function describeWatermark(v) {
   return '极大水位间距；回收更积极，可能增加后台 CPU。';
 }
 function describeVfs(v) {
-  if (v <= 50) return '低回收倾向；保留 inode/dentry 缓存，减少路径查询开销。';
+  if (v <= 50) return '较少回收文件索引和目录缓存，减少重复查询开销。';
   if (v <= 80) return '偏低回收倾向；优先保留文件元数据缓存。';
   if (v <= 120) return '中等回收倾向；缓存占用与回收开销平衡。';
   if (v <= 160) return '偏高回收倾向；降低缓存占用，增加路径重建开销。';
-  return '高回收倾向；优先释放 inode/dentry 缓存。';
+  return '更积极地回收文件索引和目录缓存。';
 }
 function swapModeIntro(mode) {
-  if (mode === 'optimized') return '<b>策略：模块优化</b><br>写入模块候选 VM 参数；ZRAM 容量独立提交。active swap 存在时仅支持待重启生效。';
-  if (mode === 'system') return '<b>策略：系统观察</b><br>仅读取平台 VM/ZRAM 状态，不写入 sysctl、mmd 属性或容量请求。';
+  if (mode === 'optimized') return '<b>策略：模块优化</b><br>应用模块预设的内存回收参数。ZRAM 容量需单独保存；压缩内存正在使用时，容量变更需重启生效。';
+  if (mode === 'system') return '<b>策略：系统管理</b><br>仅查看内存回收参数和压缩内存状态，由系统管理参数与容量。';
   if (mode === 'disabled') return '<b>策略：模块写入关闭</b><br>停止模块 VM/ZRAM 写入，仅保留状态读取。';
-  if (mode === 'stock') return '<b>策略：系统观察</b><br>旧 stock 状态已映射为 system，不提交模块容量请求。';
+  if (mode === 'stock') return '<b>策略：系统管理</b><br>沿用系统管理，仅查看状态，不提交模块容量设置。';
   return '<b>策略：自定义</b><br>写入手动指定的四项 VM 参数；ZRAM 容量独立管理。';
 }
 
@@ -78,12 +78,12 @@ function formatEffectiveBytes(value) {
 
 function vmModeLabel(mode) {
   switch (mode) {
-    case 'optimized': return 'optimized（模块 VM）';
-    case 'custom': return 'custom（模块 VM）';
-    case 'disabled': return 'disabled（只读观察）';
-    case 'stock': return 'system（兼容旧 stock，只读观察）';
-    case 'system': return 'system（只读观察）';
-    default: return 'unknown（未读回）';
+    case 'optimized': return '模块优化';
+    case 'custom': return '自定义';
+    case 'disabled': return '模块管理已关闭，仅查看状态';
+    case 'stock': return '系统管理';
+    case 'system': return '系统管理';
+    default: return '尚未读取到管理策略';
   }
 }
 
@@ -94,12 +94,12 @@ function activeSwapState(data) {
   // Presence of zram0 in /proc/swaps is authoritative; unknown must not be
   // presented as inactive because that could authorize an online setup.
   const active = activeState === 'active';
-  if (activeState === 'unknown') return { active: false, text: 'active swap 状态未读回', used: fmtBytes(swapKb * 1024) };
-  if (!active) return { active: false, text: '未接入 active swap', used: fmtBytes(swapKb * 1024) };
+  if (activeState === 'unknown') return { active: false, text: '尚未确认交换空间是否启用', used: fmtBytes(swapKb * 1024) };
+  if (!active) return { active: false, text: '压缩交换空间未启用', used: fmtBytes(swapKb * 1024) };
   const totalText = totalKb > 0 ? ` / ${fmtBytes(totalKb * 1024)}` : '';
   return {
     active: true,
-    text: `已接入 active swap（logical used ${fmtBytes(swapKb * 1024)}${totalText}）`,
+    text: `已启用压缩交换空间（已存数据 ${fmtBytes(swapKb * 1024)}${totalText}）`,
     used: fmtBytes(swapKb * 1024)
   };
 }
@@ -215,8 +215,8 @@ function syncZramRequestControl(data = state.swapData) {
   const busy = state.swapBusy;
   button.disabled = busy || !allowed || pending;
   button.setAttribute('aria-busy', String(busy));
-  button.textContent = busy ? '应用中…' : '应用请求';
-  button.title = pending ? '已有容量事务待处理，请先重启或等待 backend reconcile' : '';
+  button.textContent = busy ? '保存中…' : '保存容量';
+  button.title = pending ? '已有容量变更待处理，完成后才能再次保存' : !allowed ? '当前管理策略或设备不支持修改容量' : '';
 }
 
 function buildSwapDetail(data) {
@@ -237,12 +237,12 @@ function buildSwapDetail(data) {
   const request = zramRequestState(d);
   const algoBlock = isEH
     ? `<b>ZRAM 算法：${targetAlgorithm}（Emerald Hill 硬件加速）</b><br>由平台硬件压缩引擎提供。`
-    : `<b>ZRAM 算法：${currentAlgorithm}</b><br>由平台决定；system 策略不强制修改。`;
+    : `<b>ZRAM 算法：${currentAlgorithm}</b><br>由系统决定；“系统管理”模式不修改压缩算法。`;
   const targetSize = request.targetBytes > 0 ? `，约 ${fmtBytes(request.targetBytes)}` : '';
   const requestBlock = request.supported
     ? `模块容量请求：${escapeHtml(request.requested)}${targetSize}（${request.pending ? '待重启，当前有效容量未对齐' : zramReadbackKnown(d) ? '当前有效容量已读回' : '有效容量未知'}）`
-    : '模块容量请求：未设置（system/disabled 仅观察平台状态）';
-  const sizeBlock = `<b>当前有效容量（effective disksize）：${formatEffectiveBytes(disksize)}${ramPct}</b><br>管理者：${owner}；${swap.text}。<br>物理 ZRAM 内存成本：${formatEffectiveBytes(memUsedBytes)}。<br>${requestBlock}。`;
+    : '模块容量设置：未设置，当前仅查看系统状态';
+  const sizeBlock = `<b>当前实际容量：${formatEffectiveBytes(disksize)}${ramPct}</b><br>管理服务：${owner}；${swap.text}。<br>压缩数据及其管理结构实际占用内存：${formatEffectiveBytes(memUsedBytes)}。<br>${requestBlock}。`;
   return [
     `<b>VM 策略: ${escapeHtml(vmModeLabel(vmMode))}</b><br>${swapModeIntro(vmMode)}`,
     algoBlock,
@@ -346,36 +346,36 @@ function renderSwapCard(data) {
   const effectiveReadbackKnown = zramReadbackKnown(data);
   const targetSize = request.targetBytes > 0 ? `，约 ${fmtBytes(request.targetBytes)}` : '';
   const policyText = request.supported
-    ? `${request.requested}${targetSize} · ${request.pending ? '待重启（pending_reboot）' : effectiveReadbackKnown ? '已读回' : '读回未知'}`
-    : '未设置（system/disabled 只观察）';
+    ? `${request.requested}${targetSize} · ${request.pending ? '等待重启' : effectiveReadbackKnown ? '已读取当前容量' : '当前容量尚未确认'}`
+    : '未设置，当前仅查看系统状态';
   const reconcileText = data.zram_reconcile === 'restored'
-    ? '已恢复模块写入前的 owner 请求'
+    ? '已恢复模块修改前的容量设置'
     : data.zram_reconcile === 'effective'
-      ? (effectiveReadbackKnown ? '在线 readback 已确认当前有效' : '历史 receipt 标记 effective，当前容量未读回')
+      ? (effectiveReadbackKnown ? '已确认当前实际容量' : '曾记录生效，尚未读取本次实际容量')
       : data.zram_reconcile === 'committed'
-        ? (effectiveReadbackKnown ? '跨 boot readback 已确认当前有效' : '历史 receipt 标记 committed，当前容量未读回')
+        ? (effectiveReadbackKnown ? '重启后已确认实际容量' : '曾记录重启后生效，尚未读取当前容量')
     : data.zram_reconcile === 'external_changed'
       ? '检测到平台配置已变化，未覆盖外部请求'
-      : '无模块请求事务';
+      : '没有待处理的容量变更';
   const restoreText = data.zram_restore_pending === true
-    ? '已恢复请求，等待重启让 effective 容量对齐'
+    ? '原容量设置已恢复，重启后应用'
     : '无需等待 ZRAM 恢复';
   const transactionPhase = String(data.zram_transaction_phase || 'none');
   const transactionText = {
     staged: '请求已暂存，等待安全完成',
     requested: '等待容量读回',
-    effective: effectiveReadbackKnown ? '当前 active 与容量已读回' : '已记录在线生效，但当前容量未读回',
+    effective: effectiveReadbackKnown ? '已确认交换空间已启用及其容量' : '曾记录在线生效，当前容量尚未确认',
     committed: effectiveReadbackKnown ? '跨重启后容量已读回' : '已跨重启记录，但当前容量未读回',
     canceled: '已取消，保留平台请求',
     external_changed: '平台请求已变化，模块未覆盖',
-    orphaned: '事务不完整或跨重启无法确认',
-    degraded: '读回凭据不完整',
-    historical: '上一 boot 的历史记录，仅供参考'
-  }[transactionPhase] || '无活动事务';
+    orphaned: '变更记录不完整，或重启后未能确认结果',
+    degraded: '缺少完整的检查记录',
+    historical: '上次启动的历史记录，仅供参考'
+  }[transactionPhase] || '没有进行中的容量变更';
   const pendingReason = String(data.zram_pending_reason || 'none');
   const pendingReasonText = {
-    transaction_active: '容量事务处理中',
-    journal_degraded: '事务凭据不完整',
+    transaction_active: '容量变更处理中',
+    journal_degraded: '变更记录不完整',
     restore_pending_reboot: '恢复请求等待重启',
     effective_size_pending_reboot: '当前容量等待重启对齐'
   }[pendingReason] || (pendingReason === 'none' ? '无' : pendingReason);
@@ -383,27 +383,27 @@ function renderSwapCard(data) {
   const vmEffectiveState = String(data.vm_effective_state || 'unknown');
   const mmdText = `aconfig=${data.mmd_enabled_aconfig || 'unknown'} / zram=${data.mmd_zram_enabled || 'unknown'} / setup=${data.mmd_setup_complete || 'unknown'}`;
   const ownerHint = data.feature_vm === 'optimized'
-    ? '模块 VM 已启用；ZRAM 仅接受显式请求'
-    : '系统默认观察模式；模块不写 VM/ZRAM';
+    ? '内存回收参数由模块管理，ZRAM 容量单独设置'
+    : '由系统管理，模块仅查看状态';
   refs.swapDesc.textContent = isEH
-    ? `Emerald Hill 硬件压缩 · 压缩率 ${ratio}% · 实占 ${fmtBytes(memUsedBytes)} · ${ownerHint}`
+    ? `硬件压缩 · 压缩后为原数据的 ${ratio}% · 实际占用 ${fmtBytes(memUsedBytes)} · ${ownerHint}`
     : `算法 ${data.zram_algo || 'unknown'} · ${ownerHint}`;
   const rows = [
-    { label: 'VM 策略', value: vmModeLabel(mode), cls: mode === 'optimized' || mode === 'custom' ? 'good' : 'off' },
-    { label: 'Swap 接入状态', value: swap.text, cls: swap.active ? 'good' : 'off' },
-    { label: '逻辑 Swap 已用', value: swap.used, cls: swap.active ? 'good' : 'off' },
-    { label: 'ZRAM 管理者', value: zramOwner, cls: zramOwner === 'mmd' ? 'good' : 'warn' },
+    { label: '内存管理策略', value: vmModeLabel(mode), cls: mode === 'optimized' || mode === 'custom' ? 'good' : 'off' },
+    { label: '压缩交换空间', value: swap.text, cls: swap.active ? 'good' : 'off' },
+    { label: '压缩前数据量', value: swap.used, cls: swap.active ? 'good' : 'off' },
+    { label: 'ZRAM 管理服务', value: zramOwner === 'mmd' ? '系统内存服务（mmd）' : zramOwner === 'unknown' ? '尚未确认' : zramOwner, cls: zramOwner === 'mmd' ? 'good' : 'warn' },
     { label: '平台 mmd 状态', value: mmdText, cls: zramOwner === 'mmd' ? 'good' : 'warn' },
     { label: '平台容量请求', value: `${data.mmd_requested_size || '未设置'} · ${data.mmd_requested_algorithm || '未设置'}`, cls: 'off' },
     { label: '压缩算法', value: isEH ? '硬件加速' : (data.zram_algo || 'unknown'), cls: isEH && swap.active ? 'good' : 'warn' },
     { label: '当前有效容量', value: formatEffectiveBytes(disksize), cls: disksize > 0 ? 'good' : 'off' },
-    { label: '物理 ZRAM 内存成本', value: formatEffectiveBytes(memUsedBytes), cls: memUsedBytes > 0 ? 'good' : 'off' },
+    { label: 'ZRAM 实际内存占用', value: formatEffectiveBytes(memUsedBytes), cls: memUsedBytes > 0 ? 'good' : 'off' },
     { label: '模块容量请求', value: policyText, cls: request.pending ? 'warn' : request.supported && request.requested !== '未设置' ? 'good' : 'off' },
     { label: '容量生效状态', value: zramEffectiveState === 'pending_reboot' ? '待重启' : zramEffectiveState === 'effective' && effectiveReadbackKnown ? '当前有效' : '未知，尚未确认', cls: zramEffectiveState === 'pending_reboot' ? 'warn' : zramEffectiveState === 'effective' && effectiveReadbackKnown ? 'good' : 'warn' },
-    { label: '容量事务', value: `${transactionText} · ${reconcileText}`, cls: transactionPending || ['orphaned', 'degraded'].includes(transactionPhase) ? 'warn' : (effectiveReadbackKnown && (transactionPhase === 'effective' || transactionPhase === 'committed')) ? 'good' : 'off' },
+    { label: '容量变更进度', value: `${transactionText} · ${reconcileText}`, cls: transactionPending || ['orphaned', 'degraded'].includes(transactionPhase) ? 'warn' : (effectiveReadbackKnown && (transactionPhase === 'effective' || transactionPhase === 'committed')) ? 'good' : 'off' },
     { label: '待处理原因', value: pendingReasonText, cls: pendingReason === 'none' ? 'off' : 'warn' },
     { label: '容量恢复状态', value: data.zram_restore_pending === true ? '已恢复请求，等待重启对齐' : '无需等待恢复', cls: data.zram_restore_pending === true ? 'warn' : 'good' },
-    { label: 'VM 参数读回', value: vmEffectiveState === 'pending_reboot' || data.vm_reboot_required ? '待重启后恢复平台基线' : vmEffectiveState === 'effective' && vmReadbackKnown(data) ? '四项参数已读回' : '未知，尚未确认', cls: vmEffectiveState === 'pending_reboot' || data.vm_reboot_required ? 'warn' : vmEffectiveState === 'effective' && vmReadbackKnown(data) ? 'good' : 'warn' },
+    { label: '内存回收参数检查', value: vmEffectiveState === 'pending_reboot' || data.vm_reboot_required ? '重启后恢复系统参数' : vmEffectiveState === 'effective' && vmReadbackKnown(data) ? '已确认当前四项参数' : '尚未确认当前参数', cls: vmEffectiveState === 'pending_reboot' || data.vm_reboot_required ? 'warn' : vmEffectiveState === 'effective' && vmReadbackKnown(data) ? 'good' : 'warn' },
     { label: '换页倾向（swappiness）', value: String(finiteNumber(data.swappiness)), cls: data.swappiness === optimized.swappiness ? 'good' : data.swappiness === stock.swappiness ? 'warn' : 'off' },
     { label: '空闲内存底线（min_free_kbytes）', value: String(finiteNumber(data.min_free_kbytes)), cls: data.min_free_kbytes === optimized.min_free_kbytes ? 'good' : data.min_free_kbytes === stock.min_free_kbytes ? 'warn' : 'off' },
     { label: '水位间距（watermark_scale_factor）', value: String(finiteNumber(data.watermark_scale_factor)), cls: data.watermark_scale_factor === optimized.watermark_scale_factor ? 'good' : data.watermark_scale_factor === stock.watermark_scale_factor ? 'warn' : 'off' },
@@ -454,14 +454,14 @@ async function refreshSwap(force = false) {
       refs.swapTuneNumbers[key].max = String(limit.max);
       refs.swapTuneNumbers[key].step = String(limit.step);
     });
-    refs.swapToggleLabel.textContent = state.featureVm === 'optimized' ? '使用系统默认' : '启用模块候选';
+    refs.swapToggleLabel.textContent = state.featureVm === 'optimized' ? '改由系统管理' : '开启模块优化';
     renderSwapCard(data);
     const disksize = finiteNumber(data.zram_disksize);
     const origBytes = finiteNumber(data.zram_orig_bytes);
     const comprBytes = finiteNumber(data.zram_compr_bytes);
     const zramPct = disksize > 0 ? ((origBytes / disksize) * 100).toFixed(0) : '0';
     refs.rtZramUsage.textContent = `${zramPct}%`;
-    if (refs.rtZramUsageDetail) refs.rtZramUsageDetail.textContent = `${fmtBytes(origBytes)} / ${formatEffectiveBytes(disksize)} 逻辑 / 容量`;
+    if (refs.rtZramUsageDetail) refs.rtZramUsageDetail.textContent = `压缩前 ${fmtBytes(origBytes)} / 总容量 ${formatEffectiveBytes(disksize)}`;
     refs.rtRatio.textContent = origBytes > 0 ? `${((comprBytes / origBytes) * 100).toFixed(1)}% → 实占 ${fmtBytes(finiteNumber(data.zram_mem_used_bytes))}` : '—';
     syncHeroDesc();
       return true;
@@ -511,7 +511,7 @@ function syncBgPackageHint() {
   const pkg = String(refs.bgRestrictPkgInput.value || '').trim();
   const suggestion = state.bgRestrictSuggestions.find((item) => item.pkg === pkg);
   if (!pkg) {
-    refs.bgRestrictPkgHint.textContent = '名称来自统一识别目录；仍可手动输入未收录包名。';
+    refs.bgRestrictPkgHint.textContent = '可选择已识别的应用，也可手动输入完整包名。';
     refs.bgRestrictPkgHint.className = 'bg-package-hint';
     return;
   }
@@ -552,7 +552,7 @@ function applyBgContract(data) {
     && delays.every((delay) => Number.isInteger(delay) && delay > 0)
     && policyOrder.includes(defaultPolicy)
     && delays.includes(defaultDelay);
-  if (!valid) throw new Error('后台限制 contract 无效');
+  if (!valid) throw new Error('服务返回的后台限制选项不完整，暂时无法修改');
 
   const previousPolicy = refs.bgRestrictPolicySelect?.value;
   const previousDelay = Number(refs.bgRestrictDelaySelect?.value);
@@ -680,8 +680,8 @@ function renderBgRestrict(data) {
   refs.bgRestrictDesc.textContent = on
     ? '已开启：应用离开前台后，将按所选策略限制后台活动。'
     : '已关闭：应用列表保留，后台设置已恢复。';
-    if (state.bgRecoveryRequired) refs.bgRestrictDesc.textContent = '存在未完成的后台策略事务。可点“恢复未完成事务”恢复请求前状态；其它页面可继续使用。';
-  if (refs.bgRestrictRefreshBtn) refs.bgRestrictRefreshBtn.textContent = state.bgRecoveryRequired ? '恢复未完成事务' : '刷新';
+    if (state.bgRecoveryRequired) refs.bgRestrictDesc.textContent = '上次后台限制变更未完成，点击“恢复原设置”可恢复变更前状态。';
+  if (refs.bgRestrictRefreshBtn) refs.bgRestrictRefreshBtn.textContent = state.bgRecoveryRequired ? '恢复原设置' : '刷新';
   refs.bgRestrictRows.replaceChildren();
   const packages = Array.isArray(data.packages) ? data.packages : [];
   renderBgRestrictSuggestions(data.suggestions, packages);
@@ -913,7 +913,7 @@ async function toggleSwapMode() {
     const data = state.swapData;
     if (!refreshed || !vmReadbackMatches(data, newMode)
       || (newMode === 'optimized' && !optimizedCandidateReadbackMatches(data))) {
-      throw new Error('VM 请求已返回，但 GET readback 未确认目标模式或四项候选参数');
+      throw new Error('内存设置请求已返回，但尚未确认管理策略和四项参数');
     }
     const vmPending = data.vm_reboot_required === true;
     showToast(newMode === 'optimized'
@@ -963,7 +963,7 @@ async function confirmCustomVmReadback(values) {
     const refreshed = await refreshSwap(true);
     const data = state.swapData;
     if (!refreshed || !vmReadbackMatches(data, 'custom', values)) {
-      showToast('参数已提交，但 GET readback 尚未确认');
+      showToast('参数已提交，尚未确认实际结果，请刷新查看');
       appendLog('自定义 VM 参数等待 readback，未宣称已生效', 'warn');
       return false;
     }
@@ -1028,7 +1028,7 @@ async function confirmZramReadback(requested, displayValue, unit) {
     const refreshed = await refreshSwap(true);
     const readback = state.swapData;
     if (!refreshed || !zramRequestReadbackMatches(readback, requested)) {
-      showToast('容量请求已提交，但 GET readback 尚未确认');
+      showToast('容量设置已提交，尚未确认实际结果，请刷新查看');
       appendLog('ZRAM 容量请求等待 readback，未宣称已生效', 'warn');
       return false;
     }

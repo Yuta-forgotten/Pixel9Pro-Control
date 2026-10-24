@@ -62,10 +62,32 @@ function formatDuration(seconds) {
 function networkReadError(label, error, timeoutMs) {
   const code = error?.code || '';
   if (code === 'REQUEST_TIMEOUT') {
-    return `${label}读取超时（后端诊断预计不超过 ${Math.ceil(timeoutMs / 1000)} 秒）；请稍后重试，当前页面保留上次已确认状态。`;
+    return `${label}在 ${Math.ceil(timeoutMs / 1000)} 秒内未完成读取，页面保留上次确认的状态，可稍后刷新。`;
   }
-  if (error?.status) return `${label}读取失败（HTTP ${error.status}）：${error.detail || error.message || '后端未提供错误详情'}`;
+  if (error?.status) return `${label}读取失败：${error.message || '服务未返回有效响应'}（${error.status}）`;
   return `${label}读取失败：${error?.message || '服务未返回有效响应'}`;
+}
+
+function networkStateText(value) {
+  const labels = {
+    yes: '已确认', no: '未确认', true: '是', false: '否', unknown: '尚未确认',
+    missing: '无检查记录', none: '无', verified: '已验证', unverified: '尚未验证',
+    failed: '失败', pending: '等待处理', disabled: '已关闭', enabled: '已开启',
+    active: '当前启用', modules: '已安装模块', modules_update: '待重启更新',
+    candidate: '测试配置，尚未完成验证', confirmed_readback: '已读取并确认加载',
+    current_boot: '本次启动的记录', current_check: '本次检查的记录',
+    current_boot_verified: '本次启动已验证的记录', managed: '由模块管理',
+    pre_modem_bind: '基带启动前已绑定配置，加载结果待确认',
+    modem_load_unconfirmed: '尚未确认基带加载结果',
+    sa_observed: '当前观测到 5G 独立组网', no_confirmed_nsa_cell: '尚未确认 5G 非独立组网连接',
+    previous_boot: '上次启动的记录', stale: '记录已过期', historical: '历史记录',
+    observed: '已观测到', not_observed: '未观测到', not_applicable: '不适用',
+    not_required_magisk: 'Magisk 环境无需此项检查',
+    effective_overlay_verified: '已确认系统正在使用模块配置',
+    hybrid_mount: '重启后应用配置（Hybrid Mount）',
+    metamodule_content: '模块镜像（MetaModule）'
+  };
+  return labels[String(value)] || (value ? `状态代码：${value}` : '尚未确认');
 }
 
 function buildNrSwitchDetail() {
@@ -75,7 +97,7 @@ function buildNrSwitchDetail() {
   const recheck = Number.isFinite(contract.lteRecheckS) ? contract.lteRecheckS : null;
   const lteMode = Number.isFinite(contract.lteMode) ? contract.lteMode : 'unknown';
   const seconds = (value) => value === null ? '运行参数尚未读取' : `${value} 秒`;
-  return `<b>NR 息屏降级</b><br><br>息屏超过 <b>${seconds(delay)}</b> 后，将 DSDS slot 0 切换为 LTE mode ${lteMode}；亮屏恢复已保存的 NR mode，slot 1 不变。<br><br><b>时序参数</b><br>息屏延迟：${seconds(delay)}<br>恢复冷却：${seconds(cooldown)}<br>LTE 复查：${seconds(recheck)}<br><br><b>限制</b><br>mode 无效、恢复值无法持久化或热点启用时跳过切换；切换可能短暂中断蜂窝数据。`;
+  return `<b>息屏切换 4G</b><br><br>息屏超过 <b>${seconds(delay)}</b> 后，将主卡槽（slot 0）切换为 4G（LTE，模式值 ${lteMode}）；亮屏后恢复保存的网络模式，副卡槽（slot 1）保持不变。<br><br><b>执行间隔</b><br>息屏后等待：${seconds(delay)}<br>恢复后冷却：${seconds(cooldown)}<br>4G 状态复查：${seconds(recheck)}<br><br><b>执行条件</b><br>网络模式无效、无法保存恢复值或热点开启时，会跳过切换。切换时蜂窝数据可能短暂中断。`;
 }
 function renderNrSwitchRows(data) {
   state.nrRecoveryPending = data.nr_recovery_pending === true && data.nr_switch !== 'on';
@@ -89,23 +111,23 @@ function renderNrSwitchRows(data) {
   const actualLte = actualKnown && actualRat.includes('LTE') && !actualRat.includes('NR');
   const actualNr = actualKnown && actualRat.includes('NR');
   const modeLabel = actualKnown
-    ? `${actualRat} · setting ${data.current_mode || 'unknown'}`
-    : (Number.isNaN(modeNum) ? (data.current_mode || 'unknown') : (settingLte ? `LTE setting (${data.current_mode})` : `NR setting (${data.current_mode})`));
+    ? `${actualRat} · 设置值 ${data.current_mode || '未读取'}`
+    : (Number.isNaN(modeNum) ? (data.current_mode || '尚未确认') : (settingLte ? `4G 设置（${data.current_mode}），实际连接待确认` : `5G 设置（${data.current_mode}），实际连接待确认`));
   const rows = [
     { label: '功能状态', value: isOn ? '已开启' : '已关闭', cls: isOn ? 'good' : 'off' },
     { label: '当前网络模式', value: modeLabel, cls: actualLte || (!actualKnown && settingLte) ? 'warn' : actualNr ? 'good' : 'off' },
-    { label: '恢复用 NR 模式值', value: data.saved_nr_mode, cls: 'off' }
+    { label: '亮屏后恢复的模式值', value: data.saved_nr_mode, cls: 'off' }
   ];
   rows.forEach((row) => refs.nrSwitchRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
   refs.nrSwitchToggleLabel.textContent = isOn ? '关闭' : '开启';
   const delaySeconds = Number(data.screen_off_delay_s);
   const delayText = Number.isFinite(delaySeconds) ? formatDuration(delaySeconds) : '设定延迟';
   refs.nrSwitchDesc.textContent = isOn
-    ? `已开启：息屏 ${delayText} 后切换至 LTE，亮屏自动恢复 5G。`
-    : `息屏 ${delayText} 后切换至 LTE，亮屏自动恢复。`;
+    ? `已开启 · 息屏 ${delayText} 后切换为 4G，亮屏后恢复原网络模式。`
+    : `开启后，息屏 ${delayText} 切换为 4G，亮屏后恢复原网络模式。`;
   if (state.nrRecoveryPending) {
     refs.nrSwitchToggleLabel.textContent = '重试恢复';
-    refs.nrSwitchDesc.textContent = 'NR 策略已关闭，仍有临时模式待恢复；点击可按保存的原值重试恢复。';
+    refs.nrSwitchDesc.textContent = '功能已关闭，但原网络模式尚未恢复；可点击“重试恢复”。';
   }
 }
 
@@ -156,44 +178,44 @@ function renderStandbyGuard(data) {
     sleepFailedStep: data.sleep_last_failed_step || '',
     sleepErrorCode: data.sleep_error_code || 'SUSPEND_REASON_UNKNOWN',
     sleepErrorSeverity: data.sleep_error_severity || 'info',
-    sleepErrorHuman: data.sleep_error_human || '当前没有可归类的 suspend 失败原因；请结合同一 boot 的 kernel log 复核。',
+    sleepErrorHuman: data.sleep_error_human || '尚未确定休眠失败原因，需结合本次启动的内核日志检查。',
   };
 
   const sim2On = state.sim2AutoManage === 'on';
   refs.sim2AutoToggleLabel.textContent = sim2On ? '关闭' : '开启';
   refs.sim2AutoDesc.textContent = sim2On
-    ? '已开启：息屏时停用空槽实例，亮屏或插入 SIM2 后自动恢复。'
-    : '单卡设备可在息屏时停用空槽实例。双卡设备请保持关闭。';
+    ? '已开启 · 息屏时停用空闲副卡槽的通信实例，亮屏或检测到副卡后恢复。'
+    : '开启后管理空闲副卡槽的通信实例，仅限单卡且副卡槽为空的设备。';
   refs.sim2AutoRows.replaceChildren();
   [
     { label: '功能状态', value: sim2On ? '已开启' : '已关闭', cls: sim2On ? 'good' : 'off' },
-    { label: '实现方式', value: sim2On ? 'set-sim-count 1（减少 Active modem 实例）' : '不操作 modem 实例数', cls: sim2On ? 'good' : 'off' },
-    { label: '适用场景', value: sim2On ? '单卡用户 · 副卡槽为空' : '双卡用户 · 两张 SIM 都在使用', cls: 'off' },
+    { label: '运行方式', value: sim2On ? '息屏时减少活动通信实例' : '不修改通信实例数量', cls: sim2On ? 'good' : 'off' },
+    { label: '使用条件', value: '仅使用一张 SIM 卡，且副卡槽为空', cls: 'off' },
   ].forEach((row) => refs.sim2AutoRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   const isolateOn = state.idleIsolateMode === 'on';
   const workerState = data.background_state || 'unknown';
-  const workerLabel = ({ running: '运行中', starting: '正在初始化', paused: '已停止', stopping: '正在停止，等待当前事务收尾', stopped: '未启动', unknown: '待后端确认' })[workerState] || workerState;
+  const workerLabel = ({ running: '运行中', starting: '正在初始化', paused: '已停止', stopping: '正在停止，等待当前操作完成', stopped: '未启动', unknown: '尚未确认' })[workerState] || workerState;
   refs.idleIsolateToggleLabel.textContent = isolateOn ? '开启后台任务' : '关闭后台任务';
   refs.idleIsolateDesc.textContent = isolateOn
     ? `后台任务已关闭：温度记录及所有自动策略暂停。${workerLabel}。`
-    : `后台任务已开启：${workerLabel}。温度记录与各项策略服从各自低频周期。`;
+    : `后台任务已开启 · ${workerLabel}。温度记录与各项自动策略按各自的间隔执行。`;
   refs.idleIsolateRows.replaceChildren();
   [
     { label: '后台总开关', value: isolateOn ? '已关闭（不再记录温度）' : '已开启', cls: isolateOn ? 'warn' : 'good' },
     { label: '实际进程', value: workerLabel, cls: data.final === false ? 'warn' : 'off' },
-    { label: '临时策略收尾', value: data.background_cleanup === 'failed' ? '后台已停止，但临时策略恢复失败；请查看模块日志' : data.background_cleanup === 'unconfirmed' ? '本次 worker 的清理回执缺失，尚未确认恢复' : data.background_cleanup === 'ok' ? '已完成' : '暂无本次停止记录', cls: ['failed', 'unconfirmed'].includes(data.background_cleanup) ? 'warn' : 'off' },
+    { label: '临时设置恢复', value: data.background_cleanup === 'failed' ? '后台已停止，但临时设置恢复失败；详情见模块日志' : data.background_cleanup === 'unconfirmed' ? '缺少本次停止后的检查记录，尚未确认恢复' : data.background_cleanup === 'ok' ? '已完成' : '暂无本次停止记录', cls: ['failed', 'unconfirmed'].includes(data.background_cleanup) ? 'warn' : 'off' },
     { label: '温度记录', value: isolateOn ? '已暂停；已有历史仍可查看和导出' : '亮屏约 60 秒，息屏约 15 分钟；不主动唤醒休眠内核', cls: isolateOn ? 'off' : 'good' },
   ].forEach((row) => refs.idleIsolateRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
 
   refs.standbyDiagRows.replaceChildren();
   if (!state.standbyDiag.updatedAt) {
-    refs.standbyDiagRows.appendChild(buildInfoRow('状态文件', '等待后台 worker 首次写入', 'off'));
+    refs.standbyDiagRows.appendChild(buildInfoRow('检查结果', '等待后台任务完成首次检查', 'off'));
   } else {
     const nrLabel = state.standbyDiag.nrSwitch === 'on'
       ? (state.standbyDiag.nrState === 'lte' ? 'NR 管理开启 / 当前 LTE' : 'NR 管理开启 / 当前 5G')
       : 'NR 管理关闭';
-    const profileLabel = `${state.standbyDiag.profilePolicy === 'auto' ? '自动' : '手动'} / ${state.standbyDiag.activeProfile || 'unknown'}`;
+    const profileLabel = `${state.standbyDiag.profilePolicy === 'auto' ? '自动' : state.standbyDiag.profilePolicy === 'manual' ? '手动' : '未确认'} / ${PROFILES[state.standbyDiag.activeProfile]?.name || '档位未确认'}`;
     [
       { label: '最近更新', value: formatStandbyTimestamp(state.standbyDiag.updatedAt), cls: 'off' },
       { label: '当前屏幕', value: state.standbyDiag.screen === 'on' ? '亮屏' : state.standbyDiag.screen === 'off' ? '息屏' : '未知', cls: state.standbyDiag.screen === 'on' ? 'good' : state.standbyDiag.screen === 'off' ? 'off' : 'warn' },
@@ -243,7 +265,7 @@ function applyUecapContract(data) {
   const modeOrder = Array.isArray(raw?.mode_order) ? raw.mode_order.filter((mode) => typeof mode === 'string') : [];
   const defaultMode = typeof raw?.default_mode === 'string' ? raw.default_mode : '';
   if (data?.disabled === true) {
-    if (modeOrder.length !== 0 || defaultMode !== 'disabled') throw new Error('UECap disabled contract 无效');
+    if (modeOrder.length !== 0 || defaultMode !== 'disabled') throw new Error('服务返回的网络配置状态不一致，暂时无法切换');
     state.uecapContract = { modeOrder: [], defaultMode: 'disabled', disabled: true };
     return;
   }
@@ -251,7 +273,7 @@ function applyUecapContract(data) {
     && new Set(modeOrder).size === modeOrder.length
     && modeOrder.every((mode) => UECAP_MODE_PRESENTATION[mode])
     && modeOrder.includes(defaultMode);
-  if (!valid) throw new Error('UECap mode contract 无效');
+  if (!valid) throw new Error('服务返回的网络配置选项不完整，暂时无法切换');
   state.uecapContract = { modeOrder, defaultMode, disabled: false };
 }
 
@@ -288,7 +310,7 @@ function getUecapVerifyRow(data, requested, active) {
     && receipt.functional_state === 'verified' && ['current_boot', 'current_check'].includes(receipt.receipt_freshness);
   return {
     label: '配置校验',
-    value: confirmed ? '已确认' : bindingConfirmed ? '绑定一致，运行态待确认' : '待确认',
+    value: confirmed ? '已确认基带加载' : bindingConfirmed ? '配置文件一致，基带加载结果待确认' : '尚未确认',
     cls: confirmed ? 'good' : 'warn'
   };
 }
@@ -343,9 +365,9 @@ function renderUecapRows(data) {
   state.uecapActiveMode = active;
   const modeInfo = UECAP_MODE_PRESENTATION[requested];
   refs.uecapDesc.textContent = state.uecapReinstallRequired
-    ? `当前 MetaModule content image 不支持运行期切换；${UECAP_REINSTALL_NOTICE}。`
+    ? `当前模块镜像不支持直接切换网络配置；${UECAP_REINSTALL_NOTICE}。`
     : disabled
-      ? (data.disabled_message || '当前安装环境不提供 UECap 配置写入；以下只展示设备、modem 和无线观察结果。')
+      ? (data.disabled_message || '当前安装环境不支持修改网络能力配置，仅显示设备、基带加载与无线连接状态。')
       : state.uecapPendingMode
         ? `${uecapLabel(state.uecapPendingMode)}：已提交切换，正在校验当前配置。`
         : modeInfo ? `当前选择：${modeInfo.name}。切换后核对实际生效状态。` : '选择 UE 能力配置，切换后核对实际生效状态。';
@@ -354,11 +376,11 @@ function renderUecapRows(data) {
     ? { label: '配置校验', value: `${data.contract_result || 'unknown'} · 只读`, cls: 'off' }
     : getUecapVerifyRow(data, requested, active);
   const reloadResult = receipt.reload_result === 'success'
-    ? (receipt.modem_load_state === 'confirmed_readback' ? 'modem 已重载并完成读回' : 'modem 重载已接受，尚未确认实际加载')
+    ? (receipt.modem_load_state === 'confirmed_readback' ? '基带已重新加载配置并通过检查' : '基带已接受重载请求，实际加载结果尚未确认')
     : receipt.reload_result === 'failed'
-      ? 'modem 重载失败'
+      ? '基带重新加载配置失败'
       : receipt.reload_result === 'unknown'
-        ? '尚无运行收据'
+        ? '尚无运行检查记录'
         : '未执行';
   const nrRegistered = receipt.nr_registered === 'true' || receipt.nr_registered === true;
   const nrAvailable = receipt.nr_available === 'true' || receipt.nr_available === true;
@@ -384,33 +406,33 @@ function renderUecapRows(data) {
     ? UECAP_REINSTALL_NOTICE
     : disabled ? '当前环境只读' : '支持运行期切换';
   const rows = [
-    { label: 'Device / SKU', value: `${data.device || 'unknown'} / ${data.device_label || 'unknown'}`, cls: 'off' },
-    { label: 'Device policy', value: data.device_policy || 'unknown', cls: 'off' },
-    { label: 'Backend', value: state.uecapBackend || 'unknown', cls: state.uecapReinstallRequired ? 'warn' : 'off' },
+    { label: '设备与机型', value: `${data.device || '未读取'} / ${data.device_label || '未读取'}`, cls: 'off' },
+    { label: '机型配置策略', value: networkStateText(data.device_policy), cls: 'off' },
+    { label: '配置应用方式', value: networkStateText(state.uecapBackend), cls: state.uecapReinstallRequired ? 'warn' : 'off' },
     { label: '配置变更', value: changeMode, cls: state.uecapReinstallRequired ? 'warn' : disabled ? 'off' : 'good' },
-    { label: 'Runtime policy', value: data.runtime_policy || data.policy || 'unknown', cls: disabled ? 'off' : 'good' },
+    { label: '当前管理策略', value: networkStateText(data.runtime_policy || data.policy), cls: disabled ? 'off' : 'good' },
     { label: '已选配置', value: uecapLabel(requested), cls: requested === active ? 'good' : 'off' },
-    { label: '当前绑定', value: uecapLabel(active), cls: active === requested ? 'good' : 'warn' },
+    { label: '当前配置文件', value: uecapLabel(active), cls: active === requested ? 'good' : 'warn' },
     verifyRow,
-    { label: 'Modem load state', value: receipt.modem_load_state || 'unknown', cls: hasConfirmedModemLoad ? 'good' : 'warn' },
-    { label: 'Modem loaded profile', value: receipt.modem_loaded_profile || 'unknown', cls: 'off' },
-    { label: 'Modem 时序', value: reloadResult, cls: receipt.reload_result === 'failed' ? 'warn' : hasConfirmedModemLoad ? 'good' : 'off' },
-    { label: 'Functional state', value: receipt.functional_state || 'unknown', cls: receipt.functional_state === 'verified' ? 'good' : 'warn' },
-    { label: 'Receipt freshness', value: receipt.receipt_freshness || 'missing', cls: isCurrentReceipt ? 'good' : 'warn' },
-    { label: 'Target', value: `${data.target_name || 'unknown'} / ${(data.target_hash || 'unknown').slice(0, 16)}`, cls: 'off' },
-    { label: 'Payload 状态', value: `${data.payload_state || 'unknown'} · ${data.payload_source_build || 'unknown'}`, cls: data.payload_state === 'verified' ? 'good' : data.payload_state === 'candidate' ? 'warn' : 'off' },
-    { label: 'Payload 合同', value: `${data.payload_bytes || 0} bytes / ${(data.payload_sha256 || 'unknown').slice(0, 16)}`, cls: 'off' },
+    { label: '基带加载状态', value: networkStateText(receipt.modem_load_state), cls: hasConfirmedModemLoad ? 'good' : 'warn' },
+    { label: '基带已加载配置', value: receipt.modem_loaded_profile && UECAP_MODE_PRESENTATION[receipt.modem_loaded_profile] ? uecapLabel(receipt.modem_loaded_profile) : networkStateText(receipt.modem_loaded_profile), cls: 'off' },
+    { label: '配置重载结果', value: reloadResult, cls: receipt.reload_result === 'failed' ? 'warn' : hasConfirmedModemLoad ? 'good' : 'off' },
+    { label: '生效验证', value: networkStateText(receipt.functional_state), cls: receipt.functional_state === 'verified' ? 'good' : 'warn' },
+    { label: '检查记录时间', value: networkStateText(receipt.receipt_freshness || 'missing'), cls: isCurrentReceipt ? 'good' : 'warn' },
+    { label: '配置文件与校验值', value: `${data.target_name || '未读取'} / ${(data.target_hash || '未读取').slice(0, 16)}`, cls: 'off' },
+    { label: '配置文件状态', value: `${networkStateText(data.payload_state)} · ${data.payload_source_build || '来源版本未读取'}`, cls: data.payload_state === 'verified' ? 'good' : data.payload_state === 'candidate' ? 'warn' : 'off' },
+    { label: '文件大小与校验值', value: `${data.payload_bytes || 0} 字节 / ${(data.payload_sha256 || '未读取').slice(0, 16)}`, cls: 'off' },
     { label: '实际无线', value: radioResult, cls: observedRat === 'NR_SA' || observedRat === 'NR_NSA' ? 'good' : 'off' },
-    { label: 'SA', value: observedRat === 'NR_SA' ? 'observed · 不要求 EN-DC' : 'not observed', cls: observedRat === 'NR_SA' ? 'good' : 'off' },
-    { label: 'NSA', value: `${nsaStatus} · ${nsaReason}`, cls: nsaStatus === 'observed' ? 'good' : 'off' },
-    { label: 'LTE / 4G', value: actualRat === 'LTE' || observedRat === 'LTE' ? 'observed · 仅表示当前驻网' : 'not observed', cls: 'off' },
-    { label: 'LTE anchor', value: receipt.lte_anchor || 'unknown', cls: 'off' },
+    { label: '5G 独立组网（SA）', value: observedRat === 'NR_SA' ? '已观测到，无需 4G 锚点' : '未观测到', cls: observedRat === 'NR_SA' ? 'good' : 'off' },
+    { label: '5G 非独立组网（NSA）', value: `${networkStateText(nsaStatus)} · ${networkStateText(nsaReason)}`, cls: nsaStatus === 'observed' ? 'good' : 'off' },
+    { label: 'LTE / 4G', value: actualRat === 'LTE' || observedRat === 'LTE' ? '已观测到，仅表示当前连接' : '未观测到', cls: 'off' },
+    { label: '4G 锚点（NSA 辅助连接）', value: networkStateText(receipt.lte_anchor), cls: 'off' },
     { label: '原因', value: data.reason || 'unknown', cls: disabled ? 'off' : 'warn' },
   ];
   const summary = document.getElementById('uecap-summary');
   if (summary) summary.replaceChildren(...[
     { label: '已选配置', value: uecapLabel(requested), cls: 'off' },
-    { label: '当前绑定', value: uecapLabel(active), cls: active === requested ? 'good' : 'warn' },
+    { label: '当前配置文件', value: uecapLabel(active), cls: active === requested ? 'good' : 'warn' },
     verifyRow
   ].map((row) => buildInfoRow(row.label, row.value, row.cls)));
   const notice = document.getElementById('uecap-status-message');
@@ -424,9 +446,9 @@ function renderUecapRows(data) {
           : unsafe ? '实际生效状态尚未确认。请在“配置与无线诊断”中查看依据，再决定是否重试。' : '';
   }
   const groups = [
-    { id: 'effective', title: '生效依据', help: '已选、绑定、加载与本次启动回读', labels: ['配置变更', '已选配置', '当前绑定', '配置校验', 'Modem load state', 'Modem loaded profile', 'Modem 时序', 'Functional state', 'Receipt freshness'] },
-    { id: 'radio', title: '无线观察', help: '当前驻网，不等同于配置加载结果', labels: ['实际无线', 'SA', 'NSA', 'LTE / 4G', 'LTE anchor'] },
-    { id: 'source', title: '设备与配置来源', help: 'SKU、后端、Payload 与校验标识', labels: ['Device / SKU', 'Device policy', 'Backend', 'Runtime policy', 'Target', 'Payload 状态', 'Payload 合同', '原因'] }
+    { id: 'effective', title: '生效依据', help: '保存的选择、当前配置文件与基带加载结果', labels: ['配置变更', '已选配置', '当前配置文件', '配置校验', '基带加载状态', '基带已加载配置', '配置重载结果', '生效验证', '检查记录时间'] },
+    { id: 'radio', title: '无线连接', help: '当前连接方式，不能单独证明配置已加载', labels: ['实际无线', '5G 独立组网（SA）', '5G 非独立组网（NSA）', 'LTE / 4G', '4G 锚点（NSA 辅助连接）'] },
+    { id: 'source', title: '设备与配置来源', help: '机型、配置文件与校验信息', labels: ['设备与机型', '机型配置策略', '配置应用方式', '当前管理策略', '配置文件与校验值', '配置文件状态', '文件大小与校验值', '原因'] }
   ];
   const containers = groups.map((group) => {
     let details = refs.uecapRows.querySelector(`[data-evidence-group="${group.id}"]`);
@@ -728,7 +750,7 @@ async function setUecapMode(mode) {
         state.uecapExpectedHash = '';
         state.uecapVerifyState = 'idle';
         renderUecapRows(data);
-        showToast(`${label}：已写入 Hybrid Mount staging，重启后生效`, 4200);
+        showToast(`${label}已保存，重启后生效`, 4200);
         appendLog(`UE 配置已写入 staging: ${label}，等待重启`, 'warn');
         return;
       }
@@ -746,7 +768,7 @@ async function setUecapMode(mode) {
       state.uecapPendingMode = '';
       state.uecapExpectedHash = '';
       state.uecapVerifyState = 'failed';
-      state.uecapVerifyMessage = data.error || '配置已切换，但 modem 未完成重载';
+      state.uecapVerifyMessage = data.error || '配置文件已切换，但基带尚未完成重新加载';
       renderUecapRows(data);
       showToast(state.uecapVerifyMessage, 4200);
       appendLog(`UE 配置已写入但重载失败: ${label}`, 'warn');
@@ -766,7 +788,7 @@ async function setUecapMode(mode) {
       state.uecapMode = payload.requested_mode || mode;
       state.uecapActiveMode = payload.active_mode || mode;
       state.uecapVerifyState = 'failed';
-      state.uecapVerifyMessage = payload.error || '配置已切换，但 modem 未完成重载';
+      state.uecapVerifyMessage = payload.error || '配置文件已切换，但基带尚未完成重新加载';
       renderUecapRows(payload);
       showToast(state.uecapVerifyMessage, 4200);
       appendLog(`UE 配置已写入但重载失败: ${label}`, 'warn');
@@ -807,20 +829,20 @@ function renderBasebandRows(data) {
   const mcfg = data.mcfg || {};
   const freshness = data.runtime_receipt_freshness || 'missing';
   const rows = [
-    { label: '模块目录', value: `${data.source || 'unknown'} / ${moduleState}`, cls: data.enabled ? 'good' : 'warn' },
+    { label: '模块安装状态', value: `${networkStateText(data.source)} / ${networkStateText(moduleState)}`, cls: data.enabled ? 'good' : 'warn' },
     { label: '运行验证', value: runtimeVerified ? '本次启动已验证' : '目录存在，但尚未验证生效', cls: runtimeVerified ? 'good' : 'warn' },
     { label: '版本', value: data.version || '未知', cls: 'off' },
-    { label: '状态合同', value: `schema ${data.status_schema || 0}`, cls: Number(data.status_schema) === 3 ? 'good' : 'warn' },
-    { label: '挂载观察', value: data.mount_observed || 'unknown', cls: data.mount_observed === 'yes' || data.mount_observed === 'not_required_magisk' ? 'good' : 'warn' },
-    { label: 'Effective overlay', value: data.effective_overlay_verified || 'unknown', cls: data.effective_overlay_verified === 'yes' ? 'good' : 'warn' },
-    { label: '迁移状态', value: data.migration_state || 'unknown', cls: data.migration_state === 'effective_overlay_verified' ? 'good' : 'warn' },
-    { label: 'Source / effective', value: `${data.source_path || 'unknown'} → ${data.effective_path || 'unknown'}`, cls: 'off' },
-    { label: 'Source contract', value: `${data.source_contract_verified || 'no'} / ${(data.source_contract_hash || data.source_hash || 'unknown').slice(0, 12)}`, cls: data.source_contract_verified === 'yes' ? 'good' : 'warn' },
-    { label: 'Content contract', value: `${data.content_image_verified || 'unknown'} / ${(data.content_contract_hash || data.content_image_hash || 'unknown').slice(0, 12)}`, cls: data.content_image_verified === 'yes' || data.content_image_verified === 'not_required_magisk' ? 'good' : 'warn' },
-    { label: 'Effective contract', value: `${data.effective_contract_verified || 'no'} / ${(data.effective_contract_hash || data.effective_hash || 'unknown').slice(0, 12)}`, cls: data.effective_contract_verified === 'yes' ? 'good' : 'warn' },
-    { label: 'Effective extra files', value: data.effective_extra_files_allowed || 'unknown', cls: data.effective_extra_files_allowed === 'yes' ? 'off' : 'warn' },
-    { label: 'Receipt', value: `${freshness} / prior ${data.prior_receipt_freshness || 'missing'}`, cls: freshness === 'current_check' ? 'good' : 'warn' },
-    { label: 'Clean reinstall', value: data.clean_reinstall_required ? '需要卸载、重启、重装、再重启' : '不需要', cls: data.clean_reinstall_required ? 'warn' : 'good' },
+    { label: '状态数据格式', value: `版本 ${data.status_schema || 0}`, cls: Number(data.status_schema) === 3 ? 'good' : 'warn' },
+    { label: '配置挂载检查', value: networkStateText(data.mount_observed), cls: data.mount_observed === 'yes' || data.mount_observed === 'not_required_magisk' ? 'good' : 'warn' },
+    { label: '系统实际配置检查', value: networkStateText(data.effective_overlay_verified), cls: data.effective_overlay_verified === 'yes' ? 'good' : 'warn' },
+    { label: '配置应用状态', value: networkStateText(data.migration_state), cls: data.migration_state === 'effective_overlay_verified' ? 'good' : 'warn' },
+    { label: '模块来源与系统位置', value: `${data.source_path || '未读取'} → ${data.effective_path || '未读取'}`, cls: 'off' },
+    { label: '模块源文件校验', value: `${networkStateText(data.source_contract_verified || 'no')} / ${(data.source_contract_hash || data.source_hash || '未读取').slice(0, 12)}`, cls: data.source_contract_verified === 'yes' ? 'good' : 'warn' },
+    { label: '模块镜像校验', value: `${networkStateText(data.content_image_verified)} / ${(data.content_contract_hash || data.content_image_hash || '未读取').slice(0, 12)}`, cls: data.content_image_verified === 'yes' || data.content_image_verified === 'not_required_magisk' ? 'good' : 'warn' },
+    { label: '实际配置文件校验', value: `${networkStateText(data.effective_contract_verified || 'no')} / ${(data.effective_contract_hash || data.effective_hash || '未读取').slice(0, 12)}`, cls: data.effective_contract_verified === 'yes' ? 'good' : 'warn' },
+    { label: '额外文件是否允许', value: networkStateText(data.effective_extra_files_allowed), cls: data.effective_extra_files_allowed === 'yes' ? 'off' : 'warn' },
+    { label: '检查记录', value: `${networkStateText(freshness)} / 之前：${networkStateText(data.prior_receipt_freshness || 'missing')}`, cls: freshness === 'current_check' ? 'good' : 'warn' },
+    { label: '是否需要完整重装', value: data.clean_reinstall_required ? '需要卸载、重启、重装、再重启' : '不需要', cls: data.clean_reinstall_required ? 'warn' : 'good' },
     { label: '错误摘要', value: data.errors || 'none', cls: data.errors && data.errors !== 'none' ? 'warn' : 'off' },
     { label: 'VoLTE', value: props.volte_avail_ovr === '1' ? '已启用' : '未启用', cls: props.volte_avail_ovr === '1' ? 'good' : 'warn' },
     { label: 'Wi-Fi Calling', value: props.wfc_avail_ovr === '1' ? '已启用' : '未启用', cls: props.wfc_avail_ovr === '1' ? 'good' : 'warn' },
@@ -844,10 +866,10 @@ async function refreshBasebandTask() {
     const status = Number(err?.status || 0);
     const detail = err?.detail || err?.message || 'unknown';
     const reason = status === 404
-      ? '基带状态 CGI 不存在或当前 WebUI source 未更新，请检查模块是否启用及 webroot/cgi-bin/check_baseband.sh。'
+      ? '基带状态接口缺失，需检查模块是否启用及安装文件是否完整。'
       : status === 503
-        ? '基带状态依赖的运行 receipt 不可用，请先等待 late-start 完成或重启后复读。'
-        : '请查看后端返回的错误字段和模块 receipt。';
+        ? '启动检查记录尚未就绪，可等待模块启动完成后刷新。'
+        : '详细错误见运行记录。';
     const message = status === 0 && err?.code === 'REQUEST_TIMEOUT'
       ? networkReadError('基带配置', err, NETWORK_READ_TIMEOUTS.baseband)
       : `基带配置读取失败（HTTP ${status || 'unknown'}）：${detail}\n${reason}`;

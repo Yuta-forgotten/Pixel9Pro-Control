@@ -65,7 +65,7 @@ async function doFullRefresh() {
     const allResults = results.concat(deferredResults);
     const failures = allResults.flatMap((result, index) => {
       if (result.status === 'rejected') return [`${allTasks[index][0]}: ${result.reason?.message || result.reason}`];
-      if (result.value === false) return [`${allTasks[index][0]}: 接口未完成有效回读`];
+      if (result.value === false) return [`${allTasks[index][0]}: 尚未读取到有效状态`];
       return [];
     });
     failures.forEach((message) => appFeatures.core.appendLog(`${message}刷新失败`, 'err'));
@@ -232,7 +232,7 @@ function bindStaticEvents() {
   $('bg-restrict-pkg-input').addEventListener('input', appFeatures.memory.syncBgPackageHint);
   $('bg-restrict-policy-select').addEventListener('change', appFeatures.memory.syncBgRestrictControls);
   $('bg-restrict-refresh-btn').addEventListener('click', appFeatures.memory.forceRefreshBgRestrict);
-  $('nr-switch-detail-btn').addEventListener('click', () => openDetail('NR 息屏降级详情', appFeatures.network.buildNrSwitchDetail()));
+  $('nr-switch-detail-btn').addEventListener('click', () => openDetail('息屏切换 4G', appFeatures.network.buildNrSwitchDetail()));
   $('uecap-detail-btn').addEventListener('click', () => openDetail('UE 网络能力配置', UECAP_DETAIL));
   $('baseband-detail-btn').addEventListener('click', () => openDetail('基带模块说明', BASEBAND_DETAIL));
   $('baseband-refresh-btn').addEventListener('click', appFeatures.network.refreshBaseband);
@@ -260,31 +260,30 @@ function bindStaticEvents() {
     const detailState = appFeatures.profile.getCpuDetailState();
     const contract = detailState.cpuContract;
     const profileContract = contract?.profiles?.[detailState.currentProfile];
-    const ownership = contract?.ownership || {};
     const foreground = contract?.foreground_cpus || contract?.cpusets?.foreground?.cpus || 'unknown';
     const background = contract?.background_cpus || contract?.cpusets?.background?.cpus || 'unknown';
     const systemBackground = contract?.system_background_cpus || contract?.cpusets?.system_background?.cpus || background;
     const cpuSet = profileContract && contract
-      ? `top-app: cpu${profileContract.top_app_cpus}\nforeground: cpu${foreground} (${ownership.foreground_cpus || 'framework'}，只读观察)\nbackground: cpu${background}\nsystem-background: cpu${systemBackground}`
+      ? `当前前台应用（top-app）：cpu${profileContract.top_app_cpus}\n普通前台进程（foreground）：cpu${foreground}，由系统管理\n后台应用（background）：cpu${background}\n系统后台进程（system-background）：cpu${systemBackground}`
       : '运行参数尚未读取';
     let html = `<b>当前模式</b><br>${(PROFILES[detailState.currentProfile] || PROFILES.unknown).name}<br><br>`;
     html += detailState.schedOwner === 'external'
-      ? `<b>cpuset 分配</b><br>${appFeatures.core.escapeHtml(appFeatures.profile.getSchedulerStatusText())}`
-      : `<b>cpuset 分配</b><br>${appFeatures.core.escapeHtml(cpuSet).replace(/\n/g, '<br>')}`;
+      ? `<b>CPU 核心分配</b><br>${appFeatures.core.escapeHtml(appFeatures.profile.getSchedulerStatusText())}`
+      : `<b>CPU 核心分配（cpuset）</b><br>${appFeatures.core.escapeHtml(cpuSet).replace(/\n/g, '<br>')}`;
     if (detailState.lastClusters && detailState.lastClusters.length) {
       detailState.lastClusters.forEach((cluster, index) => {
         const maxHz = Number.isFinite(cluster.max) && cluster.max > 0 ? cluster.max : 0;
         html += `<br><br><b>${CLUSTERS[index]?.label || `Cluster ${index}`}</b><br>`;
-        html += `cur: ${cluster.cur ? `${(cluster.cur / 1000).toFixed(0)} MHz` : '—'} / max: ${maxHz ? `${(maxHz / 1000).toFixed(0)} MHz` : '—'}<br>`;
+        html += `当前频率：${cluster.cur ? `${(cluster.cur / 1000).toFixed(0)} MHz` : '—'} / 当前上限：${maxHz ? `${(maxHz / 1000).toFixed(0)} MHz` : '—'}<br>`;
         const respText = typeof cluster.resp_ms_text === 'string' ? cluster.resp_ms_text : cluster.resp_ms;
         const downText = typeof cluster.down_us_text === 'string' ? cluster.down_us_text : cluster.down_us;
-        html += `resp_time: ${appFeatures.core.escapeHtml(appFeatures.profile.formatSchedValue(respText, 'ms'))} · down_rate: ${appFeatures.core.escapeHtml(appFeatures.profile.formatSchedValue(downText, 'µs'))}<br>`;
-        html += `governor: ${appFeatures.core.escapeHtml(cluster.gov || '—')}`;
+        html += `响应时间：${appFeatures.core.escapeHtml(appFeatures.profile.formatSchedValue(respText, 'ms'))} · 降频间隔：${appFeatures.core.escapeHtml(appFeatures.profile.formatSchedValue(downText, 'µs'))}<br>`;
+        html += `调频器：${appFeatures.core.escapeHtml(cluster.gov || '—')}`;
       });
     } else html += '<br><br>暂无频率快照，请先刷新一次。';
     if (contract) {
-      html += `<br><br><b>参数所有权</b><br>top-app / response / uclamp / vendor L2：${appFeatures.core.escapeHtml(ownership.top_app_cpus || 'pixel_best_effort')}<br>foreground：${appFeatures.core.escapeHtml(ownership.foreground_cpus || 'framework')}（系统回写，模块不抢写）<br>频率上下限：${appFeatures.core.escapeHtml(ownership.scaling_min_max_freq || 'thermal_powerhal_scene')}`;
-      html += `<br><b>写回策略</b>：${appFeatures.core.escapeHtml(contract.writeback_policy || 'apply_verify_once_then_observe')}；health ${Number(contract.health_interval_s) || 300}s 只读`;
+      html += '<br><br><b>参数管理范围</b><br>本模块设置前台应用核心、响应时间、任务性能请求上限及厂商调度参数；普通前台进程的核心分配由系统管理。频率上下限仍受系统温控、电源管理和其他调度工具影响。';
+      html += `<br><b>检查方式</b>：应用后检查一次，之后每 ${Number(contract.health_interval_s) || 300} 秒读取状态；发现系统修改参数时仅记录，不反复覆盖。`;
     }
     openDetail('CPU 调度参数详情', html);
   });

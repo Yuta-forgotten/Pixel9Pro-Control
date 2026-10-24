@@ -109,8 +109,8 @@
               </div>
             </div>
             <div class="summary-grid memory-summary-grid">
-              <div class="summary-item memory-metric-card"><span>可用内存</span><strong id="rt-mem-avail">—</strong><small id="rt-mem-avail-detail">等待读回</small></div>
-              <div class="summary-item memory-metric-card memory-metric-card-zram"><span>ZRAM 逻辑占用</span><strong id="rt-zram-usage">—</strong><small id="rt-zram-usage-detail">等待读回</small></div>
+              <div class="summary-item memory-metric-card"><span>可用内存</span><strong id="rt-mem-avail">—</strong><small id="rt-mem-avail-detail">正在读取</small></div>
+              <div class="summary-item memory-metric-card memory-metric-card-zram"><span>ZRAM 已存数据</span><strong id="rt-zram-usage">—</strong><small id="rt-zram-usage-detail">正在读取压缩前的数据量</small></div>
               <div class="summary-item memory-metric-card"><span>运行时间</span><strong id="rt-uptime">—</strong><small id="rt-uptime-detail">设备启动后</small></div>
             </div>
             <details class="disclosure compact">
@@ -121,8 +121,8 @@
               <div class="disclosure-body">
                 <div class="mini-list">
                   <div class="mini-row"><span>物理内存</span><strong id="rt-mem-total">—</strong></div>
-                  <div class="mini-row"><span>压缩率 / 实占</span><strong id="rt-ratio">—</strong></div>
-                  <div class="mini-row"><span>Swap 可用</span><strong id="rt-swap-free">—</strong></div>
+                  <div class="mini-row"><span>压缩后比例 / 内存占用</span><strong id="rt-ratio">—</strong></div>
+                  <div class="mini-row"><span>剩余交换空间</span><strong id="rt-swap-free">—</strong></div>
                   <div class="mini-row"><span>WebUI 内存</span><strong id="rt-webui-mem">—</strong></div>
                 </div>
               </div>
@@ -188,35 +188,35 @@
           <p id="profile-operation-notice" role="status" hidden></p>
         </article>
         <article class="surface-card preference-card scheduler-card">
-          <div class="panel-title">调度接管与协调</div>
-          <div class="panel-desc">日常调度与游戏 lease 分离管理。</div>
+          <div class="panel-title">日常与游戏调度</div>
+          <div class="panel-desc">日常使用 Pixel 或 UGT；开启游戏自动接管后，fas-rs 可临时管理游戏调度，退出后恢复日常配置。</div>
           <div class="preference-group" id="external-scheduler-controls">
             <p id="scheduler-operation-notice" role="status" hidden></p>
             <div class="ctrl-row" id="sched-owner-row" data-module-visible="ugt" hidden>
               <div class="ctrl-copy">
-                <div class="ctrl-label">调度接管</div>
+                <div class="ctrl-label">日常调度</div>
                 <div class="ctrl-val" id="sched-owner-label">读取中</div>
               </div>
               <button class="tiny-btn" id="sched-owner-toggle-btn" type="button"><span id="sched-owner-toggle-label">读取中…</span></button>
             </div>
             <div class="ctrl-row" id="scheduler-health-row">
               <div class="ctrl-copy">
-                <div class="ctrl-label">调度健康</div>
-                <div class="ctrl-val" id="scheduler-health-label">读取控制面状态</div>
+                <div class="ctrl-label">调度状态</div>
+                <div class="ctrl-val" id="scheduler-health-label">正在检查配置与运行状态</div>
               </div>
               <button class="tiny-btn tonal" id="scheduler-retry-btn" type="button"><span id="scheduler-retry-label">重新验证</span></button>
             </div>
             <div class="ctrl-row" id="game-handoff-row" data-module-visible="fas" hidden>
               <div class="ctrl-copy">
-                <div class="ctrl-label">游戏接管</div>
-                <div class="ctrl-val" id="game-handoff-label">读取 fas-rs 接管策略</div>
+                <div class="ctrl-label">游戏自动接管</div>
+                <div class="ctrl-val" id="game-handoff-label">正在读取 fas-rs 游戏接管设置</div>
               </div>
               <button class="tiny-btn tonal" id="game-handoff-toggle-btn" type="button"><span id="game-handoff-toggle-label">读取中…</span></button>
             </div>
             <div class="ctrl-row" id="owner-arbiter-row" data-module-visible="fas" hidden>
               <div class="ctrl-copy">
-                <div class="ctrl-label">调度协调</div>
-                <div class="ctrl-val" id="owner-arbiter-label">外部调度器可立即检查接管状态</div>
+                <div class="ctrl-label">接管状态检查</div>
+                <div class="ctrl-val" id="owner-arbiter-label">按当前游戏状态检查并协调调度，通常由后台自动完成。</div>
               </div>
               <button class="tiny-btn tonal" id="owner-arbiter-tick-btn" type="button"><span id="owner-arbiter-tick-label">立即检查</span></button>
             </div>
@@ -256,7 +256,7 @@
             <span class="disclosure-copy"><strong>调度说明</strong><small>自动策略与系统默认</small></span>
             <span class="disclosure-chevron" aria-hidden="true">›</span>
           </summary>
-          <div class="disclosure-body support-copy"><p id="perf-policy-detail"></p><p>省电与均衡会调整核心分配和升频节奏；系统默认仍属于本模块管理的档位。“不启用本模块调度”会停止全部调度写入和后台任务，两者不是同一状态。自动模式仅在均衡与省电之间切换。<span id="external-scheduler-help" data-module-visible="ugt|fas" hidden></span></p></div>
+          <div class="disclosure-body support-copy"><p id="perf-policy-detail"></p><p>省电与均衡会调整 CPU 核心分配和升频响应。“系统默认”恢复系统提供的调度参数，仍由本模块管理；“不启用本模块调度”停止本模块的调度修改和相关后台任务。自动模式仅在均衡与省电之间切换。<span id="external-scheduler-help" data-module-visible="ugt|fas" hidden></span></p></div>
         </details>
 
         <div class="section-head" style="margin-top:6px">
@@ -316,12 +316,12 @@
           <div class="section-copy">
             <div class="kicker">温控阈值</div>
             <div class="section-title">档位选择</div>
-          <div class="section-sub">系统档位不写入覆盖；自定义档位在重启后由挂载层生效。</div>
+          <div class="section-sub">“不修改温控”保留系统配置；自定义档位保存后，需重启手机生效。</div>
           </div>
           <div class="profile-list" id="thermal-list"></div>
         </div>
 
-        <div class="inline-alert warn"><strong>最终安全关机阈值保持原厂</strong><span>调整只影响前置温控介入。靠近安全阈值时自动限幅，具体参数可在档位说明中查看。</span></div>
+        <div class="inline-alert warn"><strong>保留原厂安全关机阈值</strong><span>档位调整影响温控开始限制性能的时机。接近后续保护阈值时会缩小调整幅度，具体以各传感器配置为准。</span></div>
       </div>
     </section>
 
@@ -334,7 +334,7 @@
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">网络能力</div>
-              <div class="panel-title">UE 网络能力</div>
+              <div class="panel-title">网络能力配置（UECap）</div>
               <div class="panel-desc" id="uecap-desc">选择载波组合配置，切换后自动校验是否生效。</div>
             </div>
             <div class="header-actions">
@@ -374,11 +374,11 @@
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">蜂窝省电</div>
-              <div class="panel-title">NR 息屏降级</div>
+              <div class="panel-title">息屏切换 4G</div>
               <div class="panel-desc" id="nr-switch-desc">息屏 5 分钟后切换至 LTE，亮屏自动恢复。</div>
             </div>
             <div class="header-actions">
-              <button class="tiny-btn text-btn" id="nr-switch-detail-btn" type="button" aria-label="查看 NR 息屏降级说明">说明</button>
+              <button class="tiny-btn text-btn" id="nr-switch-detail-btn" type="button" aria-label="查看息屏切换 4G 说明">说明</button>
               <button class="tiny-btn primary" id="nr-switch-toggle-btn" type="button"><span id="nr-switch-toggle-label">读取中…</span></button>
             </div>
           </div>
@@ -393,14 +393,14 @@
             <div class="panel-copy">
               <div class="kicker">副卡槽策略</div>
               <div class="panel-title">SIM2 空槽管理</div>
-              <div class="panel-desc" id="sim2-auto-desc">单卡设备可在息屏时停用空槽实例。双卡设备请保持关闭。</div>
+              <div class="panel-desc" id="sim2-auto-desc">息屏后停用空闲副卡槽的通信实例，亮屏或检测到副卡后恢复。仅限单卡且副卡槽为空的设备。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn primary" id="sim2-auto-toggle-btn" type="button"><span id="sim2-auto-toggle-label">读取中…</span></button>
             </div>
           </div>
           <details class="disclosure compact">
-            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>运行状态</strong><small>适用场景与当前行为</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
+            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>运行状态</strong><small>使用条件与当前状态</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
             <div class="disclosure-body"><div class="data-list" id="sim2-auto-rows"><div class="skel" style="height:48px"></div></div></div>
           </details>
         </article>
@@ -416,17 +416,17 @@
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">内存优化</div>
-              <div class="panel-title">ZRAM / VM 参数</div>
-              <div class="panel-desc" id="swap-desc">读取 VM 参数、ZRAM owner 与 effective capacity。</div>
+              <div class="panel-title">压缩内存与回收参数</div>
+              <div class="panel-desc" id="swap-desc">查看 ZRAM 压缩内存的实际容量、管理服务与 VM 内存回收设置。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn text-btn" id="swap-detail-btn" type="button" aria-label="查看内存优化说明">说明</button>
-              <button class="tiny-btn tonal" id="swap-tune-btn" type="button">手动</button>
+              <button class="tiny-btn tonal" id="swap-tune-btn" type="button">调节参数</button>
               <button class="tiny-btn primary" id="swap-toggle-btn" type="button"><span id="swap-toggle-label">读取中…</span></button>
             </div>
           </div>
           <details class="disclosure compact">
-            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>当前参数</strong><small>VM 参数、容量和 owner readback</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
+            <summary class="disclosure-summary"><span class="disclosure-copy"><strong>当前参数</strong><small>内存回收设置、实际容量与管理服务</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
             <div class="disclosure-body"><div class="data-list" id="swap-rows"><div class="skel" style="height:140px"></div></div></div>
           </details>
         </article>
@@ -452,11 +452,11 @@
             <select class="bg-policy-select" id="bg-restrict-policy-select" aria-label="后台限制策略" disabled></select>
             <select class="bg-delay-select" id="bg-restrict-delay-select" aria-label="休眠延时" disabled></select>
             <button class="tiny-btn primary" id="bg-restrict-add-btn" type="button">添加</button>
-            <div class="bg-package-hint" id="bg-restrict-pkg-hint">名称来自统一识别目录；仍可手动输入未收录包名。</div>
+            <div class="bg-package-hint" id="bg-restrict-pkg-hint">可选择已识别的应用，也可手动输入完整包名。</div>
           </div>
           <details class="disclosure compact support-disclosure">
             <summary class="disclosure-summary">
-              <span class="disclosure-copy"><strong>使用说明与限制</strong><small>工作方式、恢复行为与能力边界</small></span>
+              <span class="disclosure-copy"><strong>使用说明与限制</strong><small>生效时机、恢复方式与影响范围</small></span>
               <span class="disclosure-chevron" aria-hidden="true">›</span>
             </summary>
             <div class="disclosure-body support-copy">
@@ -490,7 +490,7 @@
 
         <details class="disclosure advanced-card">
           <summary class="disclosure-summary">
-            <span class="disclosure-copy"><strong>后台任务状态</strong><small>最近一次 worker 快照（只读）</small></span>
+            <span class="disclosure-copy"><strong>后台任务状态</strong><small>最近一次检查结果，仅供查看</small></span>
             <span class="disclosure-chevron" aria-hidden="true">›</span>
           </summary>
           <div class="disclosure-body">
@@ -498,8 +498,8 @@
               <div class="skel" style="height:48px"></div>
             </div>
             <div class="support-copy task-status-help">
-              <p>这里显示 worker 最近一次已完成检查；总开关关闭后快照不再更新。关闭会停止温度记录和所有模块自动策略，WebUI 仍可查看已有历史和执行明确的手动操作。</p>
-              <p>温度历史亮屏约每分钟、息屏约每 15 分钟记录。使用普通可挂起 sleep，不设置唤醒闹钟、不持有唤醒锁；系统休眠时允许缺测，不为补齐曲线唤醒内核。</p>
+              <p>这里显示后台任务最近一次完成的检查。关闭后台总开关后，温度记录和模块自动策略会暂停，检查结果不再更新；仍可查看历史记录和进行手动操作。</p>
+              <p>温度在亮屏时约每分钟记录一次，息屏时约每 15 分钟一次。手机休眠期间可能没有记录，模块不会为补齐曲线主动唤醒手机。</p>
             </div>
           </div>
         </details>
@@ -529,7 +529,7 @@
             <div class="panel-copy">
               <div class="kicker">外观</div>
               <div class="panel-title">主题与配色</div>
-              <div class="panel-desc">选择显示模式与主题色。主题色仅影响按钮、选中态和进度条，不改变状态语义颜色。</div>
+              <div class="panel-desc">设置显示模式与主题色。主题色影响按钮、选中项和进度条；成功、警告、错误仍使用各自的提示颜色。</div>
             </div>
           </div>
           <div class="palette-label" style="margin-top:14px">显示模式</div>
@@ -589,11 +589,11 @@
           <span class="theme-choice-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
         </button>
         <button class="theme-choice" type="button" data-theme-option="light">
-          <span class="theme-choice-copy"><span class="theme-choice-title">浅色模式</span><span class="theme-choice-desc">适合白天、强光和需要更高可读性的场景。</span></span>
+          <span class="theme-choice-copy"><span class="theme-choice-title">浅色模式</span><span class="theme-choice-desc">使用浅色背景和深色文字。</span></span>
           <span class="theme-choice-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
         </button>
         <button class="theme-choice" type="button" data-theme-option="dark">
-          <span class="theme-choice-copy"><span class="theme-choice-title">深色模式</span><span class="theme-choice-desc">适合夜间和低照度环境，降低眩光和视觉噪声。</span></span>
+          <span class="theme-choice-copy"><span class="theme-choice-title">深色模式</span><span class="theme-choice-desc">使用深色背景和浅色文字。</span></span>
           <span class="theme-choice-check" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>
         </button>
       </div>
@@ -612,7 +612,7 @@
     </div>
     <div class="modal-sheet-body">
       <div class="modal-s-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg></div>
-      <div class="modal-s-desc" id="reboot-modal-desc">温控阈值已保存，但当前无法在线重启 thermal 服务。重启手机后新配置才会生效。</div>
+      <div class="modal-s-desc" id="reboot-modal-desc">温控配置已保存，重启手机后生效。可稍后重启，或撤销本次修改。</div>
       <div class="error-panel" id="reboot-cancel-error" role="alert" aria-live="assertive" hidden></div>
       <div class="modal-actions">
         <button class="mbtn mbtn-primary" id="reboot-now-btn" type="button">立即重启</button>
@@ -654,8 +654,8 @@
       </button>
     </div>
     <div class="modal-sheet-body">
-        <div class="swap-tune-note">system 策略仅观察 VM/ZRAM；optimized 或 custom 才写入 VM 参数。ZRAM 容量独立提交，active swap 存在时仅返回待重启，不执行在线 reset。</div>
-        <details class="swap-zram-request"><summary>ZRAM 容量请求（独立于 VM 策略）</summary><div class="swap-zram-size-form"><label for="swap-zram-size-number">容量草稿</label><div class="swap-zram-size-row"><input id="swap-zram-size-number" type="number" inputmode="decimal" min="1024" step="1" placeholder="读取中…" aria-describedby="swap-zram-size-help"><select id="swap-zram-size-unit" aria-label="ZRAM 容量单位"><option value="mb">MB</option><option value="percent">%</option></select><button class="tiny-btn primary" id="swap-zram-size-apply-btn" type="button" aria-busy="false">应用请求</button></div><div id="swap-zram-size-help" class="field-help">optimized 策略支持整数 MB 或 RAM 百分比；平台按 4 KiB 对齐后复读。已有容量事务或 active swap 时禁止重复提交。</div></div></details>
+        <div class="swap-tune-note">“系统管理”仅查看当前状态；“模块优化”和“自定义”会修改内存回收参数。ZRAM 容量需单独保存；正在使用的压缩内存不会在线重置，容量变更可能需要重启。</div>
+        <details class="swap-zram-request"><summary>ZRAM 容量设置（单独保存）</summary><div class="swap-zram-size-form"><label for="swap-zram-size-number">目标容量</label><div class="swap-zram-size-row"><input id="swap-zram-size-number" type="number" inputmode="decimal" min="1024" step="1" placeholder="读取中…" aria-describedby="swap-zram-size-help"><select id="swap-zram-size-unit" aria-label="ZRAM 容量单位"><option value="mb">MB</option><option value="percent">%</option></select><button class="tiny-btn primary" id="swap-zram-size-apply-btn" type="button" aria-busy="false">保存容量</button></div><div id="swap-zram-size-help" class="field-help">启用模块内存管理后，可输入整数 MB 或物理内存百分比。系统会按内存页大小调整数值，并检查保存结果；已有待处理变更时请勿重复提交。</div></div></details>
       <div class="swap-tune-form">
         <label class="swap-field" for="swap-input-swappiness">
           <span class="swap-field-head"><span>换页倾向（swappiness）</span><b id="swap-value-swappiness">100</b></span>
@@ -679,8 +679,8 @@
         </label>
       </div>
       <div class="swap-preset-actions">
-        <button class="tiny-btn" id="swap-preset-optimized" type="button">模块候选</button>
-        <button class="tiny-btn" id="swap-preset-stock" type="button">平台参考</button>
+        <button class="tiny-btn" id="swap-preset-optimized" type="button">填入模块预设</button>
+        <button class="tiny-btn" id="swap-preset-stock" type="button">填入系统参考值</button>
       </div>
       <div class="modal-actions">
         <button class="mbtn mbtn-primary" id="swap-custom-apply-btn" type="button">应用当前参数</button>

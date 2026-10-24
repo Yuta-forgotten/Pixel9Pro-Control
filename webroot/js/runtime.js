@@ -80,48 +80,48 @@ const THEME_ICONS = {
 const PROFILES = {
   performance: {
     name: '性能优先',
-    summary: '放开内核动态 boost 上限，并让中大核更早介入的手动性能档。',
-    desc: '中大核更早介入，适合短时高负载。温升也会更快。',
+    summary: '提高瞬时性能响应，让中核和大核更早参与；仅供手动选择。',
+    desc: '中核和大核更早参与处理，响应更积极，可能增加发热和耗电。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
     modeClass: 'mode-game',
-    detail: '这是内部手动性能基线：中大核更早补位，前台峰值响应更强。代价是温升更快；自动策略不会进入此档。'
+    detail: '提高前台任务的性能响应，让中核和大核更早参与处理，可能增加发热和耗电；自动模式不会选择此档。'
   },
   balanced: {
     name: '均衡',
-    summary: '把普通前台负载留在小中核，保留突发响应并压低长亮屏功耗。',
-    desc: '日常前台优先小中核，控制视频、网页和系统 UI 的稳态升频。',
+    summary: '前台任务优先使用小核和中核，保留小核响应，延后中核与大核升频。',
+    desc: '前台任务优先使用小核和中核，中核与大核采用较缓的升频响应。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>',
     modeClass: 'mode-balanced',
-    detail: '日常均衡基线：top-app 使用 cpu0-6；小核保持及时响应，中核与 X4 延后升频，抑制不必要的 per-task boost。'
+    detail: '日常均衡档：前台应用主要使用小核和中核（cpu0–6）。小核保持及时响应，中核与大核采用较缓的升频节奏，减少持续高频和不必要的性能提升。'
   },
   battery: {
     name: '省电',
-    summary: '在热平台或低电量时进一步放慢中大核响应，保持小核效率。',
-    desc: '优先小中核并延后突发大核，适合久热、导航和长时间视频。',
+    summary: '进一步放缓中核和大核的升频响应，保留小核响应。',
+    desc: '中核和大核的升频更保守，高负载时的响应可能较慢。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.33C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4zM11 19v-2H9l3-5 3 5h-2v2h-2z"/></svg>',
     modeClass: 'mode-battery',
-    detail: '日常省电基线：top-app 使用 cpu0-6；小核仍保持 16ms 响应，避免低频高占用，中核/X4 仅在更明显的突发需求时补位。'
+    detail: '省电档：前台应用主要使用小核和中核（cpu0–6），保留小核响应，并延后中核与大核的升频。高负载时的响应可能较慢，具体参数见下方。'
   },
   default: {
     name: '系统默认',
-    summary: '恢复 Google 内核原厂调度，不再应用模块性能策略。',
+    summary: '恢复系统提供的调度参数，仍保留本模块的配置管理。',
     desc: '使用系统原厂核心分配与升频节奏。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.25 2.52.77-1.28-3.52-2.09V8H12z"/></svg>',
     modeClass: 'mode-stock',
-    detail: '恢复内核当前提供的 response_time_ms_nom、出厂 top-app/background 路由与完整 boost 上限；foreground 仍由 framework 管理，具体数值由运行态 contract 提供。'
+    detail: '恢复内核提供的默认响应时间、前台与后台核心分配及性能提升上限。普通前台进程的核心分配仍由系统管理，具体数值以设备实际返回为准。'
   },
   off: {
     name: '不启用本模块调度',
-    summary: '停止本模块全部 profile、auto、reconcile、repair 和 owner 调度写入。',
+    summary: '停止本模块修改 CPU 调度参数，并停止相关自动切档与接管任务。',
     desc: '本模块只保留 CPU 状态读取，不再修改调度节点。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 7h10v10H7zM12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M7 7h10v10H7zM12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16z"/></svg>',
     modeClass: 'mode-stock',
-    detail: '关闭后，本模块不运行性能 profile、温度自动切档、调度 reconcile/repair 或 owner worker，也不再写 cpuset、sched_pixel、uclamp 和 vendor_sched。'
+    detail: '关闭后，本模块停止性能档位设置、温度自动切档、调度检查修复和游戏接管协调，仅显示 CPU 状态。核心分配、升频响应等调度参数不再由本模块修改。'
   },
   unknown: {
     name: '未选择',
@@ -130,33 +130,33 @@ const PROFILES = {
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M11 18h2v-2h-2v2zm1-16C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14c-2.21 0-4 1.79-4 4h2c0-1.1.9-2 2-2s2 .9 2 2c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5 0-2.21-1.79-4-4-4z"/></svg>',
     hero: '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M11 18h2v-2h-2v2zm1-16C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14c-2.21 0-4 1.79-4 4h2c0-1.1.9-2 2-2s2 .9 2 2c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5 0-2.21-1.79-4-4-4z"/></svg>',
     modeClass: 'mode-unknown',
-    detail: '当前还没有读取到有效模式，请稍后刷新或到“性能”页重新选择。'
+    detail: '尚未读取到有效调度模式，请刷新后在“性能温控”页查看。'
   }
 };
 
 const THERMAL_PRESETS = {
   [-2]: {
     name: '提前介入',
-    summary: '相对本机出厂配置提前介入。',
-    detail: '<b>提前介入</b><br><br>以本机出厂配置为基线，按所选负偏移提前前置阈值。各传感器的实际阈值以生成配置为准；最终 SHUTDOWN 保留出厂值。',
+    summary: '降低部分温控介入阈值，系统更早限制性能。',
+    detail: '<b>提前介入</b><br><br>以本机原厂配置为依据，降低温控开始限制性能的温度阈值。各传感器的实际调整幅度以生成配置为准，安全关机阈值保持原厂值。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M9.37 5.51A7 7 0 0018.49 14.63 9 9 0 119.37 5.51z"/></svg>'
   },
   2: {
     name: '轻度放宽',
-    summary: '相对本机出厂配置轻度放宽。',
-    detail: '<b>轻度放宽</b><br><br>以本机出厂配置为基线，按所选正偏移调整前置阈值，并保留 hysteresis 约束及最终 SHUTDOWN。此偏移不等于机身硬限温。',
+    summary: '小幅提高部分温控介入阈值。',
+    detail: '<b>轻度放宽</b><br><br>适度提高部分温控介入阈值，保留温控恢复所需的温差和原厂安全关机阈值。所选偏移表示配置调整量，不代表手机会被限制在某个固定温度。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15 13.18V7c0-1.66-1.34-3-3-3S9 5.34 9 7v6.18C7.79 13.86 7 15.18 7 16.71 7 18.97 8.86 20.81 11.12 21H12c2.21 0 4-1.79 4-4 0-1.53-.79-2.85-2-3.82z"/></svg>'
   },
   4: {
     name: '日常放宽',
-    summary: '相对本机出厂配置调整前置阈值。',
-    detail: '<b>日常放宽</b><br><br>以本机出厂配置为基线生成所选偏移；靠近后续阈值时按原厂 hysteresis 收窄偏移，并保持最终 SHUTDOWN。各传感器的实际阈值以生成配置为准。',
+    summary: '提高部分温控介入阈值，保留后续温控保护。',
+    detail: '<b>日常放宽</b><br><br>以本机原厂配置为依据，提高部分温控介入阈值。接近后续保护阈值时会缩小调整幅度，避免相邻档位重叠；安全关机阈值保持原厂值。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67z"/></svg>'
   },
   6: {
     name: '最大放宽',
-    summary: '使用当前支持的最大前置阈值偏移。',
-    detail: '<b>最大放宽</b><br><br>以本机出厂配置为基线生成所选偏移；靠近后续阈值时按原厂 hysteresis 收窄偏移，不会整体推高最终 SHUTDOWN。各传感器的实际阈值以生成配置为准。',
+    summary: '使用当前支持的最大调整量，保留后续温控保护。',
+    detail: '<b>最大放宽</b><br><br>使用当前支持的最大温控阈值调整量，可能增加机身发热。接近后续保护阈值时仍会缩小调整幅度，安全关机阈值保持原厂值。实际阈值以各传感器配置为准。',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>'
   }
 };
@@ -164,14 +164,14 @@ const SWAP_KEYS = ['swappiness', 'min_free_kbytes', 'watermark_scale_factor', 'v
 
 
 const UECAP_MODE_PRESENTATION = {
-  balanced: { name: '国内频段', desc: '原厂 +25 组中国 NR 组合 · 推荐' },
+  balanced: { name: '国内频段', desc: '原厂 +25 组中国 NR 组合' },
   special: { name: '全面增强', desc: '原厂 +52 组全球 NR 组合' },
   universal: { name: 'Google 默认', desc: '原厂能力表 · 不做任何修改' },
-  stock: { name: 'XL 系统原生', desc: '不绑定 candidate，使用 komodo 当前 vendor 原文件' },
-  candidate: { name: 'XL Candidate', desc: 'BP3A.251105.015 单文件测试候选 · 尚未完成 XL 实机验证' },
+  stock: { name: 'XL 系统原生', desc: '使用 Pixel 9 Pro XL 当前系统的原始配置' },
+  candidate: { name: 'XL 测试配置', desc: '来自 BP3A.251105.015 · 尚未完成 XL 实机验证' },
 };
 
-const UECAP_DETAIL = '<p>UE 网络能力配置描述手机向基站报告的载波组合。它不保证特定频段、5G 形态或功耗结果；实际连接由设备、运营商与无线环境共同决定。</p><h3>如何选择</h3><p>Pixel 9 Pro 的选项由当前后端合同提供；Google 默认沿用原厂能力，其他选项的适用范围以配置来源和校验结果为准。Pixel 9 Pro XL 保持机型独立，测试候选不能当作已经验证的正式配置。</p><h3>如何确认</h3><p>“已选配置”“当前绑定”“modem 实际加载”和“当前驻网”是不同事实。展开配置与无线诊断可查看加载、回读、Payload 和无线观察。切换是否可用、是否需要重新安装或重启，由当前后端返回；不要把已保存当作已生效。</p>';
+const UECAP_DETAIL = '<p>UECap 是手机向基站报告的网络能力配置，包含可用的载波组合。实际使用的频段、5G 连接方式和功耗，还取决于运营商与无线环境。</p><h3>配置差异</h3><p>Google 默认沿用原厂配置；其他选项的适用范围见配置来源和校验结果。Pixel 9 Pro 与 Pro XL 使用各自的配置，XL 测试配置尚未完成实机验证。</p><h3>生效状态</h3><p>“已选配置”表示保存的选择，“当前配置文件”表示系统绑定的文件；是否已由基带加载，还需单独验证。展开“配置与无线诊断”可查看加载结果与本次检查记录。当前显示 4G 或 5G 仅代表驻网状态，无法单独证明配置是否生效。需要重装或重启时，页面会给出提示。</p>';
 const BASEBAND_DETAIL = '<b>基带配置模块 (pixel9pro_baseband_trial)</b><br><br><b>提供内容</b><br>- 5G / IMS 属性：VoLTE、Wi-Fi Calling 开关<br>- CarrierSettings：运营商配置覆盖<br>- China MCFG：移动 / 联通 / 电信相关 modem 配置<br><br><b>不包含</b><br>- UECap binarypb 管理（由 pixel9pro_control 负责）<br>- 温控、CPU 调度、ZRAM 和 WebUI';
 // UECap status is a modem/runtime inspection rather than a cached read. The
 // device can take 10–12 seconds before the JSON body is complete, so one
@@ -199,15 +199,15 @@ const BG_RESTRICT_POLICY_PRESENTATION = {
   },
   block_all: {
     label: '禁止后台活动',
-    desc: '限制后台服务、自启动式后台运行、jobs、alarms 与后台网络配额，推送和同步风险较高。'
+    desc: '限制后台服务、自启动、定时任务、闹钟与后台网络配额，可能影响通知和同步。'
   },
   block_services: {
     label: '禁止后台服务',
-    desc: '禁止后台服务继续运行，保留一部分 jobs、alarms 和推送处理空间。'
+    desc: '禁止后台服务继续运行，保留部分定时任务、闹钟和推送处理能力。'
   },
   bucket: {
     label: '降低后台优先级',
-    desc: '只降低 App Standby Bucket，减少后台执行机会，适合先观察通知与同步影响。'
+    desc: '降低应用的系统待机优先级，减少后台执行机会，可能影响通知和同步。'
   }
 };
 

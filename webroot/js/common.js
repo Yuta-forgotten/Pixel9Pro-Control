@@ -177,7 +177,10 @@ function connectAutomatically({ retry = false } = {}) {
     } catch (error) {
       authState.webuiToken = '';
       try { sessionStorage.removeItem(STORAGE_TOKEN_KEY); } catch (_) {}
-      showConnectionError(error?.name === 'AbortError' ? '自动连接超时，请重试。' : `自动连接未完成：${error?.message || '请重试'}`);
+      const detail = String(error?.message || '');
+      showConnectionError(error?.name === 'AbortError' ? '自动连接超时，可点击“重新连接”。'
+        : /[\u4e00-\u9fff]/.test(detail) ? `自动连接未完成：${detail}`
+          : '自动连接未完成，可点击“重新连接”或从 Root 管理器打开 WebUI。');
       return false;
     }
   })().finally(() => { authState.pairing = null; });
@@ -297,7 +300,7 @@ async function rawApiFetch(path, opts = {}) {
   const method = (opts.method || 'GET').toUpperCase();
   try {
     if (method !== 'GET') {
-      if (!authState.webuiToken) throw new Error('missing WebUI token');
+      if (!authState.webuiToken) throw new Error('连接尚未建立，请重新连接 WebUI');
       headers['X-PIXEL9PRO-TOKEN'] = authState.webuiToken;
     } else if (authState.webuiToken) {
       headers['X-PIXEL9PRO-TOKEN'] = authState.webuiToken;
@@ -320,7 +323,7 @@ async function rawApiFetch(path, opts = {}) {
     let payload = null;
     try { payload = bodyText ? JSON.parse(bodyText) : null; } catch (_) {
       if (Date.now() >= deadlineAt) throw requestAbortError(null, 'REQUEST_TIMEOUT');
-      const formatError = new Error(`接口返回格式错误（HTTP ${response.status}）`);
+      const formatError = new Error('服务返回了无法识别的数据，请刷新后重试');
       formatError.status = response.status;
       formatError.detail = bodyText.slice(0, 240);
       throw formatError;
@@ -329,15 +332,31 @@ async function rawApiFetch(path, opts = {}) {
     if (Date.now() >= deadlineAt) throw requestAbortError(null, 'REQUEST_TIMEOUT');
     if (!response.ok) {
       const detail = payload?.error || payload?.message || (payload ? JSON.stringify(payload) : '接口未返回错误详情');
-      const message = response.status === 403 ? 'WebUI token 无效或已过期' : `HTTP ${response.status}`;
-      const error = new Error(`${message} · ${detail}`);
+      const knownDetail = {
+        '未开启游戏移交且没有有效 lease，owner arbiter 不运行': '游戏自动接管已关闭，当前没有待处理的接管状态，无需检查',
+        '未检测到 fas-rs，owner 手动唤醒不可用': '未检测到 fas-rs，无法检查游戏接管状态',
+        'scheduler operation already running or could not start': '接管检查未启动，可能有其他调度操作尚未完成，请刷新确认',
+        'invalid token': '连接验证已失效，请重新连接 WebUI',
+        'missing server token': '连接验证信息尚未就绪，请重新连接 WebUI'
+      }[detail];
+      const statusMessage = {
+        400: '提交内容无效，请检查设置后重试',
+        403: '连接验证未通过，请重新连接 WebUI',
+        404: '当前模块缺少此功能接口，请检查已安装版本',
+        409: '当前状态不满足操作条件，请刷新确认',
+        429: '操作过于频繁，请稍候再试',
+        500: '服务处理失败，请查看运行记录',
+        503: '服务暂不可用，请稍后刷新'
+      }[response.status] || '服务未完成请求，请查看运行记录';
+      const error = new Error(knownDetail || (/[\u4e00-\u9fff]/.test(detail) ? detail : statusMessage));
       error.status = response.status;
       error.detail = detail;
       error.payload = payload;
+      appendLog(`服务请求未完成（HTTP ${response.status}）：${detail}`, 'err');
       throw error;
     }
     if (payload === null || typeof payload !== 'object') {
-      const formatError = new Error(`接口返回空数据（HTTP ${response.status}）`);
+      const formatError = new Error('服务未返回有效数据，请稍后刷新');
       formatError.status = response.status;
       throw formatError;
     }
@@ -539,7 +558,7 @@ function apiFetch(path, opts = {}) {
         controller.signal.removeEventListener('abort', onAbort);
       })
       .then((ready) => {
-        if (!ready) throw new Error('missing WebUI token');
+        if (!ready) throw new Error('连接尚未建立，请重新连接 WebUI');
         return apiFetch(path, { ...opts, controller, _tokenReady: true });
       });
   }

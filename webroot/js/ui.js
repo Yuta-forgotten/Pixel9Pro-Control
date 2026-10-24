@@ -400,7 +400,7 @@ function openRebootModal(pending, prev, context = 'thermal') {
   }
   if (refs.rebootLaterBtn) {
     refs.rebootLaterBtn.hidden = false;
-    refs.rebootLaterBtn.textContent = saving ? '后台保存' : '稍后重启';
+    refs.rebootLaterBtn.textContent = saving ? '关闭提示，继续保存' : '稍后重启';
   }
   if (refs.rebootCancelBtn) {
     refs.rebootCancelBtn.hidden = saving || (context === 'thermal'
@@ -411,13 +411,13 @@ function openRebootModal(pending, prev, context = 'thermal') {
   if (context === 'scheduler') {
     const target = requireFeature('profile').getSchedulerBootTargetMode() === 'ugt' ? 'UGT 日常调度模式' : 'Pixel 调度模式';
     refs.rebootModalTitle.textContent = `切换到${target}`;
-    refs.rebootModalDesc.textContent = `启动状态已提交。重启后才会进入${target}并完成最终验证。`;
+    refs.rebootModalDesc.textContent = `已保存日常调度选择。重启手机后切换到${target}，随后检查运行状态。`;
   } else if (saving) {
     refs.rebootModalTitle.textContent = '温控策略保存中';
-    refs.rebootModalDesc.textContent = '正在写入模块 source；完成后可选择立即重启、稍后重启或放弃本次修改。';
+    refs.rebootModalDesc.textContent = '正在保存温控配置。保存完成后可重启生效，或撤销本次修改；关闭提示不会中断保存。';
   } else {
     refs.rebootModalTitle.textContent = '温控策略等待重启';
-    refs.rebootModalDesc.textContent = '温控策略已保存；当前 overlay 需要在重启后完成最终切换和复读。';
+    refs.rebootModalDesc.textContent = '温控配置已保存，重启手机后应用并检查结果。当前运行的温控配置尚未切换。';
   }
   const wasOpen = refs.rebootModal.classList.contains('open');
   refs.rebootModal.classList.add('open');

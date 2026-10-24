@@ -43,13 +43,13 @@ const THERMAL_REQUEST_TIMEOUTS = Object.freeze({
 });
 
 const THERMAL_REINSTALL_NOTICE = '修改需卸载模块、重启、重新安装并重新选择';
-const THERMAL_REBOOT_NOTICE = '已写入 module source；需重启后由 Hybrid Mount 应用，当前 Thermal HAL 不重启。';
+const THERMAL_REBOOT_NOTICE = '温控配置已保存，重启手机后应用；当前运行中的温控服务保持原状态。';
 
 const THERMAL_POLICY_PRESETS = {
   system: {
     name: '不修改温控',
-    summary: '保留系统 Thermal HAL 配置，不写入覆盖。',
-    detail: '<p>模块不生成或修改温控 source。</p><p>系统负责温控阈值与 Thermal HAL 生命周期。</p>',
+    summary: '保留系统温控配置，模块不修改温控阈值。',
+    detail: '<p>沿用系统温控配置，模块不生成替代配置。</p><p>温控阈值和温控服务继续由系统管理。</p>',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/></svg>',
   },
 };
@@ -331,7 +331,7 @@ function applyThermalContract(data) {
     && uniqueOffsets.size === offsets.length
     && offsets.every((offset) => Number.isFinite(offset) && THERMAL_PRESETS[offset])
     && uniqueOffsets.has(defaultOffset);
-  if (!valid) throw new Error('温控档位 contract 无效');
+  if (!valid) throw new Error('服务返回的温控档位不完整，暂时无法修改');
   state.contract = { policies, defaultPolicy, offsets, defaultOffset };
 }
 
@@ -520,7 +520,7 @@ async function applyThermalSelection(policy, offset) {
   if (state.reinstallRequired || !state.contract?.policies.includes(policy) || state.thermalApplyBusy) return;
   if (state.repairRequired) {
     if (policy !== 'system') {
-      showToast('请先恢复系统温控基线，再选择自定义档位。', 4200);
+      showToast('当前温控配置需要修复，恢复系统配置并重启后才能选择自定义档位', 4200);
       return;
     }
     state.thermalApplyBusy = true;
@@ -535,7 +535,7 @@ async function applyThermalSelection(policy, offset) {
       if (!applyThermalState(data)) throw new Error('修复已提交，但后端没有返回有效目标状态');
       updatePendingState(data, { open: false });
       state.verificationNotice = '修复已提交，后台更新状态中';
-      showToast('温控基线修复已提交，重启后确认生效。', 4200);
+      showToast('温控修复已提交，重启后检查生效状态', 4200);
       reconcileThermalCommit(revision, { policy: 'system', pending: true });
     } catch (err) {
       showToast(`修复失败：${err?.message || '请重新安装模块'}`, 4200);
@@ -615,7 +615,7 @@ async function applyThermalSelection(policy, offset) {
       reconcileThermalCommit(revision, next);
     } else {
       state.selectionPending = null;
-      showToast(`切换失败：${data.error || '后端返回了无效状态'}`);
+      showToast(`切换失败：${data.error || '服务未返回有效的配置状态'}`);
       appendLog(data.error || '切换失败', 'err');
     }
   } catch (err) {

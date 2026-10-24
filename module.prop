@@ -1,6 +1,7 @@
 id=pixel9pro_control
 name=Pixel 9 Pro 温控调度控制台
-version=v4.6.24
-versionCode=190
+version=v4.6.25
+versionCode=191
 author=Yuta
 description=WebUI · 首次启动后显示已选配置摘要
+updateJson=https://raw.githubusercontent.com/Yuta-forgotten/Pixel9Pro-Control/main/update.json
