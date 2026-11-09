@@ -304,15 +304,9 @@ apply_keep5g_standby_settings() {
     # 关闭它不会取消 NR 注册或 CA 能力，但在 Wi-Fi -> 蜂窝回切时可能带来轻微时延。
     apply_android_setting global mobile_data_always_on 0 || _standby_failed=1
 
-    # keep-5G 分支显式不强制关闭 VoWiFi / WFC。
-    # AOSP 中 wfc_ims_enabled 是 Wi-Fi Calling 用户开关；强制关闭会明确影响室内弱覆盖场景的通话连续性。
-    # 该项对 5G/5GA/CA 能力本身没有收益，因此本版暂停托管。
-
-    # 扫描与 Nearby 相关项对 5G 能力本身无直接影响，仅减少息屏扫描和发现流量。
+    # Nearby 项减少发现流量。
     apply_android_setting global nearby_sharing_enabled 0 || _standby_failed=1
     apply_android_setting secure nearby_sharing_slice_enabled 0 || _standby_failed=1
-    apply_android_setting global wifi_scan_always_enabled 0 || _standby_failed=1
-    apply_android_setting global ble_scan_always_enabled 0 || _standby_failed=1
 
     # adaptive_connectivity: Google 官方的 5G 节电机制。
     # 开启后，系统在 app 不需要高速时自动从 NR 回退到 LTE，降低 modem 空闲功耗。

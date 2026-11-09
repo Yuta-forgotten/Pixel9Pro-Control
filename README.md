@@ -68,8 +68,6 @@ Journal 在同一模块文件系统上优先保存 source hard-link，跨文件�
 | `adaptive_connectivity_enabled` | `1` |  NR→LTE |
 | `network_recommendations_enabled` | `1` | 系统网络建议 |
 | `mobile_data_always_on` | `0` | Wi-Fi 下不保持蜂窝常驻 |
-| `wifi_scan_always_enabled` | `0` | 关闭 Wi-Fi 后台常扫 |
-| `ble_scan_always_enabled` | `0` | 关闭 BLE 后台常扫 |
 | `nearby_sharing_enabled` | `0` | 关闭 Nearby Sharing |
 
 

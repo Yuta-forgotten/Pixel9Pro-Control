@@ -14,16 +14,11 @@ DEFAULTS_LIB="$MODDIR/scripts/runtime_defaults_lib.sh"
 json_headers
 
 mda=$(runtime_android_settings get global mobile_data_always_on 2>/dev/null | tr -d ' \n\r')
-wscan=$(runtime_android_settings get global wifi_scan_always_enabled 2>/dev/null | tr -d ' \n\r')
-bscan=$(runtime_android_settings get global ble_scan_always_enabled 2>/dev/null | tr -d ' \n\r')
 adapt_global=$(runtime_android_settings get global adaptive_connectivity_enabled 2>/dev/null | tr -d ' \n\r')
 adapt_legacy=$(runtime_android_settings get secure adaptive_connectivity_enabled 2>/dev/null | tr -d ' \n\r')
 adapt_wifi=$(runtime_android_settings get secure adaptive_connectivity_wifi_enabled 2>/dev/null | tr -d ' \n\r')
 netrec=$(runtime_android_settings get global network_recommendations_enabled 2>/dev/null | tr -d ' \n\r')
 nearby=$(runtime_android_settings get global nearby_sharing_enabled 2>/dev/null | tr -d ' \n\r')
-
-# Keep-5G 分支不再托管 VoWiFi / WFC，避免对 Wi-Fi Calling 造成确定性副作用。
-wfc="unmanaged"
 
 case "$adapt_global" in
     0|1) adapt="$adapt_global" ;;
@@ -44,6 +39,6 @@ ip link show wlan0 2>/dev/null | grep -q "MULTICAST" && mc="on"
 sim2_auto=$(cat "$MODDIR/.sim2_auto_manage" 2>/dev/null | tr -d ' \n\r')
 case "$sim2_auto" in on|off) ;; *) sim2_auto="$SIM2_AUTO_DEFAULT" ;; esac
 
-printf '{"mobile_data_always_on":"%s","wfc_ims_enabled":"%s","wifi_scan_always_enabled":"%s","ble_scan_always_enabled":"%s","adaptive_connectivity":"%s","network_recommendations":"%s","nearby_sharing":"%s","multicast":"%s","sim2_auto_manage":"%s"}' \
-    "$(json_escape "$mda")" "$wfc" "$(json_escape "$wscan")" "$(json_escape "$bscan")" \
+printf '{"mobile_data_always_on":"%s","adaptive_connectivity":"%s","network_recommendations":"%s","nearby_sharing":"%s","multicast":"%s","sim2_auto_manage":"%s"}' \
+    "$(json_escape "$mda")" \
     "$(json_escape "$adapt")" "$(json_escape "$netrec")" "$(json_escape "$nearby")" "$mc" "$sim2_auto"

@@ -11,6 +11,16 @@ dist/
 *.bundle
 
 # Local project metadata / release drafts
+.claude/
+.codex/
+settings.local.json
+.env
+.env.*
+!.env.example
+!.env.template
+.ssh/
+.aws/
+credentials.json
 .code-abyss/
 .ai_changelog.yaml
 AUDIT.md
@@ -28,6 +38,9 @@ work/
 /tmp/
 
 # Runtime state belongs to the installed module, never the source tree
+/.memory_*
+/.zram_*
+/.vm_*
 /.background_*
 /.arbiter_*
 /.bg_*
