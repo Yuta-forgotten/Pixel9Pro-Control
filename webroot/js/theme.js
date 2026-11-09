@@ -205,7 +205,7 @@ function applyCustomHex() {
   const input = document.getElementById('palette-hex-input');
   if (!input) return;
   const raw = (input.value || '').trim();
-  if (!isValidHex(raw)) { showToast('请输入有效颜色，如 #3aa6c2', 2600, 'err'); return; }
+  if (!isValidHex(raw)) { showToast('请输入有效的十六进制颜色值，例如 #3aa6c2', 2600, 'err'); return; }
   const hex = normalizeHex(raw);
   state.paletteCustom = hex;
   writePreference(STORAGE_PALETTE_CUSTOM_KEY, hex);
@@ -235,12 +235,12 @@ function saveThemeToServer() {
           body: JSON.stringify(snapshot), timeoutMs: 5000, priority: 'interactive', scope: 'theme.mutation'
         });
         if (data?.mode !== snapshot.mode || data?.palette !== snapshot.palette || data?.custom !== snapshot.custom) {
-          throw new Error(data?.error || '服务端主题回读不一致');
+          throw new Error(data?.error || '模块保存的主题与所选主题不一致');
         }
       } catch (error) {
         if (revision !== state.preferenceRevision) continue;
-        requireFeature('core').appendLog(`主题已在当前页面应用，但服务端备份未确认：${error.message || error}`, 'warn');
-        showToast('主题已应用，但跨更新备份未确认；可重新选择以重试', 4200, 'warn');
+        requireFeature('core').appendLog(`当前主题已应用，但模块保存结果未确认：${error.message || error}`, 'warn');
+        showToast('当前主题已应用，但模块尚未确认保存；重新选择可再次保存', 4200, 'warn');
       }
     }
   })().finally(() => { state.savePromise = null; });
@@ -255,7 +255,7 @@ async function restoreThemeFromServerIfNeeded() {
     const data = await requireFeature('core').apiFetch(API.theme, { timeoutMs: 5000, priority: 'background', scope: 'theme.read' });
     // A slow startup read may finish after a user changes a local preference.
     if (revision !== state.preferenceRevision) return null;
-    if (!data || data.ok === false) throw new Error(data?.error || '主题备份响应无效');
+    if (!data || data.ok === false) throw new Error(data?.error || '模块返回的主题记录无效');
     if (data.custom && isValidHex(data.custom)) {
       state.paletteCustom = normalizeHex(data.custom);
       writePreference(STORAGE_PALETTE_CUSTOM_KEY, state.paletteCustom);

@@ -86,8 +86,8 @@ for _background_lib in background_tasks_lib.sh control_worker_lib.sh thermal_his
         abort
     }
 done
-if [ ! -r "$MODPATH/scripts/vm_profile_lib.sh" ] \
-    || ! . "$MODPATH/scripts/vm_profile_lib.sh"; then
+if [ ! -r "$MODPATH/scripts/memory_lib.sh" ] \
+    || ! . "$MODPATH/scripts/memory_lib.sh"; then
     ui_print "  ✗ 缺少 VM/ZRAM contract, 已中止安装"
     abort
 fi
@@ -336,14 +336,6 @@ ui_print ""
 
 thermal_policy_init "$MODPATH" || abort
 installer_write "$MODPATH/.thermal_config_name" "$THERMAL_CONFIG_NAME"
-if ! thermal_policy_prepare_snapshot "$device" "$OLDDIR" yes; then
-    ui_print "  ✗ 无法从当前设备/旧模块建立温控 stock 基线, 已中止安装"
-    abort
-fi
-if ! thermal_policy_profile_cache_prepare "$device"; then
-    ui_print "  ⚠ 温控预生成缓存失败，WebUI 将在首次选择时重新生成"
-fi
-
 if [ "$ROOT_IMPL" = APatch ] || [ "$ROOT_IMPL" = KernelSU ]; then
     if ! uecap_active_metamodule; then
         ui_print "  ✗ APatch/KernelSU 安装必须先启用并重启 MetaModule"
@@ -655,6 +647,16 @@ esac
 [ -f "$MODPATH/.vm_reboot_required" ] || installer_write "$MODPATH/.vm_reboot_required" false
 [ -f "$MODPATH/.zram_restore_pending" ] || installer_write "$MODPATH/.zram_restore_pending" false
 [ -f "$MODPATH/.vm_policy_ready" ] || installer_write "$MODPATH/.vm_policy_ready" false
+_memory_sdk=$(getprop ro.build.version.sdk)
+memory_config_init "$MODPATH" && vm_zram_init_limits && memory_original_refresh \
+    || { ui_print '  ✗ 无法读取当前设备的原始内存配置'; abort; }
+if [ "${_memory_sdk:-0}" -ge 37 ] && [ -x /system/bin/mmd ]; then
+    installer_write "$MODPATH/.mmd_capability" "android17"
+    ui_print "  ✓ Android API $_memory_sdk：MMD 内存功能按平台实际接口启用"
+else
+    installer_write "$MODPATH/.mmd_capability" "disabled_api"
+    ui_print "  - Android API $_memory_sdk：关闭 MMD 扩展，保留 VM 调节与 ZRAM 状态读取"
+fi
 
 if [ "$UECAP_EXTERNAL" -eq 0 ] && [ "$UECAP_DISABLED" -eq 0 ] \
     && { [ "$UECAP_BACKEND" = metamodule_content ] || [ "$UECAP_BACKEND" = hybrid_mount ]; }; then
@@ -665,7 +667,8 @@ if [ "$UECAP_EXTERNAL" -eq 0 ] && [ "$UECAP_DISABLED" -eq 0 ] \
 fi
 
 _offset_raw=$(cat "$OFFSET_FILE" 2>/dev/null | tr -d ' \n\r\t')
-offset=$(thermal_normalize_offset "$_offset_raw" "$THERMAL_DEFAULT_OFFSET")
+thermal_is_valid_offset "$_offset_raw" || { ui_print "  ✗ 已保存的温控偏移无效: $_offset_raw"; abort; }
+offset="$_offset_raw"
 installer_write "$OFFSET_FILE" "$offset"
 
 # Split persistent user intent from the effective runtime owner.  For upgrades
@@ -694,21 +697,17 @@ if so_migrate_state; then
         ui_print "  CPU 启动模式: Pixel (重启后验证), 游戏接管: $(so_read_handoff_policy)"
     fi
 else
-    if [ ! -f "$SCHED_OWNER_DESIRED_FILE" ]; then
-        _desired_fallback=$(cat "$SCHED_OWNER_FILE" 2>/dev/null | tr -d ' \n\r\t')
-        case "$_desired_fallback" in pixel|external) ;;
-            *) _desired_fallback=pixel ;;
-        esac
-        installer_write "$SCHED_OWNER_DESIRED_FILE" "$_desired_fallback"
-    fi
-    [ -f "$GAME_HANDOFF_POLICY_FILE" ] || installer_write "$GAME_HANDOFF_POLICY_FILE" off
-    [ -f "$GAME_HANDOFF_SOURCE_FILE" ] || installer_write "$GAME_HANDOFF_SOURCE_FILE" legacy
-    ui_print "  ⚠ CPU 调度状态迁移失败, 已使用安全兼容值"
+    ui_print '  ✗ CPU 调度配置迁移失败，原配置未替换'
+    abort
 fi
 
-THERMAL_POLICY=$(thermal_policy_read)
+THERMAL_POLICY=$(thermal_policy_read) || { ui_print '  ✗ 无法读取温控策略'; abort; }
 installer_write "$THERMAL_POLICY_FILE" "$THERMAL_POLICY"
 if [ "$THERMAL_POLICY" = custom ]; then
+    thermal_policy_prepare_snapshot "$device" || { ui_print '  ✗ 当前原始温控配置读取或解析失败，详见上方错误'; abort; }
+    if ! thermal_policy_profile_cache_prepare "$device"; then
+        ui_print '  温控 profile 缓存未生成；继续生成当前选择的配置'
+    fi
     # Generate only from the current-device snapshot; never use a packaged
     # thermal JSON or a snapshot from another SKU/build.
     mkdir -p "${OUT_JSON%/*}" || { ui_print "  ✗ 无法创建温控配置输出目录"; abort; }
@@ -723,20 +722,12 @@ if [ "$THERMAL_POLICY" = custom ]; then
             && _thermal_output_ok=1
     fi
     if [ "$_thermal_output_ok" -ne 1 ] || [ ! -s "$_thermal_output_tmp" ]; then
-        rm -f "$_thermal_output_tmp" 2>/dev/null
-        thermal_policy_remove_overlay || abort
-        installer_write "$THERMAL_POLICY_FILE" system
-        installer_write "$OFFSET_FILE" 0
-        THERMAL_POLICY=system
-        offset=0
-        ui_print "  ⚠ 当前 stock 基线无法生成合法 custom thermal, 已 fail closed 到系统默认"
-    elif ! mv "$_thermal_output_tmp" "$OUT_JSON" || ! chmod 0644 "$OUT_JSON" 2>/dev/null; then
-        ui_print "  ✗ thermal source 权限无法设为 0644，已 fail closed 到系统默认"
-        thermal_policy_remove_overlay || abort
-        installer_write "$THERMAL_POLICY_FILE" system
-        installer_write "$OFFSET_FILE" 0
-        THERMAL_POLICY=system
-        offset=0
+        rm -f "$_thermal_output_tmp"
+        ui_print '  ✗ 无法生成请求的 custom 温控配置，旧模块保持原配置'
+        abort
+    elif ! mv "$_thermal_output_tmp" "$OUT_JSON" || ! chmod 0644 "$OUT_JSON"; then
+        ui_print '  ✗ 温控配置提交或权限设置失败，旧模块保持原配置'
+        abort
     elif ! thermal_policy_label_source; then
         # APatch may restore the regular-module source to a generic label before
         # Hybrid Mount scans it. Keep the source and defer the authoritative

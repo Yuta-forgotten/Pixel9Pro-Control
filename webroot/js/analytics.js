@@ -95,7 +95,7 @@
           anchor.click();
           anchor.remove();
           setTimeout(() => URL.revokeObjectURL(url), 1000);
-          core().showToast('已导出当前传感器和区间的温度记录');
+          core().showToast('所选传感器与时间范围的温度记录已导出');
         } catch (error) {
           core().showToast(`导出失败：${error.message || error}`);
         }
@@ -138,7 +138,7 @@
       });
       if (requestId !== state.requestId || !state.open) return;
       if (!data || data.ok !== true || !Array.isArray(data.points) || data.sensor !== state.sensor) {
-        throw new Error(data?.error || data?.reason || '历史响应无效');
+        throw new Error(data?.error || data?.reason || '温度历史数据无效');
       }
       const points = model().clip(
         model().normalizeThermal(data).filter((point) => point.sensor === state.sensor),
@@ -154,12 +154,12 @@
       });
       const sensorName = state.sensor === 'battery' ? '电池' : '机身';
       const historyStatus = stats.count === 0
-        ? `该区间暂无${sensorName}温度记录`
-        : (stats.gapCount > 0 ? `记录中有 ${stats.gapCount} 段采样间断` : '');
+        ? `所选时间范围内暂无${sensorName}温度记录`
+        : (stats.gapCount > 0 ? `存在 ${stats.gapCount} 段记录间断` : '');
       const recordingStatus = data.recording_enabled === false
-        ? '后台总开关已关闭，温度记录暂停；已有历史仍可查看和导出。'
-        : data.recording_state === 'stopped' ? '后台记录进程未运行；当前显示已有记录。'
-          : data.recording_state === 'starting' ? '后台正在初始化；当前显示已有记录。' : '';
+        ? '模块后台任务已关闭，温度记录已暂停。现有记录仍可查看和导出。'
+        : data.recording_state === 'stopped' ? '温度记录任务未运行，当前显示已保存记录。'
+          : data.recording_state === 'starting' ? '温度记录任务正在启动，当前显示已保存记录。' : '';
       const status = [recordingStatus, historyStatus].filter(Boolean).join(' ');
       state.payload = data;
       viewFeature().update(view, { sensor: state.sensor, rangeId: state.rangeId, stats, status, exportable: true });
@@ -184,7 +184,7 @@
     refs.detailModal.classList.remove('energy-mode', 'history-mode', 'detail-minimized');
     refs.detailModal.classList.add('analytics-mode', 'open');
     refs.detailMinimizeBtn?.setAttribute('aria-expanded', 'true');
-    refs.detailMinimizeBtn?.setAttribute('aria-label', '缩小详情');
+    refs.detailMinimizeBtn?.setAttribute('aria-label', '最小化详情');
     requireFeature('ui').pushModalState('detail');
     const previousScroll = refs.detailBody.scrollTop;
     refs.detailBody.replaceChildren(view.root);

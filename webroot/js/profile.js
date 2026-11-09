@@ -93,22 +93,22 @@ const syncHeroDesc = () => requireFeature('thermal').syncHeroDesc();
 
 function buildProfileDetail(key) {
   const profile = PROFILES[key] || PROFILES.unknown;
-  if (key === 'off') return `<p>${profile.desc}</p><p>关闭后停止本模块的调度写入。重新启用需按安装向导选择，并完成重启后的状态核对。</p>`;
+  if (key === 'off') return `<p>${profile.desc}</p><p>如需重新启用，请在模块安装向导中选择调度功能，重启后检查生效状态。</p>`;
   const contract = state.cpuContract;
   const values = contract?.profiles?.[key];
   let html = `<b>${profile.name}</b><br><br>${profile.detail}`;
   if (!values || !contract) return `${html}<br><br>运行参数尚未读取。`;
   const response = Array.isArray(values.response_ms)
     ? values.response_ms.map((value) => `${value}ms`).join(' / ')
-    : '内核 response_time_ms_nom（运行时复读）';
-  const foreground = contract.foreground_cpus || contract.cpusets?.foreground?.cpus || 'unknown';
-  const background = contract.background_cpus || contract.cpusets?.background?.cpus || 'unknown';
+    : '使用内核标称响应时间，具体数值尚未获取';
+  const foreground = contract.foreground_cpus || contract.cpusets?.foreground?.cpus || '未获取';
+  const background = contract.background_cpus || contract.cpusets?.background?.cpus || '未获取';
   const systemBackground = contract.system_background_cpus || contract.cpusets?.system_background?.cpus || background;
-  html += `<br><br><b>CPU 核心分配（cpuset）</b><br>当前前台应用：cpu${escapeHtml(values.top_app_cpus || '未确认')}<br>后台应用：cpu${escapeHtml(background)}<br>系统后台进程：cpu${escapeHtml(systemBackground)}`;
-  html += `<br>普通前台进程：cpu${escapeHtml(foreground)}，由系统管理`;
+  html += `<br><br><b>CPU 核心分配（cpuset）</b><br>前台应用核心：${escapeHtml(values.top_app_cpus || '未获取')}<br>后台应用核心：${escapeHtml(background)}<br>系统后台进程核心：${escapeHtml(systemBackground)}`;
+  html += `<br>普通前台进程：${escapeHtml(foreground)}，由系统管理`;
   html += `<br><b>小核 / 中核 / 大核响应时间</b>：${escapeHtml(response)}`;
   html += `<br><b>任务性能请求上限（sched_util_clamp_min）</b>：${Number.isFinite(values.uclamp_cap) ? values.uclamp_cap : '尚未读取'}`;
-  html += `<br><b>参数检查方式</b>：应用后检查一次，之后每 ${Number(contract.health_interval_s) || 300} 秒读取状态；发现系统修改参数时仅记录，不反复覆盖`;
+  html += `<br><b>状态检查</b>：应用后立即检查，之后每 ${Number(contract.health_interval_s) || 300} 秒读取一次。系统后续修改参数时，模块记录差异，不自动重新应用。`;
   return html;
 }
 
@@ -118,7 +118,7 @@ function boolValue(value) {
 }
 
 function formatSchedValue(value, unit) {
-  if (value === null || value === undefined || value === '' || value === 'N/A' || value === 'na') return 'N/A';
+  if (value === null || value === undefined || value === '' || value === 'N/A' || value === 'na') return '未提供';
   return `${value}${unit}`;
 }
 
@@ -154,17 +154,17 @@ function getFasRsStateText() {
     return state.fasRsRuntimeTarget ? `游戏接管中 · ${state.fasRsRuntimeTarget}` : '游戏接管中';
   }
   if (isFasRsResident()) {
-    return state.fasRsMode ? `常驻待机 · ${state.fasRsMode}` : '常驻待机';
+    return state.fasRsMode ? `进程运行，未接管游戏 · ${state.fasRsMode}` : '进程运行，未接管游戏';
   }
   switch (state.fasRsRuntimeState || state.fasRsModuleState) {
-    case 'disabled_marker': return '已让权';
+    case 'disabled_marker': return '已暂停';
     case 'disabled': return '已禁用';
     case 'pending_update': return '待重启更新';
     case 'pending_remove': return '待重启移除';
     case 'stale_game_lease': return '游戏接管记录已失效';
-    case 'stale_owner_state': return '运行标记待刷新';
+    case 'stale_owner_state': return '运行记录已过期';
     case 'module_enabled': return '已启用，尚未确认进程状态';
-    case 'runtime_present': return '检测到运行接口，尚未确认接管';
+    case 'runtime_present': return '运行状态已检测，接管状态未确认';
     case 'active': return '已安装';
     default: return state.fasRsDetected ? '已检测到' : '未检测到';
   }
@@ -206,7 +206,7 @@ function getExternalSchedulerStateText() {
   if (state.externalSchedulerKind === 'fas_rs') return getFasRsStateText();
   if (state.externalSchedulerKind === 'uperf') return getUperfStateText();
   if (state.externalSchedulerKind === 'multiple') {
-    return isExternalSchedulerActive() ? '多个外部调度器可用' : '检测到多个外部调度器';
+    return isExternalSchedulerActive() ? '已检测到多个外部调度器，当前有调度程序运行' : '已检测到多个外部调度器';
   }
   switch (state.externalSchedulerState) {
     case 'disabled': return '已禁用';
@@ -219,22 +219,22 @@ function getExternalSchedulerStateText() {
 }
 
 function getSchedulerStatusText() {
-  if (state.schedulerMode !== 'active') return '本模块性能调度已关闭 · 仅保留只读状态';
+  if (state.schedulerMode !== 'active') return '模块调度已关闭，仅显示运行状态';
   const boot = state.schedulerBoot;
-  if (boot.phase === 'pending_reboot') return `等待重启到${boot.targetMode === 'ugt' ? ' UGT 日常调度' : ' Pixel'}模式`;
-  if (boot.phase === 'blocked' || boot.phase === 'failed') return '启动验证未通过，可查看运行记录后重新验证';
-  if (boot.phase === 'verifying' || boot.phase === 'applying') return `正在验证 ${boot.targetMode === 'ugt' ? 'UGT' : 'Pixel'} 启动模式`;
-  if (boot.phase === 'success' && boot.effectiveMode === 'ugt') return 'UGT 日常调度模式 · 已验证';
-  if (boot.phase === 'success' && boot.effectiveMode === 'pixel') return 'Pixel 调度模式 · 已验证';
+  if (boot.phase === 'pending_reboot') return `${boot.targetMode === 'ugt' ? 'UGT' : 'Pixel'} 基础调度已保存，重启后生效`;
+  if (boot.phase === 'blocked' || boot.phase === 'failed') return '启动检查失败，请查看运行记录后重新检查';
+  if (boot.phase === 'verifying' || boot.phase === 'applying') return `正在检查 ${boot.targetMode === 'ugt' ? 'UGT' : 'Pixel'} 基础调度`;
+  if (boot.phase === 'success' && boot.effectiveMode === 'ugt') return 'UGT 基础调度 · 已生效';
+  if (boot.phase === 'success' && boot.effectiveMode === 'pixel') return 'Pixel 基础调度 · 已生效';
   const name = getEffectiveSchedulerName();
-  const desired = state.schedOwner === 'external' ? 'UGT 启动模式' : 'Pixel 启动模式';
+  const desired = state.schedOwner === 'external' ? '启动选择：UGT' : '启动选择：Pixel';
   if (state.schedEffectiveOwner === 'external') {
     if (!hasExternalScheduler()) return `${desired} · 当前无外部调度器运行`;
     const lease = state.effectiveSchedulerKind === 'fas_rs' && (state.arbiterState === 'FAS_LEASED_GAME' || state.arbiterState === 'EXIT_HOLD');
     const current = isExternalSchedulerActive() ? `${name} 接管${getEffectiveSchedulerModeText()}` : `${name} ${getExternalSchedulerStateText()}`;
     return `${desired} · 当前 ${current}${lease ? '（游戏临时接管）' : ''}`;
   }
-  return state.schedOwner === 'external' ? 'UGT 模式等待重启验证' : 'Pixel 调度模式 · 当前 Pixel9Pro-Control';
+  return state.schedOwner === 'external' ? 'UGT 基础调度待重启检查' : '当前由 Pixel9Pro-Control 管理基础调度';
 }
 
 function getSchedulerToggleText() {
@@ -265,21 +265,21 @@ function isCurrentStrategyBusy() {
 function getSchedulerExternalDesc() {
   const name = getEffectiveSchedulerName();
   if (hasExternalScheduler()) {
-    const owner = isExternalSchedulerActive() ? `CPU 调度交给 ${name}${getEffectiveSchedulerModeText()}` : `检测到 ${name} (${getExternalSchedulerStateText()})`;
-    return `${owner}；本模块的性能档位与自动切档已暂停，避免同时修改 CPU 调度参数。`;
+    const owner = isExternalSchedulerActive() ? `当前由 ${name} 管理 CPU 调度${getEffectiveSchedulerModeText()}` : `已检测到 ${name}（${getExternalSchedulerStateText()}）`;
+    return `${owner}。本模块的性能档位设置与自动切换已暂停。`;
   }
-  return '未检测到启用中的外部调度器；本模块保持让权状态，不再周期性写 CPU 调度节点。';
+  return '当前未检测到运行中的外部调度器，本模块调度仍保持暂停。';
 }
 
 function getSchedulerPixelDesc() {
   if (state.uperfDetected && state.fasRsDetected) {
-    return `当前日常调度由本模块管理；${getUperfName()} 未接管，fas-rs 仅按游戏策略临时接管。`;
+    return `当前由本模块管理基础调度，${getUperfName()} 未接管。fas-rs 仅在游戏策略生效时临时接管。`;
   }
   if (state.uperfDetected) {
-    return `检测到 ${getUperfName()}，当前日常调度由本模块管理。`;
+    return `已检测到 ${getUperfName()}，当前仍由本模块管理基础调度。`;
   }
   if (state.fasRsDetected) {
-    return '日常调度由本模块管理；开启游戏自动接管后，fas-rs 在识别到已配置的游戏时临时接管。';
+    return '当前由本模块管理基础调度。开启游戏自动接管后，fas-rs 将在已配置的游戏运行时临时接管。';
   }
   return '当前由本模块管理 CPU 调度。';
 }
@@ -298,11 +298,11 @@ function syncOptionalModuleUi() {
   });
   if (refs.externalSchedulerHelp) {
     if (available.ugt && available.fas) {
-      refs.externalSchedulerHelp.textContent = ' 日常调度可选择 Pixel 或 UGT，切换需重启。开启游戏自动接管后，fas-rs 在识别到已配置的游戏时临时接管，退出后恢复原来的日常调度。';
+      refs.externalSchedulerHelp.textContent = '基础调度可选择 Pixel 或 UGT，切换后需重启。fas-rs 可在已配置的游戏运行时临时接管，退出游戏后恢复所选基础调度。';
     } else if (available.ugt) {
-      refs.externalSchedulerHelp.textContent = ' 已检测到 UGT；日常调度可选择 Pixel 或 UGT，切换需重启。';
+      refs.externalSchedulerHelp.textContent = '已检测到 UGT。基础调度可选择 Pixel 或 UGT，切换后需重启。';
     } else if (available.fas) {
-      refs.externalSchedulerHelp.textContent = ' 已检测到 fas-rs；开启游戏自动接管后，在识别到已配置的游戏时临时接管。进程运行中不代表游戏调度已接管。';
+      refs.externalSchedulerHelp.textContent = '已检测到 fas-rs。开启游戏自动接管后，fas-rs 将在已配置的游戏运行时临时接管；单独检测到进程运行，尚不能确认游戏接管已生效。';
     } else {
       refs.externalSchedulerHelp.textContent = '';
     }
@@ -318,29 +318,29 @@ function syncOwnerArbiterUi() {
     if (available) {
       const enabled = state.gameHandoffPolicy === 'fas_rs';
       refs.gameHandoffLabel.textContent = enabled
-        ? (isFasRsRuntimeActive() ? '已开启 · fas-rs 正在接管游戏，退出后恢复日常调度' : '已开启 · 识别到已配置的游戏时，由 fas-rs 临时接管')
-        : canCheckGameHandoff() ? '已关闭 · 仍有游戏接管记录，等待恢复日常调度'
-          : '已关闭 · 游戏沿用日常调度；开启后允许 fas-rs 临时接管';
+        ? (isFasRsRuntimeActive() ? '已开启 · fas-rs 正在管理游戏调度，退出后恢复基础调度' : '已开启 · 已配置的游戏运行时由 fas-rs 临时接管')
+        : canCheckGameHandoff() ? '已关闭 · 正在等待恢复基础调度'
+          : '已关闭 · 游戏继续使用所选基础调度';
       refs.gameHandoffToggleBtn.disabled = state.schedulerMode !== 'active' || strategyBusy || !isVerifiedSchedulerBoot();
       refs.gameHandoffToggleBtn.className = `tiny-btn${enabled ? ' tonal' : ''}`;
       refs.gameHandoffToggleLabel.textContent = state.gameHandoffBusy ? '保存中…' : (enabled ? '关闭' : '开启');
-      refs.gameHandoffToggleBtn.title = !isVerifiedSchedulerBoot() ? '日常调度完成启动验证后可修改此设置' : '';
+      refs.gameHandoffToggleBtn.title = !isVerifiedSchedulerBoot() ? '基础调度通过启动检查后可修改此设置' : '';
     }
   }
   if (refs.schedulerHealthRow) {
     refs.schedulerHealthRow.hidden = false;
     const health = state.schedulerHealth;
     refs.schedulerHealthLabel.textContent = health.status === 'healthy'
-      ? '所选配置与运行状态一致'
-      : health.status === 'drift' ? '检测到调度参数变化，当前仅记录，不重复覆盖'
+      ? '实际运行参数与所选配置一致'
+      : health.status === 'drift' ? '实际运行参数与所选配置存在差异'
         : health.status === 'blocked' ? '检测到调度状态冲突，检查已暂停'
           : health.status === 'deferred'
             ? (health.reason === 'fas_rs_runtime_lease' || health.reason === 'effective_owner_external'
               ? '检查延后 · 外部调度接管中'
               : '检查延后 · 调度切换中')
-            : '等待健康检查';
+            : '等待运行状态检查';
     refs.schedulerRetryBtn.disabled = state.schedulerMode !== 'active' || strategyBusy || state.schedulerRetryBusy || !['failed', 'blocked'].includes(state.schedulerBoot.phase);
-    refs.schedulerRetryLabel.textContent = state.schedulerRetryBusy ? '验证中…' : '重新验证';
+    refs.schedulerRetryLabel.textContent = state.schedulerRetryBusy ? '检查中…' : '重新检查';
   }
   if (!refs.ownerArbiterRow) return;
   const available = state.fasRsDetected;
@@ -351,7 +351,7 @@ function syncOwnerArbiterUi() {
     ? '正在检查调度接管状态…'
     : state.schedulerMode !== 'active' ? '本模块调度已关闭，接管检查不可用'
       : !canCheckGameHandoff() ? '游戏自动接管已关闭，当前没有待处理的游戏接管记录'
-        : `fas-rs ${active || '已检测到'}；检查会按当前游戏状态协调接管与恢复`;
+        : `fas-rs：${active || '已检测到'}。检查后将根据当前游戏状态处理接管或恢复。`;
   refs.ownerArbiterTickBtn.disabled = state.schedulerMode !== 'active' || strategyBusy || !canCheckGameHandoff();
   refs.ownerArbiterTickLabel.textContent = state.ownerArbiterBusy ? '检查中…' : !canCheckGameHandoff() ? '无需检查' : '立即检查';
 }
@@ -365,25 +365,25 @@ function syncCurrentStrategyTransitionCopy() {
   let title = '';
   let detail = '';
   if (state.schedOwnerBusy) {
-    title = '正在保存日常调度选择';
+    title = '正在保存基础调度';
     detail = '正在保存下次启动使用的调度模式，重启后生效。';
   } else if (state.gameHandoffBusy) {
     title = '正在切换游戏接管';
     detail = '正在保存 fas-rs 游戏接管设置并确认当前调度状态。';
   } else if (state.ownerArbiterBusy) {
     title = '正在检查游戏接管状态';
-    detail = '正在检查当前游戏、调度归属和运行参数，并协调接管或恢复。';
+    detail = '正在检查当前游戏、调度程序与运行参数，并处理接管或恢复。';
   } else if (state.profileApplyBusy) {
     title = '正在切换性能模式';
     detail = '正在应用所选档位，并检查实际调度参数。';
   } else if (state.profilePolicyBusy) {
-    title = '正在切换自动 / 手动';
-    detail = '正在保存切档方式，并检查当前性能档位。';
+    title = '正在切换调度方式';
+    detail = '正在保存自动或手动设置，并检查当前性能档位。';
   }
   if (!title) return;
   refs.perfCurrentName.textContent = title;
   refs.perfCurrentDesc.textContent = detail;
-  refs.perfPolicyDesc.textContent = '完成前请勿重复操作；温控与系统安全保护保持生效。';
+  refs.perfPolicyDesc.textContent = '操作进行中，相关控件暂时不可用。系统温控保护继续生效。';
 }
 
 function syncProfileChoiceSemantics() {
@@ -393,8 +393,8 @@ function syncProfileChoiceSemantics() {
       && !isCurrentStrategyBusy() && !['pending_reboot', 'verifying', 'applying'].includes(state.schedulerBoot.phase)
       && !(state.profileTransition.terminal === 'yes' && state.profileTransition.ok === 'no')) {
     refs.perfPolicyDesc.textContent = state.profilePolicy === 'auto'
-      ? '自动在均衡与省电之间调整，详细策略可展开查看。'
-      : '手动保持当前档位，切换与恢复规则可展开查看。';
+      ? '根据温度与系统温控状态，自动切换均衡或省电档位。'
+      : '保持手动选择的性能档位。';
   }
   const cards = Array.from(refs.profileList.querySelectorAll('.profile-option'));
   const focusCard = cards.find((card) => card.classList.contains('selected') && !card.classList.contains('disabled'))
@@ -422,19 +422,19 @@ function syncProfileUi() {
   const strategyBusy = isCurrentStrategyBusy() || schedulerPending;
   if (state.schedulerMode !== 'active') {
     const off = PROFILES.off;
-    refs.topbarProfileChip.textContent = '调度关闭';
+    refs.topbarProfileChip.textContent = '模块调度已关闭';
     refs.perfCurrentName.textContent = off.name;
     refs.perfCurrentDesc.textContent = off.desc;
     refs.perfPolicyDesc.textContent = state.schedulerCapability === 'supported'
       ? '重新启用需在模块安装向导中选择调度功能，重启后生效。'
-      : '尚未确认当前内核支持本模块调度，调度参数修改已停用。';
+      : '当前内核的调度支持状态未确认，参数修改功能不可用。';
     refs.profilePolicyManualBtn.className = 'seg-btn';
     refs.profilePolicyAutoBtn.className = 'seg-btn';
     refs.profilePolicyManualBtn.disabled = true;
     refs.profilePolicyAutoBtn.disabled = true;
     refs.schedOwnerLabel.textContent = getSchedulerStatusText();
     refs.schedOwnerToggleBtn.disabled = true;
-    refs.schedOwnerToggleLabel.textContent = '调度已关闭';
+    refs.schedOwnerToggleLabel.textContent = '模块调度已关闭';
     refs.hero.className = `hero-card ${off.modeClass}`;
     setStaticHtml(refs.heroIcon, off.hero);
     refs.heroMode.textContent = off.name;
@@ -449,14 +449,14 @@ function syncProfileUi() {
     return;
   }
   if (isExternal) {
-    refs.topbarProfileChip.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? `${effectiveName} 接管` : '外部调度未启用') : '调度让权';
+    refs.topbarProfileChip.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? `${effectiveName} 接管` : '外部调度未运行') : '模块调度已暂停';
     refs.perfCurrentName.textContent = hasExternalScheduler()
       ? (isExternalSchedulerActive() ? `${effectiveName} 接管${getEffectiveSchedulerModeText()}` : `${effectiveName} ${getExternalSchedulerStateText()}`)
-      : '本模块让权中';
+      : '模块调度已暂停';
     refs.perfCurrentDesc.textContent = getSchedulerExternalDesc();
     refs.perfPolicyDesc.textContent = hasExternalScheduler()
-      ? '本模块不覆盖 CPU 调度；手动、自动和模式卡片已暂停。'
-      : '未检测到启用中的外部调度器；手动、自动和模式卡片已暂停，本模块只保留让权状态。';
+      ? 'CPU 调度由外部程序管理，本模块的档位设置与自动切换暂不可用。'
+      : '未检测到运行中的外部调度器，本模块的档位设置与自动切换仍保持暂停。';
     refs.profilePolicyManualBtn.className = 'seg-btn';
     refs.profilePolicyAutoBtn.className = 'seg-btn';
     refs.profilePolicyManualBtn.disabled = true;
@@ -467,7 +467,7 @@ function syncProfileUi() {
     refs.schedOwnerToggleLabel.textContent = getSchedulerToggleText();
     refs.hero.className = 'hero-card mode-game';
     setStaticHtml(refs.heroIcon, PROFILES.performance.hero);
-    refs.heroMode.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? `${effectiveName} 接管` : '外部调度未启用') : '调度停用';
+    refs.heroMode.textContent = hasExternalScheduler() ? (isExternalSchedulerActive() ? `${effectiveName} 接管` : '外部调度未运行') : '模块调度已暂停';
     document.querySelectorAll('.profile-option').forEach((card) => {
       card.classList.remove('selected');
       card.classList.toggle('disabled', card.dataset.profile !== 'off');
@@ -482,13 +482,13 @@ function syncProfileUi() {
   refs.perfCurrentName.textContent = isAuto ? `${profile.name} · 自动` : profile.name;
   const autoTransitionFailed = isAuto && state.profileTransition.terminal === 'yes' && state.profileTransition.ok === 'no';
   refs.perfCurrentDesc.textContent = isAuto
-    ? (autoTransitionFailed ? `${profile.desc} · 自动切档已停止` : `${profile.desc} · ${describeAutoReason(state.autoReason)}`)
+    ? (autoTransitionFailed ? `${profile.desc} · 自动切换已停止` : `${profile.desc} · ${describeAutoReason(state.autoReason)}`)
     : profile.desc;
   const pixelPolicyDesc = isAuto
     ? (autoTransitionFailed
-      ? '自动切档连续失败并已停止；切到手动档后可重新启用自动。'
-       : `自动模式在均衡与省电之间切换，当前状态：${describeAutoReason(state.autoReason)}。系统更改调度参数后，本模块仅记录变化。选择下方档位会转为手动。`)
-    : `手动模式保持「${profile.name}」。自动模式根据温度与系统温控状态，在均衡和省电之间切换。`;
+      ? '自动切换连续失败，已停止。选择手动档位后可重新开启自动。'
+       : `自动切换范围为均衡和省电，当前状态：${describeAutoReason(state.autoReason)}。选择下方档位后将改为手动；系统后续修改参数时，模块仅记录差异。`)
+    : `当前保持手动选择的「${profile.name}」。开启自动后，将根据温度与系统温控状态切换均衡或省电档位。`;
   refs.perfPolicyDesc.textContent = hasExternalScheduler() ? `${pixelPolicyDesc} ${getSchedulerPixelDesc()}` : pixelPolicyDesc;
   refs.profilePolicyManualBtn.className = `seg-btn${!isAuto ? ' active' : ''}`;
   refs.profilePolicyAutoBtn.className = `seg-btn${isAuto ? ' active' : ''}`;
@@ -517,20 +517,20 @@ function syncProfileUi() {
 
 function describeAutoReason(reason) {
   switch (reason) {
-    case 'auto_balanced': return '自动均衡运行中';
+    case 'auto_balanced': return '自动模式 · 均衡';
     case 'steady_hot_guard': return '温度持续偏高，已切换省电';
     case 'hot_cooldown': return '温度已回落，恢复均衡';
     case 'screen_off_reset': return '已息屏，恢复均衡';
     case 'deep_standby_reset': return '深度待机，恢复均衡';
-    case 'charging_no_throttle': return '充电状态未触发省电条件，保持均衡';
+    case 'charging_no_throttle': return '充电中，未达到省电切换条件，保持均衡';
     case 'charging_thermal_mitigation': return '充电时系统温控介入，已切换省电';
     case 'charging_comfort_hot': return '充电时温度达到切换条件，已切换省电';
     case 'charging_comfort_cooldown': return '充电温度回落，恢复均衡';
-    case 'auto_enabled': return '已启用自动调度';
-    case 'manual_policy': return '切回手动';
-    case 'manual_selected': return '手动指定模式';
-    case 'external_scheduler': return '外部调度让权';
-    case 'external_no_scheduler_sanitized': return '外部调度让权';
+    case 'auto_enabled': return '已开启自动调度';
+    case 'manual_policy': return '已切换为手动';
+    case 'manual_selected': return '使用手动选择的档位';
+    case 'external_scheduler': return '外部程序管理调度';
+    case 'external_no_scheduler_sanitized': return '模块调度已暂停';
     default: return '自动调度运行中';
   }
 }
@@ -546,12 +546,12 @@ function applySchedulerOperation(data) {
   const notice = document.getElementById('scheduler-operation-notice');
   if (!notice || !state.schedulerOperation.id) return;
   notice.hidden = false;
-  const label = ({ retry: '调度验证', handoff: '游戏接管设置', tick: '接管状态检查' })[state.schedulerOperation.kind] || '调度操作';
+  const label = ({ retry: '调度检查', handoff: '游戏接管设置', tick: '游戏接管检查' })[state.schedulerOperation.kind] || '调度操作';
   notice.textContent = state.schedulerOperation.pending
-    ? `${label}已接受，后台正在处理；可以切换页面，稍后刷新查看结果。`
+    ? `${label}正在后台执行，切换页面不会中断操作。`
     : state.schedulerOperation.phase === 'success' ? `${label}已完成。`
-      : state.schedulerOperation.phase === 'deferred' ? `${label}已延后，亮屏且其他调度操作完成后可重试。`
-        : `${label}尚未确认完成，请刷新查看当前状态。错误代码：${state.schedulerOperation.resultCode}。`;
+      : state.schedulerOperation.phase === 'deferred' ? `${label}已暂缓，请在亮屏且其他调度操作完成后重试。`
+        : `${label}结果未确认，请刷新状态。错误代码：${state.schedulerOperation.resultCode}。`;
 }
 
 function applyProfileState(data) {
@@ -835,7 +835,7 @@ async function confirmProfileMutation(expected) {
 function reconcileProfileCommit(expected, message) {
   const revision = profileMutationStateRevision;
   const notice = document.getElementById('profile-operation-notice');
-  if (notice) { notice.hidden = false; notice.textContent = `${message}，正在后台补充读取。`; }
+  if (notice) { notice.hidden = false; notice.textContent = `${message}，正在更新运行状态。`; }
   void apiFetch(`${API.profile}?compact=1`, { timeoutMs: SCHEDULER_READ_TIMEOUTS.compact,
     dedupe: false, priority: 'normal', scope: 'profile.commit.readback' })
     .then((readback) => {
@@ -843,10 +843,10 @@ function reconcileProfileCommit(expected, message) {
       if (!readback || readback.ok === false) throw new Error('状态响应无效');
       applyProfileMutationState(readback);
       const confirmed = expected();
-      if (notice) notice.textContent = confirmed ? message : `${message}；当前状态未对齐，请刷新核对。`;
+      if (notice) notice.textContent = confirmed ? message : `${message}，实际状态尚未确认，请刷新检查。`;
     })
     .catch((error) => {
-      if (revision === profileMutationStateRevision && notice) notice.textContent = `${message}；补充读取${isCancelled(error) ? '已暂停' : '失败'}，可刷新核对。`;
+      if (revision === profileMutationStateRevision && notice) notice.textContent = `${message}，状态更新${isCancelled(error) ? '已暂停' : '失败'}，请刷新检查。`;
     });
 }
 
@@ -953,7 +953,7 @@ async function refreshCpuTask() {
     const el = document.createElement('div');
     el.className = 'error-panel';
     const title = document.createElement('strong');
-    title.textContent = '获取频率失败';
+    title.textContent = 'CPU 频率读取失败';
     const detail = document.createElement('pre');
     detail.textContent = err.message;
     el.append(title, detail);
@@ -979,8 +979,8 @@ async function applyProfile(profile) {
   if (state.schedOwner === 'external') {
     showToast(hasExternalScheduler() ? getSchedulerStatusText() : '本模块调度未启用');
     appendLog(hasExternalScheduler()
-      ? `${getSchedulerStatusText()}，未切换本模块 profile`
-      : '本模块 CPU 调度未启用，未切换 profile', 'warn');
+      ? `${getSchedulerStatusText()}，性能档位未切换`
+      : '模块 CPU 调度未启用，性能档位未切换', 'warn');
     return;
   }
   if (profile === state.currentProfile || isCurrentStrategyBusy()) return;
@@ -997,11 +997,11 @@ async function applyProfile(profile) {
     const data = await apiFetch(API.profile, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile }), timeoutMs: PROFILE_MUTATION_TIMEOUT_MS, priority: 'interactive', scope: 'profile.mutation' });
     if (data.ok) {
       applyProfileMutationState(data);
-      if (data.final !== true || data.profile !== profile) throw new Error('后端未确认目标档位提交');
+      if (data.final !== true || data.profile !== profile) throw new Error('服务尚未确认所选性能档位');
       reconcileProfileCommit(() => state.currentProfile === profile, `已保存：${PROFILES[profile].name}`);
       const forcedManual = prevPolicy === 'auto' && data.policy === 'manual';
-      showToast(forcedManual ? `已切回手动：${PROFILES[profile].name}` : `切换至：${PROFILES[profile].name}`);
-      appendLog(forcedManual ? `自动已退出，手动切到 ${PROFILES[profile].name}` : `${PROFILES[profile].name} 已应用`, 'ok');
+      showToast(forcedManual ? `已切换为手动：${PROFILES[profile].name}` : `已应用：${PROFILES[profile].name}`);
+      appendLog(forcedManual ? `已关闭自动切换，应用手动档位「${PROFILES[profile].name}」` : `${PROFILES[profile].name} 已应用`, 'ok');
       refreshCpu();
     } else {
       showToast(`切换失败：${data.error || '未知'}`);
@@ -1030,7 +1030,7 @@ async function setSchedulerMode(mode) {
     });
     if (data.ok) {
       applyProfileMutationState(data);
-      if (data.final !== true || data.scheduler_mode !== mode) throw new Error('后端未确认调度模式提交');
+      if (data.final !== true || data.scheduler_mode !== mode) throw new Error('服务尚未确认所选调度模式');
       reconcileProfileCommit(() => state.schedulerMode === mode, '调度模式已保存');
       const label = '本模块性能调度已关闭';
       showToast(data.reboot_required ? `${label}，重启后完成切换` : label);
@@ -1055,15 +1055,15 @@ async function setProfilePolicy(policy) {
   if (state.schedOwner === 'external') {
     showToast(hasExternalScheduler() ? getSchedulerStatusText() : '本模块调度未启用');
     appendLog(hasExternalScheduler()
-      ? `${getSchedulerStatusText()}，自动/手动策略暂停`
-      : '本模块 CPU 调度未启用，自动/手动策略暂停', 'warn');
+      ? `${getSchedulerStatusText()}，调度方式未切换`
+      : '模块 CPU 调度未启用，调度方式未切换', 'warn');
     return;
   }
   if (state.profilePolicy === policy || isCurrentStrategyBusy()) return;
   state.profilePolicyBusy = true;
   invalidateFullProfileStateRefresh();
   syncProfileUi();
-  appendLog(policy === 'auto' ? '启用自动调度…' : '切回手动调度…', 'dim');
+  appendLog(policy === 'auto' ? '正在开启自动调度…' : '正在切换为手动调度…', 'dim');
   refs.logCard.classList.add('open');
   try {
     const data = await apiFetch(API.profile, {
@@ -1074,12 +1074,12 @@ async function setProfilePolicy(policy) {
     });
     if (data.ok) {
       applyProfileMutationState(data);
-      if (data.final !== true || data.policy !== policy) throw new Error('后端未确认策略提交');
-      reconcileProfileCommit(() => state.profilePolicy === policy, policy === 'auto' ? '自动策略已保存' : '手动策略已保存');
-      showToast(policy === 'auto' ? '已启用自动调度' : `已切回手动：${PROFILES[state.currentProfile].name}`);
+      if (data.final !== true || data.policy !== policy) throw new Error('服务尚未确认所选调度方式');
+      reconcileProfileCommit(() => state.profilePolicy === policy, policy === 'auto' ? '自动调度设置已保存' : '手动调度设置已保存');
+      showToast(policy === 'auto' ? '已开启自动调度' : `已切换为手动：${PROFILES[state.currentProfile].name}`);
       appendLog(policy === 'auto'
         ? `自动调度已启用：${describeAutoReason(state.autoReason)}`
-        : `已切回手动：${PROFILES[state.currentProfile].name}`, 'ok');
+        : `已切换为手动：${PROFILES[state.currentProfile].name}`, 'ok');
       refreshCpu();
     } else {
       showToast(`切换失败：${data.error || '未知'}`);
@@ -1105,8 +1105,8 @@ async function toggleSchedOwner() {
   invalidateFullProfileStateRefresh();
   syncProfileUi();
   const actionText = nextOwner === 'external'
-    ? '提交 UGT 日常调度模式…'
-    : '提交 Pixel 调度启动模式…';
+    ? '正在保存 UGT 基础调度…'
+    : '正在保存 Pixel 基础调度…';
   appendLog(actionText, 'dim');
   refs.logCard.classList.add('open');
   try {
@@ -1118,15 +1118,15 @@ async function toggleSchedOwner() {
     });
     if (typeof data.sched_owner === 'string') applyProfileMutationState(data);
     if (data.ok && data.final === false) {
-      showToast('启动模式已提交，重启后验证');
+      showToast('基础调度已保存，重启后生效');
       appendLog(nextOwner === 'external'
-        ? 'UGT 已设为下次启动日常基线；当前 boot 不启动 UGT'
-        : 'UGT 已设为下次启动禁用；重启后验证 Pixel 控制面', 'warn');
+        ? '下次启动使用 UGT 基础调度，当前运行状态未改变'
+        : '下次启动使用 Pixel 基础调度，重启后检查生效状态', 'warn');
       openRebootModal(null, null, 'scheduler');
     } else {
-      const detail = data.scheduler_boot?.reason || data.error || '启动状态提交失败';
+      const detail = data.scheduler_boot?.reason || data.error || '基础调度保存失败';
       showToast(`切换未完成：${detail}`);
-      appendLog(`启动模式未提交：${detail}`, 'err');
+      appendLog(`基础调度未保存：${detail}`, 'err');
     }
   } catch (err) {
     showToast(`请求失败：${err?.message || '服务未返回有效响应'}`);
@@ -1145,7 +1145,7 @@ async function cancelSchedulerChange() {
   syncProfileUi();
   const notice = document.getElementById('scheduler-operation-notice');
   if (requireFeature('ui').getRebootContext() === 'scheduler') requireFeature('ui').setRebootBusy(true);
-  if (notice) { notice.hidden = false; notice.textContent = '正在提交取消请求，可以关闭弹窗或切换页面。'; }
+  if (notice) { notice.hidden = false; notice.textContent = '正在取消待重启的调度切换，关闭提示不会中断操作。'; }
   try {
     const data = await apiFetch(API.profile, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1153,30 +1153,30 @@ async function cancelSchedulerChange() {
     });
     if (data.scheduler_boot) applyProfileMutationState(data);
     if (data.ok) {
-      if (state.schedulerBoot.final !== 'yes' || state.schedulerBoot.phase !== 'success') throw new Error('取消回执未确认终态，请刷新核对');
+      if (state.schedulerBoot.final !== 'yes' || state.schedulerBoot.phase !== 'success') throw new Error('取消结果未确认，请刷新状态');
       if (requireFeature('ui').getRebootContext() === 'scheduler') {
         requireFeature('ui').closeRebootModal('', { force: true, silent: true });
       }
       showToast('已取消待重启切换');
-      appendLog('调度启动模式已恢复到本次 boot 的状态', 'ok');
-      if (notice) notice.textContent = '取消已提交并由后端确认，正在后台补充读取。';
+      appendLog('已恢复本次启动使用的基础调度选择', 'ok');
+      if (notice) notice.textContent = '待重启切换已取消，正在更新运行状态。';
       const revision = profileMutationStateRevision;
       void apiFetch(`${API.profile}?compact=1`, { timeoutMs: SCHEDULER_READ_TIMEOUTS.compact, dedupe: false, priority: 'normal', scope: 'profile.cancel.readback' })
         .then((readback) => {
           if (revision !== profileMutationStateRevision) return;
           applyProfileMutationState(readback);
           const confirmed = state.schedulerBoot.final === 'yes' && state.schedulerBoot.phase === 'success';
-          if (notice) notice.textContent = confirmed ? '已取消待重启切换。' : '取消已提交，后续状态未确认；可刷新核对。';
+          if (notice) notice.textContent = confirmed ? '已取消待重启切换。' : '取消请求已处理，最新状态未确认，请刷新检查。';
         })
         .catch((error) => {
-          if (revision === profileMutationStateRevision && notice) notice.textContent = `取消已提交，补充读取${isCancelled(error) ? '已暂停' : '失败'}；可刷新核对，不会重新提交。`;
+          if (revision === profileMutationStateRevision && notice) notice.textContent = `取消请求已处理，状态更新${isCancelled(error) ? '已暂停' : '失败'}。请刷新检查，无需重复取消。`;
         });
     } else {
       showToast(`取消失败：${data.error || data.scheduler_boot?.reason || '未知'}`);
       appendLog(data.error || '取消待重启切换失败', 'err');
     }
   } catch (err) {
-    if (notice) notice.textContent = `取消请求未确认：${err?.message || '服务未返回有效响应'}。请先刷新核对。`;
+    if (notice) notice.textContent = `取消结果未确认：${err?.message || '服务未返回有效响应'}。请刷新状态后再操作。`;
     if (requireFeature('ui').getRebootContext() === 'scheduler') requireFeature('ui').setRebootError(notice?.textContent || String(err));
     showToast(`请求失败：${err?.message || '服务未返回有效响应'}`);
     appendLog(String(err), 'err');
@@ -1200,15 +1200,15 @@ async function retrySchedulerValidation() {
     });
     if (data.scheduler_boot || data.scheduler_operation) applyProfileMutationState(data);
     if (data.accepted && data.final === false) {
-      showToast('验证任务已接受，后台继续处理');
-      appendLog('调度验证已转为一次性后台任务，可离开页面', 'dim');
+      showToast('调度检查已开始，将在后台继续执行');
+      appendLog('调度检查正在后台执行，切换页面不会中断', 'dim');
     } else if (data.ok) {
-      if (!await confirmProfileMutation(() => state.schedulerBoot.final === 'yes')) throw new Error('验证请求已提交，尚未确认最终调度状态');
-      showToast('调度启动状态验证通过');
-      appendLog(`调度终态：${data.scheduler_boot?.result || 'success'}`, 'ok');
+      if (!await confirmProfileMutation(() => state.schedulerBoot.final === 'yes')) throw new Error('调度检查已提交，结果尚未确认');
+      showToast('调度启动检查通过');
+      appendLog(`调度检查结果：${data.scheduler_boot?.result || '已通过'}`, 'ok');
     } else {
-      showToast(`验证失败：${data.scheduler_boot?.reason || data.error || '未知'}`);
-      appendLog(`调度终态失败：${data.scheduler_boot?.result || data.error || 'unknown'}`, 'err');
+      showToast(`调度检查失败：${data.scheduler_boot?.reason || data.error || '原因未提供'}`);
+      appendLog(`调度检查失败：${data.scheduler_boot?.result || data.error || '原因未提供'}`, 'err');
     }
   } catch (err) {
     showToast(`请求失败：${err?.message || '服务未返回有效响应'}`);
@@ -1237,17 +1237,17 @@ async function toggleGameHandoff() {
     });
     if (typeof data.game_handoff_policy === 'string') applyProfileMutationState(data);
     if (data.accepted && data.final === false) {
-      showToast('接管偏好已保存，等待调度状态同步');
-      appendLog(data.pending_reason || '共享调度事务正在执行，后台将继续同步', 'warn');
+      showToast('游戏接管设置已保存，运行状态正在更新');
+      appendLog(data.pending_reason || '其他调度操作正在执行，游戏接管设置将在后台继续处理', 'warn');
     } else if (data.ok) {
       reconcileProfileCommit(() => state.gameHandoffPolicy === nextPolicy, '游戏自动接管设置已保存');
       showToast(nextPolicy === 'fas_rs' ? 'fas-rs 游戏接管已启用' : 'fas-rs 游戏接管已关闭');
       appendLog(nextPolicy === 'fas_rs'
-        ? 'fas-rs 已获准在识别到已配置的游戏时临时接管，退出后恢复日常调度'
-        : '游戏场景保持日常调度选择', 'ok');
+        ? '已开启 fas-rs 游戏临时接管，退出游戏后恢复基础调度'
+        : '已关闭游戏临时接管，继续使用所选基础调度', 'ok');
       await refreshCpu();
     } else {
-      const detail = data.arbiter_apply_result || data.error || '状态复读未通过';
+      const detail = data.arbiter_apply_result || data.error || '实际调度状态未确认';
       showToast(`切换未完成：${detail}`);
       appendLog(detail, 'err');
     }
@@ -1263,13 +1263,13 @@ async function toggleGameHandoff() {
 async function triggerOwnerArbiter() {
   if (isCurrentStrategyBusy() || !state.fasRsDetected) return;
   if (!canCheckGameHandoff()) {
-    showToast('游戏自动接管已关闭，当前无需检查');
+    showToast('游戏自动接管已关闭，无待处理的接管记录');
     syncOwnerArbiterUi();
     return;
   }
   state.ownerArbiterBusy = true;
   syncProfileUi();
-  appendLog('正在检查外部调度接管状态…', 'dim');
+  appendLog('正在检查游戏临时接管状态…', 'dim');
   refs.logCard.classList.add('open');
   try {
     const data = await apiFetch(API.ownerArbiter, {
@@ -1280,16 +1280,16 @@ async function triggerOwnerArbiter() {
     });
     if (data.scheduler_operation) applySchedulerOperation(data);
     if (data.accepted && data.final === false) {
-      showToast('接管检查已开始，完成后可刷新查看结果');
-      appendLog('接管状态检查已交由后台处理', 'dim');
+      showToast('游戏接管检查已开始，结果将在后台更新');
+      appendLog('游戏接管检查正在后台执行', 'dim');
     } else if (data.ok) {
       showToast('调度状态已更新');
-      appendLog('外部调度接管状态已更新', 'ok');
+      appendLog('游戏接管状态已更新', 'ok');
       await loadSavedProfile();
       await refreshCpu();
     } else {
       showToast(`检查失败：${data.error || '未知'}`);
-      appendLog(data.error || '外部调度状态检查失败', 'err');
+      appendLog(data.error || '游戏接管状态检查失败', 'err');
     }
   } catch (err) {
     showToast(`检查未完成：${err?.message || '服务未返回有效响应'}`);

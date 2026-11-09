@@ -47,7 +47,7 @@ module_description_refresh() (
         case "$_md_vm" in custom) _md_add 'VM 自定义' ;; optimized) _md_add 'VM 优化' ;; esac
     fi
     if [ "$(_md_read .vm_reboot_required)" = true ]; then _md_add 'VM 待重启'; fi
-    if [ -s "$_md_root/.zram_request_last" ]; then _md_add 'ZRAM 请求待处理'; fi
+    if grep -qx 'auto_apply=on' "$_md_root/.memory_boot_config" 2>/dev/null; then _md_add '内存开机设置'; fi
     [ "$(_md_read .nr_screen_switch)" != on ] || _md_add 'NR 息屏降级'
     [ ! -e "$_md_root/.nr_temporary_lease" ] || _md_add 'NR 临时状态待恢复'
     [ "$(_md_read .sim2_auto_manage)" != on ] || _md_add 'SIM2 自动管理'

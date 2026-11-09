@@ -117,9 +117,9 @@ thermal_emit_cancelled_state() {
 }
 
 thermal_emit_state() {
-    _ts_policy=$(thermal_policy_read)
+    _ts_policy=$(thermal_policy_read) || json_error '500 Internal Server Error' 'invalid saved thermal policy'
     _ts_offset=$(thermal_policy_offset_read)
-    _ts_offset=$(thermal_normalize_offset "$_ts_offset" "$THERMAL_DEFAULT_OFFSET")
+    thermal_is_valid_offset "$_ts_offset" || json_error '500 Internal Server Error' 'invalid saved thermal offset'
     _ts_source_hash=$(thermal_policy_source_hash)
     _ts_effective_hash=$(thermal_policy_effective_hash)
     _ts_source_context=$(thermal_policy_source_context)
@@ -492,6 +492,7 @@ if [ "$policy" = custom ]; then
         || json_error '409 Conflict' 'mount_backend_unavailable'
     thermal_policy_validate_selected_config \
         || json_error '409 Conflict' 'selected_thermal_config_unsupported'
+    thermal_policy_prepare_snapshot "$DEVICE" || json_error '500 Internal Server Error' '当前原始温控配置读取或解析失败'
 else
     offset=0
 fi

@@ -128,8 +128,8 @@
   }
 
   function exportHistory(payload, format) {
-    if (!payload || payload.ok !== true || !Array.isArray(payload.points)) throw new Error('尚无可导出的历史响应');
-    if (!['json', 'csv'].includes(format)) throw new Error('不支持的导出格式');
+    if (!payload || payload.ok !== true || !Array.isArray(payload.points)) throw new Error('尚无可导出的温度记录');
+    if (!['json', 'csv'].includes(format)) throw new Error('所选文件格式不受支持');
     const points = clip(normalizeThermal(payload).filter((point) => point.sensor === payload.sensor), payload.start_ts, payload.end_ts);
     const stats = temperatureStats(points, {
       startTs: payload.start_ts, endTs: payload.end_ts, backendGapCount: payload.gap_count

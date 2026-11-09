@@ -12,14 +12,14 @@ install_state_upgrade_files() {
         preferences)
             printf '%s\n' .thermal_policy .thermal_offset .scheduler_mode \
                 .feature_nr .feature_sim2 .feature_vm .profile_policy .profile_manual \
-                .nr_screen_switch .sim2_auto_manage .idle_isolate_mode .swap_mode .swap_custom \
+                .nr_screen_switch .sim2_auto_manage .idle_isolate_mode .swap_mode .swap_custom .memory_boot_config \
                 .ntp_server .uecap_mode .uecap_manual_mode .uecap_policy .uecap_reason \
                 .webui_theme .bg_restrict_list .bg_restrict_enabled .sched_owner_desired \
                 .game_handoff_policy .game_handoff_source ;;
         recovery)
             printf '%s\n' .current_profile .profile_auto_reason .cpu_sched_owner \
                 .vm_reboot_required .vm_reboot_boot_id .zram_request_baseline .zram_request_last \
-                .zram_request_receipt .zram_restore_pending .sim2_radio_off .nr_saved_mode .nr_temporary_lease .bg_restrict_baseline ;;
+                .zram_request_receipt .zram_restore_pending .zram_runtime_state .zram_runtime_baseline .sim2_radio_off .nr_saved_mode .nr_temporary_lease .bg_restrict_baseline ;;
         history) printf '%s\n' .profile_history .thermal_history ;;
         *) return 1 ;;
     esac
@@ -38,7 +38,7 @@ install_state_migrate() (
     case "$_ism_schema" in ''|1) ;; *) return 1 ;; esac
     # Recovery journals are not ordinary preferences. Never discard a live
     # transaction during upgrade and then silently generate a new baseline.
-    for _ism_journal in .bg_policy_tx .uecap_stage_tx .thermal_tx .scheduler_async.lock; do
+    for _ism_journal in .bg_policy_tx .uecap_stage_tx .thermal_tx .scheduler_async.lock .zram_runtime.lock; do
         [ ! -L "$_ism_old/$_ism_journal" ] || return 1
         [ ! -e "$_ism_old/$_ism_journal" ] || return 1
     done

@@ -137,8 +137,14 @@ if [ -r "$MODDIR/scripts/ntp_config_lib.sh" ] && [ -r "$NTP_CONFIG_FILE" ]; then
     fi
 fi
 VM_PROFILE_AVAILABLE=0
-if [ -r "$MODDIR/scripts/vm_profile_lib.sh" ]; then
-    . "$MODDIR/scripts/vm_profile_lib.sh" 2>/dev/null && VM_PROFILE_AVAILABLE=1
+if [ -r "$MODDIR/scripts/memory_lib.sh" ]; then
+    . "$MODDIR/scripts/memory_lib.sh" 2>/dev/null && vm_zram_init_limits && VM_PROFILE_AVAILABLE=1
+fi
+if [ "$SERVICE_MODE" = boot ] && [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
+    memory_config_init "$MODDIR" \
+        && vm_zram_init_limits && memory_original_refresh \
+        && memory_boot_prepare \
+        || log -t pixel9pro_ctrl 'Memory startup request was not prepared before mmd; no late rebuild attempted'
 fi
 scheduler_owner_init "$MODDIR" "/data/adb/fas_rs"
 sbm_init "$MODDIR" "/data/adb/fas_rs"
@@ -750,129 +756,25 @@ background_worker_should_run || return 1
 manage_sim2_radio
 background_worker_should_run || return 1
 
-# === 内核 I/O 参数优化 ===
-if [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
-    _service_swap_mode=$(cat "$MODDIR/.swap_mode" 2>/dev/null | tr -d ' \n\r\t')
-    case "$_service_swap_mode" in
-        optimized|custom)
-            vm_apply_dirty_params \
-                || log -t pixel9pro_ctrl "WARNING: failed to apply one or more VM dirty-page parameters"
-            ;;
-        *)
-            log -t pixel9pro_ctrl "VM system/disabled mode: dirty-page parameters observe-only"
-            ;;
-    esac
-fi
+# Dirty-page writeback belongs to the platform. VM policy only changes the
+# four documented sysctls; it does not silently change storage writeback.
 
 # sched_util_clamp_min is applied with the selected CPU profile: balanced and
 # battery use 0; default and the internal performance baseline use 1024.
 
-# === ZRAM observation / VM policy ===
-if [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
-    # mmd/fs_mgr own setup when the standard owner properties are enabled. The
-    # receipt records setup state, actual device values and inactive swap; boot
-    # never seizes ownership or mutates zram0.
-    _zram_receipt=$(printf 'schema=2\nepoch=%s\nboot_id=%s\n' \
-        "$(date +%s)" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; \
-        vm_zram_receipt)
+# === Memory: one boot receipt and explicit auto-apply only ===
+if [ "$VM_PROFILE_AVAILABLE" -eq 1 ] \
+    && memory_config_init "$MODDIR"; then
+    _memory_ready=true
+    if ! memory_boot_apply_vm; then
+        _memory_ready=false
+        log -t pixel9pro_ctrl "Memory boot settings were not fully applied; inspect the actual state"
+    fi
+    _zram_receipt=$(printf 'schema=4\nepoch=%s\nboot_id=%s\n' "$(date +%s)" "$(vm_zram_current_boot_id)"; vm_zram_receipt)
     runtime_write_value "$ZRAM_STATE_FILE" "$_zram_receipt" \
-        || log -t pixel9pro_ctrl "WARNING: failed to record ZRAM observation"
-    log -t pixel9pro_ctrl "ZRAM observed: owner=$(vm_zram_owner) algorithm=$(vm_zram_read_algorithm) size=$(vm_zram_read_disksize) active=$(vm_zram_is_active && printf true || printf false)"
-
-# === Swap / 内存回收调优 (按上次用户选择恢复) ===
-SWAP_CUSTOM_FILE="$MODDIR/.swap_custom"
-
-SWAP_MODE=$(cat "$MODDIR/.swap_mode" 2>/dev/null | tr -d ' \n\r')
-case "$SWAP_MODE" in
-    system|stock|disabled)
-        # Observe-only: leave kernel VM values and mmd/Scene ZRAM requests
-        # untouched. A reboot restores platform VM defaults; Scene remains the
-        # sole interactive ZRAM request owner.
-        vm_zram_reconcile_module_request \
-            || log -t pixel9pro_ctrl "WARNING: failed to reconcile module-owned ZRAM request"
-        case "${VM_ZRAM_RECONCILE_RESULT:-none}" in
-            orphaned|external_changed)
-                runtime_write_value "$ZRAM_RESTORE_PENDING_FILE" false >/dev/null 2>&1 || true
-                ;;
-            *)
-                if [ "${VM_ZRAM_RESTORE_PENDING:-false}" = true ]; then
-                    runtime_write_value "$ZRAM_RESTORE_PENDING_FILE" true >/dev/null 2>&1 || true
-                elif [ "$(cat "$ZRAM_RESTORE_PENDING_FILE" 2>/dev/null | tr -d ' \n\r\t')" = true ]; then
-                    _service_requested_size=$(vm_zram_read_requested_size)
-                    _service_requested_bytes=$(vm_zram_size_to_bytes "$_service_requested_size")
-                    if [ -n "$_service_requested_bytes" ] && [ "$(vm_zram_read_disksize)" = "$_service_requested_bytes" ]; then
-                        runtime_write_value "$ZRAM_RESTORE_PENDING_FILE" false >/dev/null 2>&1 || true
-                    fi
-                fi
-                ;;
-        esac
-        [ "$SWAP_MODE" = stock ] && runtime_write_value "$MODDIR/.swap_mode" system >/dev/null 2>&1 || true
-        [ "$SWAP_MODE" = disabled ] \
-            && runtime_write_value "$MODDIR/.feature_vm" disabled >/dev/null 2>&1 \
-            || runtime_write_value "$MODDIR/.feature_vm" system >/dev/null 2>&1 || true
-        _service_reboot_required=$(cat "$MODDIR/.vm_reboot_required" 2>/dev/null | tr -d ' \n\r\t')
-        _service_reboot_boot=$(cat "$VM_REBOOT_BOOT_FILE" 2>/dev/null | tr -d ' \n\r\t')
-        _service_current_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')
-        case "$_service_reboot_required" in true|false) ;; *) _service_reboot_required=false ;; esac
-        # A pending VM reset is a same-boot transaction.  Clear it only after
-        # a reboot crossed the recorded boot id; never erase a live WebUI
-        # pending state while this service is restoring the current boot.
-        if [ "$_service_reboot_required" = true ] \
-            && [ -n "$_service_reboot_boot" ] \
-            && [ -n "$_service_current_boot" ] \
-            && [ "$_service_reboot_boot" != "$_service_current_boot" ]; then
-            runtime_write_value "$MODDIR/.vm_reboot_required" false >/dev/null 2>&1 || true
-            rm -f "$VM_REBOOT_BOOT_FILE" 2>/dev/null || true
-        fi
-        log -t pixel9pro_ctrl "Swap: system/disabled observe-only; no VM or ZRAM write"
-        ;;
-    optimized)
-        if vm_write_params "$VM_OPT_SWAPPINESS" "$VM_OPT_MIN_FREE_KBYTES" "$VM_OPT_WATERMARK_SCALE" "$VM_OPT_VFS_CACHE_PRESSURE" \
-            && runtime_write_value "$MODDIR/.feature_vm" optimized \
-            && runtime_write_value "$MODDIR/.vm_reboot_required" false; then
-            rm -f "$VM_REBOOT_BOOT_FILE" 2>/dev/null || true
-            log -t pixel9pro_ctrl "Swap: restored optimized VM params; ZRAM remains explicit-request only"
-        else
-            log -t pixel9pro_ctrl "WARNING: failed to restore optimized VM params"
-        fi
-        ;;
-    custom)
-        _custom_sw=$(vm_read_custom_param swappiness "$SWAP_CUSTOM_FILE")
-        _custom_mfk=$(vm_read_custom_param min_free_kbytes "$SWAP_CUSTOM_FILE")
-        _custom_wsf=$(vm_read_custom_param watermark_scale_factor "$SWAP_CUSTOM_FILE")
-        _custom_vcp=$(vm_read_custom_param vfs_cache_pressure "$SWAP_CUSTOM_FILE")
-        if vm_is_uint_range "$_custom_sw" "$VM_SWAPPINESS_MIN" "$VM_SWAPPINESS_MAX" \
-            && vm_is_uint_range "$_custom_mfk" "$VM_MIN_FREE_KBYTES_MIN" "$VM_MIN_FREE_KBYTES_MAX" \
-            && vm_is_uint_range "$_custom_wsf" "$VM_WATERMARK_SCALE_MIN" "$VM_WATERMARK_SCALE_MAX" \
-            && vm_is_uint_range "$_custom_vcp" "$VM_VFS_CACHE_PRESSURE_MIN" "$VM_VFS_CACHE_PRESSURE_MAX"; then
-            if vm_write_params "$_custom_sw" "$_custom_mfk" "$_custom_wsf" "$_custom_vcp" \
-                && runtime_write_value "$MODDIR/.feature_vm" optimized \
-                && runtime_write_value "$MODDIR/.vm_reboot_required" false; then
-                rm -f "$VM_REBOOT_BOOT_FILE" 2>/dev/null || true
-                log -t pixel9pro_ctrl "Swap: restored custom VM params"
-            else
-                log -t pixel9pro_ctrl "WARNING: failed to restore custom VM params"
-            fi
-        else
-            runtime_write_value "$MODDIR/.swap_mode" system >/dev/null 2>&1 || true
-            runtime_write_value "$MODDIR/.feature_vm" system >/dev/null 2>&1 || true
-            runtime_write_value "$MODDIR/.vm_reboot_required" true >/dev/null 2>&1 || true
-            runtime_write_value "$VM_REBOOT_BOOT_FILE" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')" >/dev/null 2>&1 || true
-            log -t pixel9pro_ctrl "WARNING: invalid custom params; normalized to system observe-only"
-        fi
-        ;;
-    *)
-        runtime_write_value "$MODDIR/.swap_mode" system >/dev/null 2>&1 || true
-        runtime_write_value "$MODDIR/.feature_vm" system >/dev/null 2>&1 || true
-        runtime_write_value "$MODDIR/.vm_reboot_required" true >/dev/null 2>&1 || true
-        runtime_write_value "$VM_REBOOT_BOOT_FILE" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d ' \n\r\t')" >/dev/null 2>&1 || true
-        log -t pixel9pro_ctrl "Swap: missing/unknown policy normalized to system observe-only"
-        ;;
-esac
-runtime_write_value "$VM_POLICY_READY_FILE" true >/dev/null 2>&1 \
-    || log -t pixel9pro_ctrl "WARNING: VM policy readback gate could not be opened"
-else
-    log -t pixel9pro_ctrl "WARNING: VM profile library missing, skipped ZRAM/VM restore"
+        || log -t pixel9pro_ctrl "Failed to persist the memory boot observation"
+    runtime_write_value "$VM_POLICY_READY_FILE" "$_memory_ready" \
+        || log -t pixel9pro_ctrl "Memory API readiness was not persisted"
 fi
 
 log -t pixel9pro_ctrl "$MOD_VER[$ROOT_IMPL]: boot policy restore completed; warnings above remain authoritative"

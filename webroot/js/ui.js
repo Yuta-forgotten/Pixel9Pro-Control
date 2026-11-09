@@ -400,7 +400,7 @@ function openRebootModal(pending, prev, context = 'thermal') {
   }
   if (refs.rebootLaterBtn) {
     refs.rebootLaterBtn.hidden = false;
-    refs.rebootLaterBtn.textContent = saving ? '关闭提示，继续保存' : '稍后重启';
+    refs.rebootLaterBtn.textContent = saving ? '关闭' : '稍后重启';
   }
   if (refs.rebootCancelBtn) {
     refs.rebootCancelBtn.hidden = saving || (context === 'thermal'
@@ -409,15 +409,15 @@ function openRebootModal(pending, prev, context = 'thermal') {
   setRebootBusy(false);
   setRebootError('');
   if (context === 'scheduler') {
-    const target = requireFeature('profile').getSchedulerBootTargetMode() === 'ugt' ? 'UGT 日常调度模式' : 'Pixel 调度模式';
+    const target = requireFeature('profile').getSchedulerBootTargetMode() === 'ugt' ? 'UGT 基础调度' : 'Pixel 调度模式';
     refs.rebootModalTitle.textContent = `切换到${target}`;
-    refs.rebootModalDesc.textContent = `已保存日常调度选择。重启手机后切换到${target}，随后检查运行状态。`;
+    refs.rebootModalDesc.textContent = `基础调度已保存为 ${target}，重启后生效。`;
   } else if (saving) {
-    refs.rebootModalTitle.textContent = '温控策略保存中';
-    refs.rebootModalDesc.textContent = '正在保存温控配置。保存完成后可重启生效，或撤销本次修改；关闭提示不会中断保存。';
+    refs.rebootModalTitle.textContent = '正在保存温控配置';
+    refs.rebootModalDesc.textContent = '正在保存温控配置。完成后可选择重启或撤销修改；关闭窗口不影响保存。';
   } else {
-    refs.rebootModalTitle.textContent = '温控策略等待重启';
-    refs.rebootModalDesc.textContent = '温控配置已保存，重启手机后应用并检查结果。当前运行的温控配置尚未切换。';
+    refs.rebootModalTitle.textContent = '温控配置待重启';
+    refs.rebootModalDesc.textContent = '温控配置已保存，重启后生效。';
   }
   const wasOpen = refs.rebootModal.classList.contains('open');
   refs.rebootModal.classList.add('open');
@@ -443,8 +443,8 @@ function closeRebootModal(message = '', options = {}) {
   setRebootError('');
   if (!normalizedOptions.silent) {
     core.showToast(normalizedMessage || (state.rebootContext === 'scheduler'
-      ? '切换已提交，重启后验证'
-      : requireFeature('thermal').isCancelBusy?.() ? '撤销正在后台处理，可继续使用页面' : '策略已保存，重启后验证'));
+      ? '基础调度已保存，待重启生效'
+      : requireFeature('thermal').isCancelBusy?.() ? '正在撤销修改，可继续使用其他功能' : '温控配置已保存，待重启生效'));
   }
   return true;
 }
@@ -455,7 +455,7 @@ function openDetail(title, html) {
   refs.detailModal.classList.remove('analytics-mode');
   refs.detailModal.classList.remove('detail-minimized');
   refs.detailMinimizeBtn?.setAttribute('aria-expanded', 'true');
-  refs.detailMinimizeBtn?.setAttribute('aria-label', '缩小详情');
+  refs.detailMinimizeBtn?.setAttribute('aria-label', '最小化详情');
   refs.detailTitle.textContent = title;
   setStaticHtml(refs.detailBody, html);
   refs.detailModal.classList.add('open');
@@ -468,11 +468,11 @@ function toggleDetailMinimized() {
   if (!refs.detailModal.classList.contains('history-mode') && !refs.detailModal.classList.contains('analytics-mode')) return;
   const minimized = refs.detailModal.classList.toggle('detail-minimized');
   refs.detailMinimizeBtn?.setAttribute('aria-expanded', String(!minimized));
-  refs.detailMinimizeBtn?.setAttribute('aria-label', minimized ? '展开详情' : '缩小详情');
+  refs.detailMinimizeBtn?.setAttribute('aria-label', minimized ? '展开详情' : '最小化详情');
   if (minimized) requireFeature('analytics').minimize();
   syncModalState();
   if (!minimized) requireFeature('analytics').resume();
-  requireFeature('core').showToast(minimized ? '详情已缩小，刷新已暂停' : '详情已展开', 1800);
+  requireFeature('core').showToast(minimized ? '详情已最小化，自动刷新已暂停' : '详情已展开', 1800);
 }
 
 function closeDetailModal(){
@@ -482,7 +482,7 @@ function closeDetailModal(){
   refs.detailModal.classList.remove('analytics-mode');
   refs.detailModal.classList.remove('detail-minimized');
   refs.detailMinimizeBtn?.setAttribute('aria-expanded', 'true');
-  refs.detailMinimizeBtn?.setAttribute('aria-label', '缩小详情');
+  refs.detailMinimizeBtn?.setAttribute('aria-label', '最小化详情');
   popModalIfTop('detail');
   requireFeature('core').queueNextPoll(POLL_MIN_DELAY_MS);
 }

@@ -19,8 +19,8 @@ scheduler_owner_init() {
 
 so_normalize_owner() {
     case "$1" in
-        external) printf 'external' ;;
-        *) printf 'pixel' ;;
+        pixel|external) printf '%s' "$1" ;;
+        *) printf 'invalid scheduler owner: %s\n' "$1" >&2; return 1 ;;
     esac
 }
 
@@ -33,15 +33,17 @@ so_read_desired_owner() {
     _so_value=$(cat "$SO_DESIRED_FILE" 2>/dev/null | tr -d ' \n\r\t')
     case "$_so_value" in
         pixel|external) printf '%s' "$_so_value" ;;
-        *) so_read_effective_owner ;;
+        '') [ ! -e "$SO_DESIRED_FILE" ] && so_read_effective_owner ;;
+        *) printf 'invalid desired scheduler owner: %s\n' "$_so_value" >&2; return 1 ;;
     esac
 }
 
 so_read_handoff_policy() {
     _so_value=$(cat "$SO_HANDOFF_FILE" 2>/dev/null | tr -d ' \n\r\t')
     case "$_so_value" in
-        fas_rs) printf 'fas_rs' ;;
-        *) printf 'off' ;;
+        fas_rs|off) printf '%s' "$_so_value" ;;
+        '') [ ! -e "$SO_HANDOFF_FILE" ] && printf off ;;
+        *) printf 'invalid game handoff policy: %s\n' "$_so_value" >&2; return 1 ;;
     esac
 }
 
@@ -49,7 +51,8 @@ so_read_handoff_source() {
     _so_value=$(cat "$SO_HANDOFF_SOURCE_FILE" 2>/dev/null | tr -d ' \n\r\t')
     case "$_so_value" in
         user|default|legacy) printf '%s' "$_so_value" ;;
-        *) printf 'legacy' ;;
+        '') [ ! -e "$SO_HANDOFF_SOURCE_FILE" ] && printf legacy ;;
+        *) printf 'invalid game handoff source: %s\n' "$_so_value" >&2; return 1 ;;
     esac
 }
 
@@ -171,6 +174,15 @@ so_migrate_state() {
         _so_handoff_source_existed=1
     fi
 
+    if [ "$_so_desired_existed" = 1 ]; then
+        case "$_so_desired_old" in pixel|external) ;; *) printf 'invalid saved scheduler owner: %s\n' "$_so_desired_old" >&2; return 2 ;; esac
+    fi
+    if [ "$_so_handoff_existed" = 1 ]; then
+        case "$_so_handoff_old" in fas_rs|off) ;; *) printf 'invalid saved game handoff: %s\n' "$_so_handoff_old" >&2; return 2 ;; esac
+    fi
+    if [ "$_so_handoff_source_existed" = 1 ]; then
+        case "$_so_handoff_source_old" in user|default|legacy) ;; *) printf 'invalid game handoff source: %s\n' "$_so_handoff_source_old" >&2; return 2 ;; esac
+    fi
     _so_desired=$(printf '%s' "$_so_desired_old" | tr -d ' \n\r\t')
     case "$_so_desired" in
         pixel|external) ;;

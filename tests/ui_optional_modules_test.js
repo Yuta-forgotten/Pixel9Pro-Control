@@ -229,13 +229,13 @@ for (const host of ['ntp.aliyun.com', 'ntp.myhuaweicloud.com', 'ntp1.xiaomi.com'
   assert(!app.includes(`id: '${host}'`), `app.js must not duplicate NTP host ${host}`);
 }
 assert(ntpCgi.includes('ntp_config_validate') && service.includes('ntp_config_validate'), 'NTP consumers must validate the shared catalog');
-assert(!app.includes('const SWAP_OPTIMIZED') && !swapCgi.includes('OPT_SWAPPINESS='), 'VM presets must come from vm_profile_lib.sh');
-assert(swapCgi.includes('. "$VM_PROFILE_LIB"') && app.includes('data.zram_target'), 'VM CGI and UI must consume the shared VM contract');
+assert(!app.includes('const SWAP_OPTIMIZED') && !swapCgi.includes('OPT_SWAPPINESS='), 'VM presets must come from memory_lib.sh');
+assert(swapCgi.includes('. "$MODDIR/scripts/memory_lib.sh"') && app.includes('data.module_preset'), 'VM CGI and UI must consume the shared memory contract and one module preset');
 assert(swapCgi.includes('zram_active') && swapCgi.includes('zram_owner') && app.includes('zram_target_supported'), 'ZRAM UI must consume authoritative runtime/owner fields');
-assert(swapCgi.includes('system|stock') && swapCgi.includes('observe-only') && !customize.includes('vm_zram_apply_stock_request'), 'system/disabled VM policy must not write the external ZRAM owner');
-assert(swapCgi.includes('VM_ZRAM_SIZE_PROPERTY') && swapCgi.includes('pending_reboot') && swapCgi.includes('setprop'), 'ZRAM size request must use the mmd persistent property and reboot boundary');
+assert(swapCgi.includes('restore_system') && swapCgi.includes('memory_restore_vm') && !customize.includes('vm_zram_apply_stock_request'), 'system restore must use the memory contract without installing a persistent vendor override');
+assert(swapCgi.includes('boot_save') && swapCgi.includes('memory_config_save') && swapCgi.includes('zram_runtime_start'), 'boot preferences and explicit online transactions must have separate entry points');
 assert(app.includes('applyZramSizeRequest') && html.includes('swap-zram-size-apply-btn'), 'ZRAM size request UI must call the backend contract');
-assert(html.includes('swap-zram-request') && html.includes('swap-zram-size-help') && html.includes('id="swap-zram-size-number" type="number"') && html.includes('id="swap-zram-size-unit"') && html.includes('value="mb"') && html.includes('inputmode="decimal"') && app.includes('zram_input_limits'), 'ZRAM size input must use accessible MB/percentage controls');
+assert(html.includes('memory-capacity-field') && html.includes('swap-zram-size-help') && html.includes('id="swap-zram-size-number" type="number"') && html.includes('id="swap-zram-size-unit"') && html.includes('value="mb"') && html.includes('inputmode="decimal"') && app.includes('zram_input_limits'), 'ZRAM size input must use accessible MB/percentage controls');
 assert(cpuProfile.includes('. "$CPU_PROFILE_LIB"') && ownerArbiter.includes('. "$MODDIR/scripts/cpu_profile_lib.sh"'), 'CPU apply and owner verification must share one profile contract');
 assert(cpuProfile.includes('apply_profile_l2') && cpuProfile.includes('verify_profile_runtime'), 'CPU and L2 must be one verified profile transaction');
 assert(!service.includes('cpu_profile.sh" enforce') && !service.includes('POWER_PROFILE_FILE'), 'service must not retain the legacy 15-second L2 writer or .power_profile SoT');

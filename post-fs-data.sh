@@ -5,6 +5,7 @@
 # repair the current boot.
 MODDIR="${PIXEL9PRO_MODDIR:-${MODDIR:-${0%/*}}}"
 
+
 # Thermal is a plain Hybrid Mount source.  This hook does not lock, promote,
 # roll back, or relabel thermal content.  Record only what is
 # visible in the current namespace; post-mount performs the final readback.

@@ -64,14 +64,14 @@ async function doFullRefresh() {
     const allTasks = tasks.concat(deferredTasks);
     const allResults = results.concat(deferredResults);
     const failures = allResults.flatMap((result, index) => {
-      if (result.status === 'rejected') return [`${allTasks[index][0]}: ${result.reason?.message || result.reason}`];
-      if (result.value === false) return [`${allTasks[index][0]}: 尚未读取到有效状态`];
+      if (result.status === 'rejected') return [`${allTasks[index][0]}：${result.reason?.message || result.reason}`];
+      if (result.value === false) return [`${allTasks[index][0]}：未获取有效状态`];
       return [];
     });
-    failures.forEach((message) => appFeatures.core.appendLog(`${message}刷新失败`, 'err'));
+    failures.forEach((message) => appFeatures.core.appendLog(`刷新失败：${message}`, 'err'));
     appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow']);
     appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay());
-    showToast(failures.length ? '已刷新，部分模块超时或失败' : '已刷新');
+    showToast(failures.length ? '刷新完成，部分状态读取失败' : '已刷新');
   })().finally(() => {
     const refreshButton = $('refresh-all-btn');
     if (refreshButton) refreshButton.disabled = false;
@@ -205,14 +205,19 @@ function bindStaticEvents() {
   $('game-handoff-toggle-btn').addEventListener('click', appFeatures.profile.toggleGameHandoff);
   $('owner-arbiter-tick-btn').addEventListener('click', appFeatures.profile.triggerOwnerArbiter);
   $('swap-toggle-btn').addEventListener('click', appFeatures.memory.toggleSwapMode);
-  $('swap-detail-btn').addEventListener('click', () => openDetail('内存优化详情', appFeatures.memory.buildSwapDetail(appFeatures.memory.getSwapData())));
+  $('swap-detail-btn').addEventListener('click', () => openDetail('内存参数说明', appFeatures.memory.buildSwapDetail(appFeatures.memory.getSwapData())));
   $('swap-tune-btn').addEventListener('click', appFeatures.memory.openSwapTuneModal);
   $('swap-tune-close-btn').addEventListener('click', appFeatures.memory.closeSwapTuneModal);
   $('swap-tune-close-x').addEventListener('click', appFeatures.memory.closeSwapTuneModal);
   $('swap-custom-apply-btn').addEventListener('click', appFeatures.memory.applySwapCustom);
   $('swap-zram-size-apply-btn').addEventListener('click', appFeatures.memory.applyZramSizeRequest);
-  $('swap-preset-optimized').addEventListener('click', () => appFeatures.memory.setSwapTuneValues(appFeatures.memory.getSwapData()?.optimized));
-  $('swap-preset-stock').addEventListener('click', () => appFeatures.memory.setSwapTuneValues(appFeatures.memory.getSwapData()?.stock));
+  $('memory-boot-save').addEventListener('click', appFeatures.memory.saveMemoryBoot);
+  $('memory-auto-apply').addEventListener('change', appFeatures.memory.toggleMemoryAuto);
+  $('memory-restore-zram').addEventListener('click', appFeatures.memory.restoreZram);
+  $('memory-recover').addEventListener('click', appFeatures.memory.recoverMemory);
+  $('memory-preset-apply').addEventListener('click', appFeatures.memory.applyModulePreset);
+  $('memory-preset-fill').addEventListener('click', appFeatures.memory.fillModulePreset);
+  $('swap-preset-optimized').addEventListener('click', () => appFeatures.memory.setSwapTuneValues(appFeatures.memory.getSwapData()?.stock));
   SWAP_KEYS.forEach((key) => {
     refs.swapTuneInputs[key].addEventListener('input', (evt) => appFeatures.memory.syncSwapTuneField(key, evt.target.value));
     refs.swapTuneNumbers[key].addEventListener('change', (evt) => appFeatures.memory.syncSwapTuneField(key, evt.target.value));
@@ -233,7 +238,7 @@ function bindStaticEvents() {
   $('bg-restrict-policy-select').addEventListener('change', appFeatures.memory.syncBgRestrictControls);
   $('bg-restrict-refresh-btn').addEventListener('click', appFeatures.memory.forceRefreshBgRestrict);
   $('nr-switch-detail-btn').addEventListener('click', () => openDetail('息屏切换 4G', appFeatures.network.buildNrSwitchDetail()));
-  $('uecap-detail-btn').addEventListener('click', () => openDetail('UE 网络能力配置', UECAP_DETAIL));
+  $('uecap-detail-btn').addEventListener('click', () => openDetail('网络能力配置说明', UECAP_DETAIL));
   $('baseband-detail-btn').addEventListener('click', () => openDetail('基带模块说明', BASEBAND_DETAIL));
   $('baseband-refresh-btn').addEventListener('click', appFeatures.network.refreshBaseband);
   $('ntp-sync-btn').addEventListener('click', appFeatures.network.syncNtp);
@@ -280,7 +285,7 @@ function bindStaticEvents() {
         html += `响应时间：${appFeatures.core.escapeHtml(appFeatures.profile.formatSchedValue(respText, 'ms'))} · 降频间隔：${appFeatures.core.escapeHtml(appFeatures.profile.formatSchedValue(downText, 'µs'))}<br>`;
         html += `调频器：${appFeatures.core.escapeHtml(cluster.gov || '—')}`;
       });
-    } else html += '<br><br>暂无频率快照，请先刷新一次。';
+    } else html += '<br><br>未获取 CPU 频率数据，请刷新。';
     if (contract) {
       html += '<br><br><b>参数管理范围</b><br>本模块设置前台应用核心、响应时间、任务性能请求上限及厂商调度参数；普通前台进程的核心分配由系统管理。频率上下限仍受系统温控、电源管理和其他调度工具影响。';
       html += `<br><b>检查方式</b>：应用后检查一次，之后每 ${Number(contract.health_interval_s) || 300} 秒读取状态；发现系统修改参数时仅记录，不反复覆盖。`;

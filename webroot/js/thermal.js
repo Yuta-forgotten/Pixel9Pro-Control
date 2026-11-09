@@ -42,14 +42,14 @@ const THERMAL_REQUEST_TIMEOUTS = Object.freeze({
   readback: 15000
 });
 
-const THERMAL_REINSTALL_NOTICE = '修改需卸载模块、重启、重新安装并重新选择';
-const THERMAL_REBOOT_NOTICE = '温控配置已保存，重启手机后应用；当前运行中的温控服务保持原状态。';
+const THERMAL_REINSTALL_NOTICE = '此环境需重装模块才能修改温控：卸载后重启，再重新安装并选择配置。';
+const THERMAL_REBOOT_NOTICE = '温控配置已保存，重启后生效。';
 
 const THERMAL_POLICY_PRESETS = {
   system: {
     name: '不修改温控',
-    summary: '保留系统温控配置，模块不修改温控阈值。',
-    detail: '<p>沿用系统温控配置，模块不生成替代配置。</p><p>温控阈值和温控服务继续由系统管理。</p>',
+    summary: '使用系统温控配置。',
+    detail: '<p>使用系统原始温控配置，温控阈值和服务由系统管理。</p>',
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13 3C8.03 3 4 7.03 4 12H1l4 4 4-4H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.95-2.05l-1.41 1.41A8.96 8.96 0 0013 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/></svg>',
   },
 };
@@ -79,7 +79,7 @@ function tempHex(t) {
 }
 
 function tempStatus() {
-  return '当前传感器读数；温控介入由系统传感器和策略共同决定';
+  return '显示当前传感器温度。温控动作由系统根据多个传感器和策略决定。';
 }
 
 function barPct(t) {
@@ -92,10 +92,14 @@ function positionMarkers() {
 }
 
 function formatThermalOffset(policy, offset) {
-  if (policy === 'system') return '系统阈值';
+  if (policy === 'system') return '原始阈值';
+  const numericInput = typeof offset === 'number'
+    || (typeof offset === 'string' && offset.trim() !== '');
+  if (!numericInput) return '偏移未知';
   const value = Number(offset);
-  if (!Number.isFinite(value) || value === 0) return '原厂阈值';
-  return `当前阈值 ${value > 0 ? '+' : ''}${value}°C`;
+  if (!Number.isFinite(value)) return '偏移未知';
+  if (value === 0) return '未调整阈值';
+  return `阈值调整 ${value > 0 ? '+' : ''}${value}°C`;
 }
 
 function updateThermalRuntimeGuard(data) {
@@ -194,10 +198,10 @@ async function readThermalZones(controller) {
     scope: 'thermal.read'
   };
   const zones = await apiFetch(API.thermal, options);
-  if (!Array.isArray(zones) || !zones.length) throw new Error('未读取到热区数据');
+  if (!Array.isArray(zones) || !zones.length) throw new Error('未获取温度传感器数据');
   const valid = zones.filter(isThermalZoneValid);
   const skin = valid.find((zone) => zone.zone === 'VIRTUAL-SKIN') || valid.find((zone) => zone.zone === 'SKIN');
-  if (!skin) throw new Error('VIRTUAL-SKIN 未找到');
+  if (!skin) throw new Error('未获取机身综合温度');
   return valid;
 }
 
@@ -211,14 +215,14 @@ function syncHeroDesc() {
   const scheduler = requireFeature('profile').getThermalContext();
   const swapMode = requireFeature('memory').getSwapMode();
   if (preset) parts.push(preset.name);
-  if (scheduler.schedulerMode !== 'active') parts.push('本模块调度关闭');
-  else if (scheduler.schedEffectiveOwner === 'external') parts.push(scheduler.hasExternalScheduler ? (scheduler.externalSchedulerActive ? '外部调度接管' : '外部调度未启用') : '调度停用');
-  else if (scheduler.hasExternalScheduler) parts.push('覆盖外部调度');
-  if (swapMode === 'optimized') parts.push('内存已优化');
-  else if (swapMode === 'disabled') parts.push('VM 写入关闭');
-  else if (swapMode === 'system') parts.push('内存系统默认');
+  if (scheduler.schedulerMode !== 'active') parts.push('模块调度已关闭');
+  else if (scheduler.schedEffectiveOwner === 'external') parts.push(scheduler.hasExternalScheduler ? (scheduler.externalSchedulerActive ? '外部调度运行中' : '外部调度未启用') : '调度停用');
+  else if (scheduler.hasExternalScheduler) parts.push('模块基础调度运行中');
+  if (swapMode === 'optimized') parts.push('模块内存参数已启用');
+  else if (swapMode === 'disabled') parts.push('VM 调节已关闭');
+  else if (swapMode === 'system') parts.push('内存自定义参数未启用');
   if (state.reinstallRequired) parts.push(THERMAL_REINSTALL_NOTICE);
-  if (state.repairRequired) parts.push('温控状态需要修复，可发送 repair_system 后重启');
+  if (state.repairRequired) parts.push('温控配置异常，请恢复系统温控后重启');
   if (state.selectionPending) parts.push('正在保存温控配置…');
   refs.heroDesc.textContent = parts.join(' · ') || '正在读取配置…';
 }
@@ -231,7 +235,7 @@ function syncThermalUi() {
     : THERMAL_POLICY_PRESETS[visiblePolicy];
   if (!preset) {
     refs.thermalCurrentName.textContent = '温控状态未确认';
-    refs.thermalCurrentDesc.textContent = state.contractReadError || '尚未取得有效策略，请刷新状态。';
+    refs.thermalCurrentDesc.textContent = state.contractReadError || '未获取有效温控配置，请刷新。';
     refs.topbarThermalChip.textContent = '温控 · 未确认';
     return;
   }
@@ -240,7 +244,7 @@ function syncThermalUi() {
   refs.thermalCurrentDesc.textContent = state.reinstallRequired
     ? `${preset.summary} · ${THERMAL_REINSTALL_NOTICE}`
     : state.repairRequired
-      ? `${preset.summary} · 温控状态需要修复并重启`
+      ? `${preset.summary} · 温控配置异常，需要修复后重启`
     : preset.summary;
   if (state.verificationNotice) refs.thermalCurrentDesc.textContent += ` · ${state.verificationNotice}`;
   if (state.contractReadError) refs.thermalCurrentDesc.textContent += ` · ${state.contractReadError}`;
@@ -253,7 +257,7 @@ function syncThermalUi() {
   if (refs.thermalPendingBtn) {
     refs.thermalPendingBtn.hidden = !pendingBlocked && !state.thermalApplyBusy && !state.thermalCancelBusy;
     refs.thermalPendingBtn.textContent = state.thermalCancelBusy ? '查看撤销进度'
-      : state.thermalApplyBusy ? '查看保存进度' : '查看待重启变更';
+      : state.thermalApplyBusy ? '查看保存进度' : '查看待重启配置';
   }
   document.querySelectorAll('.thermal-option').forEach((card) => {
     const selected = card.dataset.policy === visiblePolicy
@@ -331,7 +335,7 @@ function applyThermalContract(data) {
     && uniqueOffsets.size === offsets.length
     && offsets.every((offset) => Number.isFinite(offset) && THERMAL_PRESETS[offset])
     && uniqueOffsets.has(defaultOffset);
-  if (!valid) throw new Error('服务返回的温控档位不完整，暂时无法修改');
+  if (!valid) throw new Error('温控档位数据不完整，无法修改');
   state.contract = { policies, defaultPolicy, offsets, defaultOffset };
 }
 
@@ -374,7 +378,7 @@ async function loadThermalPreset({ readback = false } = {}) {
       if (revision !== state.mutationRevision) return null;
       updateThermalRuntimeGuard(data);
       applyThermalContract(data);
-      if (!applyThermalState(data)) throw new Error('温控实际策略无效，保留上次已确认状态');
+      if (!applyThermalState(data)) throw new Error('返回的温控配置无效，当前显示上次结果');
       state.contractReadError = '';
       state.thermalContractRetryAttempts = 0;
       if (state.thermalContractRetryTimer) {
@@ -447,10 +451,10 @@ async function refreshThermalTask() {
       refs.tempFill.style.background = color;
     } else {
       refs.homeTempNum.textContent = '--';
-      refs.homeTempStatus.textContent = 'VIRTUAL-SKIN 未找到';
+      refs.homeTempStatus.textContent = '未获取机身综合温度';
       refs.tempNum.textContent = '--';
       refs.tempZone.textContent = 'VIRTUAL-SKIN';
-      refs.tempStatus.textContent = '未找到热区，请确认已注册';
+      refs.tempStatus.textContent = '未获取温度传感器数据';
     }
     const homeRefs = ensureSensorRefs(refs.homeSensorList, 'homeSensorRefs', secondary, 'sensor-row');
     const gridRefs = ensureSensorRefs(refs.sensorGrid, 'sensorRefs', secondary, 'sensor-chip');
@@ -473,7 +477,7 @@ async function refreshThermalTask() {
       refs.homeTempNum.textContent = '--';
       refs.tempNum.textContent = '--';
     }
-    const message = state.lastSkinTempC === null ? err.message : `读取失败，保留上次读数：${err.message}`;
+    const message = state.lastSkinTempC === null ? err.message : `读取失败，当前显示上次读数：${err.message}`;
     refs.homeTempStatus.textContent = message;
     refs.tempStatus.textContent = message;
     return false;
@@ -498,7 +502,7 @@ function reconcileThermalCommit(revision, expected) {
   }).then((data) => {
     if (revision !== state.mutationRevision) return;
     if (!matchesThermalExpectation(data, expectation)) {
-      throw new Error('当前状态与已提交目标不一致，请刷新确认');
+      throw new Error('实际状态与请求的配置不一致，请刷新检查');
     }
     applyThermalState(data);
     updatePendingState(data, { open: false });
@@ -509,8 +513,8 @@ function reconcileThermalCommit(revision, expected) {
   }).catch((error) => {
     if (revision !== state.mutationRevision || state.verificationExpected !== expectation) return;
     state.verificationNotice = isCancelled(error)
-      ? '操作已提交，状态待下次刷新确认'
-      : '操作已提交，后台状态更新未完成；可刷新确认';
+      ? '请求已提交，生效状态未确认'
+      : '请求已提交，实际状态尚未返回，请刷新检查';
     syncThermalUi();
     if (!isCancelled(error)) appendLog(`${state.verificationNotice}：${error.message || error}`, 'warn');
   });
@@ -520,7 +524,7 @@ async function applyThermalSelection(policy, offset) {
   if (state.reinstallRequired || !state.contract?.policies.includes(policy) || state.thermalApplyBusy) return;
   if (state.repairRequired) {
     if (policy !== 'system') {
-      showToast('当前温控配置需要修复，恢复系统配置并重启后才能选择自定义档位', 4200);
+      showToast('温控配置异常。请先恢复系统温控并重启，再选择自定义档位。', 4200);
       return;
     }
     state.thermalApplyBusy = true;
@@ -531,11 +535,11 @@ async function applyThermalSelection(policy, offset) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'repair_system' }), timeoutMs: THERMAL_REQUEST_TIMEOUTS.mutation, priority: 'interactive', scope: 'thermal.mutation'
       });
-      if (data?.ok !== true || data.repaired !== true) throw new Error(data?.error || '后端未接受修复');
-      if (!applyThermalState(data)) throw new Error('修复已提交，但后端没有返回有效目标状态');
+      if (data?.ok !== true || data.repaired !== true) throw new Error(data?.error || '服务未接受修复请求');
+      if (!applyThermalState(data)) throw new Error('修复请求已提交，结果未确认');
       updatePendingState(data, { open: false });
-      state.verificationNotice = '修复已提交，后台更新状态中';
-      showToast('温控修复已提交，重启后检查生效状态', 4200);
+      state.verificationNotice = '修复请求已提交，等待状态更新';
+      showToast('修复配置已保存，重启后检查结果', 4200);
       reconcileThermalCommit(revision, { policy: 'system', pending: true });
     } catch (err) {
       showToast(`修复失败：${err?.message || '请重新安装模块'}`, 4200);
@@ -543,7 +547,7 @@ async function applyThermalSelection(policy, offset) {
     return;
   }
   if (state.thermalModal.pendingId || state.thermalModal.pending) {
-    showToast('已有待重启温控变更，请先撤销或重启后再选择。', 4200);
+    showToast('已有待重启的温控配置。请先撤销修改，或重启后继续设置。', 4200);
     return;
   }
   if (policy === 'custom' && !state.contract.offsets.includes(offset)) return;
@@ -566,7 +570,7 @@ async function applyThermalSelection(policy, offset) {
   syncHeroDesc();
   card.classList.add('loading');
   const target = policy === 'custom' ? THERMAL_PRESETS[offset] : THERMAL_POLICY_PRESETS[policy];
-  appendLog(`切换温控策略 ${target.name}…`, 'dim');
+  appendLog(`正在保存温控配置：${target.name}`, 'dim');
   refs.logCard.classList.add('open');
   showToast(`${target.name} 正在保存…`, 1400);
   openRebootModal({
@@ -581,13 +585,13 @@ async function applyThermalSelection(policy, offset) {
     const data = await apiFetch(API.thermalSet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next), timeoutMs: THERMAL_REQUEST_TIMEOUTS.mutation, priority: 'interactive', scope: 'thermal.mutation' });
     if (data.ok && applyThermalState(data)) {
       state.selectionPending = null;
-      state.verificationNotice = '操作已提交，后台更新状态中';
+      state.verificationNotice = '请求已提交，等待状态更新';
       updatePendingState(data, { open: false });
       syncThermalUi();
       syncHeroDesc();
       if (data.restarted) {
-        showToast(`${target.name} · thermal 服务已重启`);
-        appendLog(`${target.name} 已重启 thermal 服务`, 'ok');
+        showToast(`${target.name} · 温控服务已重新启动`);
+        appendLog(`已为 ${target.name} 重新启动温控服务`, 'ok');
       } else if (data.reboot_required) {
         appendLog(`${target.name} 已保存（重启后生效）`, 'warn');
         const hybridPending = data.reboot_required === true || data.pending === true;
@@ -638,7 +642,7 @@ async function cancelThermalChange() {
   if (state.thermalCancelBusy) return;
   const pendingId = state.thermalModal.pendingId;
   if (!pendingId || !state.thermalModal.cancelSupported) {
-    showToast('当前没有可验证的温控待变更。', 4200);
+    showToast('当前没有可撤销的温控修改。', 4200);
     return;
   }
   const revision = ++state.mutationRevision;
@@ -655,9 +659,9 @@ async function cancelThermalChange() {
     });
     if (revision !== state.mutationRevision) return true;
     if (!validThermalSelection(readback?.policy, readback?.offset)
-      || typeof readback.pending !== 'boolean') throw new Error('温控回读没有有效策略或待变更状态');
+      || typeof readback.pending !== 'boolean') throw new Error('未获取有效的温控配置或待重启状态');
     if (readback.pending || pendingIdFrom(readback)) {
-      if (pendingIdFrom(readback) !== pendingId) throw new Error('状态显示了不同的待变更，请刷新后操作');
+      if (pendingIdFrom(readback) !== pendingId) throw new Error('待重启配置已变化，请刷新后重试');
       return false;
     }
     applyThermalState(readback);
@@ -671,7 +675,7 @@ async function cancelThermalChange() {
     }
     syncThermalUi();
     syncHeroDesc();
-    appendLog('温控撤销已由独立回读确认', 'ok');
+    appendLog('温控修改已撤销，实际状态已确认', 'ok');
     return true;
   };
   try {
@@ -684,14 +688,14 @@ async function cancelThermalChange() {
     });
     if (data?.ok !== true || data.canceled !== true || data.pending === true
       || data.reboot_required === true || !validThermalSelection(data.policy, data.offset)) {
-      throw new Error(data?.error || '后端未确认撤销');
+      throw new Error(data?.error || '服务未确认撤销结果');
     }
     // The backend already verified the source/marker restoration under its
     // mutation lock. Dismiss now; effective-path verification is supplementary
     // background work and must not extend the user's modal wait.
     applyThermalState(data);
     updatePendingState(data, { open: false });
-    state.verificationNotice = '撤销已提交，后台更新状态中';
+    state.verificationNotice = '撤销请求已提交，等待状态更新';
     syncThermalUi();
     syncHeroDesc();
     if (requireFeature('ui').getRebootContext() === 'thermal') {
@@ -701,7 +705,7 @@ async function cancelThermalChange() {
   } catch (err) {
     state.thermalModal.dismissedPendingId = pendingId;
     state.thermalModal.cancelReconcileNeeded = true;
-    const message = `撤销未确认：${err?.message || '请刷新状态后重试'}；重试将先读取当前状态`;
+    const message = `撤销结果未确认：${err?.message || '请刷新状态'}。再次操作前将检查实际状态。`;
     state.verificationNotice = message;
     syncThermalUi();
     if (requireFeature('ui').getRebootContext() === 'thermal') setRebootError(message);
@@ -718,7 +722,7 @@ async function rebootDevice() {
   const context = requireFeature('ui').getRebootContext();
   requireFeature('ui').setRebootBusy(true);
   setRebootError('');
-  showToast('正在提交重启请求…');
+  showToast('正在请求重启…');
   try {
     const data = await apiFetch(API.reboot, {
       method: 'POST',
@@ -726,12 +730,12 @@ async function rebootDevice() {
       body: JSON.stringify({ action: 'reboot', confirm: true }),
       timeoutMs: 8000, priority: 'interactive', scope: 'device.reboot'
     });
-    if (data?.ok !== true) throw new Error(data?.error || '后端未接受重启请求');
+    if (data?.ok !== true) throw new Error(data?.error || '服务未接受重启请求');
     if (requireFeature('ui').getRebootContext() === context) requireFeature('ui').closeRebootModal('', { force: true, silent: true });
-    showToast('重启请求已接受，等待设备重启');
-    appendLog('重启请求已接受；实际启动状态需重启后确认', 'warn');
+    showToast('重启请求已受理，等待设备重新启动');
+    appendLog('重启请求已受理，启动结果将在重新连接后确认', 'warn');
   } catch (err) {
-    const message = `重启请求未确认：${err?.message || err}；请核对设备状态后再决定是否重试`;
+    const message = `重启请求未确认：${err?.message || err}。请检查设备是否已开始重启。`;
     if (requireFeature('ui').getRebootContext() === context) setRebootError(message);
     showToast(message, 5000, 'err');
     appendLog(message, 'err');

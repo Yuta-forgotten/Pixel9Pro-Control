@@ -77,10 +77,10 @@ REQUIRED_ENTRIES: Final = REQUIRED_ENTRY_POINTS.union(
         "profile_state_lib", "runtime_defaults_lib", "scheduler_boot_mode_lib",
         "scheduler_capability_lib", "scheduler_detect_lib", "scheduler_owner_lib",
         "scheduler_reconcile", "scheduler_transition_guard_lib", "scheduler_async_lib", "scheduler_async_worker", "thermal_history_lib",
-        "thermal_policy_lib", "thermal_profile", "vm_profile_lib", "state_io_lib",
+        "thermal_policy_lib", "thermal_profile", "memory_lib", "memory_worker", "vendor_source", "state_io_lib",
         "module_metadata_lib", "cgi_dispatch", "browser_session_lib",
     )
-).union({"config/app_identities.tsv", "config/ntp_servers.tsv", "config/webui_browsers.tsv"}).union(
+).union({"scripts/memory_status.awk", "config/app_identities.tsv", "config/ntp_servers.tsv", "config/webui_browsers.tsv"}).union(
     f"webroot/cgi-bin/{name}.sh" for name in (
         "_common", "_baseband_status", "_thermal_cache", "audit_log", "auth",
         "bg_restrict", "check_baseband", "info", "nr_switch", "ntp", "optimize",

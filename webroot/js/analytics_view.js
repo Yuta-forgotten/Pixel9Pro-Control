@@ -63,7 +63,7 @@
       option.value = seconds;
       customWindow.appendChild(option);
     });
-    const applyCustom = el('button', 'tiny-btn tonal', '应用');
+    const applyCustom = el('button', 'tiny-btn tonal', '应用时间范围');
     applyCustom.type = 'button';
     applyCustom.addEventListener('click', () => callbacks.onCustom(Number(customWindow.value)));
     custom.append(customWindow, applyCustom);
@@ -82,7 +82,7 @@
     const heroBadge = el('span', 'analytics-hero-badge');
     heroHead.append(heroCopy, heroBadge);
     const summary = el('div', 'analytics-summary-grid');
-    ['最低', '采样均值', '最高'].forEach((label) => {
+    ['最低', '平均温度', '最高'].forEach((label) => {
       const item = el('div', 'analytics-summary-item');
       item.append(el('span', '', label), el('strong', '', '—'));
       summary.appendChild(item);
@@ -114,7 +114,7 @@
     const exportPanel = el('details', 'disclosure compact analytics-export');
     const exportSummary = el('summary', 'disclosure-summary');
     const exportCopy = el('span', 'disclosure-copy');
-    const exportScope = el('small', '', '当前传感器与时间区间');
+    const exportScope = el('small', '', '所选传感器与时间范围');
     exportCopy.append(el('strong', '', '导出记录'), exportScope);
     const chevron = el('span', 'disclosure-chevron', '›');
     chevron.setAttribute('aria-hidden', 'true');
@@ -131,7 +131,7 @@
       option.value = value;
       exportFormat.appendChild(option);
     });
-    const exportButton = el('button', 'tiny-btn primary', '导出当前区间');
+    const exportButton = el('button', 'tiny-btn primary', '导出所选记录');
     exportButton.type = 'button';
     exportButton.disabled = true;
     exportButton.addEventListener('click', () => callbacks.onExport(exportFormat.value));
@@ -220,8 +220,8 @@
 
     if (!points.length || !Number.isFinite(start) || !Number.isFinite(end)) {
       context.textAlign = 'center';
-      context.fillText('当前区间暂无温度记录', width / 2, height / 2);
-      canvas.setAttribute('aria-label', '当前区间暂无温度记录');
+      context.fillText('所选时间范围内暂无温度记录', width / 2, height / 2);
+      canvas.setAttribute('aria-label', '所选时间范围内暂无温度记录');
       return;
     }
 
@@ -272,7 +272,7 @@
       context.restore();
       context.setLineDash([]);
     }
-    canvas.setAttribute('aria-label', `温度趋势图，${stats.count} 个有效温度点`);
+    canvas.setAttribute('aria-label', `温度趋势图，${stats.count} 条有效温度记录`);
   }
 
   function showNearestPoint(view, clientX) {
@@ -298,7 +298,7 @@
     view.stateLine.textContent = status || '';
     view.stateLine.hidden = !status;
     view.hero.classList.toggle('warn', Number(stats?.current) >= 40);
-    view.heroKicker.textContent = sensor === 'battery' ? '最近电池温度' : '最近机身温度';
+    view.heroKicker.textContent = sensor === 'battery' ? '最近记录的电池温度' : '最近记录的机身温度';
     view.heroValue.textContent = Number.isFinite(stats?.current) ? `${stats.current.toFixed(1)}°C` : '—';
     view.heroStatus.textContent = stats?.lastSampleTs
       ? `记录于 ${new Date(stats.lastSampleTs * 1000).toLocaleString([], { hour: '2-digit', minute: '2-digit' })}`
@@ -309,7 +309,7 @@
     view.summary.forEach((item, index) => {
       item.querySelector('strong').textContent = Number.isFinite(values[index]) ? `${values[index].toFixed(1)}°C` : '—';
     });
-    view.legend.textContent = `${stats?.validCount ?? 0} 条有效记录 · 有记录 ${model().formatDuration(stats?.coverageSec)} · 无记录 ${model().formatDuration(stats?.unknownSec)} · 中断 ${stats?.gapCount ?? 0} 次`;
+    view.legend.textContent = `${stats?.validCount ?? 0} 条有效记录 · 记录覆盖 ${model().formatDuration(stats?.coverageSec)} · 记录空缺 ${model().formatDuration(stats?.unknownSec)} · 间断 ${stats?.gapCount ?? 0} 次`;
     draw(view, stats);
   }
 

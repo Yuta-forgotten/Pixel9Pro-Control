@@ -45,8 +45,10 @@ thermal_policy_is_valid() {
 }
 
 thermal_policy_read() {
-    _tpl_value=$(cat "$THERMAL_POLICY_FILE" 2>/dev/null | tr -d ' \r\n\t')
-    thermal_policy_is_valid "$_tpl_value" && printf '%s' "$_tpl_value" || printf '%s' "$THERMAL_POLICY_DEFAULT"
+    local value
+    value=$(cat "$THERMAL_POLICY_FILE") || return 1
+    thermal_policy_is_valid "$value" || { printf 'invalid thermal policy: %s\n' "$value" >&2; return 1; }
+    printf '%s' "$value"
 }
 
 thermal_policy_offset_read() {
@@ -63,7 +65,7 @@ thermal_policy_validate_stock() {
     _tpl_source="$1"
     [ -r "$_tpl_source" ] || return 1
     _tpl_validation="${TMPDIR:-/dev/tmp}/pixel9pro_thermal_validate.$$"
-    thermal_generate_config "$_tpl_source" "$_tpl_validation" 0 >/dev/null 2>&1
+    thermal_generate_config "$_tpl_source" "$_tpl_validation" 0 >/dev/null
     _tpl_rc=$?
     rm -f "$_tpl_validation" 2>/dev/null
     return "$_tpl_rc"
@@ -107,40 +109,27 @@ thermal_policy_stock_record_provenance() {
 sha256=$_tpl_sha"
 }
 
-thermal_policy_prepare_snapshot() {
-    _tpl_device="$1"
-    _tpl_old_root="$2"
-    _tpl_allow_vendor="$3"
-    _tpl_target=$(thermal_policy_snapshot_path "$_tpl_device") || return 1
-    thermal_policy_stock_provenance_valid "$_tpl_target" \
-        && thermal_policy_validate_stock "$_tpl_target" && return 0
+thermal_policy_read_original() {
+    /system/bin/sh "$THERMAL_POLICY_ROOT/scripts/vendor_source.sh" --file "$1"
+}
 
-    _tpl_legacy_name=thermal_stock.json
-    [ "$_tpl_device" = komodo ] && _tpl_legacy_name=thermal_stock_xl.json
-    for _tpl_candidate in \
-        "$_tpl_old_root/payloads/thermal/$_tpl_device/stock.json" \
-        "$_tpl_old_root/system/vendor/etc/$_tpl_legacy_name"; do
-        [ -n "$_tpl_old_root" ] && thermal_policy_stock_provenance_valid "$_tpl_candidate" \
-            && thermal_policy_capture_stock "$_tpl_candidate" "$_tpl_target" \
-            && thermal_policy_stock_record_provenance "$_tpl_target" \
-            && return 0
-    done
-    if [ "$_tpl_allow_vendor" = yes ]; then
-        # Never relabel an old custom payload as stock. Missing provenance on
-        # an upgrade is a diagnosis condition, not permission to recapture it.
-        [ ! -f "$_tpl_old_root/module.prop" ] || return 1
-        # A disable marker only changes the next boot. The old source can
-        # remain mounted in this namespace until reboot, so it is not stock.
-        [ ! -e "$_tpl_old_root/system/vendor/etc/thermal_info_config.json" ] || return 1
-        if [ "$(cat "$_tpl_old_root/.thermal_policy" 2>/dev/null)" = custom ]; then
-            return 1
-        fi
-        if awk '$5 ~ /\/thermal_info_config[.]json$/ { found=1 } END { exit found ? 0 : 1 }' \
-            /proc/self/mountinfo 2>/dev/null; then return 1; fi
-        thermal_policy_capture_stock /vendor/etc/thermal_info_config.json "$_tpl_target" \
-            && thermal_policy_stock_record_provenance "$_tpl_target" \
-            && return 0
+thermal_policy_prepare_snapshot() {
+    local target temporary selected
+    target=$(thermal_policy_snapshot_path "$1") || return 1
+    selected=$(thermal_policy_selected_config)
+    mkdir -p "${target%/*}" || return 1
+    temporary=$(mktemp "${target}.read.XXXXXX") || return 1
+    if [ "$selected" = thermal_info_config_lpm.json ]; then
+        if ! thermal_policy_read_original "/vendor/etc/$selected" > "$temporary"; then rm -f "$temporary"; return 1; fi
+        grep -q 'thermal_info_config.json' "$temporary" || { printf 'LPM config does not include thermal_info_config.json\n' >&2; rm -f "$temporary"; return 1; }
     fi
+    if thermal_policy_read_original /vendor/etc/thermal_info_config.json > "$temporary" \
+        && thermal_policy_validate_stock "$temporary" \
+        && chmod 600 "$temporary" && mv "$temporary" "$target"; then
+        thermal_policy_stock_record_provenance "$target"
+        return $?
+    fi
+    rm -f "$temporary"
     return 1
 }
 
@@ -260,10 +249,9 @@ thermal_policy_readback_check() {
     _tpl_effective_mode=$(thermal_policy_effective_mode)
     if [ "$_tpl_policy" = system ]; then
         [ "$_tpl_source_hash" = none ] || return 1
-        _tpl_device=$(cat "$THERMAL_POLICY_ROOT/.device_variant" 2>/dev/null | tr -d ' \n\r\t')
-        _tpl_stock=$(thermal_policy_snapshot_path "$_tpl_device" 2>/dev/null) || return 1
-        thermal_policy_stock_provenance_valid "$_tpl_stock" || return 1
-        [ "$_tpl_effective_hash" = "$(sha256sum "$_tpl_stock" 2>/dev/null | awk '{print $1}')" ] || return 1
+        _tpl_original_text=$(thermal_policy_read_original /vendor/etc/thermal_info_config.json) || return 1
+        _tpl_original=$(printf '%s\n' "$_tpl_original_text" | sha256sum | awk '{print $1}')
+        [ -n "$_tpl_original" ] && [ "$_tpl_effective_hash" = "$_tpl_original" ] || return 1
     elif [ "$_tpl_policy" = custom ]; then
         [ "$_tpl_source_hash" != none ] && [ "$_tpl_source_hash" = "$_tpl_effective_hash" ] || return 1
     else

@@ -36,7 +36,7 @@
     el.className = 'error-panel';
     el.setAttribute('role', 'alert');
     const title = document.createElement('strong');
-    title.textContent = '读取失败';
+    title.textContent = '数据读取失败';
     const detail = document.createElement('pre');
     detail.textContent = String(msg || '未知错误');
     el.append(title, detail);
@@ -51,7 +51,7 @@
       empty.className = 'log-dim'; empty.textContent = '等待操作…';
       refs.logInner.appendChild(empty);
       if (refs.logPreview) refs.logPreview.textContent = '暂无操作';
-      if (refs.logMeta) refs.logMeta.textContent = state.persistenceAvailable ? '本地记录 · 最多保留 80 条' : '当前页面记录 · 浏览器持久化不可用';
+      if (refs.logMeta) refs.logMeta.textContent = state.persistenceAvailable ? '本页操作记录 · 最多 80 条' : '本页操作记录 · 关闭页面后可能丢失';
       return;
     }
     state.entries.forEach((entry) => {
@@ -63,17 +63,17 @@
       row.append(time, copy);
       if (entry.type === 'err' && entry.detail) {
         const details = document.createElement('details');
-        const summary = document.createElement('summary'); summary.textContent = '查看完整报错';
+        const summary = document.createElement('summary'); summary.textContent = '查看错误详情';
         const pre = document.createElement('pre'); pre.textContent = entry.detail;
         details.append(summary, pre); row.appendChild(details);
       }
       refs.logInner.appendChild(row);
     });
     const last = state.entries[state.entries.length - 1];
-    if (refs.logPreview) refs.logPreview.textContent = `${last.type === 'err' ? '失败' : last.type === 'warn' ? '需注意' : '最近'} · ${last.text}`;
+    if (refs.logPreview) refs.logPreview.textContent = `${last.type === 'err' ? '失败' : last.type === 'warn' ? '提示' : '最近'} · ${last.text}`;
     if (refs.logMeta) {
       const errors = state.entries.filter((entry) => entry.type === 'err').length;
-      refs.logMeta.textContent = `${state.persistenceAvailable ? '本地记录' : '当前页面记录 · 无法持久化'} · ${state.entries.length} 条${errors ? ` · ${errors} 条失败` : ''}`;
+      refs.logMeta.textContent = `${state.persistenceAvailable ? '本页操作记录' : '本页操作记录 · 未保存至浏览器'} · ${state.entries.length} 条${errors ? ` · ${errors} 条失败` : ''}`;
     }
     refs.logInner.scrollTop = refs.logInner.scrollHeight;
   }
@@ -128,7 +128,7 @@
     session.clear.disabled = busy || state.auditClearPending;
   }
 
-  function renderAuditLines(session, lines, emptyText = '暂无后台审计记录。') {
+  function renderAuditLines(session, lines, emptyText = '暂无模块运行日志。') {
     if (!isCurrentAudit(session)) return;
     session.lines = lines;
     const content = document.createElement(lines.length ? 'pre' : 'p');
@@ -138,7 +138,7 @@
   }
 
   function validateAuditLines(data) {
-    if (data?.ok !== true || !Array.isArray(data.lines)) throw new Error('后台未返回有效审计记录');
+    if (data?.ok !== true || !Array.isArray(data.lines)) throw new Error('未获取有效的模块运行日志');
     return data.lines.map((line) => String(line));
   }
 
@@ -147,7 +147,7 @@
     const controller = new AbortController();
     session.controller = controller;
     setAuditBusy(session, true);
-    setAuditStatus(session, '正在读取后台审计记录…');
+    setAuditStatus(session, '正在读取模块运行日志…');
     try {
       const data = await requireFeature('core').apiFetch(`${API.auditLog}?limit=80`, { timeoutMs: 5000, controller, priority: 'interactive', scope: 'diagnostics.audit.read' });
       if (!isCurrentAudit(session)) return;
@@ -157,11 +157,11 @@
     } catch (err) {
       if (!isCurrentAudit(session)) return;
       if (requireFeature('core').isRequestCancelled?.(err) || (controller.signal.aborted && !requireFeature('core').isWebUiActive())) {
-        setAuditStatus(session, '读取已暂停。返回后可点“刷新记录”继续。');
+        setAuditStatus(session, '日志读取已暂停，返回页面后可刷新。');
         return;
       }
-      setAuditStatus(session, `后台日志读取失败：${err.message || err}。可点“刷新记录”重试。`, true);
-      appendLog(`后台日志读取失败：${err.message || err}`, 'err');
+      setAuditStatus(session, `模块日志读取失败：${err.message || err}。请刷新重试。`, true);
+      appendLog(`模块日志读取失败：${err.message || err}`, 'err');
     } finally {
       if (session.controller === controller) session.controller = null;
       setAuditBusy(session, false);
@@ -173,7 +173,7 @@
     const controller = new AbortController();
     session.controller = controller;
     setAuditBusy(session, true);
-    setAuditStatus(session, '正在准备可用审计记录…');
+    setAuditStatus(session, '正在准备导出模块日志…');
     try {
       const data = await requireFeature('core').apiFetch(`${API.auditLog}?all=1&limit=2000`, { timeoutMs: 5000, controller, priority: 'interactive', scope: 'diagnostics.audit.read' });
       if (!isCurrentAudit(session)) return;
@@ -187,12 +187,12 @@
       anchor.click();
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setAuditStatus(session, `已导出后台可用的 ${lines.length} 条审计记录。`);
-      requireFeature('core').showToast('后台审计记录已导出');
+      setAuditStatus(session, `已导出 ${lines.length} 条模块运行日志。`);
+      requireFeature('core').showToast('模块运行日志已导出');
     } catch (err) {
       if (isCurrentAudit(session)) {
         const paused = requireFeature('core').isRequestCancelled?.(err) || (controller.signal.aborted && !requireFeature('core').isWebUiActive());
-        setAuditStatus(session, paused ? '导出准备已暂停。返回后可重新导出。' : `导出失败：${err.message || err}。可重新导出。`, !paused);
+        setAuditStatus(session, paused ? '日志导出已暂停，返回页面后可重试。' : `导出失败：${err.message || err}。可重新导出。`, !paused);
       }
     } finally {
       if (session.controller === controller) session.controller = null;
@@ -202,10 +202,10 @@
 
   async function clearAudit(session) {
     if (!isCurrentAudit(session) || session.busy || state.auditClearPending) return;
-    if (!window.confirm('确认清理模块后台审计记录？此操作不可撤销，本页操作记录不会受影响。')) return;
+    if (!window.confirm('确认清空模块运行日志？此操作不可撤销；本页操作记录保留。')) return;
     state.auditClearPending = true;
     setAuditBusy(session, true);
-    setAuditStatus(session, '正在清理并重新读取后台审计记录…');
+    setAuditStatus(session, '正在清空模块运行日志…');
     let committed = false;
     try {
       // A dispatched write may finish after close. Keep its global busy guard;
@@ -214,23 +214,23 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'clear' }), timeoutMs: 5000, priority: 'interactive', scope: 'diagnostics.audit'
       });
-      if (data?.ok !== true || data.action !== 'clear') throw new Error(data?.error || '后台未确认清理结果');
+      if (data?.ok !== true || data.action !== 'clear') throw new Error(data?.error || '模块未确认日志清空结果');
       committed = true;
-      renderAuditLines(session, [], '清理请求已成功，正在回读后台记录…');
+      renderAuditLines(session, [], '日志已清空，正在确认结果…');
       const readback = await requireFeature('core').apiFetch(`${API.auditLog}?limit=80`, { timeoutMs: 5000, priority: 'normal', scope: 'diagnostics.audit.read' });
       const lines = validateAuditLines(readback);
       if (isCurrentAudit(session)) {
         renderAuditLines(session, lines);
         setAuditStatus(session, lines.length
-          ? `已清理并回读；后台当前有 ${lines.length} 条新记录。`
-          : '后台审计记录已清理，回读确认当前为空。');
-        requireFeature('core').showToast('后台审计记录已清理并回读');
+          ? `旧日志已清空，当前新增 ${lines.length} 条记录。`
+          : '模块运行日志已清空，当前无记录。');
+        requireFeature('core').showToast('模块运行日志已清空并确认');
       }
-      appendLog('后台审计记录已清理并回读', 'ok');
+      appendLog('模块运行日志已清空并确认', 'ok');
     } catch (err) {
       const message = committed
-        ? `清理已提交，但回读失败：${err.message || err}。旧记录已隐藏，请刷新确认。`
-        : `清理结果未确认：${err.message || err}。请先刷新记录核对，再决定是否重试。`;
+        ? `清空请求已提交，但结果读取失败：${err.message || err}。请刷新确认。`
+        : `清空结果未确认：${err.message || err}。请先刷新日志，再重试。`;
       setAuditStatus(session, message, true);
       appendLog(message, 'err');
     } finally {
@@ -243,12 +243,12 @@
 
   async function openAuditLog() {
     if (state.auditSession && isCurrentAudit(state.auditSession)) return;
-    requireFeature('ui').openDetail('后台审计日志',
+    requireFeature('ui').openDetail('模块运行日志',
       '<div class="detail-content" id="audit-log-view">'
-      + '<p>显示模块后台的脱敏事件。本页操作记录与后台审计记录分别保存。</p>'
+      + '<p>记录模块后台运行事件。本页操作记录单独保存。</p>'
       + '<div class="audit-log-actions"><button class="tiny-btn tonal" id="audit-log-refresh" type="button">刷新记录</button>'
       + '<button class="tiny-btn tonal" id="audit-log-export" type="button">导出记录</button>'
-      + '<button class="tiny-btn danger-btn" id="audit-log-clear" type="button">清理后台记录</button></div>'
+      + '<button class="tiny-btn danger-btn" id="audit-log-clear" type="button">清空模块日志</button></div>'
       + '<p class="audit-log-status" id="audit-log-status" role="status"></p>'
       + '<div id="audit-log-content"></div></div>');
     const session = {
@@ -263,7 +263,7 @@
     session.clear.addEventListener('click', () => clearAudit(session));
     if (state.auditClearPending) {
       setAuditBusy(session, false);
-      setAuditStatus(session, '正在确认先前的清理结果…');
+      setAuditStatus(session, '正在确认上次日志清空结果…');
       return;
     }
     await readAudit(session);

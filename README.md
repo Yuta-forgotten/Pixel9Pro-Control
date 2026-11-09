@@ -46,16 +46,18 @@ Thermal source 在安装、WebUI staging 和撤销恢复时固定为 `0644`；po
 
 偏移覆盖 8 个 VIRTUAL-SKIN 相关传感器（VIRTUAL-SKIN / HINT / SOC / CPU-LIGHT-ODPM / CPU-MID / CPU-ODPM / CPU-HIGH / GPU）。安装器和 WebUI 共用同一份生成逻辑，每次从当前机型 stock JSON 重建。前置 severity 先按档位平移；第 7 个 SHUTDOWN 槽位若为数值，保留 stock `55/59°C`。靠近 SHUTDOWN 时，生成器按 stock `HotHysteresis` 从后向前收窄，并额外保留 `0.1°C` 的严格间隔，保证“前一档阈值 `<` 下一档阈值减下一档 hysteresis”；只检查阈值递增并不足以保证 Pixel Thermal HAL 接受配置。
 
-安装阶段会从当前设备的 fingerprint/hash 校验 stock 一次并预生成四个 custom profile，运行时只复制经过同一 provenance 校验的 profile；缓存失效时才回退到生成器。
+只有选择自定义温控时，才从当前设备的原始 vendor 配置生成目标文件；旧构建快照和缓存不作为升级安装条件。预生成 profile 仅用于减少交互等待，缓存缺失时直接生成所选配置。
 Journal 在同一模块文件系统上优先保存 source hard-link，跨文件系统或链接被拒绝时自动回退原子 copy，不改变 SELinux 或挂载所有权。
 
 
-### ZRAM / 内存优化
+### ZRAM / 内存设置
 
-- 算法：由当前系统 owner 初始化；caiman / `CP41.260814.003.B1` 实机为 `lz77eh`（Emerald Hill 硬件加速）
-- 容量：WebUI 同时显示 effective `disksize`、平台管理者、active swap、逻辑/压缩/实际 RAM 成本；APatch 0.13.8 + Hybrid Mount 下由 mmd 独占 ZRAM，Control 的 system/disabled 模式只读观察，绝不覆盖平台请求。
-- VM 参数：模块优化是显式 opt-in，默认候选为 `swappiness=100`、`min_free_kbytes=65536`、`watermark_scale_factor=100`、`vfs_cache_pressure=100`；system 模式不写任何 `/proc/sys/vm/*`。
-- WebUI 的“平台参考”按钮只是可比较的 VM preset，不代表模块能够推断设备当前平台 sysctl；真正的 system 模式以重启后的平台 readback 为准。
+- **模块预设**：容量取板级默认（当前 Pixel 为 `50% RAM`），4 KiB 内核使用 `lz77eh`；VM 为 `80 / 65536 / 200 / 100`，依次对应 swappiness、min_free_kbytes、watermark_scale_factor、vfs_cache_pressure。
+- **手动设置**：容量、主算法和四项 VM 参数独立调整；只读显示实际容量、交换槽、物理占用与参数差异。页大小由内核决定。
+- **临时应用**：仅本次启动有效。交换区由一次性后台任务重新配置，显示操作结果；内存余量不足、已有回写历史无法迁移或平台接口不支持时不执行在线重建。
+- **启动参数**：单独保存，自动应用默认关闭。开启后在系统初始化 ZRAM 前提交容量和算法，并在启动后一次性应用所选 VM 参数；关闭后模块不再自动应用。
+- **恢复原始参数**：通过临时独立的挂载视图重新读取本机原始 vendor 配置，并恢复容量、算法和 VM；当前值与持久覆盖分别显示。Pro / Pro XL 均读取本机配置，不共用预登记参数。
+- MMD 扩展要求 Android 17 / API 37 和实际接口支持。平台维护、回写、重压缩与预取继续由系统管理；模块不添加定时清理或循环调参。
 
 ### 待机与 modem 策略（以 Google 默认机制为主）
 

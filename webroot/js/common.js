@@ -94,7 +94,7 @@ function setWebuiToken(token) {
 function clearWebuiToken() {
   authState.webuiToken = '';
   try { sessionStorage.removeItem(STORAGE_TOKEN_KEY); } catch (_) {}
-  showConnectionError('连接已失效。可点“重新连接”，无需输入配对信息。');
+  showConnectionError('连接已失效，请重新连接。');
 }
 
 function showConnectionError(message) {
@@ -108,7 +108,7 @@ async function validatePairing() {
   if (!authState.webuiToken) return false;
   try {
     const result = await rawApiFetch(API.auth, { timeoutMs: 6000 });
-    if (result.paired !== true) throw new Error('配对未确认');
+    if (result.paired !== true) throw new Error('连接身份未通过验证');
     const panel = document.getElementById('webui-connection');
     if (panel) panel.hidden = true;
     return true;
@@ -152,10 +152,10 @@ async function browserAutoSession() {
       body: JSON.stringify({ action: 'bootstrap' }), signal: controller.signal
     });
     const text = await response.text();
-    if (text.length > 4096) throw new Error('自动连接响应无效');
+    if (text.length > 4096) throw new Error('连接服务返回的数据无效');
     const data = JSON.parse(text);
     if (!response.ok || data?.paired !== true || !setWebuiToken(data.token)) {
-      throw new Error(data?.error || '自动连接未完成，请重试');
+      throw new Error(data?.error || '连接未建立，请重试');
     }
     return true;
   } finally { clearTimeout(timer); }
@@ -169,7 +169,7 @@ function connectAutomatically({ retry = false } = {}) {
       if (WEBUI_NATIVE_TRANSPORT) {
         if (retry) authState.bootstrapAttempted = false;
         const token = await readManagerToken();
-        if (!token || !setWebuiToken(token) || !await validatePairing()) throw new Error('管理器连接未完成，请重试');
+        if (!token || !setWebuiToken(token) || !await validatePairing()) throw new Error('未能连接 Root 管理器，请重试');
       } else await browserAutoSession();
       const panel = document.getElementById('webui-connection');
       if (panel) panel.hidden = true;
@@ -178,9 +178,9 @@ function connectAutomatically({ retry = false } = {}) {
       authState.webuiToken = '';
       try { sessionStorage.removeItem(STORAGE_TOKEN_KEY); } catch (_) {}
       const detail = String(error?.message || '');
-      showConnectionError(error?.name === 'AbortError' ? '自动连接超时，可点击“重新连接”。'
-        : /[\u4e00-\u9fff]/.test(detail) ? `自动连接未完成：${detail}`
-          : '自动连接未完成，可点击“重新连接”或从 Root 管理器打开 WebUI。');
+      showConnectionError(error?.name === 'AbortError' ? '连接超时，请重新连接。'
+        : /[\u4e00-\u9fff]/.test(detail) ? `连接失败：${detail}`
+          : '连接失败。请重新连接，或从 Root 管理器打开控制台。');
       return false;
     }
   })().finally(() => { authState.pairing = null; });
@@ -203,10 +203,10 @@ function nativeRunCommand(command, { signal, timeoutMs, maxBytes = 4 * 1024 * 10
   // APatch exec(...callback) still calls Job.exec synchronously inside the
   // JavaScript bridge. spawn enqueues and returns, keeping close/navigation
   // available while the bounded CGI finishes in its own root shell.
-  if (typeof window.ksu?.spawn !== 'function') return Promise.reject(new Error('管理器缺少异步 spawn 接口，请更新管理器后重试'));
+  if (typeof window.ksu?.spawn !== 'function') return Promise.reject(new Error('Root 管理器不支持异步调用，请更新后重试'));
   const now = Date.now();
   if (nativeCommands.size >= 3) {
-    const error = new Error('管理器仍有未完成命令，请稍后手动刷新');
+    const error = new Error('Root 管理器正在执行其他操作，请稍后刷新');
     error.code = 'NATIVE_BUSY'; error.cancelled = true;
     return Promise.reject(error);
   }
@@ -244,12 +244,12 @@ function nativeRunCommand(command, { signal, timeoutMs, maxBytes = 4 * 1024 * 10
       stdout: { emit: (event, chunk) => {
         if (event !== 'data' || settled) return;
         stdout += `${String(chunk || '')}\n`;
-        if (stdout.length > maxBytes) finish(new Error('模块接口响应过大'));
+        if (stdout.length > maxBytes) finish(new Error('模块返回的数据超出接口限制'));
       } },
       stderr: { emit: (event, chunk) => { if (event === 'data' && stderr.length < 2048) stderr += String(chunk || '').slice(0, 2048 - stderr.length); } },
       emit: (event, value) => {
         if (event === 'exit') { nativeCommands.delete(commandId); finish(null, { code: Number(value), stdout, stderr }); }
-        else if (event === 'error') { nativeCommands.delete(commandId); finish(new Error('管理器命令执行失败')); }
+        else if (event === 'error') { nativeCommands.delete(commandId); finish(new Error('Root 管理器执行操作失败')); }
       }
     };
     try { window.ksu.spawn(command, '[]', '{}', callback); } catch (error) { nativeCommands.delete(commandId); finish(error); }
@@ -263,13 +263,13 @@ function nativeApiFetch(path, request) {
   const url = new URL(path, 'http://127.0.0.1:6210');
   const allowed = new Set(Object.values(API).map((value) => new URL(value, url).pathname));
   if (!allowed.has(url.pathname) || !/^\/cgi-bin\/[A-Za-z0-9_.-]+[.]sh$/.test(url.pathname)) {
-    return Promise.reject(new Error('不允许的模块接口'));
+    return Promise.reject(new Error('模块接口不可用'));
   }
   const method = (request.method || 'GET').toUpperCase();
-  if (!['GET', 'POST'].includes(method)) return Promise.reject(new Error('不支持的请求方法'));
+  if (!['GET', 'POST'].includes(method)) return Promise.reject(new Error('接口不支持此请求'));
   const body = method === 'POST' ? String(request.body || '') : '';
   const bytes = new TextEncoder().encode(body).length;
-  if (bytes > 4096) return Promise.reject(new Error('请求正文过大'));
+  if (bytes > 4096) return Promise.reject(new Error('提交内容超出接口限制'));
   const token = String(request.headers['X-PIXEL9PRO-TOKEN'] || '');
   const fields = {
     REMOTE_ADDR: '127.0.0.1', REQUEST_METHOD: method,
@@ -282,7 +282,7 @@ function nativeApiFetch(path, request) {
   return nativeRunCommand(command, { signal: request.signal, timeoutMs: request.timeoutMs }).then(({ code: errno, stdout }) => {
       const output = String(stdout || '');
       const separator = /\r?\n\r?\n/.exec(output);
-      if (!separator) throw new Error(`模块接口未返回有效响应（退出码 ${Number(errno)}）`);
+      if (!separator) throw new Error(`模块执行失败，未返回有效数据（退出码 ${Number(errno)}）`);
       const headers = output.slice(0, separator.index);
       const statusMatch = /^Status:\s*(\d{3})/im.exec(headers);
       const status = statusMatch ? Number(statusMatch[1]) : Number(errno) === 0 ? 200 : 500;
@@ -300,7 +300,7 @@ async function rawApiFetch(path, opts = {}) {
   const method = (opts.method || 'GET').toUpperCase();
   try {
     if (method !== 'GET') {
-      if (!authState.webuiToken) throw new Error('连接尚未建立，请重新连接 WebUI');
+      if (!authState.webuiToken) throw new Error('连接未建立，请重新连接控制台');
       headers['X-PIXEL9PRO-TOKEN'] = authState.webuiToken;
     } else if (authState.webuiToken) {
       headers['X-PIXEL9PRO-TOKEN'] = authState.webuiToken;
@@ -323,7 +323,7 @@ async function rawApiFetch(path, opts = {}) {
     let payload = null;
     try { payload = bodyText ? JSON.parse(bodyText) : null; } catch (_) {
       if (Date.now() >= deadlineAt) throw requestAbortError(null, 'REQUEST_TIMEOUT');
-      const formatError = new Error('服务返回了无法识别的数据，请刷新后重试');
+      const formatError = new Error('服务返回的数据格式无效，请刷新后重试');
       formatError.status = response.status;
       formatError.detail = bodyText.slice(0, 240);
       throw formatError;
@@ -331,32 +331,32 @@ async function rawApiFetch(path, opts = {}) {
     // JSON.parse is synchronous: check elapsed time before publishing its result.
     if (Date.now() >= deadlineAt) throw requestAbortError(null, 'REQUEST_TIMEOUT');
     if (!response.ok) {
-      const detail = payload?.error || payload?.message || (payload ? JSON.stringify(payload) : '接口未返回错误详情');
+      const detail = payload?.error || payload?.message || (payload ? JSON.stringify(payload) : '服务未提供错误详情');
       const knownDetail = {
-        '未开启游戏移交且没有有效 lease，owner arbiter 不运行': '游戏自动接管已关闭，当前没有待处理的接管状态，无需检查',
-        '未检测到 fas-rs，owner 手动唤醒不可用': '未检测到 fas-rs，无法检查游戏接管状态',
-        'scheduler operation already running or could not start': '接管检查未启动，可能有其他调度操作尚未完成，请刷新确认',
-        'invalid token': '连接验证已失效，请重新连接 WebUI',
-        'missing server token': '连接验证信息尚未就绪，请重新连接 WebUI'
+        '未开启游戏移交且没有有效 lease，owner arbiter 不运行': '游戏临时接管已关闭，无待恢复的调度状态',
+        '未检测到 fas-rs，owner 手动唤醒不可用': '未检测到 fas-rs，无法检查游戏临时接管',
+        'scheduler operation already running or could not start': '游戏接管检查未启动，请等待当前调度操作完成',
+        'invalid token': '连接验证已失效，请重新连接控制台',
+        'missing server token': '连接信息未就绪，请重新连接控制台'
       }[detail];
       const statusMessage = {
-        400: '提交内容无效，请检查设置后重试',
-        403: '连接验证未通过，请重新连接 WebUI',
-        404: '当前模块缺少此功能接口，请检查已安装版本',
-        409: '当前状态不满足操作条件，请刷新确认',
-        429: '操作过于频繁，请稍候再试',
-        500: '服务处理失败，请查看运行记录',
-        503: '服务暂不可用，请稍后刷新'
-      }[response.status] || '服务未完成请求，请查看运行记录';
+        400: '参数无效，请检查后重试',
+        403: '连接验证失败，请重新连接控制台',
+        404: '当前模块版本未提供此功能接口',
+        409: '当前状态不支持此操作，请刷新检查',
+        429: '请求频率超出限制，请稍后重试',
+        500: '操作失败，详细原因见运行记录',
+        503: '服务暂不可用，请稍后重试'
+      }[response.status] || '请求未完成，详细原因见运行记录';
       const error = new Error(knownDetail || (/[\u4e00-\u9fff]/.test(detail) ? detail : statusMessage));
       error.status = response.status;
       error.detail = detail;
       error.payload = payload;
-      appendLog(`服务请求未完成（HTTP ${response.status}）：${detail}`, 'err');
+      appendLog(`请求失败（HTTP ${response.status}）：${detail}`, 'err');
       throw error;
     }
     if (payload === null || typeof payload !== 'object') {
-      const formatError = new Error('服务未返回有效数据，请稍后刷新');
+      const formatError = new Error('服务未返回有效数据，请刷新后重试');
       formatError.status = response.status;
       throw formatError;
     }
@@ -472,7 +472,7 @@ function rejectQueuedRequest(job, error) {
 }
 
 function queuedRequestTimeout(job) {
-  const error = new Error('请求排队超时，请稍后重试');
+  const error = new Error('请求等待超时，请稍后重试');
   error.code = 'REQUEST_QUEUE_TIMEOUT';
   rejectQueuedRequest(job, error);
   pumpRequestHub();
@@ -536,7 +536,7 @@ function apiFetch(path, opts = {}) {
   const method = (opts.method || 'GET').toUpperCase();
   const policy = resolveRequestPolicy(path, opts);
   if (method === 'GET' && !authState.webuiToken) {
-    const error = new Error('连接尚未建立，数据读取已暂停');
+    const error = new Error('连接未建立，自动刷新已暂停');
     error.code = 'AUTH_REQUIRED';
     error.cancelled = true;
     return Promise.reject(error);
@@ -558,7 +558,7 @@ function apiFetch(path, opts = {}) {
         controller.signal.removeEventListener('abort', onAbort);
       })
       .then((ready) => {
-        if (!ready) throw new Error('连接尚未建立，请重新连接 WebUI');
+        if (!ready) throw new Error('连接未建立，请重新连接控制台');
         return apiFetch(path, { ...opts, controller, _tokenReady: true });
       });
   }
@@ -568,7 +568,7 @@ function apiFetch(path, opts = {}) {
     if (existing) return existing;
   }
   if (requestHub.queue.length >= requestHub.maxQueued) {
-    const error = new Error('请求繁忙，请等待当前操作完成后重试');
+    const error = new Error('当前操作尚未完成，请稍后重试');
     error.code = 'REQUEST_QUEUE_FULL';
     return Promise.reject(error);
   }
@@ -866,7 +866,7 @@ function bindPullToRefresh() {
   const show = (dy) => {
     const p = Math.min(dy / TRIGGER, 1);
     refs.pullInd.style.transform = `translateY(${(-100 + p * 100).toFixed(1)}%)`;
-    refs.pullText.textContent = dy >= TRIGGER ? '释放刷新' : '下拉刷新';
+    refs.pullText.textContent = dy >= TRIGGER ? '松开刷新' : '下拉刷新';
   };
 
   document.querySelectorAll('.tab-page').forEach((page) => {
@@ -940,7 +940,7 @@ function fmtBytes(bytes) {
 async function loadInfoInternal() {
   try {
     const data = await apiFetch(API.info);
-    if (Array.isArray(data) || data.ok === false) throw new Error(data.error || '系统信息响应无效');
+    if (Array.isArray(data) || data.ok === false) throw new Error(data.error || '系统信息数据无效');
     const deviceModel = data.model || '—';
     const network = requireFeature('network');
     const profile = requireFeature('profile');
@@ -983,7 +983,7 @@ async function loadInfoInternal() {
       const h = Math.floor(data.uptime_sec / 3600);
       const m = Math.floor((data.uptime_sec % 3600) / 60);
       refs.rtUptime.textContent = h > 0 ? `${h}小时${m}分` : `${m}分钟`;
-      if (refs.rtUptimeDetail) refs.rtUptimeDetail.textContent = '设备启动后';
+      if (refs.rtUptimeDetail) refs.rtUptimeDetail.textContent = '自本次启动起';
     }
     const vc = data.version_code || '';
     try {
