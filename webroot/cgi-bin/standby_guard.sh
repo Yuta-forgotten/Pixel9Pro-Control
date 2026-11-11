@@ -21,15 +21,6 @@ read_onoff_file() {
     runtime_read_onoff "$1" "$2"
 }
 
-read_state_value() {
-    _sg_file="$1"
-    _sg_key="$2"
-    _sg_default="$3"
-    _sg_value=$(sed -n "s/^${_sg_key}=//p" "$_sg_file" 2>/dev/null | head -n 1 | tr -d '\r')
-    [ -n "$_sg_value" ] || _sg_value="$_sg_default"
-    printf '%s' "$_sg_value"
-}
-
 sleep_error_human() {
     case "$2" in
         -16) printf '内核记录的最后一次 suspend 回调返回 EBUSY（-16）；设备名和错误码不能单独确定原因，也不代表刚刚发生。' ;;
@@ -76,19 +67,31 @@ emit_state() {
     diag_active_profile="unknown"
     diag_cycle_count="0"
 
-    if [ -f "$STANDBY_DIAG_FILE" ] \
-        && [ "$(read_state_value "$STANDBY_DIAG_FILE" boot_id '')" = "$(cat /proc/sys/kernel/random/boot_id)" ] \
-        && [ "$(read_state_value "$STANDBY_DIAG_FILE" worker_id '')" = "$(cat "$MODDIR/.background_run" 2>/dev/null)" ]; then
-        diag_updated_at=$(read_state_value "$STANDBY_DIAG_FILE" updated_at "")
-        diag_screen=$(read_state_value "$STANDBY_DIAG_FILE" screen "unknown")
-        diag_worker_mode=$(read_state_value "$STANDBY_DIAG_FILE" worker_mode "unknown")
-        diag_next_sleep_secs=$(read_state_value "$STANDBY_DIAG_FILE" next_sleep_secs "")
-        diag_burst_active=$(read_state_value "$STANDBY_DIAG_FILE" burst_active "0")
-        diag_nr_switch=$(read_state_value "$STANDBY_DIAG_FILE" nr_switch "off")
-        diag_nr_state=$(read_state_value "$STANDBY_DIAG_FILE" nr_state "unknown")
-        diag_profile_policy=$(read_state_value "$STANDBY_DIAG_FILE" profile_policy "unknown")
-        diag_active_profile=$(read_state_value "$STANDBY_DIAG_FILE" active_profile "unknown")
-        diag_cycle_count=$(read_state_value "$STANDBY_DIAG_FILE" cycle_count "0")
+    if [ -f "$STANDBY_DIAG_FILE" ]; then
+        _sg_boot=; _sg_worker=; _sg_updated=; _sg_screen=unknown; _sg_mode=unknown
+        _sg_sleep=; _sg_burst=0; _sg_nr_switch=off; _sg_nr_state=unknown
+        _sg_policy=unknown; _sg_profile=unknown; _sg_cycles=0
+        _sg_cr=$(printf '\r')
+        # Keep identity and payload on the same open inode while the worker
+        # atomically replaces this file. No per-field sed/head/tr processes.
+        while IFS='=' read -r _sg_key _sg_value || [ -n "$_sg_key" ]; do
+            _sg_value=${_sg_value%"$_sg_cr"}
+            case "$_sg_key" in
+                boot_id) _sg_boot="$_sg_value" ;; worker_id) _sg_worker="$_sg_value" ;;
+                updated_at) _sg_updated="$_sg_value" ;; screen) _sg_screen="$_sg_value" ;;
+                worker_mode) _sg_mode="$_sg_value" ;; next_sleep_secs) _sg_sleep="$_sg_value" ;;
+                burst_active) _sg_burst="$_sg_value" ;; nr_switch) _sg_nr_switch="$_sg_value" ;;
+                nr_state) _sg_nr_state="$_sg_value" ;; profile_policy) _sg_policy="$_sg_value" ;;
+                active_profile) _sg_profile="$_sg_value" ;; cycle_count) _sg_cycles="$_sg_value" ;;
+            esac
+        done < "$STANDBY_DIAG_FILE"
+        if [ "$_sg_boot" = "$(cat /proc/sys/kernel/random/boot_id)" ] \
+            && [ "$_sg_worker" = "$(cat "$MODDIR/.background_run" 2>/dev/null)" ]; then
+            diag_updated_at="$_sg_updated"; diag_screen="$_sg_screen"; diag_worker_mode="$_sg_mode"
+            diag_next_sleep_secs="$_sg_sleep"; diag_burst_active="$_sg_burst"; diag_nr_switch="$_sg_nr_switch"
+            diag_nr_state="$_sg_nr_state"; diag_profile_policy="$_sg_policy"
+            diag_active_profile="$_sg_profile"; diag_cycle_count="$_sg_cycles"
+        fi
     fi
 
     printf '"background_enabled":%s,"background_state":"%s","background_cleanup":"%s","final":%s,' "$_background_enabled" "$_background_state" "$_background_cleanup" "$_background_final"

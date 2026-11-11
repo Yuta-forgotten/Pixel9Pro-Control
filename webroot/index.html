@@ -80,7 +80,6 @@
                 <div class="panel-title">机身温度</div>
               </div>
               <div class="header-actions">
-                <button class="tiny-btn tonal" id="home-temp-chart-btn" type="button">历史</button>
                 <span class="badge off" id="home-mod-badge">读取中</span>
               </div>
             </div>
@@ -422,33 +421,34 @@
             <div><span>已用交换空间</span><strong id="memory-current-swap">—</strong></div>
           </div>
           <div class="memory-preset-strip"><div><h3>模块预设</h3><p id="memory-preset-summary">正在读取预设参数</p></div></div>
-          <div class="memory-primary-actions"><button class="tiny-btn primary" id="memory-preset-apply" type="button">应用模块预设</button><button class="tiny-btn tonal" id="swap-toggle-btn" type="button"><span id="swap-toggle-label">恢复原始参数</span></button></div>
-          <div class="memory-overview-footer"><button class="tiny-btn text-btn" id="swap-tune-btn" type="button">手动设置</button><button class="tiny-btn text-btn" id="swap-detail-btn" type="button">参数说明</button></div>
+          <div class="memory-primary-actions"><button class="tiny-btn primary" id="memory-preset-apply" type="button" disabled>应用模块预设</button><button class="tiny-btn tonal" id="swap-toggle-btn" type="button" disabled><span id="swap-toggle-label">恢复原始参数</span></button></div>
+          <div class="memory-overview-footer"><button class="tiny-btn text-btn" id="swap-tune-btn" type="button" disabled>手动设置</button><button class="tiny-btn text-btn" id="swap-detail-btn" type="button">参数说明</button></div>
           <details class="disclosure compact memory-diagnostics"><summary class="disclosure-summary"><span class="disclosure-copy"><strong>运行详情</strong><small>系统服务、实际参数与操作结果</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary><div class="disclosure-body"><div class="data-list" id="swap-rows"></div></div></details>
         </article>
 
-        <article class="surface-card preference-card">
+        <article class="surface-card preference-card bg-restrict-card">
           <div class="panel-head">
             <div class="panel-copy">
               <div class="kicker">后台功耗控制</div>
               <div class="panel-title">后台应用限制</div>
-              <div class="panel-desc" id="bg-restrict-desc">应用进入后台后，经过设定延时执行后台限制。</div>
             </div>
             <div class="header-actions">
               <button class="tiny-btn tonal" id="bg-restrict-refresh-btn" type="button">刷新</button>
-              <button class="tiny-btn primary" id="bg-restrict-toggle-btn" type="button"><span id="bg-restrict-toggle-label">读取中…</span></button>
+              <button class="tiny-btn primary" id="bg-restrict-toggle-btn" type="button" disabled><span id="bg-restrict-toggle-label">读取中…</span></button>
             </div>
           </div>
-          <div class="data-list" id="bg-restrict-rows" style="margin-top:14px">
-            <div class="skel" style="height:48px"></div>
-          </div>
+          <p class="panel-desc bg-operation-status" id="bg-restrict-desc" role="status" aria-live="polite">正在读取后台限制设置。</p>
           <div id="bg-restrict-add-area" class="bg-add-area">
-            <input class="bg-pkg-input" type="text" id="bg-restrict-pkg-input" list="bg-restrict-pkg-suggestions" placeholder="输入完整包名或选择应用" autocomplete="off">
+            <label class="bg-field bg-app-field"><span>添加应用</span><input class="bg-pkg-input" type="text" id="bg-restrict-pkg-input" list="bg-restrict-pkg-suggestions" placeholder="输入完整包名或选择应用" autocomplete="off" disabled></label>
             <datalist id="bg-restrict-pkg-suggestions"></datalist>
-            <select class="bg-policy-select" id="bg-restrict-policy-select" aria-label="后台限制策略" disabled></select>
-            <select class="bg-delay-select" id="bg-restrict-delay-select" aria-label="休眠延时" disabled></select>
-            <button class="tiny-btn primary" id="bg-restrict-add-btn" type="button">添加</button>
+            <label class="bg-field"><span>限制方式</span><select class="bg-policy-select" id="bg-restrict-policy-select" disabled></select></label>
+            <label class="bg-field"><span>离开前台后</span><select class="bg-delay-select" id="bg-restrict-delay-select" disabled></select></label>
             <div class="bg-package-hint" id="bg-restrict-pkg-hint">从列表选择应用，或输入完整包名。</div>
+            <button class="tiny-btn primary" id="bg-restrict-add-btn" type="button" disabled>添加应用</button>
+          </div>
+          <div class="bg-list-heading">已管理应用<span>修改后选择“保存修改”</span></div>
+          <div class="data-list" id="bg-restrict-rows">
+            <div class="skel" style="height:48px"></div>
           </div>
           <details class="disclosure compact support-disclosure">
             <summary class="disclosure-summary">
@@ -456,8 +456,8 @@
               <span class="disclosure-chevron" aria-hidden="true">›</span>
             </summary>
             <div class="disclosure-body support-copy">
-              <p>应用进入后台后，按设定延时暂停进程并降低后台优先级；返回前台后解除限制。</p>
-              <p>该策略保留应用的网络、唤醒锁、前台服务和媒体权限。关闭限制或移除应用后，恢复启用前的设置。</p>
+              <p>“延时休眠”在应用离开前台并达到所设延时后执行；其他限制方式不使用休眠延时。</p>
+              <p>后台限制可能影响通知、同步和后台任务。关闭限制或移除应用后，恢复启用前由本模块保存的设置。</p>
             </div>
           </details>
         </article>

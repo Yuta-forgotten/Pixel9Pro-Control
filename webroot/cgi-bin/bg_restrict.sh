@@ -3,13 +3,14 @@
 # applies one locked transaction and reports failure instead of committing a
 # list/state change that the Android framework did not accept.
 . "${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}/webroot/cgi-bin/_common.sh"
-require_loopback
+[ -n "${PIXEL9PRO_BG_WORKER_ID:-}" ] || require_loopback
 [ -r "$MODDIR/scripts/bg_restrict_lib.sh" ] && . "$MODDIR/scripts/bg_restrict_lib.sh" \
     || json_error '500 Internal Server Error' 'background restriction library not found'
 [ -r "$MODDIR/scripts/app_identity_lib.sh" ] && . "$MODDIR/scripts/app_identity_lib.sh" \
     || json_error '500 Internal Server Error' 'app identity library not found'
 . "$MODDIR/scripts/bg_transaction_lib.sh" \
     || json_error '500 Internal Server Error' 'background transaction library not found'
+bg_operation_init || json_error '500 Internal Server Error' 'background operation storage unavailable'
 
 BG_ENABLED_FILE="$MODDIR/.bg_restrict_enabled"
 BG_LIST_FILE="$MODDIR/.bg_restrict_list"
@@ -143,14 +144,14 @@ write_pkg_entry() {
 }
 validate_pkg_policy_request() {
     bg_is_valid_policy "$1" \
-        || json_error '400 Bad Request' 'invalid background policy'
+        || bg_request_error '400 Bad Request' 'invalid background policy' BG_INVALID_POLICY
     bg_is_valid_delay "$2" \
-        || json_error '400 Bad Request' 'invalid background delay'
+        || bg_request_error '400 Bad Request' 'invalid background delay' BG_INVALID_DELAY
 }
 
 validate_package_name() {
     case "$1" in
-        ''|.*|*.|*..*|*[!a-zA-Z0-9._]*) json_error '400 Bad Request' 'invalid package name' ;;
+        ''|.*|*.|*..*|*[!a-zA-Z0-9._]*) bg_request_error '400 Bad Request' 'invalid package name' BG_INVALID_PACKAGE ;;
     esac
 }
 
@@ -159,7 +160,7 @@ emit_state() {
     printf '"enabled":"%s","bg_contract":' "$_enabled"
     bg_print_ui_contract_json
     _bg_recovery_required=false
-    [ ! -d "$MODDIR/.bg_policy_tx" ] || _bg_recovery_required=true
+    if [ -d "$MODDIR/.bg_policy_tx" ] && ! bg_tx_cleanup_only; then _bg_recovery_required=true; fi
     printf ',"recovery_required":%s,"policy_user_id":%s' "$_bg_recovery_required" "$BG_USER_ID"
     printf ',"packages":['
     _first=1
@@ -176,98 +177,145 @@ emit_state() {
     emit_identity_suggestions
 }
 
-if [ "$REQUEST_METHOD" = "GET" ]; then
-    . "$MODDIR/scripts/state_io_lib.sh" || json_error '500 Internal Server Error' 'state I/O unavailable'
-    state_lock_acquire "$MODDIR/.locks/bg_policy.lock" 2 || json_error '409 Conflict' 'background policy changing; retry later'
-    trap 'state_lock_release "$MODDIR/.locks/bg_policy.lock" >/dev/null 2>&1' EXIT
-    trap 'exit 129' HUP
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
+if [ -n "${PIXEL9PRO_BG_WORKER_ID:-}" ]; then
+    [ "$(id -u)" = 0 ] || exit 1
+    bg_operation_load
+    [ "$BO_ID" = "$PIXEL9PRO_BG_WORKER_ID" ] && [ "$BO_PHASE" = queued ] \
+        && [ "$BO_BOOT" = "$(cat /proc/sys/kernel/random/boot_id)" ] || exit 1
+    module_lock_write_owner "$BO_LOCK" || exit 1
+    BG_OPERATION_WORKER=1
+    CGI_REQUEST_STARTED="$BO_START"
+    action="$BO_ACTION"; pkg="$BO_PACKAGE"; policy="$BO_POLICY"; delay="$BO_DELAY"
+    CGI_AUDIT_OPERATION="bg_restrict.$action"
+    trap 'bg_request_error "500 Internal Server Error" "background worker exited before completion" BG_WORKER_EXIT' EXIT
+    trap 'bg_request_error "500 Internal Server Error" "background worker interrupted" BG_WORKER_INTERRUPTED' HUP INT TERM
+    BO_PHASE=running
+    bg_operation_commit || bg_request_error '500 Internal Server Error' 'cannot publish running background operation' BG_RECEIPT_FAILED
+elif [ "$REQUEST_METHOD" = "GET" ]; then
+    bg_operation_load
+    # A pending transaction owns the policy files. Return only its receipt;
+    # never wait for Binder work or publish a partially applied package list.
+    if [ "$BO_PENDING" != true ] && [ "$BO_PHASE" != unconfirmed ]; then
+        state_lock_acquire "$MODDIR/.locks/bg_policy.lock" 2 \
+            || bg_request_error '409 Conflict' 'background policy changing; retry later' BG_POLICY_BUSY
+        trap 'state_lock_release "$MODDIR/.locks/bg_policy.lock" >/dev/null 2>&1' EXIT
+        trap 'exit 129' HUP
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        # A POST may have been accepted since the initial non-blocking read.
+        bg_operation_load
+    fi
     json_headers
     printf '{'
-    emit_state
+    if [ "$BO_PENDING" = true ] || [ "$BO_PHASE" = unconfirmed ]; then
+        printf '"ok":true,"state_pending":true,'
+    else
+        emit_state
+        printf ','
+    fi
+    bg_operation_json
     printf '}\n'
-
+    exit 0
 elif [ "$REQUEST_METHOD" = "POST" ]; then
     require_json_post
     require_token
     acquire_lock "bg_restrict"
-    . "$MODDIR/scripts/state_io_lib.sh" || json_error '500 Internal Server Error' 'state I/O unavailable'
-    state_lock_acquire "$MODDIR/.locks/bg_policy.lock" 10 || json_error '409 Conflict' 'background policy busy'
-    trap 'bg_tx_rollback >/dev/null 2>&1; state_lock_release "$MODDIR/.locks/bg_policy.lock" >/dev/null 2>&1; release_lock' EXIT
-    trap 'exit 129' HUP
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
+    CGI_ERROR_CODE=BG_INVALID_JSON
     read_json_body 1024
-    body="$JSON_BODY"
-
+    CGI_ERROR_CODE=BG_INVALID_FIELDS
     cgi_json_schema 'action:string package:string policy:string delay:number'
     action=$(cgi_json_field action)
     pkg=$(cgi_json_field package)
     policy=$(cgi_json_field policy)
     delay=$(cgi_json_field delay)
-    case "$action" in add|update|remove) validate_package_name "$pkg" ;; toggle|refresh|recover) ;;
-        *) json_error '400 Bad Request' 'unknown background action' ;; esac
+    case "$action" in add|update|remove|toggle|refresh|recover) CGI_AUDIT_OPERATION="bg_restrict.$action" ;; esac
+    case "$action" in
+        add|update) validate_package_name "$pkg"; validate_pkg_policy_request "$policy" "$delay" ;;
+        remove) validate_package_name "$pkg" ;; toggle|refresh|recover) ;;
+        *) bg_request_error '400 Bad Request' 'unknown background action' BG_INVALID_ACTION ;;
+    esac
+    CGI_AUDIT_OPERATION="bg_restrict.$action"
+    bg_operation_start "$action" "$pkg" "$policy" "$delay"
+    _bg_start_rc=$?
+    case "$_bg_start_rc" in
+        0) ;;
+        75) bg_request_error '409 Conflict' 'background operation already running' BG_OPERATION_BUSY ;;
+        76) bg_request_error '409 Conflict' 'previous background operation needs explicit recovery' BG_RECOVERY_REQUIRED ;;
+        77) bg_request_error '409 Conflict' 'previous background operation completed; journal cleanup is pending' BG_CLEANUP_PENDING ;;
+        *) bg_request_error '500 Internal Server Error' 'background operation could not be queued' BG_QUEUE_FAILED ;;
+    esac
+    # The metadata summary belongs to the worker's completed transaction.
+    CGI_DESCRIPTION_REFRESHED=1
+    json_headers
+    printf '{"ok":true,"accepted":true,"final":false,'
+    bg_operation_json
+    printf '}\n'
+    exit 0
+else
+    bg_request_error '405 Method Not Allowed' 'GET or POST' BG_INVALID_METHOD
+fi
+
+# Only the root worker reaches the transaction body. Validation happened once
+# at the HTTP boundary; this process consumes the private accepted receipt.
+    state_lock_acquire "$MODDIR/.locks/bg_policy.lock" 10 \
+        || bg_request_error '409 Conflict' 'background policy busy' BG_POLICY_BUSY
+    BG_POLICY_LOCKED=1
     if [ "$action" = recover ]; then
-        bg_tx_recover || json_error '500 Internal Server Error' 'background recovery incomplete; journal retained'
+        bg_tx_recover || bg_request_error '500 Internal Server Error' 'background recovery incomplete; journal retained' BG_RECOVERY_FAILED
     else
-        bg_tx_begin "$action" "$pkg" || json_error '409 Conflict' 'background state cannot be snapshotted, or an interrupted transaction requires recovery'
+        bg_tx_begin "$action" "$pkg" \
+            || bg_request_error '409 Conflict' 'background state cannot be snapshotted, or an interrupted transaction requires recovery' BG_SNAPSHOT_FAILED
     fi
 
     case "$action" in
         recover) ;;
         toggle)
             if [ "$(bg_read_enabled)" = on ]; then
-                bg_remove_all || json_error '500 Internal Server Error' 'one or more app baselines could not be restored'
+                bg_remove_all || bg_request_error '500 Internal Server Error' 'one or more app baselines could not be restored' BG_RESTORE_FAILED
                 cgi_atomic_write "$BG_ENABLED_FILE" off \
-                    && clear_stop_state_file || json_error '500 Internal Server Error' 'cannot save disabled background policy'
+                    && clear_stop_state_file || bg_request_error '500 Internal Server Error' 'cannot save disabled background policy' BG_SAVE_FAILED
             else
                 clear_stop_state_file && bg_apply_all \
                     && cgi_atomic_write "$BG_ENABLED_FILE" on \
-                    || json_error '500 Internal Server Error' 'cannot apply and save background policy'
+                    || bg_request_error '500 Internal Server Error' 'cannot apply and save background policy' BG_APPLY_FAILED
             fi
             ;;
         refresh)
             [ "$(bg_read_enabled)" != on ] || bg_apply_all \
-                || json_error '500 Internal Server Error' 'one or more app policies could not be applied'
+                || bg_request_error '500 Internal Server Error' 'one or more app policies could not be applied' BG_APPLY_FAILED
             ;;
         add|update)
-            validate_pkg_policy_request "$policy" "$delay"
             if [ "$action" = add ]; then
-                pkg_exists "$pkg" && json_error '400 Bad Request' 'package already in list'
+                pkg_exists "$pkg" && bg_request_error '400 Bad Request' 'package already in list' BG_PACKAGE_EXISTS
                 _bg_count=$(awk -F'|' '$0 !~ /^#/ && $1!="" {n++} END {print n+0}' "$BG_LIST_FILE" 2>/dev/null) || _bg_count=0
-                [ "$_bg_count" -lt "$BG_MAX_PACKAGES" ] || json_error '409 Conflict' 'background policy list is full (32 owner-user packages)'
+                [ "$_bg_count" -lt "$BG_MAX_PACKAGES" ] || bg_request_error '409 Conflict' 'background policy list is full (32 owner-user packages)' BG_LIST_FULL
             else
-                pkg_exists "$pkg" || json_error '400 Bad Request' 'package not in list'
+                pkg_exists "$pkg" || bg_request_error '400 Bad Request' 'package not in list' BG_PACKAGE_MISSING
             fi
             write_pkg_entry "$pkg" "$policy" "$delay" && delete_stop_state "$pkg" \
-                || json_error '500 Internal Server Error' 'cannot save package policy'
+                || bg_request_error '500 Internal Server Error' 'cannot save package policy' BG_SAVE_FAILED
             [ "$(bg_read_enabled)" != on ] || bg_apply_policy "$pkg" "$policy" \
-                || json_error '500 Internal Server Error' 'cannot apply package policy'
+                || bg_request_error '500 Internal Server Error' 'cannot apply package policy' BG_APPLY_FAILED
             ;;
         remove)
-            pkg_exists "$pkg" || json_error '400 Bad Request' 'package not in list'
+            pkg_exists "$pkg" || bg_request_error '400 Bad Request' 'package not in list' BG_PACKAGE_MISSING
             if [ "$(bg_read_enabled)" = on ]; then
                 bg_package_presence "$pkg"
                 _bg_presence=$?
                 case "$_bg_presence" in
-                    0) bg_remove_restrict "$pkg" || json_error '500 Internal Server Error' 'cannot restore package baseline' ;;
-                    1) bg_delete_baseline "$pkg" || json_error '500 Internal Server Error' 'cannot remove uninstalled package baseline' ;;
-                    *) json_error '503 Service Unavailable' 'package presence is unreadable' ;;
+                    0) bg_remove_restrict "$pkg" || bg_request_error '500 Internal Server Error' 'cannot restore package baseline' BG_RESTORE_FAILED ;;
+                    1) bg_delete_baseline "$pkg" || bg_request_error '500 Internal Server Error' 'cannot remove uninstalled package baseline' BG_BASELINE_FAILED ;;
+                    *) bg_request_error '503 Service Unavailable' 'package presence is unreadable' BG_PRESENCE_FAILED ;;
                 esac
             fi
             delete_pkg_line "$pkg" && delete_stop_state "$pkg" \
-                || json_error '500 Internal Server Error' 'cannot remove package policy'
+                || bg_request_error '500 Internal Server Error' 'cannot remove package policy' BG_SAVE_FAILED
             ;;
-        *) json_error '400 Bad Request' 'unknown background action' ;;
+        *) bg_request_error '400 Bad Request' 'unknown background action' BG_INVALID_ACTION ;;
     esac
 
-    [ "$action" = recover ] || bg_tx_commit || json_error '500 Internal Server Error' 'background transaction commit failed'
-    json_headers
-    printf '{"ok":true,'
-    # Mutation completion cannot depend on a per-package Binder/pm scan.
-    printf '"committed":true,"enabled":"%s","action":"%s"' "$(bg_read_enabled)" "$action"
-    printf '}\n'
-else
-    json_error '405 Method Not Allowed' 'GET or POST'
-fi
+    [ "$action" = recover ] || bg_tx_commit \
+        || bg_request_error '500 Internal Server Error' 'background transaction commit failed' BG_COMMIT_FAILED
+    BO_ERROR_CODE=BG_COMMITTED
+    bg_operation_finish success true
+    exit $?

@@ -38,7 +38,7 @@ install_state_migrate() (
     case "$_ism_schema" in ''|1) ;; *) return 1 ;; esac
     # Recovery journals are not ordinary preferences. Never discard a live
     # transaction during upgrade and then silently generate a new baseline.
-    for _ism_journal in .bg_policy_tx .uecap_stage_tx .thermal_tx .scheduler_async.lock .zram_runtime.lock; do
+    for _ism_journal in .bg_policy_tx .locks/bg_operation.lock .uecap_stage_tx .thermal_tx .scheduler_async.lock .zram_runtime.lock; do
         [ ! -L "$_ism_old/$_ism_journal" ] || return 1
         [ ! -e "$_ism_old/$_ism_journal" ] || return 1
     done

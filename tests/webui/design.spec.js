@@ -148,7 +148,7 @@ test('档位选择与说明是独立控件，键盘打开说明不提交写入',
   await expect(page.locator('#thermal-list .profile-select[aria-checked=true]')).toHaveCount(1);
 });
 
-test('温控取消失败时必须保持弹窗，禁止关闭和重启并允许重试', async ({ page }) => {
+test('温控撤销处理中可关闭弹窗，事务不重发且失败后可主动重试', async ({ page }) => {
   const model = await installThermalFixture(page);
   model.cancelMode = 'delay-failure';
   await page.locator('[data-policy="custom"][data-offset="4"] .profile-select').click();
@@ -156,13 +156,17 @@ test('温控取消失败时必须保持弹窗，禁止关闭和重启并允许�
   const cancelRequest = page.locator('#reboot-cancel-btn').click();
   await page.waitForFunction(() => document.querySelector('#reboot-cancel-btn').disabled);
   await expect(page.locator('#reboot-now-btn')).toBeDisabled();
-  await expect(page.locator('#reboot-later-btn')).toBeDisabled();
-  await expect(page.locator('#reboot-close-x')).toBeDisabled();
+  await expect(page.locator('#reboot-later-btn')).toBeEnabled();
+  await expect(page.locator('#reboot-close-x')).toBeEnabled();
   await page.keyboard.press('Escape');
-  await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
+  await expect(page.locator('#modal-reboot')).not.toHaveClass(/open/);
   await cancelRequest;
+  await expect.poll(() => model.requests.filter((request) => request.action === 'cancel_pending').length).toBe(1);
+  expect(model.pending).toBe(true);
+  await expect(page.locator('#modal-reboot')).not.toHaveClass(/open/);
+  await page.locator('#thermal-pending-btn').click();
   await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
-  await expect(page.locator('#reboot-cancel-error')).toContainText('撤销未确认');
+  await expect(page.locator('#reboot-cancel-error')).toContainText('撤销结果未确认');
   await expect(page.locator('#reboot-cancel-error')).toBeVisible();
   await expect(page.locator('#reboot-now-btn')).toBeEnabled();
   model.cancelMode = 'success';
@@ -207,30 +211,32 @@ test('页面重载后可打开并取消仍然存在的 pending，异常成功响
   model.cancelMode = 'incomplete';
   await page.locator('#reboot-cancel-btn').click();
   await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
-  await expect(page.locator('#reboot-cancel-error')).toContainText('撤销未确认');
+  await expect(page.locator('#reboot-cancel-error')).toContainText('撤销结果未确认');
   model.cancelMode = 'success';
   await page.locator('#reboot-cancel-btn').click();
   await expect(page.locator('#modal-reboot')).not.toHaveClass(/open/);
 });
 
-test('非 Hybrid 后端继续用旧状态回写取消，不发送 cancel_pending', async ({ page }) => {
+test('后端未提供撤销能力时不猜测原状态或发送取消写入', async ({ page }) => {
   const model = await installThermalFixture(page, { policy: 'system', offset: 2, hybrid: false });
   await page.locator('[data-policy="custom"][data-offset="4"] .profile-select').click();
   await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
-  await page.locator('#reboot-cancel-btn').click();
+  await expect(page.locator('#reboot-cancel-btn')).toBeHidden();
+  await page.locator('#reboot-later-btn').click();
   await expect(page.locator('#modal-reboot')).not.toHaveClass(/open/);
-  expect(model.requests.at(-1)).toEqual({ policy: 'system', offset: 2 });
+  expect(model.requests).toEqual([{ policy: 'custom', offset: 4 }]);
+  expect(model.pending).toBe(true);
 });
 
-test('取消提交后复读超时，重试先 reconcile 而不是重复写入', async ({ page }) => {
+test('撤销回执已确认时补读失败不延长弹窗等待或重发修改', async ({ page }) => {
   const model = await installThermalFixture(page, { policy: 'system', offset: 2 });
   await page.locator('[data-policy="custom"][data-offset="4"] .profile-select').click();
   await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
   model.readbackFail = true;
   await page.locator('#reboot-cancel-btn').click();
-  await expect(page.locator('#modal-reboot')).toHaveClass(/open/);
-  await expect(page.locator('#reboot-cancel-error')).toContainText('撤销未确认');
-  await page.locator('#reboot-cancel-btn').click();
+  await expect(page.locator('#modal-reboot')).not.toHaveClass(/open/);
+  await expect(page.locator('#toast-wrap')).toContainText('已撤销本次温控修改');
+  await page.evaluate(() => requireFeature('thermal').load());
   await expect(page.locator('#modal-reboot')).not.toHaveClass(/open/);
   expect(model.requests.filter((request) => request.action === 'cancel_pending')).toHaveLength(1);
 });
@@ -247,7 +253,7 @@ test('UE能力只展示摘要，技术字段分组展开并保留用户的展开
   await expect(radio).toContainText('NSA');
   const selected=await page.locator('.uecap-btn[aria-pressed=true]').getAttribute('data-mode');
   await radio.locator('summary').focus();
-  await page.evaluate(()=>requireFeature('network').refresh());
+  await page.evaluate(()=>requireFeature('network').refreshDiagnostics());
   await expect(page.locator('[data-evidence-group=radio] > summary')).toBeFocused();
   await expect(page.locator('[data-evidence-group=radio]')).toHaveAttribute('open','');
   await expect(page.locator('.uecap-btn[aria-pressed=true]')).toHaveAttribute('data-mode',selected);
@@ -262,18 +268,18 @@ test('UE读取失败或运行证据未知时首屏不伪报已确认', async ({ 
   await ready(page);await page.locator('#tab-network').click();
   await expect(page.locator('#uecap-summary')).toContainText('已确认');
   await page.route('**/cgi-bin/uecap.sh',route=>route.fulfill({status:503,json:{ok:false,error:'fixture unavailable'}}));
-  await page.evaluate(()=>requireFeature('network').refresh());
+  await page.evaluate(()=>requireFeature('network').refreshDiagnostics());
   await expect(page.locator('#uecap-summary')).not.toContainText('已确认');
   await expect(page.locator('#uecap-status-message')).toBeVisible();
-  await expect(page.locator('#uecap-status-message')).toContainText('过期');
+  await expect(page.locator('#uecap-status-message')).toContainText('当前显示上次读取结果');
   await page.unroute('**/cgi-bin/uecap.sh');
   await page.route('**/cgi-bin/uecap.sh',async route=>{
     const response=await route.fetch(),data=await response.json();
     data.runtime_receipt={...data.runtime_receipt,modem_load_state:'unknown',functional_state:'unknown',receipt_freshness:'missing'};
     await route.fulfill({json:data});
   });
-  await page.evaluate(()=>requireFeature('network').refresh());
-  await expect(page.locator('#uecap-summary')).toContainText('运行态待确认');
+  await page.evaluate(()=>requireFeature('network').refreshDiagnostics());
+  await expect(page.locator('#uecap-summary')).toContainText('基带加载状态未确认');
   await expect(page.locator('#uecap-status-message')).toBeVisible();
 });
 
@@ -305,7 +311,7 @@ test('普通与历史详情关闭统一，缩小Dock与Toast和底栏互不遮�
     return {dockAboveNav:dock.bottom<=nav.top,toastAboveDock:toast.bottom<=dock.top-4,toastVisible:toast.top>=0};
   })).toEqual({dockAboveNav:true,toastAboveDock:true,toastVisible:true});
   const paused=await page.evaluate(()=>requireFeature('analytics').getState());
-  expect(paused.timer).toBeNull();expect(paused.request).toBeNull();
+  expect(paused.timer).toBeNull();expect(paused.suspended).toBe(true);
   await page.locator('#detail-minimize-btn').click();
   await expect(page.locator('#detail-close-btn')).toBeVisible();
   await page.locator('#detail-close-x').click();
@@ -343,7 +349,7 @@ test('后台日志只在详情清理，成功回读并清除陈旧内容', async
   expect(writes).toBe(1);expect(reads).toBeGreaterThanOrEqual(2);
 });
 
-test('真实Canvas缺口为虚线，连续功耗段保持实线，切源不复用旧图', async ({ page },testInfo) => {
+test('温度Canvas缺口为虚线、连续段为实线，切换传感器不复用旧图', async ({ page },testInfo) => {
   await page.addInitScript(()=>{
     window.__chartStrokes=[];
     const original=CanvasRenderingContext2D.prototype.stroke;
@@ -353,9 +359,12 @@ test('真实Canvas缺口为虚线，连续功耗段保持实线，切源不复�
   await expect(page.locator('.analytics-chart-legend')).toContainText('间断');
   await expect.poll(()=>page.evaluate(()=>window.__chartStrokes.some(stroke=>stroke.dash.join(',')==='6,5'))).toBe(true);
   expect(await page.evaluate(()=>window.__chartStrokes.some(stroke=>stroke.dash.length===0))).toBe(true);
-  await page.locator('#modal-detail .modal-sheet-body').screenshot({path:testInfo.outputPath('power-gap.png')});
-  await page.locator('[data-analytics-source=thermal]').click();
-  await expect(page.locator('.analytics-hero-kicker')).toContainText('温度');
+  await page.locator('#modal-detail .modal-sheet-body').screenshot({path:testInfo.outputPath('temperature-gap.png')});
+  const originalChart = await page.locator('.analytics-chart-wrap canvas').evaluate((canvas) => canvas.toDataURL());
+  await page.locator('[data-thermal-sensor=battery]').click();
+  await expect(page.locator('.analytics-hero-kicker')).toHaveText('最近记录的电池温度');
+  await expect(page.locator('.analytics-hero-value')).toHaveText('34.2°C');
+  await expect.poll(() => page.locator('.analytics-chart-wrap canvas').evaluate((canvas) => canvas.toDataURL())).not.toBe(originalChart);
   await expect(page.locator('body')).not.toContainText(/NaN|undefined/);
 });
 

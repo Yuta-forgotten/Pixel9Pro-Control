@@ -10,6 +10,7 @@ cp "$SOURCE_ROOT/scripts/background_tasks_lib.sh" "$MODULE/scripts/" || exit 2
 cp "$SOURCE_ROOT/webroot/cgi-bin/_common.sh" "$MODULE/webroot/cgi-bin/" || exit 2
 cp "$SOURCE_ROOT/webroot/cgi-bin/_thermal_cache.sh" "$MODULE/webroot/cgi-bin/" || exit 2
 cp "$SOURCE_ROOT/webroot/cgi-bin/thermal.sh" "$MODULE/webroot/cgi-bin/" || exit 2
+printf '%s\n' 'thermal-history-fixture-token' > "$MODULE/.webui_token"
 
 # Execute the production encoder, including controls and trailing newlines.
 PIXEL9PRO_MODDIR="$MODULE"
@@ -27,7 +28,7 @@ printf '%s,33100,boot-a,session-a,thermal_sysfs,1,0,screen_off_sample,off,400,ba
 printf '%s,41000,boot-a,session-a,thermal_hal,1,0,ok,on,700,module\n' "$((now - 600))" >> "$MODULE/.thermal_history"
 
 run_history() {
-    REQUEST_METHOD=GET REMOTE_ADDR=127.0.0.1 QUERY_STRING="$1" \
+    REQUEST_METHOD=GET REMOTE_ADDR=127.0.0.1 HTTP_X_PIXEL9PRO_TOKEN=thermal-history-fixture-token QUERY_STRING="$1" \
         PIXEL9PRO_MODDIR="$MODULE" sh "$MODULE/webroot/cgi-bin/thermal.sh"
 }
 
@@ -71,10 +72,8 @@ export OLDDIR="$TEST_ROOT/migration/old" MODPATH="$TEST_ROOT/migration/new"
 printf '39000\n' > "$OLDDIR/.thermal_history"
 printf 'retired power data\n' > "$OLDDIR/.power_history"
 printf 'manual\n' > "$OLDDIR/.profile_policy"
-printf '_migration_failed=0\n' > "$TEST_ROOT/migration/run.sh"
-awk '/^    for _sf in / { capture=1 } capture { print } capture && /^    done$/ { exit }' "$SOURCE_ROOT/customize.sh" >> "$TEST_ROOT/migration/run.sh"
-printf '[ "$_migration_failed" -eq 0 ]\n' >> "$TEST_ROOT/migration/run.sh"
-sh "$TEST_ROOT/migration/run.sh" || exit 1
+. "$SOURCE_ROOT/scripts/install_state_lib.sh" || exit 1
+install_state_migrate "$OLDDIR" "$MODPATH" || exit 1
 cmp -s "$OLDDIR/.thermal_history" "$MODPATH/.thermal_history" || exit 1
 cmp -s "$OLDDIR/.profile_policy" "$MODPATH/.profile_policy" || exit 1
 [ ! -e "$MODPATH/.power_history" ] || exit 1

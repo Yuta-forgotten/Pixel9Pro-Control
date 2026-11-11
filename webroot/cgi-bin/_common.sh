@@ -1,6 +1,7 @@
 #!/system/bin/sh
 # Shared CGI boundary: loopback/token checks, bounded JSON bodies, atomic state
 # writes, and process-owned mutation locks. CGI scripts source this file first.
+IFS=' ' read -r CGI_REQUEST_STARTED _cgi_request_unused < /proc/uptime
 
 MODDIR="${PIXEL9PRO_MODDIR:-/data/adb/modules/pixel9pro_control}"
 WEBUI_PORT="${PIXEL9PRO_WEBUI_PORT:-6210}"
@@ -71,6 +72,11 @@ json_escape() {
     '
 }
 
+cgi_duration_ms() {
+    [ -n "${CGI_REQUEST_STARTED:-}" ] || { printf 0; return; }
+    awk -v start="$CGI_REQUEST_STARTED" 'BEGIN { getline < "/proc/uptime"; printf "%.0f",($1-start)*1000 }'
+}
+
 json_error() {
     code="$1"
     shift
@@ -86,13 +92,14 @@ json_error() {
     fi
     _json_error_status=${code%% *}
     case "$_json_error_status" in ''|*[!0-9]*) _json_error_status=500 ;; esac
+    _json_error_reason="${CGI_ERROR_CODE:-HTTP_$_json_error_status}"
     case "$_json_error_status" in
         401|403|405) : ;; # Untrusted/local probing must not fork log writers.
         *) [ "$AUDIT_LOG_AVAILABLE" -ne 1 ] \
-            || audit_log_event_async cgi "${0##*/}" failure "HTTP_$_json_error_status" 0 ;;
+            || audit_log_event_async cgi "${CGI_AUDIT_OPERATION:-${0##*/}}" failure "$_json_error_reason" "$(cgi_duration_ms)" ;;
     esac
     json_status_headers "$code"
-    printf '{"ok":false,"error":"%s","error_code":"HTTP_%s"}\n' "$(json_escape "$msg")" "$_json_error_status"
+    printf '{"ok":false,"error":"%s","error_code":"%s"}\n' "$(json_escape "$msg")" "$_json_error_reason"
     exit 0
 }
 

@@ -2,7 +2,7 @@
 'use strict';
 (() => {
   const LOG_STORAGE_KEY = 'pixel9pro_runtime_log_v2';
-  const state = { entries: [], maxEntries: 80, persistenceAvailable: true, auditSession: null, auditClearPending: false, lastPersistAt: 0 };
+  const state = { entries: [], maxEntries: 80, persistenceAvailable: true, auditSession: null, auditClearPending: false };
   const logText = (value, limit) => String(value ?? '').slice(0, limit);
   const logType = (value) => ['err', 'warn', 'ok', 'dim'].includes(value) ? value : '';
 
@@ -27,7 +27,6 @@
         ts: entry.ts.getTime(), text: entry.text, type: entry.type, detail: entry.detail, count: entry.count || 1
       }))));
       state.persistenceAvailable = true;
-      state.lastPersistAt = Date.now();
     } catch (_) { state.persistenceAvailable = false; }
   }
 
@@ -79,6 +78,9 @@
   }
 
   function appendLog(text, type = '', detail = '') {
+    // Query-string cache stamps share one origin. Read its latest record before
+    // appending so an already-open tab does not overwrite another tab's log.
+    if (state.persistenceAvailable) loadStoredLogs();
     const last = state.entries[state.entries.length - 1];
     const normalizedText = logText(text ?? '—', 1024);
     const normalizedType = logType(type);
@@ -86,7 +88,7 @@
       && last.text === normalizedText && Date.now() - last.ts.getTime() < 60000) {
       last.count = Math.min(1000000, (last.count || 1) + 1);
       last.ts = new Date();
-      if (Date.now() - state.lastPersistAt > 30000) persistLogs();
+      persistLogs();
       renderLogs();
       return;
     }
@@ -279,6 +281,12 @@
   document.addEventListener('visibilitychange', () => { if (document.hidden) pauseAuditRead(); });
   document.addEventListener('freeze', pauseAuditRead);
   window.addEventListener('pagehide', pauseAuditRead);
+  window.addEventListener('storage', (event) => {
+    if (event.key === LOG_STORAGE_KEY || event.key === null) {
+      loadStoredLogs();
+      renderLogs();
+    }
+  });
 
   loadStoredLogs();
   registerFeature('diagnostics', { initialize: renderLogs, errorBlock, appendLog, clearLogs, openAuditLog });

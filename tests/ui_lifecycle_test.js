@@ -26,7 +26,7 @@ async function setup(browser, viewport = { width: 390, height: 844 }, withToken 
   for (const file of ['runtime', 'ui', 'common', 'diagnostics', ...(withMemory ? ['memory'] : [])]) {
     await page.addScriptTag({ content: fs.readFileSync(path.join(webroot, 'js', `${file}.js`), 'utf8') });
   }
-  await page.evaluate(({ withToken, withMemory }) => {
+  await page.evaluate(async ({ withToken, withMemory }) => {
     window.testAnalytics = { stop: 0, minimize: 0, resume: 0 };
     registerFeature('analytics', {
       stop() { window.testAnalytics.stop += 1; },
@@ -34,8 +34,9 @@ async function setup(browser, viewport = { width: 390, height: 844 }, withToken 
       resume() { window.testAnalytics.resume += 1; }
     });
     registerFeature('thermal', { setPendingChange() {}, stopChart() {}, pauseChart() {}, scheduleChart() {} });
-    registerFeature('profile', { getSchedulerBootTargetMode: () => 'pixel' });
+    registerFeature('profile', { getSchedulerBootTargetMode: () => 'pixel', syncOptionalModuleUi() {} });
     if (!withMemory) registerFeature('memory', {
+      shouldObserveRestrictions: () => false,
       closeSwapTuneModal() {
         refs.swapTuneModal.classList.remove('open');
         requireFeature('ui').popModalIfTop('swapTune');
@@ -50,6 +51,10 @@ async function setup(browser, viewport = { width: 390, height: 844 }, withToken 
     window.addEventListener('popstate', ui.handlePopState);
     window.testRequests = [];
     window.fetch = (url, options = {}) => new Promise((resolve, reject) => {
+      if (withToken && String(url) === API.auth) {
+        resolve(new Response(JSON.stringify({ ok: true, paired: true, token_len: 20 })));
+        return;
+      }
       const entry = { url: String(url), method: options.method || 'GET', options, resolve, reject, done: false, aborted: false };
       window.testRequests.push(entry);
       options.signal?.addEventListener('abort', () => {
@@ -61,7 +66,7 @@ async function setup(browser, viewport = { width: 390, height: 844 }, withToken 
     // The storage key is part of runtime's production token contract.
     if (withToken) {
       sessionStorage.setItem(STORAGE_TOKEN_KEY, 'lifecycle-test-token');
-      requireFeature('auth').initialize();
+      await requireFeature('auth').initialize();
     }
   }, { withToken, withMemory });
   return { context, page };
@@ -340,7 +345,7 @@ async function test(name, fn) {
           await respond(page, { error: 'Auth unavailable' }, 500);
           await page.waitForFunction(() => requireFeature('core').requestHubState().active === 0);
           assert.equal(await page.evaluate(() => window.promptCount), 0);
-          assert.equal(await page.evaluate(() => window.testRequests.filter((entry) => entry.method === 'POST').length), 0);
+          assert.equal(await page.evaluate(() => window.testRequests.filter((entry) => entry.method === 'POST' && entry.url !== API.auth).length), 0);
           assert.equal(await page.evaluate(() => requireFeature('auth').hasToken()), false);
         } finally { await context.close(); }
       });
@@ -390,14 +395,14 @@ async function test(name, fn) {
         assert.equal(await page.locator('#idle-isolate-toggle-label').textContent(), '开启后台任务');
         assert.match(await page.locator('#idle-isolate-desc').textContent(), /后台任务已关闭/);
         assert.match(await page.locator('#idle-isolate-rows').textContent(), /恢复失败/);
-        assert.match(await page.locator('#toast-wrap').textContent(), /后台开关已保存.*HTTP 500/);
+        assert.match(await page.locator('#toast-wrap').textContent(), /设置已保存，后台进程状态未确认/);
         assert.deepEqual(await page.evaluate(() => window.standbyPosts), [{ idle_isolate_mode: 'on' }]);
         await page.evaluate(() => requireFeature('network').toggleIdleIsolateMode());
         assert.deepEqual(await page.evaluate(() => window.standbyPosts), [{ idle_isolate_mode: 'on' }, { idle_isolate_mode: 'off' }]);
       } finally { await context.close(); }
     });
 
-    await test('background restriction compact commit stays unconfirmed until a read-only refresh succeeds', async () => {
+    await test('background restriction accepted request stays unconfirmed until a read-only terminal refresh succeeds', async () => {
       const { context, page } = await setup(browser, undefined, true, true);
       try {
         await page.evaluate(async () => {
@@ -409,21 +414,26 @@ async function test(name, fn) {
               window.bgPosts.push(JSON.parse(options.body));
               enabled = 'off';
               window.failBgReadback = true;
-              return new Response(JSON.stringify({ ok: true, committed: true, enabled }), { status: 200 });
+              return new Response(JSON.stringify({ ok: true, accepted: true, final: false,
+                operation: { id: 'fixture-recovery', action: 'toggle', phase: 'queued', pending: true, committed: false, rollback: 'none', error_code: '', error: '', duration_ms: 0 } }), { status: 200 });
             }
             if (window.failBgReadback) return new Response('{"ok":false,"error":"readback unavailable"}', { status: 503 });
-            return new Response(JSON.stringify({ ok: true, enabled, packages: [], suggestions: [],
+            return new Response(JSON.stringify({ ok: true, enabled,
+              operation: { id: enabled === 'off' ? 'fixture-recovery' : '', action: 'toggle', phase: enabled === 'off' ? 'success' : 'none', pending: false, committed: enabled === 'off', rollback: 'none', error_code: '', error: '', duration_ms: 1 },
+              packages: [{ pkg: 'com.example.test', label: '测试应用', policy: 'bucket', delay: 5 }], suggestions: [],
               bg_contract: { policy_order: ['stop_after_leave', 'bucket'], allowed_delays: [5], default_policy: 'stop_after_leave', default_delay: 5 } }), { status: 200 });
           };
           await requireFeature('memory').refreshRestrictions();
         });
         assert.equal(await page.locator('#bg-restrict-toggle-label').textContent(), '关闭');
         await page.evaluate(() => requireFeature('memory').toggleBgRestrict());
-        assert.match(await page.locator('#bg-restrict-desc').textContent(), /已提交，回读未确认/);
-        assert.match(await page.locator('#bg-restrict-rows').textContent(), /readback unavailable/);
+        await page.waitForFunction(() => document.querySelector('#bg-restrict-desc').textContent.includes('服务暂不可用'));
+        assert.match(await page.locator('#bg-restrict-desc').textContent(), /后台限制请求结果未确认/);
+        assert.equal(await page.locator('#bg-restrict-rows .bg-policy-row').count(), 1);
+        assert.match(await page.locator('#bg-restrict-rows').textContent(), /测试应用/);
         assert.doesNotMatch(await page.locator('#bg-restrict-rows').textContent(), /尚未添加应用/);
         assert.equal(await page.locator('#bg-restrict-toggle-btn').isDisabled(), true);
-        assert.match(await page.locator('#toast-wrap').textContent(), /已提交，回读未确认/);
+        assert.doesNotMatch(await page.locator('#toast-wrap').textContent(), /后台限制已关闭/);
         assert.deepEqual(await page.evaluate(() => window.bgPosts), [{ action: 'toggle' }]);
         await page.evaluate(() => requireFeature('memory').forceRefreshBgRestrict());
         assert.deepEqual(await page.evaluate(() => window.bgPosts), [{ action: 'toggle' }]);
@@ -434,6 +444,286 @@ async function test(name, fn) {
         assert.deepEqual(await page.evaluate(() => window.bgPosts), [{ action: 'toggle' }]);
       } finally { await context.close(); }
     });
+
+    await test('background restriction refresh preserves an unsaved row draft', async () => {
+      const { context, page } = await setup(browser, undefined, true, true);
+      try {
+        await page.evaluate(async () => {
+          const data = { ok: true, enabled: 'on', suggestions: [],
+            operation: { id: '', action: '', phase: 'none', pending: false, committed: false, rollback: 'none', error_code: '', error: '', duration_ms: 0 },
+            packages: [{ pkg: 'com.example.test', label: '测试应用', policy: 'bucket', delay: 5,
+              bucket: 'rare', op_bg: 'ignore', op_any: 'ignore', stop_state: 'pending', runtime_freshness: 'last_verified' }],
+            bg_contract: { policy_order: ['stop_after_leave', 'bucket'], allowed_delays: [5, 10], default_policy: 'stop_after_leave', default_delay: 5 } };
+          window.fetch = async () => new Response(JSON.stringify(data));
+          await requireFeature('memory').refreshRestrictions();
+          const policy = document.querySelector('#bg-restrict-rows .bg-policy-select');
+          policy.value = 'stop_after_leave'; policy.dispatchEvent(new Event('change'));
+          const delay = document.querySelector('#bg-restrict-rows .bg-delay-select');
+          delay.value = '10'; delay.dispatchEvent(new Event('change'));
+          await requireFeature('memory').refreshRestrictions();
+        });
+        assert.equal(await page.locator('#bg-restrict-rows .bg-policy-select').inputValue(), 'stop_after_leave');
+        assert.equal(await page.locator('#bg-restrict-rows .bg-delay-select').inputValue(), '10');
+        assert.equal(await page.locator('#bg-restrict-rows .bg-policy-row').count(), 1);
+      } finally { await context.close(); }
+    });
+
+    await test('background restriction acceptance finishes before readback and rejects an older snapshot', async () => {
+      const { context, page } = await setup(browser, undefined, true, true);
+      try {
+        await page.evaluate(async () => {
+          window.bgFixture = { ok: true, enabled: 'on', suggestions: [],
+            operation: { id: '', action: '', phase: 'none', pending: false, committed: false, rollback: 'none', error_code: '', error: '', duration_ms: 0 },
+            packages: [{ pkg: 'com.example.test', label: '测试应用', policy: 'bucket', delay: 5,
+              bucket: 'rare', op_bg: 'ignore', op_any: 'ignore', stop_state: 'pending', runtime_freshness: 'last_verified' }],
+            bg_contract: { policy_order: ['stop_after_leave', 'bucket'], allowed_delays: [5, 10], default_policy: 'stop_after_leave', default_delay: 5 } };
+          window.fetch = async () => new Response(JSON.stringify(window.bgFixture));
+          await requireFeature('memory').refreshRestrictions();
+          window.bgReads = []; window.bgWrites = []; window.bgCommitFinished = false;
+          window.fetch = (url, options = {}) => {
+            if (options.method === 'POST') {
+              window.bgWrites.push(JSON.parse(options.body));
+              return Promise.resolve(new Response(JSON.stringify({ ok: true, accepted: true, final: false,
+                operation: { id: 'fixture-stale', action: 'toggle', phase: 'queued', pending: true, committed: false, rollback: 'none', error_code: '', error: '', duration_ms: 0 } })));
+            }
+            return new Promise((resolve) => window.bgReads.push(resolve));
+          };
+          requireFeature('memory').refreshRestrictions();
+          requireFeature('memory').toggleBgRestrict().then(() => { window.bgCommitFinished = true; });
+        });
+        await page.waitForFunction(() => window.bgCommitFinished);
+        assert.equal(await page.locator('#bg-restrict-toggle-label').textContent(), '等待确认');
+        assert.equal(await page.locator('#bg-restrict-toggle-btn').isDisabled(), true);
+        assert.equal(await page.locator('#bg-restrict-rows .bg-policy-row').count(), 1);
+        assert.equal(await page.locator('#bg-restrict-rows .bg-policy-select').isEnabled(), true);
+        assert.deepEqual(await page.evaluate(() => window.bgWrites), [{ action: 'toggle' }]);
+        await page.evaluate(() => window.bgReads[0](new Response(JSON.stringify(window.bgFixture))));
+        await page.waitForFunction(() => window.bgReads.length === 2);
+        assert.equal(await page.locator('#bg-restrict-toggle-label').textContent(), '等待确认');
+        await page.evaluate(() => window.bgReads[1](new Response(JSON.stringify({ ...window.bgFixture, enabled: 'off',
+          operation: { id: 'fixture-stale', action: 'toggle', phase: 'success', pending: false, committed: true, rollback: 'none', error_code: '', error: '', duration_ms: 1 } }))));
+        await page.waitForFunction(() => !document.querySelector('#bg-restrict-toggle-btn').disabled);
+        assert.equal(await page.locator('#bg-restrict-toggle-label').textContent(), '开启');
+        assert.deepEqual(await page.evaluate(() => window.bgWrites), [{ action: 'toggle' }]);
+      } finally { await context.close(); }
+    });
+
+    for (const outcome of ['success', 'failed']) {
+      await test(`background restriction async accepted running ${outcome} preserves phase and drafts`, async () => {
+        const { context, page } = await setup(browser, undefined, true, true);
+        try {
+          await page.evaluate(async () => {
+            window.asyncBgData = { ok: true, enabled: 'on', suggestions: [],
+              packages: [{ pkg: 'com.example.test', label: '测试应用', policy: 'bucket', delay: 5 }],
+              bg_contract: { policy_order: ['stop_after_leave', 'bucket'], allowed_delays: [5, 10], default_policy: 'stop_after_leave', default_delay: 5 } };
+            window.asyncBgPhase = 'none'; window.asyncBgPosts = [];
+            window.asyncBgOperation = () => ({ id: 'fixture-bg-operation', action: 'toggle', phase: window.asyncBgPhase,
+              pending: ['queued', 'running'].includes(window.asyncBgPhase), committed: window.asyncBgPhase === 'success',
+              rollback: window.asyncBgPhase === 'failed' ? 'complete' : 'none',
+              error_code: window.asyncBgPhase === 'failed' ? 'FIXTURE_FAILED' : '',
+              error: window.asyncBgPhase === 'failed' ? 'fixture operation failed' : '', duration_ms: 10 });
+            window.fetch = async (url, options = {}) => {
+              if (options.method === 'POST') {
+                window.asyncBgPosts.push(JSON.parse(options.body)); window.asyncBgPhase = 'queued';
+                return new Response(JSON.stringify({ ok: true, accepted: true, final: false, operation: window.asyncBgOperation() }));
+              }
+              return new Response(JSON.stringify(['queued', 'running'].includes(window.asyncBgPhase)
+                ? { ok: true, state_pending: true, operation: window.asyncBgOperation() }
+                : { ...window.asyncBgData, enabled: window.asyncBgPhase === 'success' ? 'off' : 'on', operation: window.asyncBgOperation() }));
+            };
+            await requireFeature('memory').refreshRestrictions();
+            const policy = document.querySelector('#bg-restrict-rows .bg-policy-select');
+            policy.value = 'stop_after_leave'; policy.dispatchEvent(new Event('change'));
+            const delay = document.querySelector('#bg-restrict-rows .bg-delay-select');
+            delay.value = '10'; delay.dispatchEvent(new Event('change'));
+            await Promise.all([requireFeature('memory').toggleBgRestrict(), requireFeature('memory').toggleBgRestrict(), requireFeature('memory').toggleBgRestrict()]);
+          });
+          assert.equal(await page.evaluate(() => window.asyncBgPosts.length), 1);
+          assert.doesNotMatch(await page.locator('#toast-wrap').textContent(), /后台限制已关闭|配置已保存/);
+          assert.equal(await page.locator('#bg-restrict-toggle-btn').isDisabled(), true);
+          assert.equal(await page.locator('#bg-restrict-rows .bg-policy-select').inputValue(), 'stop_after_leave');
+          await page.evaluate(async () => { window.asyncBgPhase = 'running'; await requireFeature('memory').forceRefreshBgRestrict(); });
+          assert.equal(await page.locator('#bg-restrict-rows .bg-policy-row').count(), 1);
+          assert.equal(await page.locator('#bg-restrict-rows .bg-delay-select').inputValue(), '10');
+          assert.equal(await page.locator('#bg-restrict-toggle-btn').isDisabled(), true);
+          await page.evaluate(async (outcome) => { window.asyncBgPhase = outcome; await requireFeature('memory').forceRefreshBgRestrict(); }, outcome);
+          assert.equal(await page.evaluate(() => window.asyncBgPosts.length), 1);
+          assert.equal(await page.locator('#bg-restrict-toggle-btn').isEnabled(), true);
+          assert.equal(await page.locator('#bg-restrict-toggle-label').textContent(), outcome === 'success' ? '开启' : '关闭');
+          assert.equal(await page.locator('#bg-restrict-rows .bg-policy-select').inputValue(), 'stop_after_leave');
+          assert.equal(await page.locator('#bg-restrict-rows .bg-delay-select').inputValue(), '10');
+          if (outcome === 'success') assert.match(await page.locator('#toast-wrap').textContent(), /后台限制已关闭/);
+          else assert.match(await page.locator('#bg-restrict-desc').textContent(), /fixture operation failed/);
+        } finally { await context.close(); }
+      });
+    }
+
+    await test('background restriction polling pauses while hidden and ends its bounded observation window', async () => {
+      const { context, page } = await setup(browser, undefined, true, true);
+      try {
+        await page.clock.install();
+        await page.evaluate(async () => {
+          window.bgPollVisible = true;
+          Object.defineProperty(document, 'hidden', { configurable: true, get: () => !window.bgPollVisible });
+          Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => window.bgPollVisible ? 'visible' : 'hidden' });
+          registerFeature('app', { shouldPollCpu: () => false, shouldPollThermal: () => false,
+            shouldPollOptim: () => false, shouldPollSlow: () => false });
+          registerFeature('network', {});
+          const operation = { id: 'fixture-poll', action: 'toggle', phase: 'queued', pending: true,
+            committed: false, rollback: 'none', error_code: '', error: '', duration_ms: 0 };
+          window.bgPollPosts = 0; window.bgPollReads = 0;
+          let started = false;
+          window.fetch = async (url, options = {}) => {
+            if (String(url) !== API.bgRestrict) throw new Error(`Unexpected poll: ${url}`);
+            if (options.method === 'POST') {
+              window.bgPollPosts += 1; started = true;
+              return new Response(JSON.stringify({ ok: true, accepted: true, final: false, operation }));
+            }
+            if (started) {
+              window.bgPollReads += 1;
+              return new Response(JSON.stringify({ ok: true, state_pending: true, operation: { ...operation, phase: 'running' } }));
+            }
+            return new Response(JSON.stringify({ ok: true, enabled: 'on', packages: [], suggestions: [],
+              operation: { ...operation, id: '', phase: 'none', pending: false },
+              bg_contract: { policy_order: ['bucket'], allowed_delays: [5], default_policy: 'bucket', default_delay: 5 } }));
+          };
+          await requireFeature('memory').refreshRestrictions();
+          requireFeature('shell').startPolling();
+          await requireFeature('memory').toggleBgRestrict();
+        });
+        await page.clock.runFor(6100);
+        const visibleReads = await page.evaluate(() => window.bgPollReads);
+        assert(visibleReads >= 3 && visibleReads <= 4, `bounded visible poll count: ${visibleReads}`);
+        await page.evaluate(() => { window.bgPollVisible = false; });
+        await page.clock.runFor(6100);
+        assert.equal(await page.evaluate(() => window.bgPollReads), visibleReads);
+        await page.evaluate(() => { window.bgPollVisible = true; requireFeature('core').queueNextPoll(2000); });
+        await page.clock.runFor(2100);
+        assert.equal(await page.evaluate(() => window.bgPollReads), visibleReads + 1);
+        await page.clock.fastForward(121000);
+        assert.equal(await page.evaluate(() => requireFeature('memory').shouldObserveRestrictions()), false);
+        const expiredReads = await page.evaluate(() => window.bgPollReads);
+        await page.clock.runFor(6100);
+        assert.equal(await page.evaluate(() => window.bgPollReads), expiredReads);
+        assert.equal(await page.locator('#bg-restrict-toggle-btn').isDisabled(), true);
+        await page.evaluate(() => requireFeature('memory').forceRefreshBgRestrict());
+        assert.equal(await page.evaluate(() => requireFeature('memory').shouldObserveRestrictions()), true);
+        assert.equal(await page.evaluate(() => window.bgPollPosts), 1);
+        assert.equal(await page.evaluate(() => window.bgPollReads), expiredReads + 1);
+      } finally { await context.close(); }
+    });
+
+    for (const receipt of ['confirmed', 'staged', 'delayed']) {
+      await test(`network UECap ${receipt} receipt releases controls without duplicate writes`, async () => {
+        const { context, page } = await setup(browser);
+        try {
+          await page.addScriptTag({ content: fs.readFileSync(path.join(webroot, 'js', 'network.js'), 'utf8') });
+          await page.clock.install();
+          await page.evaluate(async (receipt) => {
+            registerFeature('app', { refreshCurrentTabData: async () => {} });
+            window.uecapReads = 0; window.uecapWrites = 0;
+            window.uecapFixture = (mode) => ({ ok: true, device: 'caiman', device_policy: 'managed', runtime_policy: 'managed',
+              policy: 'manual', disabled: false, requested_mode: mode, active_mode: mode, target_hash: `${mode}-hash`,
+              balanced_hash: 'balanced-hash', special_hash: 'special-hash', universal_hash: 'universal-hash',
+              uecap_contract: { mode_order: ['balanced', 'special', 'universal'], default_mode: 'balanced' },
+              runtime_receipt: { bind_status: 'verified', bound_profile: mode, modem_load_state: 'unconfirmed',
+                modem_loaded_profile: 'unknown', functional_state: 'modem_load_unconfirmed', receipt_freshness: 'current_boot' } });
+            window.fetch = (url, options = {}) => {
+              if (String(url) !== API.uecap) throw new Error(`Unexpected network request: ${url}`);
+              if (options.method === 'POST') {
+                window.uecapWrites += 1;
+                const response = { ...window.uecapFixture('special'), reboot_required: receipt === 'staged' };
+                if (receipt !== 'confirmed') response.active_mode = 'balanced';
+                return Promise.resolve(new Response(JSON.stringify(response)));
+              }
+              window.uecapReads += 1;
+              if (window.uecapReads > 1 && receipt === 'delayed') {
+                return new Promise((resolve) => { window.finishUecapRead = () => resolve(new Response(JSON.stringify(window.uecapFixture('special')))); });
+              }
+              return Promise.resolve(new Response(JSON.stringify(window.uecapFixture('balanced'))));
+            };
+            await requireFeature('network').refreshDiagnostics();
+            requireFeature('core').switchTab('network');
+          }, receipt);
+          await page.locator('#uecap-btn-group [data-mode="special"]').click();
+          if (receipt === 'delayed') {
+            await page.waitForFunction(() => typeof window.finishUecapRead === 'function');
+            await page.evaluate(() => {
+              requireFeature('core').switchTab('home');
+              document.querySelector('#uecap-btn-group [data-mode="special"]').click();
+            });
+            assert.equal(await page.locator('#page-home').evaluate((el) => el.classList.contains('active')), true);
+            assert.equal(await page.evaluate(() => window.uecapWrites), 1);
+            await page.evaluate(() => window.finishUecapRead());
+          }
+          await page.waitForFunction(() => !document.querySelector('#uecap-btn-group [data-mode="special"]').disabled);
+          assert.equal(await page.evaluate(() => window.uecapWrites), 1);
+          assert.equal(await page.evaluate(() => window.uecapReads), receipt === 'delayed' ? 2 : 1);
+          assert.match(await page.locator('#toast-wrap').textContent(), receipt === 'staged' ? /待重启应用/ : /系统配置文件已更新/);
+          assert.doesNotMatch(await page.locator('#toast-wrap').textContent(), /基带已加载/);
+        } finally { await context.close(); }
+      });
+    }
+
+    for (const action of ['nr', 'ntp-server', 'ntp-sync']) {
+      await test(`network ${action} exposes immediate busy state and serializes clicks`, async () => {
+        const { context, page } = await setup(browser);
+        try {
+          await page.addScriptTag({ content: fs.readFileSync(path.join(webroot, 'js', 'network.js'), 'utf8') });
+          await page.evaluate(async (action) => {
+            window.networkWrites = []; window.nrFixture = 'off'; window.ntpFixture = 'time.android.com';
+            window.fetch = (url, options = {}) => {
+              if (options.method === 'POST') {
+                const body = JSON.parse(options.body); window.networkWrites.push({ url: String(url), body });
+                return new Promise((resolve) => { window.finishNetworkWrite = () => {
+                  if (String(url) === API.nrSwitch) window.nrFixture = 'on';
+                  if (body.server) window.ntpFixture = body.server;
+                  resolve(new Response(JSON.stringify({ ok: true, nr_switch: window.nrFixture, refreshed: true, device_time: 'fixture-time' })));
+                }; });
+              }
+              const data = String(url) === API.nrSwitch
+                ? { nr_switch: window.nrFixture, current_mode: '33', saved_nr_mode: '33', screen_off_delay_s: 300 }
+                : String(url) === API.ntp
+                  ? { ntp_server: window.ntpFixture, auto_time: '1', servers: [{ id: 'time.android.com', name: 'Android' }, { id: 'ntp.aliyun.com', name: 'Aliyun' }] }
+                  : { idle_isolate_mode: 'off', sim2_auto_manage: 'off', background_enabled: true, background_state: 'running', final: true };
+              return Promise.resolve(new Response(JSON.stringify(data)));
+            };
+            await requireFeature('network').refresh();
+            if (action === 'nr') {
+              requireFeature('network').toggleNrSwitch(); requireFeature('network').toggleNrSwitch();
+            } else if (action === 'ntp-server') {
+              document.querySelector('#ntp-server-list [data-server="ntp.aliyun.com"]').click();
+              requireFeature('network').syncNtp();
+            } else {
+              requireFeature('network').syncNtp(); requireFeature('network').syncNtp();
+              document.querySelector('#ntp-server-list [data-server="ntp.aliyun.com"]').click();
+            }
+          }, action);
+          assert.equal(await page.evaluate(() => window.networkWrites.length), 1);
+          const button = page.locator(action === 'nr' ? '#nr-switch-toggle-btn' : '#ntp-sync-btn');
+          assert.equal(await button.isDisabled(), true);
+          assert.equal(await button.getAttribute('aria-busy'), 'true');
+          if (action === 'nr') assert.equal(await page.locator('#nr-switch-toggle-label').textContent(), '切换中…');
+          else {
+            assert.equal(await page.locator('#ntp-server-list button:disabled').count(), 2);
+            assert.match(await page.locator('#ntp-sync-label').textContent(), action === 'ntp-sync' ? /同步中/ : /切换中/);
+            if (action === 'ntp-server') {
+              assert.equal(await page.locator('#ntp-server-list [data-server="ntp.aliyun.com"]').getAttribute('aria-busy'), 'true');
+              assert.equal(await page.locator('#ntp-server-list [data-server="ntp.aliyun.com"] .badge').textContent(), '提交中…');
+            }
+          }
+          await page.evaluate(() => window.finishNetworkWrite());
+          await page.waitForFunction((action) => !document.querySelector(action === 'nr' ? '#nr-switch-toggle-btn' : '#ntp-sync-btn').disabled, action);
+          assert.equal(await button.getAttribute('aria-busy'), 'false');
+          assert.equal(await page.evaluate(() => window.networkWrites.length), 1);
+          if (action === 'nr') assert.equal(await page.locator('#nr-switch-toggle-label').textContent(), '关闭');
+          if (action === 'ntp-server') {
+            assert.equal(await page.locator('#ntp-server-list [data-server="ntp.aliyun.com"] .badge').textContent(), '当前使用');
+            assert.equal(await page.locator('#ntp-server-list [data-server="time.android.com"] .badge').textContent(), '选择');
+          }
+        } finally { await context.close(); }
+      });
+    }
 
     await test('hidden first load resumes data initialization once without rebinding the UI', async () => {
       const context = await browser.newContext({ bypassCSP: true });
@@ -454,7 +744,9 @@ async function test(name, fn) {
           Object.defineProperty(document, 'hidden', { configurable: true, get: () => !window.reviewVisible });
           Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => window.reviewVisible ? 'visible' : 'hidden' });
           sessionStorage.setItem(STORAGE_TOKEN_KEY, 'lifecycle-test-token');
-          window.fetch = async () => new Response('{"model":"Pixel 9 Pro","module_version":"review"}');
+          window.fetch = async (url) => new Response(JSON.stringify(String(url) === API.auth
+            ? { ok: true, paired: true, token_len: 20 }
+            : { model: 'Pixel 9 Pro', module_version: 'review' }));
           registerFeature('profile', {
             initialize() { window.initCounts.profile += 1; },
             load() { window.initCounts.profileLoad += 1; return new Promise((resolve) => { window.finishProfileLoad = () => { window.initialContractLoaded = true; resolve(true); }; }); },
@@ -466,8 +758,8 @@ async function test(name, fn) {
             load() { window.initCounts.thermalLoad += 1; return Promise.resolve(true); },
             refresh() { window.initCounts.thermalRefresh += 1; return Promise.resolve(true); }, pause() {}
           });
-          registerFeature('theme', { initialize() { window.initCounts.theme += 1; } });
-          registerFeature('memory', { refresh: async () => true, refreshRestrictions: async () => true });
+          registerFeature('theme', { initialize() { window.initCounts.theme += 1; }, async restoreFromServer() {} });
+          registerFeature('memory', { refresh: async () => true, refreshRestrictions: async () => true, shouldObserveRestrictions: () => false });
           registerFeature('network', { refresh: async () => true, setBasebandBackendState() {}, setBasebandInstalled() {}, syncDeviceClockForTab() {}, stopDeviceClock() {} });
           registerFeature('analytics', { pause() {}, isActive: () => false });
         });
@@ -594,7 +886,7 @@ async function test(name, fn) {
         await respond(page, { ok: true, action: 'clear' });
         await page.waitForFunction(() => !document.querySelector('#audit-log-content').textContent.includes('old-record'));
         await respond(page, { ok: true, lines: [] });
-        await page.waitForFunction(() => document.querySelector('#audit-log-status').textContent.includes('回读确认当前为空'));
+        await page.waitForFunction(() => document.querySelector('#audit-log-status').textContent.includes('模块运行日志已清空，当前无记录'));
         assert.equal(await page.locator('#audit-log-clear').isEnabled(), true);
         assert.equal(await page.locator('#audit-log-clear').count(), 1);
       } finally { await context.close(); }
@@ -606,7 +898,7 @@ async function test(name, fn) {
         await page.evaluate(() => { requireFeature('diagnostics').openAuditLog(); });
         await respond(page, { error: 'Read blocked' }, 500);
         await page.waitForFunction(() => document.querySelector('#audit-log-status').classList.contains('error-panel'));
-        assert.match(await page.locator('#audit-log-status').textContent(), /刷新记录/);
+        assert.match(await page.locator('#audit-log-status').textContent(), /请刷新重试/);
         await page.locator('#audit-log-refresh').click();
         await page.evaluate(() => requireFeature('ui').openDetail('其它详情', '<p id="other-detail">必须保留</p>'));
         await page.waitForFunction(() => window.testRequests.at(-1).aborted);
@@ -626,7 +918,7 @@ async function test(name, fn) {
         await respond(page, { ok: true, action: 'clear' });
         await respond(page, { error: 'Readback unavailable' }, 500);
         await page.waitForFunction(() => document.querySelector('#audit-log-status').classList.contains('error-panel'));
-        assert.match(await page.locator('#audit-log-status').textContent(), /清理已提交.*回读失败/);
+        assert.match(await page.locator('#audit-log-status').textContent(), /清空请求已提交，但结果读取失败/);
         assert.doesNotMatch(await page.locator('#audit-log-content').textContent(), /stale-before-clear/);
         assert.equal(await page.locator('#audit-log-refresh').isEnabled(), true);
       } finally { await context.close(); }
@@ -662,7 +954,7 @@ async function test(name, fn) {
           requireFeature('ui').closeDetailModal();
           requireFeature('diagnostics').openAuditLog();
         });
-        assert.match(await page.locator('#audit-log-status').textContent(), /先前的清理结果/);
+        assert.match(await page.locator('#audit-log-status').textContent(), /正在确认上次日志清空结果/);
         assert.equal(await page.locator('#audit-log-clear').isDisabled(), true);
         assert.equal(await page.evaluate(() => window.testRequests.length), 2);
         await respond(page, { ok: true, action: 'clear' });

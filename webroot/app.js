@@ -19,62 +19,51 @@ const $ = appFeatures.ui.getElement;
 const openDetail = appFeatures.ui.openDetail;
 const showToast = appFeatures.core.showToast;
 let fullRefreshPromise = null;
-let tabRefreshPromise = null;
-let initialDataStage = 0;
-let initialDataPromise = null;
-const initialDataTasks = [
-  () => appFeatures.shell.loadInfo(),
-  () => appFeatures.profile.load(),
-  () => appFeatures.thermal.load(),
-  () => appFeatures.profile.refresh(),
-  () => appFeatures.thermal.refresh()
-];
+let profileLoaded = false;
+const dataTasks = {
+  info: ['系统信息', () => appFeatures.shell.loadInfo()],
+  profile: ['调度配置', () => appFeatures.profile.load()],
+  cpu: ['CPU', () => appFeatures.profile.refresh()],
+  thermalConfig: ['温控配置', () => appFeatures.thermal.load()],
+  thermal: ['温度', () => appFeatures.thermal.refresh()],
+  memory: ['内存', () => appFeatures.memory.refresh()],
+  restrictions: ['后台限制', () => appFeatures.memory.refreshRestrictions()],
+  network: ['网络设置', () => appFeatures.network.refresh()],
+  diagnostics: ['网络诊断', () => appFeatures.network.refreshDiagnostics()]
+};
+const tabData = {
+  home: ['info', 'cpu', 'thermalConfig', 'thermal', 'memory', 'network'],
+  tune: ['cpu', 'thermalConfig', 'thermal'],
+  network: ['info', 'network', 'diagnostics'],
+  system: ['info', 'memory', 'restrictions', 'network']
+};
+
+function refreshComponents(keys) {
+  return Promise.all(keys.map((key) => appFeatures.core.runFeatureTask(`app.component.${key}`, async () => {
+    const result = await dataTasks[key][1]();
+    if (key === 'profile' && result === true) profileLoaded = true;
+    return result;
+  })));
+}
 
 async function doFullRefresh() {
   if (!appFeatures.core.isWebUiActive()) return null;
   if (fullRefreshPromise) return fullRefreshPromise;
   fullRefreshPromise = (async () => {
     const refreshButton = $('refresh-all-btn');
-    if (refreshButton) refreshButton.disabled = true;
+    refreshButton.disabled = true;
     showToast('正在刷新…', 1000);
-    if (tabRefreshPromise) await tabRefreshPromise.catch(() => {});
+    const keys = Object.keys(dataTasks);
+    const results = await refreshComponents(keys);
     if (!appFeatures.core.isWebUiActive()) return;
-    // Keep fast local snapshots together, then start the network stage after
-    // them. The network page contains slow modem/baseband inspections; putting
-    // all domains into one Promise.allSettled batch exhausts the shared
-    // Request Hub and makes valid CGI responses expire while queued.
-    const tasks = [
-      ['CPU', () => appFeatures.profile.refresh()],
-      ['温控', async () => {
-        const stateRead = await appFeatures.thermal.load();
-        if (stateRead === false) return false;
-        return appFeatures.thermal.refresh();
-      }],
-      ['内存', () => appFeatures.memory.refresh()]
-    ];
-    const results = await Promise.allSettled(tasks.map(([, task]) => task()));
-    if (!appFeatures.core.isWebUiActive()) return;
-    const deferredTasks = [
-      ['网络', () => appFeatures.network.refresh()],
-      ['后台限制', () => appFeatures.memory.refreshRestrictions()],
-      ['系统信息', () => appFeatures.shell.loadInfo()]
-    ];
-    const deferredResults = await Promise.allSettled(deferredTasks.map(([, task]) => task()));
-    if (!appFeatures.core.isWebUiActive()) return;
-    const allTasks = tasks.concat(deferredTasks);
-    const allResults = results.concat(deferredResults);
-    const failures = allResults.flatMap((result, index) => {
-      if (result.status === 'rejected') return [`${allTasks[index][0]}：${result.reason?.message || result.reason}`];
-      if (result.value === false) return [`${allTasks[index][0]}：未获取有效状态`];
-      return [];
-    });
+    const failures = keys.filter((key, index) => results[index] === false)
+      .map((key) => `${dataTasks[key][0]}：未获取有效状态`);
     failures.forEach((message) => appFeatures.core.appendLog(`刷新失败：${message}`, 'err'));
     appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow']);
     appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay());
     showToast(failures.length ? '刷新完成，部分状态读取失败' : '已刷新');
   })().finally(() => {
-    const refreshButton = $('refresh-all-btn');
-    if (refreshButton) refreshButton.disabled = false;
+    $('refresh-all-btn').disabled = false;
     fullRefreshPromise = null;
   });
   return fullRefreshPromise;
@@ -102,40 +91,19 @@ function shouldPollSlow() {
 
 function refreshCurrentTabData() {
   if (!appFeatures.core.isWebUiActive()) return Promise.resolve();
-  if (tabRefreshPromise) return tabRefreshPromise;
-  const now = Date.now();
   const tab = appFeatures.shell.getCurrentTab();
-  tabRefreshPromise = (async () => {
-    if (tab === 'home') {
-      appFeatures.core.markPollFresh(['cpu', 'thermal', 'optim', 'slow'], now);
-      await Promise.allSettled([
-        appFeatures.profile.refresh(), appFeatures.thermal.refresh(), appFeatures.memory.refresh()
-      ]);
-      if (!appFeatures.core.isWebUiActive()) return;
-      await Promise.allSettled([appFeatures.network.refresh(), appFeatures.shell.loadInfo()]);
-    } else if (tab === 'tune') {
-      appFeatures.core.markPollFresh(['cpu', 'thermal'], now);
-      await Promise.allSettled([appFeatures.profile.refresh(), appFeatures.thermal.refresh()]);
-    } else if (tab === 'network') {
-      appFeatures.core.markPollFresh(['slow'], now);
-      await appFeatures.shell.loadInfo();
-      if (!appFeatures.core.isWebUiActive()) return;
-      await appFeatures.network.refresh();
-    } else if (tab === 'system') {
-      appFeatures.core.markPollFresh(['optim', 'slow'], now);
-      await Promise.allSettled([
-        appFeatures.memory.refresh(), appFeatures.memory.refreshRestrictions()
-      ]);
-      if (!appFeatures.core.isWebUiActive()) return;
-      await appFeatures.shell.loadInfo();
-      if (!appFeatures.core.isWebUiActive()) return;
-      await appFeatures.network.refresh();
-    }
-  })().catch(() => {}).finally(() => {
-    tabRefreshPromise = null;
+  // A new page starts its own reads immediately; shared components keep one
+  // in-flight task instead of joining the previous page's entire refresh.
+  return appFeatures.core.runFeatureTask(`app.tab.${tab}`, () => {
+    const keys = [...tabData[tab]];
+    if (!profileLoaded && (tab === 'home' || tab === 'tune')) keys.push('profile');
+    const pollKeys = { home: ['cpu', 'thermal', 'optim', 'slow'], tune: ['cpu', 'thermal'],
+      network: ['slow'], system: ['optim', 'slow'] };
+    appFeatures.core.markPollFresh(pollKeys[tab]);
+    return refreshComponents(keys);
+  }).finally(() => {
     appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay());
   });
-  return tabRefreshPromise;
 }
 
 function startPolling() {
@@ -162,10 +130,8 @@ async function resumeForegroundWork() {
   appFeatures.shell.setForegroundPaused(false);
   if (!wasPaused && appFeatures.shell.isPolling()) return;
   appFeatures.shell.setLastInteractionAt(Date.now());
-  const needsInitialData = initialDataStage < initialDataTasks.length;
-  if (needsInitialData && !await initializeData()) return;
   if (!appFeatures.core.isWebUiActive()) return;
-  if (!needsInitialData) refreshCurrentTabData();
+  void refreshCurrentTabData();
   startPolling();
   appFeatures.network.syncDeviceClockForTab();
   if (appFeatures.analytics.isActive()) appFeatures.analytics.resume();
@@ -244,7 +210,6 @@ function bindStaticEvents() {
   $('ntp-sync-btn').addEventListener('click', appFeatures.network.syncNtp);
   $('temp-chart-btn').addEventListener('click', () => appFeatures.analytics.open('thermal'));
   $('energy-btn').addEventListener('click', () => appFeatures.analytics.open('thermal'));
-  $('home-temp-chart-btn').addEventListener('click', () => appFeatures.analytics.open('thermal'));
   $('log-toggle').addEventListener('click', () => {
     refs.logCard.classList.toggle('open');
     $('log-toggle').setAttribute('aria-expanded', String(refs.logCard.classList.contains('open')));
@@ -321,35 +286,6 @@ function bindStaticEvents() {
   document.addEventListener('resume', resumeForegroundWork);
 }
 
-async function refreshDeferredInitData() {
-  if (!appFeatures.core.isWebUiActive()) return;
-  appFeatures.core.markPollFresh(['optim', 'slow']);
-  await Promise.allSettled([appFeatures.memory.refresh(), appFeatures.memory.refreshRestrictions()]);
-  if (!appFeatures.core.isWebUiActive()) return;
-  await appFeatures.network.refresh();
-  appFeatures.core.queueNextPoll(appFeatures.core.computeNextPollDelay());
-}
-
-function initializeData() {
-  if (initialDataPromise) return initialDataPromise;
-  if (initialDataStage === initialDataTasks.length) return Promise.resolve(true);
-  initialDataPromise = (async () => {
-    while (initialDataStage < initialDataTasks.length && appFeatures.core.isWebUiActive()) {
-      const result = await initialDataTasks[initialDataStage]();
-      if (result === null && !appFeatures.core.isWebUiActive()) return false;
-      initialDataStage += 1;
-    }
-    if (initialDataStage < initialDataTasks.length) return false;
-    appFeatures.core.markPollFresh(['cpu', 'thermal']);
-    window.setTimeout(() => {
-      if (appFeatures.core.isWebUiActive()) refreshDeferredInitData();
-    }, 1000);
-    if (appFeatures.core.isWebUiActive()) startPolling();
-    return true;
-  })().finally(() => { initialDataPromise = null; });
-  return initialDataPromise;
-}
-
 async function init() {
   if (!WEBUI_NATIVE_TRANSPORT && location.host !== '127.0.0.1:6210') return;
   const bootAt = Date.now();
@@ -370,7 +306,8 @@ async function init() {
   });
   if (await pairing) {
     void appFeatures.theme.restoreFromServer();
-    await initializeData();
+    startPolling();
+    await refreshCurrentTabData();
   }
 }
 

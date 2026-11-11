@@ -1,5 +1,10 @@
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
+const { chromium } = require('playwright');
+const { expect } = require('@playwright/test');
+
+(async () => {
 
 const root = path.resolve(process.argv[2] || path.join(__dirname, '..'));
 const html = fs.readFileSync(path.join(root, 'webroot', 'index.html'), 'utf8');
@@ -28,6 +33,7 @@ const service = ['service.sh', 'scripts/control_worker_lib.sh']
 const thermalLib = fs.readFileSync(path.join(root, 'scripts', 'thermal_profile.sh'), 'utf8');
 const thermalPolicyLib = fs.readFileSync(path.join(root, 'scripts', 'thermal_policy_lib.sh'), 'utf8');
 const bgRestrictLib = fs.readFileSync(path.join(root, 'scripts', 'bg_restrict_lib.sh'), 'utf8');
+const memoryStatus = fs.readFileSync(path.join(root, 'scripts', 'memory_status.awk'), 'utf8');
 const cpuProfileLib = fs.readFileSync(path.join(root, 'scripts', 'cpu_profile_lib.sh'), 'utf8');
 const nrModeLib = fs.readFileSync(path.join(root, 'scripts', 'nr_mode_lib.sh'), 'utf8');
 const cpuProfile = fs.readFileSync(path.join(root, 'scripts', 'cpu_profile.sh'), 'utf8');
@@ -45,6 +51,7 @@ const schedulerDetectLib = fs.readFileSync(path.join(root, 'scripts', 'scheduler
 const schedulerBootLib = fs.readFileSync(path.join(root, 'scripts', 'scheduler_boot_mode_lib.sh'), 'utf8');
 const schedulerOwnerLib = fs.readFileSync(path.join(root, 'scripts', 'scheduler_owner_lib.sh'), 'utf8');
 const schedulerReconcile = fs.readFileSync(path.join(root, 'scripts', 'scheduler_reconcile.sh'), 'utf8');
+const schedulerAsyncWorker = fs.readFileSync(path.join(root, 'scripts', 'scheduler_async_worker.sh'), 'utf8');
 const schedulerGuard = fs.readFileSync(path.join(root, 'scripts', 'scheduler_transition_guard_lib.sh'), 'utf8');
 const basebandRoot = process.env.PIXEL9PRO_BASEBAND_ROOT
   ? path.resolve(process.env.PIXEL9PRO_BASEBAND_ROOT)
@@ -102,11 +109,11 @@ assert(!app.includes("requireFeature('shell').getDeviceModel() === 'Pixel 9 Pro'
 assert(app.includes('ugt: state.uperfDetected') && app.includes('fas: state.fasRsDetected'), 'UGT/fas-rs visibility must use independent detection flags');
 assert(app.includes('if (!state.basebandInstalled && (!state.basebandState || !state.basebandState.installed))'), 'baseband detail fetch must be skipped only when the module state is absent');
 for (const transitionCopy of [
-  '正在提交下次启动模式；当前 boot 不会热启动或热停止 UGT。',
-  '正在更新 fas-rs 接管策略并核对当前 owner，通常需要数秒。',
-  '正在复读前台场景、owner 和关键调度节点，通常需要数秒。',
-  '正在应用 profile 并复读关键调度节点，通常需要数秒。',
-  '正在应用当前 profile 并复读调度状态，通常需要数秒。',
+  '正在保存下次启动使用的调度模式，重启后生效。',
+  '正在保存 fas-rs 游戏接管设置并确认当前调度状态。',
+  '正在检查当前游戏、调度程序与运行参数，并处理接管或恢复。',
+  '正在应用所选档位，并检查实际调度参数。',
+  '正在保存自动或手动设置，并检查当前性能档位。',
 ]) {
   assert(app.includes(transitionCopy), `current strategy transition copy is missing: ${transitionCopy}`);
 }
@@ -123,14 +130,48 @@ const thermalPresetStart = app.indexOf('const THERMAL_PRESETS = {');
 const thermalPresetEnd = app.indexOf('\n};', thermalPresetStart);
 assert(thermalPresetStart >= 0 && thermalPresetEnd > thermalPresetStart, 'thermal preset block is missing');
 const thermalPresetBlock = app.slice(thermalPresetStart, thermalPresetEnd);
-for (const [label, source, prefix] of [
-  ['thermal', thermalLib, '_tp_'],
-  ['BG', bgRestrictLib, '_bg_'],
-]) {
+for (const [label, source, prefix] of [['thermal', thermalLib, '_tp_']]) {
   const shellLocals = [...source.matchAll(/^\s*(_[A-Za-z0-9_]+)=/gm)].map((match) => match[1]);
   assert(shellLocals.every((name) => name.startsWith(prefix)), `${label} library has unscoped shell variables`);
   assert(!/^\s*(?:\.|source)\s+/m.test(source), `${label} leaf library must not source another library`);
 }
+function assertBgNamespace(source) {
+  // This lexical guard covers the library's existing assignment/function
+  // forms. sh -n and bg_namespace_test.py check syntax and actual isolation.
+  const table = source.match(/^bg_table_replace\(\) \(\r?\n[\s\S]*?^\)/m)?.[0];
+  assert(table, 'BG table writer must remain a subshell function');
+  const observation = shellFunction(source, 'bg_record_observation');
+  const outer = source.replace(table, '').replace(observation, '');
+  const assignments = (text) => [...text.replace(/'[^']*'/g, (literal) => literal.replace(/[^\r\n]/g, ' '))
+    .matchAll(/(?:^|;)[ \t]*([a-z_][A-Za-z0-9_]*)=/gm)].map((match) => match[1]);
+  assert(assignments(table).every((name) => name.startsWith('_bgt_')), 'BG table writer has undeclared scratch names');
+  assert(assignments(observation).every((name) => name === '_bgo_pkg'), 'BG observation helper owns only _bgo_pkg');
+  assert(assignments(outer).every((name) => name.startsWith('_bg_')), 'BG library has unscoped shell variables');
+  assert(!/\b_bgt_[A-Za-z0-9_]+\b/.test(outer + observation), 'BG subshell scratch escapes its function');
+  assert(!/\b_bgo_[A-Za-z0-9_]+\b/.test(outer), 'BG observation scratch escapes its owning helper');
+  const sources = [...source.matchAll(/(?:^|\|\|)[ \t]*\.\s+([^\r\n]+?)(?:\s+\|\||$)/gm)].map((match) => match[1]);
+  assert(sources.length === 5 && sources.every((dependency) => dependency === '"$MODDIR/scripts/state_io_lib.sh"'),
+    'BG may source only its five explicit state_io consumers');
+}
+assertBgNamespace(bgRestrictLib);
+assertBgNamespace(bgRestrictLib + "\nprintf '%s' 'literal; tmp=not-a-shell-assignment'\n");
+for (const [name, invalid] of [
+  ['global tmp', bgRestrictLib + '\ntmp=unsafe\n'],
+  ['global _tmp', bgRestrictLib + '\n_tmp=unsafe\n'],
+  ['observation name used by caller', bgRestrictLib + '\n_bg_other=$_bgo_pkg\n'],
+  ['table no longer subshell', bgRestrictLib.replace('bg_table_replace() (', 'bg_table_replace() {')],
+]) {
+  let rejected = false;
+  try { assertBgNamespace(invalid); } catch (_) { rejected = true; }
+  assert(rejected, `BG namespace negative control was accepted: ${name}`);
+}
+const bgNamespaceConsumers = ['service.sh', 'scripts/control_worker_lib.sh', 'scripts/bg_transaction_lib.sh',
+  'scripts/state_io_lib.sh', 'webroot/cgi-bin/bg_restrict.sh'];
+for (const consumer of bgNamespaceConsumers) {
+  assert(!/\b_bgo_[A-Za-z0-9_]+\b/.test(fs.readFileSync(path.join(root, consumer), 'utf8')),
+    `BG observation namespace collides with caller/dependency ${consumer}`);
+}
+console.log('BG namespace contract passed: declared owners, subshell boundary and four rejected negative controls');
 // UECap became an orchestrator in the dual-SKU/slot work. Its manifest resolver
 // has one existing _p_full scratch name (not a shell local). Limit this exception
 // to that function and prove that the shared dependencies cannot collide with it.
@@ -211,8 +252,21 @@ assert(customize.includes('_ofs_vals="$THERMAL_ALLOWED_OFFSETS"') && customize.i
 assert(thermalLib.includes('THERMAL_ALLOWED_OFFSETS="-2 0 2 4 6"') && thermalLib.includes('thermal_print_ui_contract_json()') && thermalLib.includes('THERMAL_SHUTDOWN_SLOT=7'), 'shared thermal contract must expose five presets and preserve shutdown');
 assert(thermalCgi.includes('"thermal_contract":') && app.includes('thermal_contract'), 'thermal CGI must expose the backend-owned UI contract');
 assert(app.includes('const BG_RESTRICT_POLICY_PRESENTATION') && !app.includes('BG_RESTRICT_POLICY_ORDER') && !app.includes('BG_RESTRICT_DELAYS'), 'BG JS must retain presentation only');
-assert(html.includes('id="bg-restrict-policy-select" aria-label="后台限制策略" disabled></select>')
-  && html.includes('id="bg-restrict-delay-select" aria-label="休眠延时" disabled></select>'), 'BG HTML must wait for the backend contract instead of embedding behavior options');
+// Verify semantics before application scripts run: label association and
+// attribute order are independent, but empty/disabled controls are mandatory.
+const browser = await chromium.launch({ ...require('./webui/playwright.config.js').use.launchOptions, headless: true });
+try {
+  const page = await browser.newPage();
+  await page.route('**/*', (route) => route.abort());
+  await page.setContent(html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '').replace(/<link\b[^>]*>/g, ''));
+  for (const [id, name] of [['bg-restrict-policy-select', '限制方式'], ['bg-restrict-delay-select', '离开前台后']]) {
+    const control = page.locator(`#${id}`);
+    await expect(control).toBeDisabled();
+    await expect(control.locator('option')).toHaveCount(0);
+    await expect(control).toHaveAccessibleName(name);
+  }
+  console.log('Initial BG DOM contract passed: two empty, disabled, accessibly named selects');
+} finally { await browser.close(); }
 assert(app.includes('const raw = data?.bg_contract') && service.includes('bg_default_seed_entry') && !customize.includes('com.ss.android.ugc.aweme|stop_after_leave|5'), 'BG policy, delay and seed defaults must come from the backend contract');
 assert(uecapProfile.includes('UECAP_MODE_ORDER="balanced special universal"') && uecapProfile.includes('uecap_print_ui_contract_json()'), 'UECap runtime must own mode order and default');
 assert(uecapProfile.includes('case "${0##*/}" in') && uecapProfile.includes('uecap_profile.sh) uecap_main "$@"'), 'sourcing UECap library must not dispatch CLI mutations');
@@ -231,7 +285,49 @@ for (const host of ['ntp.aliyun.com', 'ntp.myhuaweicloud.com', 'ntp1.xiaomi.com'
 assert(ntpCgi.includes('ntp_config_validate') && service.includes('ntp_config_validate'), 'NTP consumers must validate the shared catalog');
 assert(!app.includes('const SWAP_OPTIMIZED') && !swapCgi.includes('OPT_SWAPPINESS='), 'VM presets must come from memory_lib.sh');
 assert(swapCgi.includes('. "$MODDIR/scripts/memory_lib.sh"') && app.includes('data.module_preset'), 'VM CGI and UI must consume the shared memory contract and one module preset');
-assert(swapCgi.includes('zram_active') && swapCgi.includes('zram_owner') && app.includes('zram_target_supported'), 'ZRAM UI must consume authoritative runtime/owner fields');
+assert(shellFunction(swapCgi, 'memory_snapshot').includes('-f "$MODDIR/scripts/memory_status.awk"')
+  && memoryStatus.includes('put("zram_active_state",swap_state)') && memoryStatus.includes('put("zram_owner",')
+  && app.includes("data.zram_active_state === 'active'") && app.includes('data.zram_owner')
+  && app.includes('data?.zram_online_supported !== true'), 'ZRAM UI must consume the current shared snapshot activity, owner and online capability fields');
+const fixturePath = path.join(root, 'tests', 'memory_status_fixture.py');
+const fixturePosix = process.platform === 'win32'
+  ? spawnSync('wsl.exe', ['-e', 'wslpath', '-a', fixturePath], { encoding: 'utf8' })
+  : { status: 0, stdout: fixturePath };
+assert(fixturePosix.status === 0, `memory fixture path conversion failed: ${fixturePosix.stderr}`);
+const snapshotFixture = spawnSync(process.platform === 'win32' ? 'wsl.exe' : 'python3',
+  [...(process.platform === 'win32' ? ['-e', 'python3'] : []), fixturePosix.stdout.trim()], { encoding: 'utf8', timeout: 15000 });
+assert(snapshotFixture.status === 0, `memory snapshot fixture failed: ${snapshotFixture.stdout}\n${snapshotFixture.stderr}`);
+const snapshots = JSON.parse(snapshotFixture.stdout);
+assert(snapshots.length === 4 && snapshots[0].zram_active && !snapshots[1].zram_active && !snapshots[2].zram_active
+  && snapshots[3].zram_owner === 'unknown', 'matching size/algorithm must not fake active swap or an mmd owner');
+const memoryBrowser = await chromium.launch({ ...require('./webui/playwright.config.js').use.launchOptions, headless: true });
+try {
+  const page = await memoryBrowser.newPage({ bypassCSP: true });
+  await page.route('**/*', (route) => route.fulfill({ contentType: 'text/html',
+    body: html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '').replace(/<link\b[^>]*>/g, '') }));
+  await page.goto('http://127.0.0.1:6210/');
+  for (const script of ['runtime', 'ui', 'common', 'diagnostics', 'memory']) {
+    await page.addScriptTag({ content: fs.readFileSync(path.join(root, 'webroot/js', `${script}.js`), 'utf8') });
+  }
+  await page.evaluate(async () => {
+    registerFeature('thermal', { syncHeroDesc() {} });
+    requireFeature('ui').initialize();
+    sessionStorage.setItem(STORAGE_TOKEN_KEY, 'memory-status-fixture');
+    window.fetch = async () => new Response('{"ok":true,"paired":true}');
+    await requireFeature('auth').initialize();
+  });
+  for (const snapshot of snapshots) {
+    assert(await page.evaluate(async (data) => {
+      window.fetch = async () => new Response(JSON.stringify(data));
+      return requireFeature('memory').refresh();
+    }, snapshot), 'real memory UI must accept the production snapshot');
+    await expect(page.locator('#memory-live-status')).toHaveText(snapshot.zram_active ? '交换区已启用' : '状态未确认');
+    await expect(page.locator('#swap-rows')).toContainText(snapshot.zram_owner);
+    assert(await page.locator('#swap-zram-size-apply-btn').isDisabled() === !snapshot.zram_online_supported,
+      'online write control must consume actual runtime capability, not mmd presence alone');
+  }
+  console.log('ZRAM producer-to-DOM contract passed: active, inactive, unknown and non-mmd snapshots');
+} finally { await memoryBrowser.close(); }
 assert(swapCgi.includes('restore_system') && swapCgi.includes('memory_restore_vm') && !customize.includes('vm_zram_apply_stock_request'), 'system restore must use the memory contract without installing a persistent vendor override');
 assert(swapCgi.includes('boot_save') && swapCgi.includes('memory_config_save') && swapCgi.includes('zram_runtime_start'), 'boot preferences and explicit online transactions must have separate entry points');
 assert(app.includes('applyZramSizeRequest') && html.includes('swap-zram-size-apply-btn'), 'ZRAM size request UI must call the backend contract');
@@ -287,7 +383,7 @@ assert(service.includes('_sleep_until_worker_cycle') && service.includes('UNIFIE
 assert(profileCgi.includes('scheduler_transition_guard_lib.sh') && profileCgi.includes('reset_auto_profile_guard'), 'explicit profile requests must reset stale automatic retry state under the shared lock');
 assert(profileCgi.includes('emit_profile_mutation_state()') && app.includes('function applyProfileMutationState(data)'), 'profile mutations must return and merge a compact verified state');
 assert(profileCgi.includes('emit_profile_transition_state()') && profileCgi.includes('stg_load'), 'compact profile state must expose primary or fallback retry terminal state');
-assert(app.includes('自动切档连续失败并已停止') && app.includes('state.profileTransition.terminal'), 'WebUI must show when automatic profile retries reached a failed terminal state');
+assert(app.includes('自动切换连续失败，已停止。') && app.includes('state.profileTransition.terminal'), 'WebUI must show when automatic profile retries reached a failed terminal state');
 assert(profileCgi.includes('if so_transition_lock_is_active; then') && profileCgi.includes('_health_status=deferred'), 'profile reads must expose transition-deferred health without racing the persisted health file');
 const profileSchedulerLockStart = profileCgi.indexOf('acquire_profile_scheduler_lock()');
 const profileSchedulerLockEnd = profileCgi.indexOf('\n}', profileSchedulerLockStart);
@@ -313,6 +409,10 @@ const mutationApplyStart = app.indexOf('function applyProfileMutationState(data)
 const mutationApplyEnd = app.indexOf('function renderProfileCards()', mutationApplyStart);
 assert(mutationApplyStart >= 0 && mutationApplyEnd > mutationApplyStart, 'profile mutation state merger is missing');
 const mutationApplySource = app.slice(mutationApplyStart, mutationApplyEnd).trim();
+const schedulerOperationStart = app.indexOf('function applySchedulerOperation(data) {');
+const schedulerOperationEnd = app.indexOf('function applyProfileState(data)', schedulerOperationStart);
+assert(schedulerOperationStart >= 0 && schedulerOperationEnd > schedulerOperationStart, 'compact merger scheduler-operation dependency is missing');
+const schedulerOperationSource = app.slice(schedulerOperationStart, schedulerOperationEnd).trim();
 const mutationState = {
   currentProfile: 'balanced', manualProfile: 'balanced', profilePolicy: 'auto',
   schedOwner: 'pixel', schedEffectiveOwner: 'pixel', gameHandoffPolicy: 'fas_rs',
@@ -324,9 +424,11 @@ const mutationState = {
     rebootRequired: 'no', autoRepairUsed: 'no'
   }
 };
-const applyMutation = new Function('state', 'PROFILES', 'syncProfileUi', 'syncHeroDesc',
-  `let latestProfileMutationState = null; let profileMutationStateRevision = 0; ${mutationApplySource}; return applyProfileMutationState;`)(
-  mutationState, { balanced: {}, battery: {} }, () => {}, () => {}
+const operationNotice = { hidden: true, textContent: '' };
+const applyMutation = new Function('state', 'PROFILES', 'syncProfileUi', 'syncHeroDesc', 'document',
+  `let latestProfileMutationState = null; let profileMutationStateRevision = 0; ${schedulerOperationSource}\n${mutationApplySource}; return applyProfileMutationState;`)(
+  mutationState, { balanced: {}, battery: {} }, () => {}, () => {},
+  { getElementById(id) { assert(id === 'scheduler-operation-notice', 'unexpected mutation fixture DOM dependency'); return operationNotice; } }
 );
 applyMutation({
   profile: 'battery', manual_profile: 'battery', policy: 'manual', sched_owner: 'pixel',
@@ -341,13 +443,21 @@ applyMutation({ scheduler_health: { status: 'deferred', reason: 'transition_in_p
 assert(mutationState.schedulerHealth.status === 'deferred' && mutationState.schedulerHealth.reason === 'transition_in_progress', 'compact profile state must refresh persisted scheduler health');
 applyMutation({ profile_transition: { key: 'profile:auto:balanced->battery', attempts: 3, terminal: 'yes', ok: 'no', result: 'failed_final' } });
 assert(mutationState.profileTransition.terminal === 'yes' && mutationState.profileTransition.attempts === 3, 'compact profile state must expose the final automatic retry result');
+applyMutation({ scheduler_operation: { id: 'fixture-op', kind: 'handoff', phase: 'running', pending: true, result_code: 0 } });
+assert(mutationState.schedulerOperation.pending && operationNotice.textContent.includes('正在后台执行'), 'accepted compact operation must remain visibly pending');
+applyMutation({ scheduler_operation: { id: 'fixture-op', kind: 'handoff', phase: 'success', pending: false, result_code: 0 } });
+assert(!mutationState.schedulerOperation.pending && operationNotice.textContent.includes('已完成'), 'terminal compact operation must replace pending notice');
 const handoffStart = profileCgi.indexOf('if [ -n "$newhandoff" ]');
 const handoffEnd = profileCgi.indexOf('\n    sbm_load_state', handoffStart);
 const handoffBody = profileCgi.slice(handoffStart, handoffEnd);
 assert(handoffBody.includes('acquire_profile_scheduler_lock') && handoffBody.includes('require_locked_verified_baseline') && handoffBody.includes('release_profile_scheduler_lock'), 'game handoff persistence must support both verified baselines under the shared scheduler lock');
 assert(handoffBody.includes('.owner_mutation_guard') && handoffBody.includes('stg_reset') && handoffBody.includes('previous policy restored'), 'explicit game handoff changes must reset the owner terminal guard with rollback');
 assert(handoffBody.includes('so_write_handoff_preference "$newhandoff" user') && handoffBody.includes('final":false'), 'game handoff must record explicit user intent and return pending when runtime reconciliation is busy');
-assert(profileCgi.includes('SO_TRANSITION_LOCK_MAX_ATTEMPTS=1 SO_TRANSITION_LOCK_RETRY_SLEEP_S=0') && app.includes("data.accepted && data.final === false") && app.includes('等待调度状态同步'), 'explicit handoff reconciliation must fail fast on a busy shared lock and keep the UI pending');
+assert(handoffBody.includes('scheduler_async_start handoff')
+  && schedulerAsyncWorker.includes('SO_TRANSITION_LOCK_MAX_ATTEMPTS=1 SO_TRANSITION_LOCK_RETRY_SLEEP_S=0')
+  && schedulerAsyncWorker.includes('sh "$MODDIR/scripts/owner_arbiter.sh" apply-tick "$MODDIR" on')
+  && app.includes('data.accepted && data.final === false') && app.includes('游戏接管设置已保存，运行状态正在更新'),
+  'explicit handoff worker must fail fast on a busy shared lock while its accepted response keeps the UI pending');
 const chooseCpuStart = customize.indexOf('choose_cpu_scheduling()');
 const chooseCpuEnd = customize.indexOf('\n}\n', chooseCpuStart);
 const chooseCpuBody = customize.slice(chooseCpuStart, chooseCpuEnd);
@@ -359,7 +469,11 @@ assert(profileCgi.includes('scheduler_boot') && profileCgi.includes('sbm_stage_m
 assert(!ownerArbiter.includes('_oa_resp="16 40 200"'), 'owner arbiter must not duplicate CPU response triplets');
 assert(!ownerArbiter.includes('command -v detect_'), 'owner arbiter must require its scheduler-detection contract');
 assert((ownerArbiter.match(/detect_external_scheduler 2>\/dev\/null/g) || []).length === 1, 'owner arbiter must scan external schedulers once per tick');
-assert(service.includes('display_state_read') && ownerArbiterCgi.includes('display_state_read') && customize.includes('scripts/display_state_lib.sh'), 'service, installer, and owner CGI must share the display-state contract');
+assert(service.includes('display_state_read') && ownerArbiterCgi.includes('scheduler_async_start tick')
+  && schedulerAsyncWorker.includes('. "$MODDIR/scripts/display_state_lib.sh"')
+  && schedulerAsyncWorker.includes('display_state_read')
+  && schedulerAsyncWorker.includes('[ "$(display_state_legacy_screen)" = on ] || exit 75')
+  && customize.includes('scripts/display_state_lib.sh'), 'service, installer, and dispatched owner worker must share the display-state contract and defer noninteractive work');
 assert(displayStateLib.includes('deviceidle get screen') && displayStateLib.includes('DRM enabled'), 'display-state contract must use DeviceIdle and document the DRM boundary');
 assert(!/enabled\)\s+_[A-Za-z0-9_]*screen=["']?on/.test(service + ownerArbiterCgi), 'DRM enabled must never directly prove an interactive screen');
 assert(schedulerDetectLib.includes('detect_external_scheduler_fresh()') && schedulerDetectLib.includes('scheduler_load_inventory()'), 'scheduler detection must separate fresh discovery from cached runtime refresh');
@@ -380,12 +494,18 @@ assert(service.includes('scripts/nr_mode_lib.sh') && nrCgi.includes('scripts/nr_
 assert(nrModeLib.includes('nr_mode_write_verified()') && nrModeLib.includes('nr_mode_save_current()'), 'NR contract must verify writes and persist a restore mode');
 assert(nrCgi.includes('"screen_off_delay_s"') && app.includes('state.nrContract'), 'WebUI NR timing must come from the backend runtime contract');
 assert(!app.includes('30-50%'), 'NR detail must not promise an unverified fixed power-saving percentage');
-assert(customize.includes('不支持的设备') && /if ! thermal_policy_prepare_snapshot "\$device" "\$OLDDIR" yes; then[\s\S]*?\n\s*abort\r?\nfi/.test(customize), 'installer must reject unknown devices and abort when current-device stock preparation fails');
+assert(customize.includes('不支持的设备')
+  && /thermal_policy_prepare_snapshot "\$device"\s*\|\|\s*\{[^\n]*\babort;\s*\}/.test(customize),
+  'installer must reject unknown devices and abort when current-device original stock preparation fails');
 const thermalSnapshotBody = shellFunction(thermalPolicyLib, 'thermal_policy_prepare_snapshot');
-assert(thermalSnapshotBody.includes('thermal_policy_snapshot_path "$_tpl_device"')
-  && thermalSnapshotBody.includes('[ "$_tpl_device" = komodo ] && _tpl_legacy_name=thermal_stock_xl.json')
-  && thermalSnapshotBody.includes('thermal_policy_capture_stock "$_tpl_candidate" "$_tpl_target"')
-  && thermalSnapshotBody.includes('thermal_policy_capture_stock /vendor/etc/thermal_info_config.json "$_tpl_target"'), 'stock preparation must preserve device-scoped snapshots, XL migration and current-device capture validation');
+assert(thermalSnapshotBody.includes('target=$(thermal_policy_snapshot_path "$1") || return 1')
+  && shellFunction(thermalPolicyLib, 'thermal_policy_snapshot_path').includes('case "$1" in caiman|komodo) ;; *) return 1')
+  && thermalSnapshotBody.includes('thermal_policy_read_original /vendor/etc/thermal_info_config.json > "$temporary"')
+  && thermalSnapshotBody.includes('thermal_policy_validate_stock "$temporary"')
+  && thermalSnapshotBody.includes('thermal_policy_stock_record_provenance "$target"')
+  && shellFunction(thermalPolicyLib, 'thermal_policy_read_original').includes('scripts/vendor_source.sh" --file "$1"')
+  && !thermalSnapshotBody.includes('OLDDIR') && !thermalSnapshotBody.includes('thermal_stock_xl.json'),
+  'stock preparation must read the current device original namespace, validate it, record provenance and never migrate an unverified historical snapshot');
 assert(customize.includes('UECAP_EXTERNAL=1') && customize.includes('UECAP_DISABLED_REASON="device_external_stock"'), 'komodo installs must use the external/stock UECap policy');
 assert(customize.includes('magisk_uecap_unavailable'), 'Magisk managed UECap state must be explicit');
 assert(!customize.includes('uecap_unsupported_device') && !customize.includes('magisk_no_baseband'), 'retired UECap disable reasons must not remain in runtime installer logic');
@@ -448,3 +568,4 @@ assert(!/https?:\/\//.test(inventoryBody), 'installer inventory must not contain
 assert(customize.includes('if [ "$_is_upgrade" -eq 0 ]; then\n    report_optional_module_inventory'), 'inventory must run on first install');
 
 console.log('optional module UI/install contracts OK');
+})().catch((error) => { console.error(error); process.exitCode = 1; });

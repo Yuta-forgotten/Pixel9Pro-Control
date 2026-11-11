@@ -3,10 +3,12 @@
 (() => {
 const state = {
   swapMode: 'system', featureVm: 'system', swapData: null,
-  swapBusy: false, swapLoading: false, zramDraft: null, zramDraftBound: false,
+  swapBusy: false, swapLoading: false, swapRevision: 0, zramDraft: null, zramDraftBound: false,
   zramOperationId: '', zramOperationPhase: '',
   bgContract: null, bgRestrictEnabled: 'on', bgRestrictBusy: false,
-  bgRestrictReadbackPending: false, bgRecoveryRequired: false, bgRestrictSuggestions: []
+  bgRestrictReadbackPending: false, bgRecoveryRequired: false, bgRestrictSuggestions: [],
+  bgRevision: 0, bgAction: null, bgDrafts: new Map(),
+  bgOperation: null, bgObserveUntil: 0, bgSuccessText: '', bgSubmittedId: ''
 };
 const core = () => requireFeature('core');
 const apiFetch = (...args) => core().apiFetch(...args);
@@ -223,15 +225,22 @@ function acceptSwapData(data) {
 }
 
 async function refreshSwap(force = false) {
-  return core().runFeatureTask(force ? `memory.swap.refresh.${Date.now()}` : 'memory.swap.refresh', async () => {
+  if (state.swapBusy && !force) return null;
+  const revision = state.swapRevision;
+  return core().runFeatureTask(`memory.swap.refresh.${revision}.${force}`, async () => {
     state.swapLoading = true;
+    let data;
     try {
-      const data = await apiFetch(API.swap, { timeoutMs: 8000, priority: force ? 'interactive' : 'normal', dedupe: !force, scope: force ? `memory.read.${Date.now()}` : 'memory.read' });
-      acceptSwapData(data); return true;
+      data = await apiFetch(API.swap, { timeoutMs: 8000, priority: force ? 'interactive' : 'normal', dedupe: !force, scope: 'memory.read' });
     } catch (err) {
-      if (core().isRequestCancelled?.(err)) return null;
+      if (core().isRequestCancelled(err) || revision !== state.swapRevision) return null;
+      refs.swapDesc.textContent = `内存状态读取失败：${err.message}`;
+      control('memory-live-status').textContent = state.swapData ? '显示上次状态' : '读取失败';
       refs.swapRows.replaceChildren(errorBlock(`内存读取失败：${err.message}`)); return false;
     } finally { state.swapLoading = false; }
+    if (revision !== state.swapRevision) return null;
+    acceptSwapData(data);
+    return true;
   });
 }
 
@@ -298,7 +307,7 @@ function normalizeBgDelay(delay) {
   return state.bgContract.delays.includes(value) ? value : state.bgContract.defaultDelay;
 }
 
-function applyBgContract(data) {
+function parseBgContract(data) {
   const raw = data?.bg_contract;
   const policyOrder = Array.isArray(raw?.policy_order) ? raw.policy_order.filter((id) => typeof id === 'string') : [];
   const delays = Array.isArray(raw?.allowed_delays) ? raw.allowed_delays.map(Number) : [];
@@ -312,11 +321,19 @@ function applyBgContract(data) {
     && delays.every((delay) => Number.isInteger(delay) && delay > 0)
     && policyOrder.includes(defaultPolicy)
     && delays.includes(defaultDelay);
-  if (!valid) throw new Error('服务返回的后台限制选项不完整，暂时无法修改');
+  if (!valid) {
+    const error = new Error('服务返回的后台限制选项不完整，暂时无法修改');
+    error.code = 'BG_CONTRACT_INVALID';
+    throw error;
+  }
+  return { policyOrder, delays, defaultPolicy, defaultDelay };
+}
 
+function applyBgContract(contract) {
+  const { policyOrder, delays, defaultPolicy, defaultDelay } = contract;
   const previousPolicy = refs.bgRestrictPolicySelect?.value;
   const previousDelay = Number(refs.bgRestrictDelaySelect?.value);
-  state.bgContract = { policyOrder, delays, defaultPolicy, defaultDelay };
+  state.bgContract = contract;
 
   refs.bgRestrictPolicySelect.replaceChildren();
   policyOrder.forEach((id) => {
@@ -364,16 +381,15 @@ function createBgDelaySelect(value) {
 }
 
 function syncBgDelayControl(policySelect, delaySelect) {
-  if (!policySelect || !delaySelect) return;
-  delaySelect.disabled = state.bgRestrictBusy || state.bgRestrictReadbackPending || policySelect.value !== 'stop_after_leave';
+  delaySelect.disabled = policySelect.value !== 'stop_after_leave';
 }
 
 function syncBgRestrictControls() {
   const busy = state.bgRestrictBusy || state.bgRestrictReadbackPending || state.bgRecoveryRequired || !state.bgContract;
   if (refs.bgRestrictToggleBtn) refs.bgRestrictToggleBtn.disabled = busy;
   if (refs.bgRestrictAddBtn) refs.bgRestrictAddBtn.disabled = busy;
-  if (refs.bgRestrictPkgInput) refs.bgRestrictPkgInput.disabled = busy;
-  if (refs.bgRestrictPolicySelect) refs.bgRestrictPolicySelect.disabled = busy;
+  if (refs.bgRestrictPkgInput) refs.bgRestrictPkgInput.disabled = !state.bgContract;
+  if (refs.bgRestrictPolicySelect) refs.bgRestrictPolicySelect.disabled = !state.bgContract;
   if (refs.bgRestrictDelaySelect) syncBgDelayControl(refs.bgRestrictPolicySelect, refs.bgRestrictDelaySelect);
   if (refs.bgRestrictRefreshBtn) refs.bgRestrictRefreshBtn.disabled = state.bgRestrictBusy;
   document.querySelectorAll('#bg-restrict-rows .bg-policy-row').forEach((row) => {
@@ -381,11 +397,23 @@ function syncBgRestrictControls() {
     const delaySelect = row.querySelector('.bg-delay-select');
     const saveBtn = row.querySelector('.bg-policy-save');
     const removeBtn = row.querySelector('.bg-policy-remove');
-    if (policySelect) policySelect.disabled = busy;
+    if (policySelect) policySelect.disabled = false;
     if (delaySelect) syncBgDelayControl(policySelect, delaySelect);
-    if (saveBtn) saveBtn.disabled = busy;
-    if (removeBtn) removeBtn.disabled = busy;
+    const saving = state.bgRestrictBusy && state.bgAction.package === row.dataset.package;
+    const dirty = state.bgDrafts.has(row.dataset.package);
+    if (saveBtn) {
+      saveBtn.disabled = busy || !dirty;
+      saveBtn.textContent = saving && state.bgAction.action === 'update' ? '保存中…' : dirty ? '保存修改' : '已保存';
+    }
+    if (removeBtn) {
+      removeBtn.disabled = busy;
+      removeBtn.textContent = saving && state.bgAction.action === 'remove' ? '移除中…' : '移除';
+    }
   });
+  refs.bgRestrictAddBtn.textContent = state.bgRestrictBusy && state.bgAction.action === 'add' ? '添加中…' : '添加应用';
+  refs.bgRestrictToggleLabel.textContent = state.bgRestrictBusy && state.bgAction.action === 'toggle'
+    ? '切换中…' : state.bgRestrictReadbackPending ? '等待确认'
+      : !state.bgContract ? '读取中…' : state.bgRestrictEnabled === 'on' ? '关闭' : '开启';
 }
 
 function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled, runtime = {}) {
@@ -430,8 +458,8 @@ function bgRestrictStatus(pkg, bucket, opBg, opAny, policy, enabled, runtime = {
   }
 }
 
-function renderBgRestrict(data) {
-  applyBgContract(data);
+function renderBgRestrict(data, contract) {
+  applyBgContract(contract);
   state.bgRestrictReadbackPending = false;
   state.bgRecoveryRequired = data.recovery_required === true;
   state.bgRestrictEnabled = data.enabled === 'on' ? 'on' : 'off';
@@ -442,17 +470,22 @@ function renderBgRestrict(data) {
     : '后台限制已关闭，应用原有设置已恢复。';
     if (state.bgRecoveryRequired) refs.bgRestrictDesc.textContent = '上次修改未完成。选择“恢复原设置”可撤销该次修改。';
   if (refs.bgRestrictRefreshBtn) refs.bgRestrictRefreshBtn.textContent = state.bgRecoveryRequired ? '恢复原设置' : '刷新';
-  refs.bgRestrictRows.replaceChildren();
-  const packages = Array.isArray(data.packages) ? data.packages : [];
+  const packages = data.packages;
   renderBgRestrictSuggestions(data.suggestions, packages);
   if (packages.length === 0) {
-    refs.bgRestrictRows.appendChild(buildInfoRow('应用列表', '尚未添加应用', 'off'));
+    refs.bgRestrictRows.replaceChildren(buildInfoRow('应用列表', '尚未添加应用', 'off'));
     syncBgRestrictControls();
     return;
   }
-  packages.forEach((p) => {
+  const existingRows = new Map([...refs.bgRestrictRows.children].map((row) => [row.dataset.package, row]));
+  const rows = packages.map((p) => {
     const policy = normalizeBgPolicy(p.policy);
     const delay = normalizeBgDelay(p.delay);
+    const existing = existingRows.get(p.pkg);
+    if (existing) {
+      existing.dataset.confirmedPolicy = policy;
+      existing.dataset.confirmedDelay = String(delay);
+    }
     const meta = BG_RESTRICT_POLICY_PRESENTATION[policy];
     const opBg = p.op_bg || '';
     const opAny = p.op_any || p.appops || '';
@@ -464,17 +497,7 @@ function renderBgRestrict(data) {
         st.cls = st.cls === 'err' ? 'warn' : 'off';
       } else { st.text = '配置已保存，实际状态尚未确认'; st.cls = 'warn'; }
     }
-    const row = document.createElement('div');
-    row.className = 'data-row bg-policy-row';
-
-    const main = document.createElement('div');
-    main.className = 'bg-policy-main';
-    const title = document.createElement('div');
-    title.className = 'bg-policy-title';
     const displayName = friendlyPackageLabel(p.pkg, p.label);
-    title.textContent = displayName;
-    const detail = document.createElement('div');
-    detail.className = 'bg-policy-detail';
     const stopStateText = {
       pending: '等待设定延时结束',
       force_stopped: '进程已停止',
@@ -484,9 +507,31 @@ function renderBgRestrict(data) {
       untracked: '首次离开前台后开始计时'
     }[stopState] || '';
     const packagePrefix = displayName !== p.pkg ? `${p.pkg} · ` : '';
-    detail.textContent = policy === 'stop_after_leave'
+    const detailText = policy === 'stop_after_leave'
       ? `${packagePrefix}${meta.label} · ${delay}分钟${stopStateText ? ` · ${stopStateText}` : ''}`
       : `${packagePrefix}${meta.label}`;
+    if (existing && (state.bgDrafts.has(p.pkg)
+      || (existing.contains(document.activeElement) && document.activeElement.matches('select, input')))) {
+      existing.querySelector('.bg-policy-title').textContent = displayName;
+      existing.querySelector('.bg-policy-detail').textContent = detailText;
+      const badge = existing.querySelector('.badge');
+      badge.textContent = st.text;
+      badge.className = `badge ${st.cls}`;
+      return existing;
+    }
+    const row = document.createElement('div');
+    row.className = 'data-row bg-policy-row';
+    row.dataset.package = p.pkg;
+    row.dataset.confirmedPolicy = policy;
+    row.dataset.confirmedDelay = String(delay);
+    const main = document.createElement('div');
+    main.className = 'bg-policy-main';
+    const title = document.createElement('div');
+    title.className = 'bg-policy-title';
+    title.textContent = displayName;
+    const detail = document.createElement('div');
+    detail.className = 'bg-policy-detail';
+    detail.textContent = detailText;
     main.appendChild(title);
     main.appendChild(detail);
 
@@ -499,76 +544,155 @@ function renderBgRestrict(data) {
 
     const controls = document.createElement('div');
     controls.className = 'bg-policy-controls';
-    const policySelect = createBgPolicySelect(policy);
-    const delaySelect = createBgDelaySelect(delay);
-    policySelect.addEventListener('change', () => syncBgDelayControl(policySelect, delaySelect));
+    const draft = state.bgDrafts.get(p.pkg);
+    const policySelect = createBgPolicySelect(draft ? draft.policy : policy);
+    const delaySelect = createBgDelaySelect(draft ? draft.delay : delay);
+    const rememberDraft = () => {
+      const next = { policy: policySelect.value, delay: Number(delaySelect.value) };
+      if (!state.bgRestrictBusy && !state.bgRestrictReadbackPending && next.policy === row.dataset.confirmedPolicy
+        && next.delay === Number(row.dataset.confirmedDelay)) state.bgDrafts.delete(p.pkg);
+      else state.bgDrafts.set(p.pkg, next);
+      syncBgRestrictControls();
+    };
+    policySelect.addEventListener('change', rememberDraft);
+    delaySelect.addEventListener('change', rememberDraft);
     const saveBtn = document.createElement('button');
     saveBtn.className = 'tiny-btn primary bg-policy-save';
     saveBtn.type = 'button';
-    saveBtn.textContent = '保存';
+    saveBtn.textContent = '保存修改';
     saveBtn.addEventListener('click', () => bgRestrictUpdate(p.pkg, policySelect.value, delaySelect.value));
     const rmBtn = document.createElement('button');
     rmBtn.className = 'tiny-btn bg-policy-remove';
     rmBtn.type = 'button';
     rmBtn.textContent = '移除';
     rmBtn.addEventListener('click', () => bgRestrictRemove(p.pkg));
-    controls.appendChild(policySelect);
-    controls.appendChild(delaySelect);
-    controls.appendChild(saveBtn);
-    controls.appendChild(rmBtn);
+    const policyField = document.createElement('label');
+    policyField.className = 'bg-field';
+    const policyLabel = document.createElement('span'); policyLabel.textContent = '限制方式';
+    policyField.append(policyLabel, policySelect);
+    const delayField = document.createElement('label');
+    delayField.className = 'bg-field';
+    const delayLabel = document.createElement('span'); delayLabel.textContent = '离开前台后';
+    delayField.append(delayLabel, delaySelect);
+    const actions = document.createElement('div'); actions.className = 'bg-row-actions';
+    actions.append(saveBtn, rmBtn);
+    controls.appendChild(policyField);
+    controls.appendChild(delayField);
+    controls.appendChild(actions);
 
     row.appendChild(main);
     row.appendChild(statusWrap);
     row.appendChild(controls);
-    refs.bgRestrictRows.appendChild(row);
+    return row;
+  });
+  [...refs.bgRestrictRows.children].filter((row) => !rows.includes(row)).forEach((row) => row.remove());
+  rows.forEach((row, index) => {
+    if (refs.bgRestrictRows.children[index] !== row) refs.bgRestrictRows.insertBefore(row, refs.bgRestrictRows.children[index] || null);
   });
   syncBgRestrictControls();
 }
 
 function showBgReadbackPending(detail = '') {
-  const message = `后台限制已提交，应用结果尚未确认${detail ? `：${detail}` : '，正在读取当前状态…'}`;
+  const message = `后台限制请求结果未确认${detail ? `：${detail}。请刷新检查，勿重复提交。` : '，正在读取当前状态…'}`;
   state.bgRestrictReadbackPending = true;
   refs.bgRestrictToggleLabel.textContent = '等待确认';
   refs.bgRestrictDesc.textContent = message;
-  refs.bgRestrictRows.replaceChildren(detail
-    ? errorBlock(`${message}。可刷新状态查看结果，刷新不会重复执行修改。`)
-    : buildInfoRow('提交状态', '已提交，正在检查应用结果', 'warn'));
   syncBgRestrictControls();
 }
 
+function showBgOperation(operation) {
+  if (state.bgOperation?.id !== operation.id && operation.pending) state.bgObserveUntil = Date.now() + 120000;
+  state.bgOperation = operation;
+  state.bgRestrictReadbackPending = true;
+  state.bgRecoveryRequired = operation.phase === 'unconfirmed' || operation.rollback === 'incomplete';
+  refs.bgRestrictRefreshBtn.textContent = state.bgRecoveryRequired ? '恢复原设置' : '刷新';
+  refs.bgRestrictDesc.textContent = operation.pending
+    ? `后台限制${operation.phase === 'queued' ? '正在等待执行' : '正在后台执行'}。可继续编辑，执行结束后再提交。`
+    : `后台限制任务未完成：${operation.error}。请选择“恢复原设置”。`;
+  syncBgRestrictControls();
+}
+
+function shouldObserveRestrictions() {
+  if (!state.bgOperation?.pending || !core().isWebUiActive()) return false;
+  if (Date.now() < state.bgObserveUntil) return true;
+  refs.bgRestrictDesc.textContent = '后台限制仍在处理或结果尚未确认，自动观察已暂停。请刷新查看进度，不会重复提交。';
+  return false;
+}
+
 async function refreshBgRestrict({ readback = false } = {}) {
-  return requireFeature('core').runFeatureTask(readback ? 'memory.bgRestrict.readback' : 'memory.bgRestrict.refresh', async () => {
+  if (state.bgRestrictBusy && !readback) return null;
+  const revision = state.bgRevision;
+  return core().runFeatureTask(`memory.bgRestrict.${revision}.${readback}`, async () => {
+    let data;
+    let contract;
     try {
-      const data = await apiFetch(API.bgRestrict, { timeoutMs: 8000, dedupe: !readback,
+      data = await apiFetch(API.bgRestrict, { timeoutMs: 8000, dedupe: !readback,
         priority: readback ? 'interactive' : 'normal', scope: readback ? 'memory.bgRestrict.readback' : 'memory.bgRestrict.read' });
       if (data?.ok === false) throw new Error(data.error || '后台限制状态读取失败');
-      renderBgRestrict(data);
-      return true;
+      if (!data.operation || typeof data.operation.pending !== 'boolean') throw new Error('后台限制状态缺少有效的任务回执');
+      if (!data.state_pending) {
+        if (!Array.isArray(data.packages)) {
+          const error = new Error('后台限制状态缺少有效的应用列表，请刷新重试');
+          error.code = 'BG_PACKAGES_INVALID';
+          throw error;
+        }
+        contract = parseBgContract(data);
+      }
     } catch (err) {
-      if (requireFeature('core').isRequestCancelled?.(err)) return null;
+      if (core().isRequestCancelled(err) || revision !== state.bgRevision) return null;
+      if (err.code === 'BG_CONTRACT_INVALID') state.bgContract = null;
+      if (err.code === 'BG_PACKAGES_INVALID') state.bgRestrictReadbackPending = true;
       if (state.bgRestrictReadbackPending) {
         showBgReadbackPending(err.message);
         return false;
       }
       syncBgRestrictControls();
-      refs.bgRestrictRows.replaceChildren();
-      refs.bgRestrictRows.appendChild(errorBlock('获取失败：' + err.message));
+      refs.bgRestrictDesc.textContent = `后台限制状态读取失败：${err.message}。请刷新重试。`;
+      if (!state.bgContract) refs.bgRestrictRows.replaceChildren(errorBlock(refs.bgRestrictDesc.textContent));
       return false;
     }
+    if (revision !== state.bgRevision) return null;
+    if (data.state_pending) {
+      showBgOperation(data.operation);
+      return true;
+    }
+    const completed = state.bgOperation?.id === data.operation.id && state.bgOperation.pending;
+    state.bgOperation = data.operation;
+    state.bgObserveUntil = 0;
+    const submitted = data.operation.id === state.bgSubmittedId;
+    if (completed && data.operation.phase === 'success' && submitted) {
+      const draft = state.bgDrafts.get(state.bgAction.package);
+      if (state.bgAction.action === 'remove' || (draft && draft.policy === state.bgAction.policy && draft.delay === state.bgAction.delay)) {
+        state.bgDrafts.delete(state.bgAction.package);
+      }
+      if (state.bgAction.action === 'add' && refs.bgRestrictPkgInput.value.trim() === state.bgAction.package) {
+        refs.bgRestrictPkgInput.value = '';
+      }
+    }
+    renderBgRestrict(data, contract);
+    if (data.operation.phase === 'failed') {
+      refs.bgRestrictDesc.textContent = `后台限制操作未完成：${data.operation.error}。${data.operation.rollback === 'complete' ? '已恢复操作前的设置。' : '请查看恢复状态。'}`;
+      if (completed) showToast(refs.bgRestrictDesc.textContent);
+    } else if (completed && data.operation.phase === 'success') {
+      showToast(submitted ? state.bgSuccessText : '后台限制操作已完成');
+    }
+    return true;
   });
 }
 
 async function forceRefreshBgRestrict() {
   if (state.bgRecoveryRequired) return bgRestrictAction({ action: 'recover' }, '已恢复请求前的后台策略');
+  if (state.bgOperation?.pending) state.bgObserveUntil = Date.now() + 120000;
   return refreshBgRestrict({ readback: true });
 }
 
 async function bgRestrictAction(body, successText) {
   if (state.bgRecoveryRequired && body.action !== 'recover') return false;
-  if (state.bgRestrictBusy || state.bgRestrictReadbackPending) return false;
+  if (state.bgRestrictBusy || (state.bgRestrictReadbackPending && body.action !== 'recover')) return false;
   state.bgRestrictBusy = true;
+  state.bgRevision += 1;
+  state.bgAction = body;
   syncBgRestrictControls();
-  let committed = false;
   try {
     const data = await apiFetch(API.bgRestrict, {
       method: 'POST',
@@ -576,18 +700,19 @@ async function bgRestrictAction(body, successText) {
       body: JSON.stringify(body),
       timeoutMs: 10000, priority: 'interactive', scope: 'memory.bgRestrict'
     });
-    if (data?.ok !== true || data.committed === false) throw new Error(data?.error || '后台限制保存结果尚未确认');
-    committed = true;
-    showBgReadbackPending();
-    if (await refreshBgRestrict({ readback: true }) !== true) {
-      showToast('后台限制已提交，应用结果尚未确认；请刷新核对');
-      return false;
-    }
-    showToast(successText);
+    if (data.ok !== true || data.accepted !== true || data.final !== false) throw new Error('后台限制请求未返回有效的任务回执');
+    if (!data.operation || typeof data.operation.pending !== 'boolean') throw new Error('后台限制请求缺少有效的任务回执');
+    state.bgSubmittedId = data.operation.id;
+    state.bgSuccessText = successText;
+    showBgOperation(data.operation);
+    showToast('后台限制操作已开始，正在后台处理');
+    queueNextPoll(2000);
+    void refreshBgRestrict({ readback: true });
     return true;
   } catch (e) {
-    if (committed) showBgReadbackPending(e.message);
-    showToast(`${committed ? '配置已提交，应用结果尚未确认' : '请求失败'}：${e.message}`);
+    const unknown = !e.status && !['REQUEST_QUEUE_TIMEOUT', 'REQUEST_QUEUE_FULL', 'AUTH_REQUIRED', 'NATIVE_BUSY'].includes(e.code);
+    if (unknown) showBgReadbackPending(e.message);
+    showToast(`${unknown ? '请求结果未确认，请刷新检查' : '请求未完成'}：${e.message}`);
     return false;
   } finally {
     state.bgRestrictBusy = false;
@@ -610,14 +735,10 @@ async function bgRestrictAdd() {
   const policy = normalizeBgPolicy(refs.bgRestrictPolicySelect.value);
   const delay = normalizeBgDelay(refs.bgRestrictDelaySelect.value);
   const suggestion = state.bgRestrictSuggestions.find((item) => item.pkg === pkg);
-  const ok = await bgRestrictAction(
+  return bgRestrictAction(
     { action: 'add', package: pkg, policy, delay },
     `已添加 ${friendlyPackageLabel(pkg, suggestion?.label)}`
   );
-  if (ok) {
-    refs.bgRestrictPkgInput.value = '';
-    syncBgPackageHint();
-  }
 }
 
 async function bgRestrictUpdate(pkg, policy, delay) {
@@ -634,7 +755,9 @@ async function bgRestrictRemove(pkg) {
 
 async function memoryMutation(payload, success) {
   if (state.swapBusy) return null;
+  state.swapRevision += 1;
   state.swapBusy = true; syncZramRequestControl();
+  showToast('正在提交内存设置…');
   try {
     const result = await apiFetch(API.swap, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload), timeoutMs: 10000, priority: 'interactive', scope: 'memory.swap' });
@@ -700,6 +823,7 @@ async function recoverMemory() { await memoryMutation({ mode: 'recover' }, '恢�
 
 registerFeature('memory', {
   refresh: refreshSwap, refreshRestrictions: refreshBgRestrict,
+  shouldObserveRestrictions,
   isRefreshing: () => state.swapLoading,
   getSwapMode: () => state.featureVm, getSwapData: () => state.swapData,
   friendlyPackageLabel, buildSwapDetail, openSwapTuneModal, closeSwapTuneModal,

@@ -50,12 +50,8 @@ bg_package_presence() {
 
 bg_record_observation() {
     _bgo_pkg="$1"
-    _bgo_bucket=$(bg_read_standby_bucket "$_bgo_pkg") || return 1
-    _bgo_bg=$(bg_read_appop_mode "$_bgo_pkg" RUN_IN_BACKGROUND) || return 1
-    _bgo_any=$(bg_read_appop_mode "$_bgo_pkg" RUN_ANY_IN_BACKGROUND) || return 1
-    case "$_bgo_bucket" in ''|*[!A-Za-z0-9_]*) return 1 ;; esac
     bg_table_replace "$MODDIR/.bg_restrict_observed" "$_bgo_pkg" \
-        "$_bgo_pkg|$_bgo_bucket|$_bgo_bg|$_bgo_any|$(cat /proc/sys/kernel/random/boot_id)|$(date +%s)"
+        "$_bgo_pkg|$2|$3|$4|$(cat /proc/sys/kernel/random/boot_id)|$(date +%s)"
 }
 
 bg_is_valid_policy() {
@@ -226,13 +222,10 @@ bg_record_baseline() {
     state_read_entry "$BG_BASELINE_FILE" >/dev/null || return 1
     bg_baseline_line "$_bg_record_pkg" >/dev/null 2>&1 && return 0
 
-    _bg_record_bucket=$(bg_read_standby_bucket "$_bg_record_pkg")
-    _bg_record_op_bg=$(bg_read_appop_mode "$_bg_record_pkg" RUN_IN_BACKGROUND) || return 1
-    _bg_record_op_any=$(bg_read_appop_mode "$_bg_record_pkg" RUN_ANY_IN_BACKGROUND) || return 1
-
-    _bg_record_bucket_arg=$(bg_bucket_to_set_arg "$_bg_record_bucket")
+    # The caller already owns the actual request-entry snapshot.
+    _bg_record_bucket_arg=$(bg_bucket_to_set_arg "$2")
     [ -n "$_bg_record_bucket_arg" ] || return 1
-    _bg_record_row=$(printf '%s|%s|%s|%s' "$_bg_record_pkg" "$_bg_record_bucket" "$_bg_record_op_bg" "$_bg_record_op_any")
+    _bg_record_row=$(printf '%s|%s|%s|%s' "$_bg_record_pkg" "$2" "$3" "$4")
     bg_table_replace "$BG_BASELINE_FILE" "$_bg_record_pkg" "$_bg_record_row"
 }
 
@@ -315,31 +308,42 @@ bg_apply_policy() {
     _bg_apply_pkg="$1"
     _bg_apply_policy=$(bg_normalize_policy "$2")
     case "$_bg_apply_pkg" in ''|*[!a-zA-Z0-9._]*) return 1 ;; esac
-    _bg_before_bucket=$(bg_read_standby_bucket "$_bg_apply_pkg")
-    _bg_before_bucket=$(bg_bucket_to_set_arg "$_bg_before_bucket")
-    _bg_before_bg=$(bg_read_appop_mode "$_bg_apply_pkg" RUN_IN_BACKGROUND) \
-        && _bg_before_any=$(bg_read_appop_mode "$_bg_apply_pkg" RUN_ANY_IN_BACKGROUND) \
-        && [ -n "$_bg_before_bucket" ] || return 1
-    bg_record_baseline "$_bg_apply_pkg" || return 1
+    if [ "${BG_TX_ACTIVE:-0}" = 1 ]; then
+        _bg_before_row=$(awk -F'|' -v pkg="$_bg_apply_pkg" '$1==pkg {print; found=1; exit} END {exit !found}' "$BG_TX_ROOT/runtime") || return 1
+        IFS='|' read -r _bg_before_pkg _bg_before_bucket _bg_before_bg _bg_before_any <<EOF
+$_bg_before_row
+EOF
+    else
+        _bg_before_bucket=$(bg_read_standby_bucket "$_bg_apply_pkg")
+        _bg_before_bucket=$(bg_bucket_to_set_arg "$_bg_before_bucket")
+        _bg_before_bg=$(bg_read_appop_mode "$_bg_apply_pkg" RUN_IN_BACKGROUND) \
+            && _bg_before_any=$(bg_read_appop_mode "$_bg_apply_pkg" RUN_ANY_IN_BACKGROUND) \
+            && [ -n "$_bg_before_bucket" ] || return 1
+    fi
+    bg_record_baseline "$_bg_apply_pkg" "$_bg_before_bucket" "$_bg_before_bg" "$_bg_before_any" || return 1
+    # All policies write the same three owned controls. Build the target from
+    # the real baseline once, then do one authoritative readback of each value.
+    _bg_target_bucket=restricted; _bg_target_bg=ignore; _bg_target_any=ignore
     case "$_bg_apply_policy" in
-        bucket)
-            bg_am set-standby-bucket --user "$BG_USER_ID" "$_bg_apply_pkg" rare 2>/dev/null \
-                && bg_restore_appops_from_baseline "$_bg_apply_pkg" \
-                && bg_bucket_matches "$_bg_apply_pkg" rare
-            ;;
-        block_services)
-            bg_am set-standby-bucket --user "$BG_USER_ID" "$_bg_apply_pkg" restricted 2>/dev/null \
-                && bg_cmd appops set --user "$BG_USER_ID" "$_bg_apply_pkg" RUN_IN_BACKGROUND ignore 2>/dev/null \
-                && bg_restore_run_any_from_baseline "$_bg_apply_pkg" \
-                && bg_bucket_matches "$_bg_apply_pkg" restricted \
-                && bg_appop_matches "$_bg_apply_pkg" RUN_IN_BACKGROUND ignore
-            ;;
-        block_all|stop_after_leave|*)
-            bg_apply_restrict "$_bg_apply_pkg"
-            ;;
+        bucket|block_services)
+            _bg_target_baseline=$(bg_baseline_line "$_bg_apply_pkg") || return 1
+            bg_parse_baseline "$_bg_target_baseline"
+            _bg_target_any="$_bg_base_op_any"
+            if [ "$_bg_apply_policy" = bucket ]; then
+                _bg_target_bucket=rare; _bg_target_bg="$_bg_base_op_bg"
+            fi ;;
     esac
+    bg_am set-standby-bucket --user "$BG_USER_ID" "$_bg_apply_pkg" "$_bg_target_bucket" \
+        && bg_set_appop_mode "$_bg_apply_pkg" RUN_IN_BACKGROUND "$_bg_target_bg" \
+        && bg_set_appop_mode "$_bg_apply_pkg" RUN_ANY_IN_BACKGROUND "$_bg_target_any" \
+        && bg_bucket_matches "$_bg_apply_pkg" "$_bg_target_bucket" \
+        && bg_appop_matches "$_bg_apply_pkg" RUN_IN_BACKGROUND "$_bg_target_bg" \
+        && bg_appop_matches "$_bg_apply_pkg" RUN_ANY_IN_BACKGROUND "$_bg_target_any"
     _bg_apply_rc=$?
     if [ "$_bg_apply_rc" -ne 0 ]; then
+        # The foreground transaction restores all affected packages together.
+        # Standalone boot application still owns its local compensation below.
+        [ "${BG_TX_ACTIVE:-0}" != 1 ] || return 1
         bg_am set-standby-bucket --user "$BG_USER_ID" "$_bg_apply_pkg" "$_bg_before_bucket" \
             && bg_set_appop_mode "$_bg_apply_pkg" RUN_IN_BACKGROUND "$_bg_before_bg" \
             && bg_set_appop_mode "$_bg_apply_pkg" RUN_ANY_IN_BACKGROUND "$_bg_before_any" \
@@ -350,7 +354,7 @@ bg_apply_policy() {
     fi
     # The mutation has already read back its writes. A supplementary receipt
     # lets GET remain bounded without rescanning every package through Binder.
-    bg_record_observation "$_bg_apply_pkg" \
+    bg_record_observation "$_bg_apply_pkg" "$_bg_target_bucket" "$_bg_target_bg" "$_bg_target_any" \
         || log -t pixel9pro_ctrl 'WARNING: background policy applied; observation receipt unavailable'
     return 0
 }

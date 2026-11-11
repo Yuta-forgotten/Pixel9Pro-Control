@@ -807,20 +807,37 @@ function invalidateFullProfileStateRefresh() {
   profileFullStateGeneration += 1;
 }
 
-function refreshFullProfileState() {
+function profileReadNotice(kind, error) {
+  const notice = document.getElementById('profile-operation-notice');
+  if (error) {
+    notice.dataset.readFailure = kind;
+    notice.hidden = false;
+    notice.textContent = `调度${kind === 'full' ? '完整配置' : '状态'}读取失败：${error.message}`;
+    appendLog(notice.textContent, 'err');
+  } else if (notice.dataset.readFailure === kind) {
+    delete notice.dataset.readFailure;
+    notice.hidden = true;
+    notice.textContent = '';
+  }
+}
+
+async function refreshFullProfileState() {
   const generation = ++profileFullStateGeneration;
   const mutationRevision = profileMutationStateRevision;
-  return apiFetch(API.profile, { timeoutMs: SCHEDULER_READ_TIMEOUTS.full, priority: 'background', scope: 'profile.full.read' })
-    .then((fullState) => {
-      if (generation !== profileFullStateGeneration) return false;
-      const newerMutationState = mutationRevision !== profileMutationStateRevision
-        ? latestProfileMutationState
-        : null;
-      applyProfileState(fullState);
-      if (newerMutationState) applyProfileMutationState(newerMutationState);
-      return true;
-    })
-    .catch((err) => isCancelled(err) ? null : false);
+  let fullState;
+  try {
+    fullState = await apiFetch(API.profile, { timeoutMs: SCHEDULER_READ_TIMEOUTS.full, priority: 'background', scope: 'profile.full.read' });
+  } catch (error) {
+    if (isCancelled(error) || generation !== profileFullStateGeneration) return null;
+    profileReadNotice('full', error);
+    return false;
+  }
+  if (generation !== profileFullStateGeneration) return null;
+  const newerMutationState = mutationRevision !== profileMutationStateRevision ? latestProfileMutationState : null;
+  applyProfileState(fullState);
+  if (newerMutationState) applyProfileMutationState(newerMutationState);
+  profileReadNotice('full');
+  return true;
 }
 
 async function confirmProfileMutation(expected) {
@@ -835,7 +852,9 @@ async function confirmProfileMutation(expected) {
 function reconcileProfileCommit(expected, message) {
   const revision = profileMutationStateRevision;
   const notice = document.getElementById('profile-operation-notice');
-  if (notice) { notice.hidden = false; notice.textContent = `${message}，正在更新运行状态。`; }
+  delete notice.dataset.readFailure;
+  notice.hidden = false;
+  notice.textContent = `${message}，正在更新运行状态。`;
   void apiFetch(`${API.profile}?compact=1`, { timeoutMs: SCHEDULER_READ_TIMEOUTS.compact,
     dedupe: false, priority: 'normal', scope: 'profile.commit.readback' })
     .then((readback) => {
@@ -850,71 +869,27 @@ function reconcileProfileCommit(expected, message) {
     });
 }
 
-async function loadSavedProfile() {
-  try {
+function refreshProfileState() {
+  return core().runFeatureTask('profile.state.read', async () => {
     const revision = profileMutationStateRevision;
-    const data = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: SCHEDULER_READ_TIMEOUTS.compact, priority: 'normal', scope: 'profile.read' });
+    let data;
+    try {
+      data = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: SCHEDULER_READ_TIMEOUTS.compact, priority: 'normal', scope: 'profile.read' });
+    } catch (error) {
+      if (isCancelled(error)) return null;
+      profileReadNotice('compact', error);
+      return false;
+    }
     if (revision === profileMutationStateRevision) applyProfileMutationState(data);
-    void refreshFullProfileState();
+    profileReadNotice('compact');
     return true;
-  } catch (err) {
-    if (isCancelled(err)) return null;
-    state.currentProfile = 'unknown';
-    state.schedulerMode = 'off';
-    state.schedulerCapability = 'unknown';
-    state.schedulerCapabilityReason = 'state_unavailable';
-    state.manualProfile = 'balanced';
-    state.profilePolicy = 'manual';
-    state.schedOwner = 'pixel';
-    state.schedEffectiveOwner = 'pixel';
-    state.gameHandoffPolicy = 'off';
-    state.arbiterState = '';
-    state.arbiterApplyResult = '';
-    state.arbiterReason = '';
-    state.uperfDetected = false;
-    state.uperfModuleId = '';
-    state.uperfModuleName = '';
-    state.uperfModulePath = '';
-    state.uperfModuleSource = '';
-    state.uperfModuleState = '';
-    state.uperfModuleEnabled = 'no';
-    state.uperfProcessAlive = 'no';
-    state.uperfActive = 'no';
-    state.fasRsDetected = false;
-    state.fasRsModuleId = '';
-    state.fasRsModuleName = '';
-    state.fasRsModulePath = '';
-    state.fasRsModuleSource = '';
-    state.fasRsModuleState = '';
-    state.fasRsModuleEnabled = 'no';
-    state.fasRsOwnerState = '';
-    state.fasRsMode = '';
-    state.fasRsProcessAlive = 'no';
-    state.fasRsRuntimeState = '';
-    state.fasRsRuntimeOwnerActive = 'no';
-    state.fasRsRuntimeTarget = '';
-    state.fasRsActive = 'no';
-    state.externalSchedulerDetected = false;
-    state.externalSchedulerActive = false;
-    state.externalSchedulerId = '';
-    state.externalSchedulerName = '';
-    state.externalSchedulerKind = '';
-    state.externalSchedulerPath = '';
-    state.externalSchedulerSource = '';
-    state.externalSchedulerState = '';
-    state.externalSchedulerEnabled = 'no';
-    state.effectiveSchedulerOwner = 'pixel';
-    state.effectiveSchedulerName = 'Pixel9Pro-Control';
-    state.effectiveSchedulerKind = 'pixel';
-    state.effectiveSchedulerMode = '';
-    state.profileSurface = 'authoritative';
-    state.profileSurfaceStale = false;
-    state.profileSurfaceNote = '';
-    state.autoReason = '';
-    syncProfileUi();
-    syncHeroDesc();
-    return false;
-  }
+  });
+}
+
+async function loadSavedProfile() {
+  const result = await refreshProfileState();
+  if (result === true) void refreshFullProfileState();
+  return result;
 }
 
 async function refreshCpuTask() {
@@ -940,11 +915,6 @@ async function refreshCpuTask() {
       home.freq.textContent = current ? `${(current / 1000).toFixed(0)} MHz` : '—';
       home.fill.style.transform = `scaleX(${scale.toFixed(3)})`;
     });
-    const mutationRevision = profileMutationStateRevision;
-    try {
-      const profileData = await apiFetch(`${API.profile}?compact=1`, { timeoutMs: SCHEDULER_READ_TIMEOUTS.compact, priority: 'background', scope: 'profile.read' });
-      if (mutationRevision === profileMutationStateRevision) applyProfileMutationState(profileData);
-    } catch (err) { if (!isCancelled(err)) {} }
     return true;
   } catch (err) {
     if (isCancelled(err)) return null;
@@ -968,7 +938,11 @@ async function refreshCpuTask() {
 }
 
 async function refreshCpu() {
-  return core().runFeatureTask('profile.cpu.refresh', () => refreshCpuTask());
+  return core().runFeatureTask('profile.cpu.refresh', async () => {
+    const results = await Promise.all([refreshCpuTask(), refreshProfileState()]);
+    if (results.includes(false)) return false;
+    return results.every((result) => result === null) ? null : true;
+  });
 }
 
 async function applyProfile(profile) {

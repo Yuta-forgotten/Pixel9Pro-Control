@@ -4,7 +4,7 @@ set -u
 SOURCE_ROOT="$1"
 MODDIR="$2/module"
 mkdir -p "$MODDIR/scripts" "$MODDIR/webroot/cgi-bin" "$MODDIR/.background_worker.lock" || exit 2
-for lib in background_tasks_lib.sh runtime_defaults_lib.sh thermal_history_lib.sh nr_mode_lib.sh profile_state_lib.sh; do
+for lib in background_tasks_lib.sh runtime_defaults_lib.sh state_io_lib.sh thermal_history_lib.sh nr_mode_lib.sh profile_state_lib.sh; do
     cp "$SOURCE_ROOT/scripts/$lib" "$MODDIR/scripts/" || exit 2
 done
 cp "$SOURCE_ROOT/tests/fixtures/thermal_snapshot.sh" "$MODDIR/webroot/cgi-bin/_thermal_cache.sh" || exit 2
@@ -47,6 +47,7 @@ sleep() {
     # Commit the highest pause while the production worker is waiting.
     printf on > "$MODDIR/.idle_isolate_mode"
 }
+module_lock_write_owner "$SERVICE_LOCK_DIR" || exit 1
 control_worker_main || exit 1
 [ "$(cat "$MODDIR/collector_calls")" = sysfs ] || exit 1
 [ "$(cat "$MODDIR/sleep_cadence")" = 900 ] || exit 1

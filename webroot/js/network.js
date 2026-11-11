@@ -27,6 +27,8 @@ const state = {
   ntpServer: '',
   ntpServers: [],
   ntpBusy: false,
+  ntpAction: '',
+  ntpRequestedServer: '',
   deviceClockTimer: null
 };
 
@@ -119,16 +121,23 @@ function renderNrSwitchRows(data) {
     { label: '亮屏后恢复模式', value: data.saved_nr_mode, cls: 'off' }
   ];
   rows.forEach((row) => refs.nrSwitchRows.appendChild(buildInfoRow(row.label, row.value, row.cls)));
-  refs.nrSwitchToggleLabel.textContent = isOn ? '关闭' : '开启';
   const delaySeconds = Number(data.screen_off_delay_s);
   const delayText = Number.isFinite(delaySeconds) ? formatDuration(delaySeconds) : '所设延迟';
   refs.nrSwitchDesc.textContent = isOn
     ? `已开启 · 息屏 ${delayText} 后切换为 4G，亮屏后恢复原网络模式。`
     : `开启后，息屏达到 ${delayText} 时切换为 4G，亮屏后恢复原网络模式。`;
   if (state.nrRecoveryPending) {
-    refs.nrSwitchToggleLabel.textContent = '重试恢复';
     refs.nrSwitchDesc.textContent = '功能已关闭，原网络模式尚未恢复。选择“重试恢复”可再次执行恢复。';
   }
+  syncNrSwitchButton();
+}
+
+function syncNrSwitchButton() {
+  const button = document.getElementById('nr-switch-toggle-btn');
+  button.disabled = state.nrBusy;
+  button.setAttribute('aria-busy', String(state.nrBusy));
+  refs.nrSwitchToggleLabel.textContent = state.nrBusy ? '切换中…'
+    : state.nrRecoveryPending ? '重试恢复' : state.nrSwitch === 'on' ? '关闭' : '开启';
 }
 
 function syncStandbyGuardButtons() {
@@ -605,24 +614,31 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
   const nonce = ++state.uecapVerifyNonce;
   const label = UECAP_MODE_PRESENTATION[mode]?.name || mode;
   const deadline = Date.now() + UECAP_VERIFY_TIMEOUT_MS;
-  let lastData = initialData || null;
+  let lastData = initialData;
   let lastErr = '';
+  const finishIfConfirmed = (data) => {
+    const confirmedHash = expectedHash || getUecapModeHash(data, mode);
+    if (data.requested_mode !== mode || data.active_mode !== mode
+      || !confirmedHash || data.target_hash !== confirmedHash) return false;
+    state.uecapBusy = false;
+    state.uecapPendingMode = '';
+    state.uecapExpectedHash = '';
+    state.uecapVerifyState = 'idle';
+    state.uecapVerifyMessage = '';
+    renderUecapRows(data);
+    showToast(`系统配置文件已更新：${label}`);
+    appendLog(`网络能力配置文件校验通过：${label}`, 'ok');
+    return true;
+  };
+
+  // POST already returns the locked file readback. Do not hold the controls
+  // for a fixed sleep and another GET when that receipt proves this result.
+  if (finishIfConfirmed(initialData)) return;
 
   state.uecapPendingMode = mode;
   state.uecapExpectedHash = expectedHash || '';
   state.uecapVerifyState = 'switching';
-  renderUecapRows(lastData || {
-    policy: state.uecapPolicy,
-    disabled: false,
-    backend: state.uecapBackend,
-    reinstall_required: state.uecapReinstallRequired,
-    uecap_contract: { mode_order: state.uecapContract?.modeOrder || [], default_mode: state.uecapContract?.defaultMode || mode },
-    requested_mode: mode,
-    active_mode: state.uecapActiveMode || 'custom',
-    target_hash: expectedHash || 'unknown'
-  });
-
-  await sleep(1800);
+  renderUecapRows(lastData);
 
   while (state.uecapVerifyNonce === nonce && Date.now() < deadline && core().isWebUiActive()) {
     state.uecapVerifyState = 'verifying';
@@ -636,22 +652,7 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
       state.uecapActiveMode = data.active_mode || 'custom';
       renderUecapRows(data);
 
-      const confirmedHash = expectedHash || getUecapModeHash(data, mode);
-      const confirmed = data.requested_mode === mode
-        && data.active_mode === mode
-        && (!confirmedHash || data.target_hash === confirmedHash);
-
-      if (confirmed) {
-        state.uecapBusy = false;
-        state.uecapPendingMode = '';
-        state.uecapExpectedHash = '';
-        state.uecapVerifyState = 'idle';
-        state.uecapVerifyMessage = '';
-        renderUecapRows(data);
-        showToast(`系统配置文件已更新：${label}`);
-        appendLog(`网络能力配置文件校验通过：${label}`, 'ok');
-        return;
-      }
+      if (finishIfConfirmed(data)) return;
     } catch (err) {
       if (requireFeature('core').isRequestCancelled?.(err)) {
         lastErr = '检查已暂停，请刷新查看结果';
@@ -682,6 +683,7 @@ async function verifyUecapSwitch(mode, expectedHash, initialData) {
 async function toggleNrSwitch() {
   if (state.nrBusy) return;
   state.nrBusy = true;
+  syncNrSwitchButton();
   try {
     const request = state.nrRecoveryPending ? { action: 'set', enabled: 'off' } : { action: 'toggle' };
     const data = await apiFetch(API.nrSwitch, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), timeoutMs: NETWORK_WRITE_TIMEOUT_MS, priority: 'interactive', scope: 'network.nr' });
@@ -703,7 +705,6 @@ async function toggleNrSwitch() {
     if (err?.payload?.committed && err.payload.nr_switch === 'off') {
       state.nrRecoveryPending = true;
       state.nrSwitch = 'off';
-      refs.nrSwitchToggleLabel.textContent = '重试恢复';
       refs.nrSwitchDesc.textContent = '自动切换已关闭，原网络模式恢复结果未确认。请刷新查看结果。';
     }
     const message = err?.message || String(err);
@@ -711,6 +712,7 @@ async function toggleNrSwitch() {
     appendLog(`息屏切换 4G 请求失败：${message}`, 'err');
   } finally {
     state.nrBusy = false;
+    syncNrSwitchButton();
   }
 }
 
@@ -943,6 +945,7 @@ function renderNtpCard(data) {
   servers.forEach((srv) => {
     const card = document.createElement('button');
     card.type = 'button';
+    card.dataset.server = srv.id;
     card.setAttribute('role', 'radio');
     card.setAttribute('aria-checked', String(srv.id === current));
     card.className = `opt-item${srv.id === current ? ' ntp-selected' : ''}`;
@@ -977,6 +980,20 @@ function renderNtpCard(data) {
   refs.ntpDesc.textContent = data.ntp_server_source === 'system_default'
     ? '当前由系统管理时间服务器。选择下方服务器后，将保存为指定服务器。'
     : managed ? `当前服务器：${ntpLabel}（${current}）` : `当前服务器：${current || '未读取'}。选择下方服务器可更改。`;
+  syncNtpControls();
+}
+
+function syncNtpControls() {
+  const syncButton = document.getElementById('ntp-sync-btn');
+  syncButton.disabled = state.ntpBusy;
+  syncButton.setAttribute('aria-busy', String(state.ntpBusy));
+  refs.ntpSyncLabel.textContent = state.ntpBusy ? state.ntpAction === 'sync' ? '同步中…' : '切换中…' : '立即同步';
+  refs.ntpServerList.querySelectorAll('button[data-server]').forEach((card) => {
+    const submitting = state.ntpBusy && state.ntpAction === 'server' && card.dataset.server === state.ntpRequestedServer;
+    card.disabled = state.ntpBusy;
+    card.setAttribute('aria-busy', String(submitting));
+    card.querySelector('.badge').textContent = submitting ? '提交中…' : card.dataset.server === state.ntpServer ? '当前使用' : '选择';
+  });
 }
 
 async function refreshNtp({ readback = false } = {}) {
@@ -994,6 +1011,10 @@ async function refreshNtp({ readback = false } = {}) {
 async function setNtpServer(server) {
   if (state.ntpBusy || server === state.ntpServer) return;
   state.ntpBusy = true;
+  state.ntpAction = 'server';
+  state.ntpRequestedServer = server;
+  syncNtpControls();
+  refs.ntpDesc.textContent = '正在保存时间服务器…';
   try {
     const data = await apiFetch(API.ntp, {
       method: 'POST',
@@ -1005,6 +1026,7 @@ async function setNtpServer(server) {
       const label = state.ntpServers.find((s) => s.id === server)?.name || server;
       const readback = await refreshNtp({ readback: true });
       if (!readback || state.ntpServer !== server) {
+        refs.ntpDesc.textContent = '服务器设置已提交，实际配置尚未确认。请刷新检查。';
         showToast(`服务器设置已提交，${label} 的实际配置未确认`);
         appendLog(`NTP 服务器设置已提交，实际配置未确认：${server}`, 'warn');
       } else if (data.refreshed === false) {
@@ -1015,23 +1037,29 @@ async function setNtpServer(server) {
         appendLog(`NTP 服务器已切换，系统已接受校时请求：${server}`, 'ok');
       }
     } else {
+      refs.ntpDesc.textContent = `服务器设置未完成：${data.error || '未提供错误详情'}`;
       showToast(`服务器切换失败：${data.error || '未提供错误详情'}`);
     }
   } catch (err) {
     if (!requireFeature('core').isRequestCancelled?.(err)) {
       const message = err?.message || String(err);
+      refs.ntpDesc.textContent = `服务器设置请求未完成：${message}`;
       showToast(`服务器切换失败：${message}`);
       appendLog(`NTP 切换失败：${message}`, 'err');
     }
   } finally {
     state.ntpBusy = false;
+    state.ntpAction = '';
+    state.ntpRequestedServer = '';
+    syncNtpControls();
   }
 }
 
 async function syncNtp() {
   if (state.ntpBusy) return;
   state.ntpBusy = true;
-  refs.ntpSyncLabel.textContent = '同步中…';
+  state.ntpAction = 'sync';
+  syncNtpControls();
   try {
     const data = await apiFetch(API.ntp, {
       method: 'POST',
@@ -1058,8 +1086,9 @@ async function syncNtp() {
       appendLog(`NTP 同步失败：${message}`, 'err');
     }
   } finally {
-    refs.ntpSyncLabel.textContent = '立即同步';
     state.ntpBusy = false;
+    state.ntpAction = '';
+    syncNtpControls();
   }
 }
 
@@ -1067,18 +1096,19 @@ registerFeature('network', {
   async refresh() {
     if (!core().isWebUiActive()) return null;
     return requireFeature('core').runFeatureTask('network.refresh', async () => {
-      // Short reads share one stage. UECap and baseband both perform slow
-      // runtime inspection, so they are isolated in a second stage with
-      // endpoint-specific deadlines instead of expiring in the Request Hub
-      // queue behind unrelated controls.
-      const fast = await Promise.allSettled([
+      const results = await Promise.all([
         refreshNrSwitch(), refreshNtp(), refreshStandbyGuard()
       ]);
-      if (!core().isWebUiActive()) return null;
-      const slow = await Promise.allSettled([
+      if (results.some((result) => result === false)) return false;
+      return results.every((result) => result === null) ? null : true;
+    });
+  },
+  refreshDiagnostics() {
+    if (!core().isWebUiActive()) return Promise.resolve(null);
+    return core().runFeatureTask('network.diagnostics', async () => {
+      const results = await Promise.all([
         refreshUecap(), refreshBaseband()
       ]);
-      const results = fast.concat(slow).map((item) => item.status === 'fulfilled' ? item.value : false);
       if (results.some((result) => result === false)) return false;
       return results.every((result) => result === null) ? null : true;
     });

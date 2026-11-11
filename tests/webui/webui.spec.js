@@ -105,7 +105,7 @@ test('性能、温控与详情交互保持可用', async ({ page }) => {
   await page.locator('[data-range="120"]').click();
   await expect(page.locator('.analytics-hero-badge')).toHaveText('2 小时');
   await page.locator('[data-thermal-sensor="battery"]').click();
-  await expect(page.locator('.analytics-hero-kicker')).toHaveText('最近电池温度');
+  await expect(page.locator('.analytics-hero-kicker')).toHaveText('最近记录的电池温度');
   await expect(page.locator('.analytics-hero-value')).toHaveText('34.2°C');
   await page.locator('#detail-close-x').click();
   await expect(page.locator('#modal-detail')).not.toHaveClass(/open/);
@@ -135,10 +135,11 @@ test('温度历史区间与传感器切换有记录、有曲线且读取失败�
   page.on('request', (request) => requests.push(request.url()));
   await page.goto('/');
   await waitForWebuiReady(page);
-  await page.locator('#home-temp-chart-btn').click();
+  await expect(page.locator('#home-temp-chart-btn')).toHaveCount(0);
+  await page.locator('#energy-btn').click();
   await expect(page.locator('#detail-title')).toHaveText('温度历史');
   await expect(page.locator('.analytics-hero-value')).toHaveText('39.1°C');
-  await expect(page.locator('.analytics-chart-legend')).toContainText('3 个有效点');
+  await expect(page.locator('.analytics-chart-legend')).toContainText('3 条有效记录');
   await page.locator('[data-range="120"]').click();
   await expect(page.locator('.analytics-hero-badge')).toHaveText('2 小时');
   await expect(page.locator('.analytics-hero-value')).toHaveText('39.1°C');
@@ -160,7 +161,7 @@ test('温度历史区间与传感器切换有记录、有曲线且读取失败�
   await page.screenshot({ path: testInfo.outputPath('thermal-history-2h.png'), fullPage: true });
   await page.locator('[data-thermal-sensor="battery"]').click();
   await expect(page.locator('.analytics-hero-value')).toHaveText('34.2°C');
-  await expect(page.locator('.analytics-hero-kicker')).toHaveText('最近电池温度');
+  await expect(page.locator('.analytics-hero-kicker')).toHaveText('最近记录的电池温度');
   await page.locator('[data-range="custom"]').click();
   await expect(page.locator('.analytics-custom-range')).toBeVisible();
   await page.locator('.analytics-custom-range select').selectOption('14400');
@@ -171,11 +172,11 @@ test('温度历史区间与传感器切换有记录、有曲线且读取失败�
   // Download exactly the displayed window, without another collection request.
   await page.locator('.analytics-export summary').click();
   await page.screenshot({ path: testInfo.outputPath('thermal-history-export.png'), fullPage: true });
-  await expect(page.getByRole('button', { name: '导出当前区间' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '导出所选记录' })).toBeEnabled();
   const beforeExport = requests.filter((url) => url.includes('history=1')).length;
   await page.getByLabel('温度历史导出格式').selectOption('json');
   const jsonDownloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '导出当前区间' }).click();
+  await page.getByRole('button', { name: '导出所选记录' }).click();
   const jsonDownload = await jsonDownloadPromise;
   const jsonFile = testInfo.outputPath('temperature-export.json');
   await jsonDownload.saveAs(jsonFile);
@@ -187,7 +188,7 @@ test('温度历史区间与传感器切换有记录、有曲线且读取失败�
   expect(exported.points[2].timestamp_utc).toMatch(/Z$/);
   await page.getByLabel('温度历史导出格式').selectOption('csv');
   const csvDownloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '导出当前区间' }).click();
+  await page.getByRole('button', { name: '导出所选记录' }).click();
   const csvDownload = await csvDownloadPromise;
   const csvFile = testInfo.outputPath('temperature-export.csv');
   await csvDownload.saveAs(csvFile);
@@ -212,7 +213,7 @@ test('温度历史区间与传感器切换有记录、有曲线且读取失败�
     await route.fulfill({ json: { ...data, recording_enabled: false, recording_state: 'paused' } });
   });
   await page.getByRole('button', { name: '刷新', exact: true }).click();
-  await expect(page.locator('.analytics-status')).toContainText('后台总开关已关闭');
+  await expect(page.locator('.analytics-status')).toContainText('模块后台任务已关闭，温度记录已暂停');
   await expect(page.locator('.analytics-hero-value')).toHaveText('34.2°C');
   await expect(page.locator('.analytics-export button')).toBeEnabled();
   await expect(page.locator('.toast')).toHaveCount(0);
@@ -239,7 +240,7 @@ test('温度读取失败不隐式清缓存，页面隐藏不继续自动读取',
   expect(calls).toHaveLength(2);
   expect(calls.every((call) => call.method === 'GET' && !call.url.includes('fresh='))).toBe(true);
   await expect(page.locator('#home-temp-num')).toHaveText(previous);
-  await expect(page.locator('#home-temp-status')).toContainText('保留上次读数');
+  await expect(page.locator('#home-temp-status')).toContainText('当前显示上次读数');
   await page.evaluate(() => {
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
@@ -265,7 +266,8 @@ test('缺失 backend UI contract 时可变选项保持关闭', async ({ page }) 
   }));
   await page.route('**/cgi-bin/bg_restrict.sh', (route) => route.fulfill({
     contentType: 'application/json',
-    body: JSON.stringify({ ok: true, enabled: 'on', packages: [] }),
+    body: JSON.stringify({ ok: true, enabled: 'on', packages: [],
+      operation: { id: '', action: '', phase: 'none', pending: false, committed: false, rollback: 'none', error_code: '', error: '', duration_ms: 0 } }),
   }));
 
   await page.goto('/');
@@ -277,14 +279,14 @@ test('缺失 backend UI contract 时可变选项保持关闭', async ({ page }) 
   await page.locator('#tab-network').click();
   await expect(page.locator('#uecap-btn-group .uecap-btn')).toHaveCount(0);
   await expect(page.locator('#uecap-btn-group')).toBeHidden();
-  await expect(page.locator('#uecap-rows')).toContainText('UECap mode contract 无效');
+  await expect(page.locator('#uecap-rows')).toContainText('网络配置选项不完整，无法切换');
 
   await page.locator('#tab-system').click();
   await expect(page.locator('#bg-restrict-policy-select option')).toHaveCount(0);
   await expect(page.locator('#bg-restrict-delay-select option')).toHaveCount(0);
   await expect(page.locator('#bg-restrict-policy-select')).toBeDisabled();
   await expect(page.locator('#bg-restrict-delay-select')).toBeDisabled();
-  await expect(page.locator('#bg-restrict-rows')).toContainText('后台限制 contract 无效');
+  await expect(page.locator('#bg-restrict-desc')).toContainText('后台限制选项不完整');
 });
 
 test('基带状态、UECap ownership 与无线观察结果保持分层', async ({ page }) => {
@@ -294,9 +296,9 @@ test('基带状态、UECap ownership 与无线观察结果保持分层', async (
 
   await expect(page.locator('#baseband-card')).toBeVisible();
   await expect(page.locator('#uecap-btn-group .uecap-btn')).toHaveCount(3);
-  await expect(page.locator('#baseband-rows')).toContainText('本次启动已验证');
-  await expect(page.locator('#uecap-rows')).toContainText('NR SA');
-  await expect(page.locator('#uecap-rows')).toContainText('不要求 EN-DC');
+  await expect(page.locator('#baseband-rows')).toContainText('本次启动已生效');
+  await expect(page.locator('#uecap-rows')).toContainText('5G 独立组网');
+  await expect(page.locator('#uecap-rows')).toContainText('无需 4G 锚点');
   await expectNoHorizontalOverflow(page);
   await expectNoInvalidRenderedValues(page);
 });
@@ -379,7 +381,7 @@ test('Magisk UECap disabled 不隐藏 standalone baseband，且 LTE 不被判为
   await expect(page.locator('#uecap-btn-group')).toBeHidden();
   await expect(page.locator('#uecap-rows')).toContainText('magisk_uecap_unavailable');
   await expect(page.locator('#uecap-rows')).toContainText('LTE / 4G');
-  await expect(page.locator('#uecap-rows')).toContainText('当前无线观察结果，不代表 UECap 失败');
+  await expect(page.locator('#uecap-rows')).toContainText('仅表示当前连接，无法判断配置加载结果');
   await expect(page.locator('#baseband-card')).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await expectNoInvalidRenderedValues(page);
@@ -410,11 +412,11 @@ for (const [name, receipt] of [
     await waitForWebuiReady(page);
     await page.locator('#tab-network').click();
     if (name === 'NR NSA') {
-      await expect(page.locator('#uecap-rows')).toContainText('NR NSA');
+      await expect(page.locator('#uecap-rows')).toContainText('5G 非独立组网');
       await expect(page.locator('#uecap-rows')).toContainText('nr_nsa_observed');
     } else {
-      await expect(page.locator('#uecap-rows')).toContainText('尚无可确认的 NR 无线状态');
-      await expect(page.locator('#uecap-rows')).toContainText('no_confirmed_nsa_cell');
+      await expect(page.locator('#uecap-rows')).toContainText('5G 连接状态未确认');
+      await expect(page.locator('#uecap-rows')).toContainText('5G 非独立组网连接未确认');
     }
     await expectNoHorizontalOverflow(page);
     await expectNoInvalidRenderedValues(page);
@@ -442,7 +444,7 @@ test('stale receipt 与 effective overlay 失败明确要求 clean reinstall', a
   await page.goto('/');
   await waitForWebuiReady(page);
   await page.locator('#tab-network').click();
-  await expect(page.locator('#baseband-rows')).toContainText('需要卸载、重启、重装、再重启');
+  await expect(page.locator('#baseband-rows')).toContainText('需要：卸载 → 重启 → 安装 → 重启');
   await expect(page.locator('#baseband-rows')).toContainText('stale_or_unverified');
   await expect(page.locator('#baseband-rows')).toContainText('content_image_missing');
   await expectNoHorizontalOverflow(page);

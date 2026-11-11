@@ -65,5 +65,17 @@ vm.runInNewContext(source, context, { filename: 'memory.js' });
   assert.deepEqual(requests.at(-1), { mode: 'boot_save', auto_apply: 'on' }, 'toggle only changes the switch');
   feature.setSwapTuneValues(stock);
   assert.equal(Number(refs.swapTuneNumbers.swappiness.value), 60, 'system values remain a distinct action');
-  console.log(JSON.stringify({ ok: true, assertions: 16, checks: ['HTML bindings', 'preset fill/apply consistency', 'boot save/toggle separation', 'system values remain separate'] }));
+  const oldState = structuredClone(data);
+  const committedState = { ...structuredClone(data), swappiness: 123, mode: 'custom' };
+  let finishOldRead;
+  core.apiFetch = (url, options = {}) => options.method === 'POST'
+    ? Promise.resolve({ ok: true, state: committedState })
+    : new Promise((resolve) => { finishOldRead = resolve; });
+  const oldRead = feature.refresh();
+  await feature.applyModulePreset();
+  assert.equal(feature.getSwapData().swappiness, 123, 'mutation receipt updates the current state immediately');
+  finishOldRead(oldState);
+  await oldRead;
+  assert.equal(feature.getSwapData().swappiness, 123, 'a read started before mutation cannot replace its committed state');
+  console.log(JSON.stringify({ ok: true, assertions: 18, checks: ['HTML bindings', 'preset fill/apply consistency', 'boot save/toggle separation', 'system values remain separate', 'stale read cannot replace committed state'] }));
 })().catch((error) => { console.error(error); process.exitCode = 1; });

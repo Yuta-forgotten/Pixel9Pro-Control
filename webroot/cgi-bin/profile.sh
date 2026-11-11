@@ -203,12 +203,23 @@ emit_scheduler_boot_state() {
 }
 
 emit_scheduler_health_state() {
-    _health_status=$(sbm_state_value "$SBM_HEALTH_FILE" status 2>/dev/null)
-    _health_reason=$(sbm_state_value "$SBM_HEALTH_FILE" reason 2>/dev/null)
-    _health_checked=$(sbm_state_value "$SBM_HEALTH_FILE" checked_epoch 2>/dev/null)
-    _health_profile_verified=$(sbm_state_value "$SBM_HEALTH_FILE" profile_verified 2>/dev/null)
-    _health_cpufreq=$(sbm_state_value "$SBM_HEALTH_FILE" cpufreq_permissions 2>/dev/null)
-    _health_powerhal=$(sbm_state_value "$SBM_HEALTH_FILE" powerhal_failures 2>/dev/null)
+    _health_status=; _health_reason=; _health_checked=
+    _health_profile_verified=; _health_cpufreq=; _health_powerhal=
+    # One open file means one atomic writer snapshot, not six generations.
+    if [ -s "$SBM_HEALTH_FILE" ]; then
+        _health_cr=$(printf '\r')
+        while IFS='=' read -r _health_key _health_value || [ -n "$_health_key" ]; do
+            _health_value=${_health_value%"$_health_cr"}
+            case "$_health_key" in
+                status) _health_status="$_health_value" ;;
+                reason) _health_reason="$_health_value" ;;
+                checked_epoch) _health_checked="$_health_value" ;;
+                profile_verified) _health_profile_verified="$_health_value" ;;
+                cpufreq_permissions) _health_cpufreq="$_health_value" ;;
+                powerhal_failures) _health_powerhal="$_health_value" ;;
+            esac
+        done < "$SBM_HEALTH_FILE"
+    fi
     if so_transition_lock_is_active; then
         _health_status=deferred
         _health_reason=transition_in_progress

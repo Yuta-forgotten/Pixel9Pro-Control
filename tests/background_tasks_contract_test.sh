@@ -5,7 +5,7 @@ SOURCE_ROOT="$1"
 TEST_ROOT="$2"
 MODULE="$TEST_ROOT/module"
 mkdir -p "$MODULE/scripts" "$MODULE/webroot/cgi-bin" || exit 2
-for lib in background_tasks_lib.sh runtime_defaults_lib.sh; do
+for lib in background_tasks_lib.sh runtime_defaults_lib.sh state_io_lib.sh; do
     cp "$SOURCE_ROOT/scripts/$lib" "$MODULE/scripts/" || exit 2
 done
 for cgi in _common.sh standby_guard.sh; do
@@ -62,10 +62,11 @@ rm "$MODULE/hold-stop"
 printf '@@settled\n%s\n' "$(post '{"idle_isolate_mode":"on"}')"
 background_worker_alive && exit 1
 
-printf '%s|failed' "$(cat /proc/sys/kernel/random/boot_id)" > "$MODULE/.background_cleanup_state"
+printf '%s|fixture-cleanup' "$(cat /proc/sys/kernel/random/boot_id)" > "$MODULE/.background_run"
+printf '%s|failed' "$(cat "$MODULE/.background_run")" > "$MODULE/.background_cleanup_state"
 printf '@@cleanup_failed\n%s\n' "$(post '{"idle_isolate_mode":"on"}')"
 [ "$(cat "$MODULE/.idle_isolate_mode")" = on ] || exit 1
-rm "$MODULE/.background_cleanup_state"
+rm "$MODULE/.background_cleanup_state" "$MODULE/.background_run"
 
 # A foreground writer already past its entry gate is part of stop completion.
 sh "$MODULE/service.sh" --history-writer >/dev/null 2>&1 &

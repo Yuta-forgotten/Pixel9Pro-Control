@@ -5,9 +5,11 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
-const scratch = path.join(root, 'tmp');
+const useTmpfs = process.env.PIXEL_THERMAL_TEST_TMPFS === '1';
+const scratch = useTmpfs ? path.join(root, '..', 'work') : path.join(root, 'tmp');
 fs.mkdirSync(scratch, { recursive: true });
 const testRoot = fs.mkdtempSync(path.join(scratch, 'thermal-history-contract-'));
+let mounted = false;
 
 function wslPath(value) {
   const result = spawnSync('wsl.exe', ['-e', 'wslpath', '-a', value], { encoding: 'utf8' });
@@ -32,6 +34,17 @@ function response(output, name) {
 }
 
 try {
+  if (useTmpfs) {
+    assert.equal(path.dirname(testRoot), scratch);
+    assert(path.basename(testRoot).startsWith('thermal-history-contract-'));
+    assert.deepEqual(fs.readdirSync(testRoot), []);
+    const mount = spawnSync('wsl.exe', ['-e', 'mount', '-t', 'tmpfs', '-o', 'size=10m,mode=700', 'tmpfs', wslPath(testRoot)], { encoding: 'utf8' });
+    assert.equal(mount.status, 0, `tmpfs mount failed: ${mount.stderr}`);
+    mounted = true;
+    assert.equal(spawnSync('wsl.exe', ['-e', 'mountpoint', '-q', wslPath(testRoot)]).status, 0);
+    const filesystem = spawnSync('wsl.exe', ['-e', 'stat', '-f', '-c', '%T', wslPath(testRoot)], { encoding: 'utf8' });
+    assert.equal(filesystem.stdout.trim(), 'tmpfs');
+  }
   const command = `sh ${quote(wslPath(path.join(__dirname, 'thermal_history_contract_test.sh')))} ${quote(wslPath(root))} ${quote(wslPath(testRoot))}`;
   const result = spawnSync('wsl.exe', ['-e', 'sh', '-lc', command], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
   assert.equal(result.status, 0, `thermal CGI fixture failed:\n${result.stdout}\n${result.stderr}`);
@@ -111,5 +124,11 @@ try {
 
   process.stdout.write('Thermal history and master lifecycle CGI contracts passed.\n');
 } finally {
+  if (mounted) {
+    const unmount = spawnSync('wsl.exe', ['-e', 'umount', wslPath(testRoot)], { encoding: 'utf8' });
+    assert.equal(unmount.status, 0, `tmpfs unmount failed: ${unmount.stderr}`);
+    assert.notEqual(spawnSync('wsl.exe', ['-e', 'mountpoint', '-q', wslPath(testRoot)]).status, 0);
+    assert.deepEqual(fs.readdirSync(testRoot), []);
+  }
   fs.rmSync(testRoot, { recursive: true, force: true });
 }

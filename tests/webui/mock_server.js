@@ -24,6 +24,8 @@ const runtime = {
   bgEnabled: 'on',
   ntpServer: 'time.android.com',
 };
+let bgOperation = { id: '', action: '', phase: 'none', pending: false, committed: false,
+  rollback: 'none', error_code: '', error: '', duration_ms: 0 };
 const cpuContract = {
   foreground_cpus: '0-6',
   background_cpus: '0-3',
@@ -145,6 +147,20 @@ function swapState() {
     zram_reboot_required: false,
     vm_reboot_required: false,
     vm_policy_ready: true,
+    vm_effective_state: 'observed',
+    limits: {
+      swappiness: { min: 0, max: 200, step: 1 },
+      min_free_kbytes: { min: 1024, max: 318985, step: 1 },
+      watermark_scale_factor: { min: 1, max: 3000, step: 1 },
+      vfs_cache_pressure: { min: 0, max: 3000, step: 1 },
+    },
+    module_preset: { size: '50%', algorithm: 'lz77eh', ...optimized },
+    memory_boot: { auto_apply: false, vm_enabled: false },
+    zram_online_supported: true,
+    zram_operation: { phase: 'none', pending: false },
+    zram_algorithms: ['lz77eh', 'lz4'],
+    zram_input_limits: { mb: { min: 0.01, max: 32000 }, percent: { min: 1, max: 200 } },
+    zram_swap_size_kb: 7962388,
     zram_reconcile: 'none',
     zram_restore_pending: false,
     zram_transaction_id: '',
@@ -291,6 +307,12 @@ function uecapState(extra = {}) {
 async function handleApi(req, res, url) {
   const pathname = url.pathname;
   const body = req.method === 'POST' ? await readBody(req) : {};
+  if (pathname === '/cgi-bin/auth.sh' && req.method === 'POST') {
+    if (req.headers['x-pixel9pro-bootstrap'] !== '1' || body.action !== 'bootstrap') {
+      return json(res, { ok: false, error: 'invalid bootstrap request' }, 403);
+    }
+    return json(res, { ok: true, paired: true, token });
+  }
   if (req.method === 'POST' && req.headers['x-pixel9pro-token'] !== token) {
     return json(res, { ok: false, error: 'invalid token' }, 403);
   }
@@ -300,7 +322,9 @@ async function handleApi(req, res, url) {
       { cur: 1400000, max: 2600000, gov: 'sched_pixel', resp_ms: 40, down_us: 12000 },
       { cur: 1800000, max: 3105000, gov: 'sched_pixel', resp_ms: 80, down_us: 16000 },
     ]);
-    case '/cgi-bin/auth.sh': return json(res, { token });
+    case '/cgi-bin/auth.sh': return req.headers['x-pixel9pro-token'] === token
+      ? json(res, { ok: true, paired: true, token_len: token.length })
+      : json(res, { ok: false, error: 'invalid token' }, 403);
     case '/cgi-bin/info.sh': return json(res, {
       model: 'Pixel 9 Pro', version: '17', android: '17', kernel: '6.1-test', module_version: CURRENT_MODULE_VERSION,
       version_code: CURRENT_VERSION_CODE, httpd_rss_kb: 1240, mem_total_kb: 16384000,
@@ -351,7 +375,7 @@ async function handleApi(req, res, url) {
     case '/cgi-bin/nr_switch.sh':
       if (body.action === 'toggle') runtime.nrSwitch = runtime.nrSwitch === 'on' ? 'off' : 'on';
       return json(res, {
-        ok: true, enabled: runtime.nrSwitch, current_mode: '33', current_slot0: '33', actual_rat: 'NR SA',
+        ok: true, nr_switch: runtime.nrSwitch, current_mode: '33', current_slot0: '33', actual_rat: 'NR SA',
         saved_nr_mode: '33', screen_off_delay_s: 300, restore_cooldown_s: 600,
         lte_recheck_s: 300, lte_mode: 9,
       });
@@ -364,13 +388,28 @@ async function handleApi(req, res, url) {
       if (body.idle_isolate_mode) runtime.idleIsolate = body.idle_isolate_mode;
       return json(res, {
         ok: true, sim2_auto_manage: runtime.sim2Auto, idle_isolate_mode: runtime.idleIsolate,
+        background_enabled: runtime.idleIsolate === 'off',
+        background_state: runtime.idleIsolate === 'off' ? 'running' : 'paused', final: true,
         diag_worker_mode: 'screen_on', diag_next_sleep_sec: 15, diag_updated_epoch: Math.floor(Date.now() / 1000),
         diag_profile_policy: runtime.policy, diag_active_profile: runtime.profile,
       });
     case '/cgi-bin/bg_restrict.sh':
-      if (body.action === 'toggle') runtime.bgEnabled = runtime.bgEnabled === 'on' ? 'off' : 'on';
+      if (req.method === 'POST') {
+        if (bgOperation.pending) return json(res, { ok: false, error: 'background operation pending' }, 409);
+        bgOperation = { id: `fixture-bg-${Date.now()}`, action: body.action, phase: 'queued', pending: true,
+          committed: false, rollback: 'none', error_code: '', error: '', duration_ms: 0 };
+        return json(res, { ok: true, accepted: true, final: false, operation: bgOperation });
+      }
+      if (bgOperation.phase === 'queued') {
+        bgOperation = { ...bgOperation, phase: 'running' };
+        return json(res, { ok: true, state_pending: true, operation: bgOperation });
+      }
+      if (bgOperation.phase === 'running') {
+        if (bgOperation.action === 'toggle') runtime.bgEnabled = runtime.bgEnabled === 'on' ? 'off' : 'on';
+        bgOperation = { ...bgOperation, phase: 'success', pending: false, committed: true, duration_ms: 1 };
+      }
       return json(res, {
-        ok: true, enabled: runtime.bgEnabled, entries: [],
+        ok: true, enabled: runtime.bgEnabled, packages: [], operation: bgOperation,
         bg_contract: {
           policy_order: ['stop_after_leave', 'block_all', 'block_services', 'bucket'],
           allowed_delays: [3, 5, 10], default_policy: 'stop_after_leave', default_delay: 5,

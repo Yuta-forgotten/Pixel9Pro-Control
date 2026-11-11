@@ -38,7 +38,7 @@ const shellState = {
     inFlight: false,
     failures: { cpu: 0, thermal: 0, optim: 0, slow: 0 },
     lastInteractionAt: 0,
-    lastRun: { cpu: 0, thermal: 0, optim: 0, slow: 0 }
+    lastRun: { cpu: 0, thermal: 0, optim: 0, slow: 0, restrictions: 0 }
   },
   pull: { y0: 0, active: false, dist: 0, busy: false }
 };
@@ -199,7 +199,7 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
-function nativeRunCommand(command, { signal, timeoutMs, maxBytes = 4 * 1024 * 1024 }) {
+function nativeRunCommand(command, { signal, timeoutMs, maxBytes = 4 * 1024 * 1024, resource = '', scope = '', mutation = false, diagnostic = false }) {
   // APatch exec(...callback) still calls Job.exec synchronously inside the
   // JavaScript bridge. spawn enqueues and returns, keeping close/navigation
   // available while the bounded CGI finishes in its own root shell.
@@ -211,7 +211,11 @@ function nativeRunCommand(command, { signal, timeoutMs, maxBytes = 4 * 1024 * 10
     return Promise.reject(error);
   }
   const commandId = `${now}_${authState.callbackId++}`;
-  nativeCommands.set(commandId, true);
+  nativeCommands.set(commandId, { resource, scope, mutation, diagnostic });
+  const release = () => {
+    nativeCommands.delete(commandId);
+    pumpRequestHub();
+  };
   return new Promise((resolve, reject) => {
     const callback = `pixel9pro_job_${Date.now()}_${authState.callbackId++}`;
     let settled = false;
@@ -230,7 +234,7 @@ function nativeRunCommand(command, { signal, timeoutMs, maxBytes = 4 * 1024 * 10
         window[callback] = {
           stdout: { emit() {} }, stderr: { emit() {} },
           emit(event) {
-            if (event === 'exit' || event === 'error') { nativeCommands.delete(commandId); delete window[callback]; }
+            if (event === 'exit' || event === 'error') { release(); delete window[callback]; }
           }
         };
       } else delete window[callback];
@@ -238,7 +242,7 @@ function nativeRunCommand(command, { signal, timeoutMs, maxBytes = 4 * 1024 * 10
     };
     const onAbort = () => finish(requestAbortError(signal));
     const timer = window.setTimeout(() => finish(requestAbortError(null, 'REQUEST_TIMEOUT')), timeoutMs);
-    if (signal?.aborted) { nativeCommands.delete(commandId); onAbort(); return; }
+    if (signal?.aborted) { release(); onAbort(); return; }
     signal?.addEventListener('abort', onAbort, { once: true });
     window[callback] = {
       stdout: { emit: (event, chunk) => {
@@ -248,11 +252,11 @@ function nativeRunCommand(command, { signal, timeoutMs, maxBytes = 4 * 1024 * 10
       } },
       stderr: { emit: (event, chunk) => { if (event === 'data' && stderr.length < 2048) stderr += String(chunk || '').slice(0, 2048 - stderr.length); } },
       emit: (event, value) => {
-        if (event === 'exit') { nativeCommands.delete(commandId); finish(null, { code: Number(value), stdout, stderr }); }
-        else if (event === 'error') { nativeCommands.delete(commandId); finish(new Error('Root 管理器执行操作失败')); }
+        if (event === 'exit') { release(); finish(null, { code: Number(value), stdout, stderr }); }
+        else if (event === 'error') { release(); finish(new Error('Root 管理器执行操作失败')); }
       }
     };
-    try { window.ksu.spawn(command, '[]', '{}', callback); } catch (error) { nativeCommands.delete(commandId); finish(error); }
+    try { window.ksu.spawn(command, '[]', '{}', callback); } catch (error) { release(); finish(error); }
   });
 }
 
@@ -279,7 +283,9 @@ function nativeApiFetch(path, request) {
   const environment = Object.entries(fields).map(([key, value]) => `${key}=${shellQuote(value)}`).join(' ');
   const program = `/system/bin/sh /data/adb/modules/pixel9pro_control/scripts/cgi_dispatch.sh ${shellQuote(url.pathname.split('/').pop())}`;
   const command = `printf '%s' ${shellQuote(body)} | env ${environment} ${program}`;
-  return nativeRunCommand(command, { signal: request.signal, timeoutMs: request.timeoutMs }).then(({ code: errno, stdout }) => {
+  return nativeRunCommand(command, { signal: request.signal, timeoutMs: request.timeoutMs,
+    resource: requestResource(url.pathname), scope: request.scope, mutation: method !== 'GET',
+    diagnostic: request.requestClass === 'diagnostic' && request.priority < 90 }).then(({ code: errno, stdout }) => {
       const output = String(stdout || '');
       const separator = /\r?\n\r?\n/.exec(output);
       if (!separator) throw new Error(`模块执行失败，未返回有效数据（退出码 ${Number(errno)}）`);
@@ -309,8 +315,12 @@ async function rawApiFetch(path, opts = {}) {
     delete request.timeoutMs;
     delete request.controller;
     delete request._tokenReady;
+    delete request.scope;
+    delete request.priority;
+    delete request.requestClass;
     const response = WEBUI_NATIVE_TRANSPORT
-      ? await nativeApiFetch(path, { ...request, timeoutMs })
+      ? await nativeApiFetch(path, { ...request, timeoutMs, scope: opts.scope,
+        priority: opts.priority, requestClass: opts.requestClass })
       : await fetch(path, request);
     if (response.status === 403
       && authState.webuiToken === headers['X-PIXEL9PRO-TOKEN']) clearWebuiToken();
@@ -482,14 +492,27 @@ function isLimitedDiagnostic(job) {
   return !job.mutation && job.requestClass === 'diagnostic' && job.priority < 90;
 }
 
+function requestResource(path) {
+  if (path === API.status || path === API.ownerArbiter) return API.profile;
+  if (path === API.thermal) return API.thermalSet;
+  return path;
+}
+
 function pumpRequestHub() {
-  while (requestHub.active < requestHub.maxConcurrent && requestHub.queue.length) {
+  while (requestHub.active < requestHub.maxConcurrent && requestHub.queue.length
+    && (!WEBUI_NATIVE_TRANSPORT || nativeCommands.size < requestHub.maxConcurrent)) {
     requestHub.queue.sort((left, right) => right.priority - left.priority || left.id - right.id);
     // Slow automatic diagnostics share one slot; snapshots/history can use the
     // other two. Explicit interactive readback keeps its existing admission.
-    const diagnosticBusy = [...requestHub.activeJobs].some(isLimitedDiagnostic);
+    const diagnosticBusy = [...requestHub.activeJobs].some(isLimitedDiagnostic)
+      || [...nativeCommands.values()].some((running) => running.diagnostic);
     const jobIndex = requestHub.queue.findIndex((candidate) =>
       (!diagnosticBusy || !isLimitedDiagnostic(candidate))
+      // Observer cancellation/timeout does not terminate a manager process.
+      // Keep its resource fence until spawn reports the actual exit.
+      && ![...nativeCommands.values()].some((running) =>
+        (running.resource === candidate.resource && (running.mutation || candidate.mutation))
+        || (running.mutation && running.scope === candidate.scope))
       && !requestHub.queue.some((pending) => pending.mutation && pending.id < candidate.id
         && (pending.resource === candidate.resource || (candidate.mutation && pending.scope === candidate.scope)))
       && (candidate.mutation
@@ -565,7 +588,15 @@ function apiFetch(path, opts = {}) {
   const key = requestHubKey(path, opts, method);
   if (key) {
     const existing = requestHub.pendingGets.get(key);
-    if (existing) return existing;
+    if (existing) {
+      const queued = requestHub.queue.find((job) => job.promise === existing);
+      if (queued && policy.priority > queued.priority) {
+        queued.priority = policy.priority;
+        queued.options.priority = policy.priority;
+        pumpRequestHub();
+      }
+      return existing;
+    }
   }
   if (requestHub.queue.length >= requestHub.maxQueued) {
     const error = new Error('当前操作尚未完成，请稍后重试');
@@ -573,12 +604,12 @@ function apiFetch(path, opts = {}) {
     return Promise.reject(error);
   }
   const options = { ...opts, timeoutMs: policy.timeoutMs };
-  delete options.priority;
+  options.priority = policy.priority;
   delete options.dedupe;
   delete options.dedupeKey;
   delete options.queueTimeoutMs;
-  delete options.requestClass;
-  delete options.scope;
+  options.requestClass = policy.requestClass;
+  options.scope = String(opts.scope || policy.resource);
   const priority = policy.priority;
   const mutation = method !== 'GET';
   const controller = options.controller || new AbortController();
@@ -593,7 +624,7 @@ function apiFetch(path, opts = {}) {
     id: requestHub.nextId++, path, options, priority, key, mutation,
     requestClass: policy.requestClass,
     scope: String(opts.scope || policy.resource),
-    resource: policy.resource,
+    resource: requestResource(policy.resource),
     controller,
     supersedeAllowed: !opts.controller,
     signal: controller.signal,
@@ -608,7 +639,7 @@ function apiFetch(path, opts = {}) {
     pumpRequestHub();
   };
   job.signal.addEventListener('abort', job.onQueuedAbort, { once: true });
-  if (mutation) cancelBackgroundRequests(policy.resource);
+  if (mutation) cancelBackgroundRequests(job.resource);
   pumpRequestHub();
   return promise;
 }
@@ -619,22 +650,17 @@ function requestHubState() {
     queued: requestHub.queue.length,
     deduped: requestHub.pendingGets.size,
     completed: requestHub.completed,
-    rejected: requestHub.rejected
+    rejected: requestHub.rejected,
+    nativeActive: nativeCommands.size
   };
 }
 
 function runFeatureTask(key, task) {
   if (featureTasks.has(key)) return featureTasks.get(key);
-  let promise;
-  try {
-    promise = Promise.resolve(task());
-  } catch (error) {
-    promise = Promise.reject(error);
-  }
+  const promise = Promise.resolve().then(task).finally(() => {
+    featureTasks.delete(key);
+  });
   featureTasks.set(key, promise);
-  promise.finally(() => {
-    if (featureTasks.get(key) === promise) featureTasks.delete(key);
-  }).catch(() => {});
   return promise;
 }
 
@@ -698,6 +724,9 @@ function markPollFresh(keys, at = Date.now()) {
 
 function computeNextPollDelay(now = Date.now()) {
   const delays = [];
+  if (requireFeature('memory').shouldObserveRestrictions()) {
+    delays.push(Math.max(2000 - (now - shellState.poller.lastRun.restrictions), POLL_MIN_DELAY_MS));
+  }
   ['cpu', 'thermal', 'optim', 'slow'].forEach((key) => {
     const interval = getPollInterval(key);
     if (!interval) return;
@@ -717,10 +746,6 @@ async function runPollCycle() {
   if (!shellState.poller.running || !isWebUiActive() || shellState.poller.inFlight) return;
   const now = Date.now();
   const app = requireFeature('app');
-  if (app.isFullRefreshActive?.()) {
-    queueNextPoll(3000);
-    return;
-  }
   shellState.poller.inFlight = true;
   const jobs = [];
   const profile = requireFeature('profile');
@@ -737,31 +762,30 @@ async function runPollCycle() {
     if (app.shouldPollOptim() && !memory.isRefreshing() && (now - shellState.poller.lastRun.optim) >= getPollInterval('optim')) {
       jobs.push({ key: 'optim', run: () => memory.refresh() });
     }
+    if (memory.shouldObserveRestrictions() && now - shellState.poller.lastRun.restrictions >= 2000) {
+      jobs.push({ key: 'restrictions', run: () => memory.refreshRestrictions() });
+    }
     if (app.shouldPollSlow() && (now - shellState.poller.lastRun.slow) >= getPollInterval('slow')) {
       jobs.push({
         key: 'slow',
         run: async () => {
-          const networkResult = await network.refresh();
-          if (!isWebUiActive()) return;
-          const memoryResult = await memory.refreshRestrictions();
-          if (!isWebUiActive()) return;
-          const infoResult = await loadInfo();
-          return networkResult !== false && memoryResult !== false && infoResult !== false;
+          const results = await Promise.all([network.refresh(), loadInfo(),
+            ...(memory.shouldObserveRestrictions() ? [] : [memory.refreshRestrictions()])]);
+          return results.every((result) => result !== false);
         }
       });
     }
 
     if (jobs.length) {
       markPollFresh(jobs.map((job) => job.key), now);
-      // Keep the single CGI listener from serving several expensive dumpsys
-      // requests at once. A failed job is handled by its feature and does not
-      // block the other scheduled jobs.
-      const outcomes = await Promise.allSettled(jobs.map((job) => job.run()));
+      // Features return false/null for expected transport failures. Internal
+      // errors must remain visible instead of becoming a silent backoff.
+      const outcomes = await Promise.all(jobs.map((job) => job.run()));
       outcomes.forEach((outcome, index) => {
         const key = jobs[index].key;
-        if (outcome.status === 'rejected' && isRequestCancelled(outcome.reason)) return;
-        if (outcome.status === 'fulfilled' && outcome.value === null) return;
-        shellState.poller.failures[key] = outcome.status === 'rejected' || outcome.value === false
+        if (key === 'restrictions') return;
+        if (outcome === null) return;
+        shellState.poller.failures[key] = outcome === false
           ? Math.min(4, shellState.poller.failures[key] + 1) : 0;
       });
     }
