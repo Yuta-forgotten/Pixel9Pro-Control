@@ -1,4 +1,4 @@
-// NR、SIM、UECap、基带与 NTP 功能。
+// NR、SIM、UECap、基带、NTP 与系统 DNS 缓存功能。
 'use strict';
 (() => {
 const state = {
@@ -29,6 +29,7 @@ const state = {
   ntpBusy: false,
   ntpAction: '',
   ntpRequestedServer: '',
+  dnsCacheBusy: false,
   deviceClockTimer: null
 };
 
@@ -1092,6 +1093,71 @@ async function syncNtp() {
   }
 }
 
+async function clearDnsCache() {
+  if (state.dnsCacheBusy) return;
+  const button = document.getElementById('dns-cache-clear-btn');
+  const label = document.getElementById('dns-cache-clear-label');
+  const status = document.getElementById('dns-cache-status');
+  state.dnsCacheBusy = true;
+  button.disabled = true;
+  button.setAttribute('aria-busy', 'true');
+  label.textContent = '清理中…';
+  status.hidden = false;
+  status.classList.remove('warn');
+  status.textContent = '正在清理系统 DNS 缓存…';
+  try {
+    const data = await apiFetch(API.dnsCache, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'clear' }),
+      requestClass: 'mutation', timeoutMs: NETWORK_WRITE_TIMEOUT_MS,
+      priority: 'interactive', scope: 'network.dnsCache'
+    });
+    if (data.ok === false) {
+      const error = new Error(data.error || '清理未完成');
+      error.payload = data;
+      throw error;
+    }
+    if (data.ok !== true || data.completed !== true || data.action !== 'clear' || data.scope !== 'system'
+      || !Number.isInteger(data.total_networks) || data.total_networks < 1
+      || data.cleared_networks !== data.total_networks) {
+      throw new Error('服务返回的清理结果不完整');
+    }
+    status.textContent = '系统 DNS 缓存已清理';
+    showToast(status.textContent);
+    appendLog(status.textContent, 'ok', '', { operation: 'dns_cache_clear', code: 'DNS_CACHE_CLEARED', durationMs: data.duration_ms });
+    return true;
+  } catch (err) {
+    const payload = err?.payload;
+    const hasFailureReceipt = payload?.ok === false && payload.completed === false
+      && payload.action === 'clear' && payload.scope === 'system'
+      && typeof payload.result_unconfirmed === 'boolean'
+      && Number.isInteger(payload.cleared_networks) && payload.cleared_networks >= 0
+      && Number.isInteger(payload.total_networks) && payload.total_networks >= payload.cleared_networks;
+    const resultUnconfirmed = !hasFailureReceipt || payload.result_unconfirmed;
+    const detail = err?.message || '未收到操作结果';
+    status.classList.add('warn');
+    if (!hasFailureReceipt) {
+      status.textContent = '未收到完整结果，清理状态未确认。';
+    } else if (resultUnconfirmed) {
+      status.textContent = payload.cleared_networks > 0
+        ? '部分 DNS 缓存已清理，其余结果未确认。' : '清理结果未确认。';
+    } else {
+      status.textContent = `${payload.cleared_networks > 0 ? '部分 DNS 缓存已清理' : '清理未完成'}：${detail}`;
+    }
+    showToast(status.textContent, 4000, 'warn');
+    appendLog(`DNS 缓存清理${resultUnconfirmed ? '结果未确认' : '未完成'}：${detail}`, resultUnconfirmed ? 'warn' : 'err', '', {
+      persistent: true, operation: 'dns_cache_clear', code: payload?.error_code || err?.code || 'DNS_RESULT_UNCONFIRMED'
+    });
+    return false;
+  } finally {
+    state.dnsCacheBusy = false;
+    button.disabled = false;
+    button.setAttribute('aria-busy', 'false');
+    label.textContent = '清理缓存';
+  }
+}
+
 registerFeature('network', {
   async refresh() {
     if (!core().isWebUiActive()) return null;
@@ -1121,6 +1187,7 @@ registerFeature('network', {
   toggleIdleIsolateMode,
   refreshBaseband,
   syncNtp,
+  clearDnsCache,
   isBasebandInstalled: () => state.basebandInstalled,
   setBasebandInstalled(value) { state.basebandInstalled = Boolean(value); },
   setBasebandBackendState(value) {

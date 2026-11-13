@@ -362,7 +362,12 @@ async function rawApiFetch(path, opts = {}) {
       error.status = response.status;
       error.detail = detail;
       error.payload = payload;
-      appendLog(`请求失败（HTTP ${response.status}）：${detail}`, 'err');
+      // The feature reports the user-visible outcome once. Transport details
+      // stay in memory and do not count as a second failed operation.
+      appendLog(`请求返回 HTTP ${response.status}`, 'dim', detail, {
+        persistent: false, operation: new URL(path, location.href).pathname, phase: 'request',
+        code: payload?.error_code || `HTTP_${response.status}`
+      });
       throw error;
     }
     if (payload === null || typeof payload !== 'object') {

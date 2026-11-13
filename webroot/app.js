@@ -208,6 +208,7 @@ function bindStaticEvents() {
   $('baseband-detail-btn').addEventListener('click', () => openDetail('基带模块说明', BASEBAND_DETAIL));
   $('baseband-refresh-btn').addEventListener('click', appFeatures.network.refreshBaseband);
   $('ntp-sync-btn').addEventListener('click', appFeatures.network.syncNtp);
+  $('dns-cache-clear-btn').addEventListener('click', appFeatures.network.clearDnsCache);
   $('temp-chart-btn').addEventListener('click', () => appFeatures.analytics.open('thermal'));
   $('energy-btn').addEventListener('click', () => appFeatures.analytics.open('thermal'));
   $('log-toggle').addEventListener('click', () => {

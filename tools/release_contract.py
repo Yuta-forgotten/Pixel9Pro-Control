@@ -52,6 +52,7 @@ REQUIRED_ENTRY_POINTS: Final = frozenset(
         "webroot/cgi-bin/thermal.sh",
         "webroot/cgi-bin/standby_guard.sh",
         "webroot/js/common.js",
+        "webroot/js/log_model.js",
         "webroot/js/analytics.js",
         "webroot/js/analytics_model.js",
         "webroot/js/analytics_view.js",
@@ -83,7 +84,7 @@ REQUIRED_ENTRIES: Final = REQUIRED_ENTRY_POINTS.union(
 ).union({"scripts/memory_status.awk", "config/app_identities.tsv", "config/ntp_servers.tsv", "config/webui_browsers.tsv"}).union(
     f"webroot/cgi-bin/{name}.sh" for name in (
         "_common", "_baseband_status", "_thermal_cache", "audit_log", "auth",
-        "bg_restrict", "check_baseband", "info", "nr_switch", "ntp", "optimize",
+        "bg_restrict", "check_baseband", "dns_cache", "info", "nr_switch", "ntp", "optimize",
         "owner_arbiter", "profile", "reboot", "set_thermal", "standby_guard",
         "status", "swap", "theme", "thermal", "uecap",
     )

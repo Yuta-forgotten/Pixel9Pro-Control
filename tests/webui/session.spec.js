@@ -42,12 +42,13 @@ test('随机查询参数不隔离模块状态、审计日志和浏览器操作�
   });
   const token = await page.evaluate(() => sessionStorage.getItem('pixel9pro_webui_token'));
   expect(token).toBeTruthy();
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
 
   await page.goto('/?cache=second');
   await expect(page.locator('#topbar-kicker')).toContainText('Pixel 9 Pro');
   expect(await page.evaluate(() => window.tokenBeforeInitialization)).toBe(token);
-  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pixel9pro_runtime_log_v2'))
-    .some((entry) => entry.text === 'query-storage-regression'))).toBe(true);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pixel9pro_runtime_log_v3')).entries
+    .some((entry) => entry.message === 'query-storage-regression'))).toBe(true);
   expect(await page.evaluate(async () => (await requireFeature('core').apiFetch(API.standbyGuard)).background_enabled)).toBe(false);
   expect(await page.evaluate(async () => (await requireFeature('core').apiFetch(API.auditLog)).lines)).toEqual(auditLines);
 
@@ -56,13 +57,17 @@ test('随机查询参数不隔离模块状态、审计日志和浏览器操作�
   await expect(otherPage.locator('#topbar-kicker')).toContainText('Pixel 9 Pro');
   expect(await otherPage.evaluate(() => window.tokenBeforeInitialization)).toBeNull();
   expect(await otherPage.evaluate(() => sessionStorage.getItem('pixel9pro_webui_token'))).toBe(token);
-  expect(await otherPage.evaluate(() => JSON.parse(localStorage.getItem('pixel9pro_runtime_log_v2'))
-    .some((entry) => entry.text === 'query-storage-regression'))).toBe(true);
+  expect(await otherPage.evaluate(() => JSON.parse(localStorage.getItem('pixel9pro_runtime_log_v3')).entries
+    .some((entry) => entry.message === 'query-storage-regression'))).toBe(true);
   expect(await otherPage.evaluate(async () => (await requireFeature('core').apiFetch(API.standbyGuard)).background_enabled)).toBe(false);
   expect(await otherPage.evaluate(async () => (await requireFeature('core').apiFetch(API.auditLog)).lines)).toEqual(auditLines);
   await page.evaluate(() => requireFeature('core').appendLog('interleaved-log-A', 'ok'));
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
   await otherPage.evaluate(() => requireFeature('core').appendLog('interleaved-log-B', 'ok'));
-  const sharedEntries = await page.evaluate(() => JSON.parse(localStorage.getItem('pixel9pro_runtime_log_v2')).map((entry) => entry.text));
+  await otherPage.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  const sharedSummaries = await page.evaluate(() => JSON.parse(localStorage.getItem('pixel9pro_runtime_log_v3')).entries);
+  expect(sharedSummaries.every((entry) => !Object.hasOwn(entry, 'detail'))).toBe(true);
+  const sharedEntries = sharedSummaries.map((entry) => entry.message);
   expect(sharedEntries).toContain('interleaved-log-A');
   expect(sharedEntries).toContain('interleaved-log-B');
   await expect.poll(() => page.evaluate(() => refs.logInner.textContent)).toContain('interleaved-log-B');

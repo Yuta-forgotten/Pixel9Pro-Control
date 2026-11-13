@@ -37,100 +37,28 @@ audit_log_safe_file() {
 }
 
 audit_log_lock() {
+    command -v flock >/dev/null 2>&1 || return 1
     [ ! -L "$AUDIT_LOG_DIR" ] || return 1
-    mkdir -p "$AUDIT_LOG_DIR" 2>/dev/null && chmod 700 "$AUDIT_LOG_DIR" 2>/dev/null || return 1
-    _al_lock="$AUDIT_LOG_DIR/.writer.lock"
-    [ ! -L "$_al_lock" ] || return 1
+    [ -d "$AUDIT_LOG_DIR" ] || mkdir -p "$AUDIT_LOG_DIR" 2>/dev/null || return 1
+    _al_lock="$AUDIT_LOG_DIR/.writer.flock"
+    audit_log_safe_file "$_al_lock" || return 1
+    exec 9>>"$_al_lock" || return 1
+    _al_lock_mode=$(stat -c %a "$_al_lock") || return 1
+    [ "$_al_lock_mode" = 600 ] || chmod 600 "$_al_lock" || return 1
     _al_attempt=0
-    while ! mkdir "$_al_lock" 2>/dev/null; do
+    while ! flock -n 9; do
         _al_attempt=$((_al_attempt + 1))
         [ "$_al_attempt" -lt 40 ] || return 75
-        _al_lock_pid=$(audit_log_read_first_line "$_al_lock/pid")
-        _al_lock_boot=$(audit_log_read_first_line "$_al_lock/boot")
-        _al_lock_ticks=$(audit_log_read_first_line "$_al_lock/ticks")
-        _al_lock_mtime=$(stat -c %Y "$_al_lock" 2>/dev/null) || return 1
-        _al_now=$(date +%s 2>/dev/null) || return 1
-        case "$_al_lock_pid" in ''|*[!0-9]*) _al_lock_pid=0 ;; esac
-        case "$_al_lock_mtime:$_al_now" in *[!0-9:]*|:*|*:) return 1 ;; esac
-        _al_owner_live=0
-        if [ "$_al_lock_pid" -gt 1 ] && [ -n "$_al_lock_ticks" ] \
-            && [ "$_al_lock_boot" = "$(audit_log_read_first_line /proc/sys/kernel/random/boot_id)" ]; then
-            _al_live_stat=$(sed 's/^.*) //' "/proc/$_al_lock_pid/stat" 2>/dev/null || true)
-            if [ "${_al_live_stat%% *}" != Z ] \
-                && [ "$(printf '%s' "$_al_live_stat" | cut -d' ' -f20)" = "$_al_lock_ticks" ] \
-                && kill -0 "$_al_lock_pid" 2>/dev/null; then _al_owner_live=1; fi
-        fi
-        _al_stale=0
-        if [ "$_al_owner_live" = 0 ]; then
-            if [ "$_al_lock_pid" -gt 1 ] && [ -n "$_al_lock_boot" ] && [ -n "$_al_lock_ticks" ]; then
-                _al_stale=1
-            elif [ $((_al_now - _al_lock_mtime)) -gt 30 ]; then _al_stale=1; fi
-        fi
-        if [ "$_al_stale" = 1 ]; then
-            rm -f "$_al_lock/pid" "$_al_lock/boot" "$_al_lock/ticks" 2>/dev/null && rmdir "$_al_lock" 2>/dev/null || return 1
-        else
-            sleep 0.05
-        fi
+        sleep 0.05
     done
-    # /proc/self identifies this actual subshell; $$ may be the parent shell.
-    IFS=' ' read -r _al_self _al_stat < /proc/self/stat || { rmdir "$_al_lock"; return 1; }
-    trap 'rm -f "$_al_lock/pid" "$_al_lock/boot" "$_al_lock/ticks" "$_al_lock/snapshot" "$_al_lock/trim"; rmdir "$_al_lock" 2>/dev/null' EXIT
-    trap 'exit 129' HUP
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    _al_self_ticks=$(sed 's/^.*) //' "/proc/$_al_self/stat" | cut -d' ' -f20)
-    [ -n "$_al_self_ticks" ] || return 1
-    printf '%s\n' "$(audit_log_read_first_line /proc/sys/kernel/random/boot_id)" > "$_al_lock/boot" \
-        && printf '%s\n' "$_al_self_ticks" > "$_al_lock/ticks" \
-        && printf '%s\n' "$_al_self" > "$_al_lock/pid"
+    # Every caller is a subshell; the kernel releases FD 9 on exit or a signal.
+    # The previous mkdir lock, if present, is legacy state and is left untouched.
 }
 
 audit_log_prepare() {
-    audit_log_safe_file "$AUDIT_LOG_FILE" && audit_log_safe_file "$AUDIT_LOG_DIR/.events_day" || return 1
+    audit_log_safe_file "$AUDIT_LOG_FILE" || return 1
     [ -e "$AUDIT_LOG_FILE" ] || : > "$AUDIT_LOG_FILE" || return 1
-    chmod 600 "$AUDIT_LOG_FILE" || return 1
-    audit_log_day_roll
-}
-
-audit_log_day_roll() {
-    _al_today=$(date '+%Y-%m-%d') || return 1
-    _al_day_file="$AUDIT_LOG_DIR/.events_day"
-    _al_previous=$(audit_log_read_first_line "$_al_day_file")
-    case "$_al_previous" in ????-??-??) ;; *) _al_previous= ;; esac
-    case "$_al_previous" in *[!0-9-]*) _al_previous= ;; esac
-    if [ -n "$_al_previous" ] && [ "$_al_previous" != "$_al_today" ] && [ -s "$AUDIT_LOG_FILE" ]; then
-        _al_daily="$AUDIT_LOG_DIR/events-$_al_previous.log"
-        audit_log_safe_file "$_al_daily" || return 1
-        _al_day_index="$AUDIT_LOG_KEEP"
-        while [ "$_al_day_index" -ge 1 ]; do
-            _al_chunk="$AUDIT_LOG_FILE.$_al_day_index"
-            audit_log_safe_file "$_al_chunk" || return 1
-            [ ! -f "$_al_chunk" ] || cat "$_al_chunk" >> "$_al_daily" || return 1
-            rm -f "$_al_chunk" || return 1
-            _al_day_index=$((_al_day_index - 1))
-        done
-        cat "$AUDIT_LOG_FILE" >> "$_al_daily" && chmod 600 "$_al_daily" || return 1
-        _al_daily_cap=$(( (AUDIT_LOG_KEEP + 1) * (AUDIT_LOG_MAX_BYTES + 2048) ))
-        _al_daily_size=$(wc -c < "$_al_daily" | tr -d ' \r\n')
-        if [ "$_al_daily_size" -gt "$_al_daily_cap" ]; then
-            tail -c "$_al_daily_cap" "$_al_daily" | sed '1d' > "$_al_lock/trim" \
-                && mv "$_al_lock/trim" "$_al_daily" || return 1
-        fi
-        : > "$AUDIT_LOG_FILE" || return 1
-    fi
-    printf '%s\n' "$_al_today" > "$_al_day_file" && chmod 600 "$_al_day_file" || return 1
-    _al_daily_count=0
-    for _al_daily in "$AUDIT_LOG_DIR"/events-????-??-??.log; do
-        audit_log_safe_file "$_al_daily" || return 1
-        [ ! -f "$_al_daily" ] || _al_daily_count=$((_al_daily_count + 1))
-    done
-    # ISO-date glob order is chronological; keep four bounded daily archives.
-    for _al_daily in "$AUDIT_LOG_DIR"/events-????-??-??.log; do
-        [ "$_al_daily_count" -gt 4 ] || break
-        [ -f "$_al_daily" ] || continue
-        rm -f "$_al_daily" || return 1
-        _al_daily_count=$((_al_daily_count - 1))
-    done
+    chmod 600 "$AUDIT_LOG_FILE"
 }
 
 audit_log_rotate() {
@@ -192,27 +120,107 @@ audit_log_clear() (
     : > "$AUDIT_LOG_FILE" && audit_log_append audit clear success AUDIT_LOG_CLEARED 0
 )
 
-audit_log_read() (
-    umask 077
-    _al_read_limit="$1"
-    _al_read_all="${2:-0}"
-    case "$_al_read_limit" in ''|*[!0-9]*) return 1 ;; esac
-    [ "$_al_read_limit" -ge 1 ] && [ "$_al_read_limit" -le 2000 ] || return 1
-    audit_log_lock && audit_log_prepare || return 1
-    : > "$_al_lock/snapshot" || return 1
-    if [ "$_al_read_all" = 1 ]; then
+# Fixed owned sources, oldest first. Legacy daily archives are read-only until
+# an explicit clear; new events use only the existing bounded size rotation.
+audit_log_source_paths() {
+    if [ "$1" = 1 ]; then
         for _al_daily in "$AUDIT_LOG_DIR"/events-????-??-??.log; do
             audit_log_safe_file "$_al_daily" || return 1
-            [ ! -f "$_al_daily" ] || cat "$_al_daily" >> "$_al_lock/snapshot" || return 1
+            [ ! -f "$_al_daily" ] || printf '%s\n' "$_al_daily"
         done
         _al_index="$AUDIT_LOG_KEEP"
         while [ "$_al_index" -ge 1 ]; do
             _al_chunk="$AUDIT_LOG_FILE.$_al_index"
             audit_log_safe_file "$_al_chunk" || return 1
-            [ ! -f "$_al_chunk" ] || cat "$_al_chunk" >> "$_al_lock/snapshot" || return 1
+            [ ! -f "$_al_chunk" ] || printf '%s\n' "$_al_chunk"
             _al_index=$((_al_index - 1))
         done
     fi
-    cat "$AUDIT_LOG_FILE" >> "$_al_lock/snapshot" || return 1
-    tail -n "$_al_read_limit" "$_al_lock/snapshot"
+    audit_log_safe_file "$AUDIT_LOG_FILE" || return 1
+    [ ! -f "$AUDIT_LOG_FILE" ] || printf '%s\n' "$AUDIT_LOG_FILE"
+}
+
+# Keep the existing text-tail ABI for shell consumers without a disk snapshot.
+audit_log_read() (
+    umask 077
+    _al_read_limit="$1"
+    case "$_al_read_limit" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$_al_read_limit" -ge 1 ] && [ "$_al_read_limit" -le 2000 ] || return 1
+    audit_log_lock || return $?
+    _al_sources=$(audit_log_source_paths "${2:-0}") || return 1
+    set -- /dev/null
+    while IFS= read -r _al_source; do
+        [ -z "$_al_source" ] || set -- "$@" "$_al_source"
+    done <<EOF
+$_al_sources
+EOF
+    LC_ALL=C awk -v limit="$_al_read_limit" '
+        { lines[(NR-1)%limit]=$0 }
+        END { for (i=(NR>limit ? NR-limit : 0);i<NR;i++) print lines[i%limit] }
+    ' "$@"
+)
+
+# CGI validates the query once. Hashing each fixed source under the writer lock
+# detects same-second writes and rotation between pages without a saved file.
+# Returns 65 for oversized records/page, 66 for offset, 73 for snapshot change.
+audit_log_page() (
+    umask 077
+    _al_page_limit="$1"
+    _al_page_offset="$2"
+    _al_page_all="$3"
+    _al_expected_snapshot="$4"
+    audit_log_lock || return $?
+    _al_sources=$(audit_log_source_paths "$_al_page_all") || return 1
+    _al_identity="scope=$_al_page_all"
+    _al_rotated=false
+    for _al_archive in "$AUDIT_LOG_FILE.1" "$AUDIT_LOG_DIR"/events-????-??-??.log; do
+        [ ! -f "$_al_archive" ] || _al_rotated=true
+    done
+    set -- /dev/null
+    while IFS= read -r _al_source; do
+        [ -n "$_al_source" ] || continue
+        _al_hash=$(sha256sum "$_al_source") || return 1
+        _al_identity="$_al_identity
+$_al_hash"
+        set -- "$@" "$_al_source"
+    done <<EOF
+$_al_sources
+EOF
+    _al_snapshot=$(printf '%s\n' "$_al_identity" | sha256sum) || return 1
+    _al_snapshot=${_al_snapshot%% *}
+    [ -z "$_al_expected_snapshot" ] || [ "$_al_expected_snapshot" = "$_al_snapshot" ] || return 73
+    LC_ALL=C awk -v limit="$_al_page_limit" -v offset="$_al_page_offset" \
+        -v snapshot="$_al_snapshot" -v rotated="$_al_rotated" -v schema="$AUDIT_LOG_SCHEMA" '
+        function escape(value, result,i,c) {
+            result=""
+            for (i=1;i<=length(value);i++) {
+                c=substr(value,i,1)
+                if (c=="\\") result=result "\\\\"
+                else if (c=="\"") result=result "\\\""
+                else if (c in escaped) result=result escaped[c]
+                else result=result c
+            }
+            return result
+        }
+        BEGIN { for (i=0;i<32;i++) escaped[sprintf("%c",i)]=sprintf("\\u%04x",i) }
+        {
+            # The former API silently cut these lines; reject damaged history.
+            if (length($0)>1600) { invalid=1; next }
+            if (NR>offset && returned<limit) {
+                line=escape($0)
+                bytes+=length(line)+3
+                if (bytes>3145728) { invalid=1; next }
+                lines=lines (returned++ ? "," : "") "\"" line "\""
+            }
+        }
+        END {
+            if (invalid) exit 65
+            if (offset>NR) exit 66
+            next_offset=offset+returned
+            more=next_offset<NR
+            printf "{\"ok\":true,\"schema\":%d,\"source\":\"structured_audit\",\"lines\":[%s],\"limit\":%d,\"rotated\":%s,\"total_lines\":%d,\"offset\":%d,\"next_offset\":%s,\"complete\":%s,\"truncated\":%s,\"snapshot_id\":\"%s\"}\n", \
+                schema,lines,limit,rotated,NR,offset,(more ? sprintf("%d",next_offset) : "null"), \
+                (more ? "false" : "true"),(more ? "true" : "false"),snapshot
+        }
+    ' "$@"
 )

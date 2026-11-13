@@ -93,10 +93,14 @@ json_error() {
     _json_error_status=${code%% *}
     case "$_json_error_status" in ''|*[!0-9]*) _json_error_status=500 ;; esac
     _json_error_reason="${CGI_ERROR_CODE:-HTTP_$_json_error_status}"
+    # Persist only authenticated operation failures. Read/poll errors and
+    # rejected input remain in the page's memory log, not the device audit file.
     case "$_json_error_status" in
-        401|403|405) : ;; # Untrusted/local probing must not fork log writers.
-        *) [ "$AUDIT_LOG_AVAILABLE" -ne 1 ] \
-            || audit_log_event_async cgi "${CGI_AUDIT_OPERATION:-${0##*/}}" failure "$_json_error_reason" "$(cgi_duration_ms)" ;;
+        500|503)
+            if [ "${CGI_AUTHENTICATED:-0}" = 1 ] && [ "${REQUEST_METHOD:-}" = POST ]; then
+                audit_log_event_async cgi "${CGI_AUDIT_OPERATION:-${0##*/}}" failure "$_json_error_reason" "$(cgi_duration_ms)"
+            fi
+            ;;
     esac
     json_status_headers "$code"
     printf '{"ok":false,"error":"%s","error_code":"%s"}\n' "$(json_escape "$msg")" "$_json_error_reason"

@@ -22,6 +22,7 @@ const API = {
   nrSwitch: '/cgi-bin/nr_switch.sh',
   uecap: '/cgi-bin/uecap.sh',
   ntp: '/cgi-bin/ntp.sh',
+  dnsCache: '/cgi-bin/dns_cache.sh',
   auditLog: '/cgi-bin/audit_log.sh',
   auth: '/cgi-bin/auth.sh',
   checkBaseband: '/cgi-bin/check_baseband.sh',

@@ -2,7 +2,7 @@
 # Invoked by the trusted manager asset page. Keep the production CGI runtime
 # on the root manager's BusyBox, just as its module hooks and httpd use it.
 case "$1" in
-    audit_log.sh|auth.sh|bg_restrict.sh|check_baseband.sh|info.sh|nr_switch.sh|ntp.sh|optimize.sh|owner_arbiter.sh|profile.sh|reboot.sh|set_thermal.sh|standby_guard.sh|status.sh|swap.sh|theme.sh|thermal.sh|uecap.sh) ;;
+    audit_log.sh|auth.sh|bg_restrict.sh|check_baseband.sh|dns_cache.sh|info.sh|nr_switch.sh|ntp.sh|optimize.sh|owner_arbiter.sh|profile.sh|reboot.sh|set_thermal.sh|standby_guard.sh|status.sh|swap.sh|theme.sh|thermal.sh|uecap.sh) ;;
     *) exit 64 ;;
 esac
 _cd_root=${0%/scripts/cgi_dispatch.sh}

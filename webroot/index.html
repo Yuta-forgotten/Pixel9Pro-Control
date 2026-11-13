@@ -166,7 +166,7 @@
             </button>
           </div>
           <div class="log-body" id="log-body">
-            <div class="log-toolbar"><span id="log-meta">本页操作记录 · 最多 80 条</span><span class="log-toolbar-actions"><button class="tiny-btn sm tonal" id="log-audit-btn" type="button">查看模块日志</button><button class="tiny-btn sm" id="log-clear-btn" type="button">清空本页记录</button></span></div>
+            <div class="log-toolbar"><span id="log-meta">详细记录仅保留在当前页面</span><span class="log-toolbar-actions"><button class="tiny-btn sm tonal" id="log-audit-btn" type="button">日志分析与导出</button><button class="tiny-btn sm" id="log-clear-btn" type="button">清空本页记录</button></span></div>
             <div class="log-inner" id="log-inner"><span class="log-dim">等待操作…</span></div>
           </div>
         </div>
@@ -402,6 +402,20 @@
             <summary class="disclosure-summary"><span class="disclosure-copy"><strong>运行状态</strong><small>使用条件与当前状态</small></span><span class="disclosure-chevron" aria-hidden="true">›</span></summary>
             <div class="disclosure-body"><div class="data-list" id="sim2-auto-rows"><div class="skel" style="height:48px"></div></div></div>
           </details>
+        </article>
+
+        <article class="surface-card preference-card" id="dns-cache-card">
+          <div class="panel-head">
+            <div class="panel-copy">
+              <div class="panel-title">DNS 缓存</div>
+              <div class="panel-desc" id="dns-cache-desc">清除系统保存的域名解析记录，下次访问时重新查询。</div>
+              <div class="panel-desc" id="dns-cache-scope">不更改网络设置，也不清理应用或代理服务的缓存。</div>
+            </div>
+            <div class="header-actions">
+              <button class="tiny-btn tonal" id="dns-cache-clear-btn" type="button" aria-busy="false" aria-describedby="dns-cache-desc dns-cache-scope"><span id="dns-cache-clear-label">清理缓存</span></button>
+            </div>
+          </div>
+          <div class="inline-alert" id="dns-cache-status" role="status" aria-live="polite" hidden></div>
         </article>
       </div>
     </section>
@@ -681,6 +695,7 @@
 <script src="/js/theme.js?v=__WEBUI_VER__"></script>
 <script src="/js/ui.js?v=__WEBUI_VER__"></script>
 <script src="/js/common.js?v=__WEBUI_VER__"></script>
+<script src="/js/log_model.js?v=__WEBUI_VER__"></script>
 <script src="/js/diagnostics.js?v=__WEBUI_VER__"></script>
 <script src="/js/analytics_model.js?v=__WEBUI_VER__"></script>
 <script src="/js/analytics_view.js?v=__WEBUI_VER__"></script>

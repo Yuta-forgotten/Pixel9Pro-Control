@@ -22,7 +22,18 @@
 .log-entry pre{max-height:16rem;margin:8px 0 0;padding:12px;border-radius:var(--radius-sm);background:var(--surface-2);color:var(--danger);font:400 var(--font-caption)/1.5 var(--font-mono);white-space:pre-wrap;overflow:auto;overflow-wrap:anywhere}
 .danger-btn{background:var(--danger-container);border-color:var(--danger);color:var(--danger)}
 .text-btn{background:transparent;border-color:transparent;color:var(--primary)}
-.audit-log-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;flex-wrap:wrap}
+.audit-log-actions{display:flex;align-items:flex-end;justify-content:flex-end;gap:8px;margin-top:16px;flex-wrap:wrap}
+.audit-log-actions label{display:grid;flex:1 1 9rem;min-width:0;gap:6px;color:var(--text-2);font-size:var(--font-support)}
+.audit-log-actions select,.audit-log-actions input{box-sizing:border-box;width:100%;min-width:0;min-height:48px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface-2);color:var(--text);font:inherit}
+.audit-log-actions input[type=file]{overflow:hidden;font-size:var(--font-caption)}
+.audit-log-actions :is(select,input):focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+#audit-log-view{min-width:0;overflow-wrap:anywhere}
+#audit-log-view>p{color:var(--text-2);font-size:var(--font-support);line-height:1.5}
+#audit-log-content{max-height:50vh;overflow:auto;overscroll-behavior:contain;margin-top:16px}
+#audit-log-content .log-entry{font-size:var(--font-support);line-height:1.5}
+#audit-log-content .log-entry details{grid-column:1 / -1}
+#audit-log-content pre{color:var(--text-2);white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;box-sizing:border-box}
+#audit-log-view :is(button,select,input){max-width:100%}
 .error-panel{display:grid;gap:8px;padding:16px;border:1px solid var(--danger);border-radius:var(--radius-md);background:var(--danger-container);color:var(--danger);font-size:var(--font-support);line-height:1.4286;overflow-wrap:anywhere}
 .error-panel pre{margin:0;max-height:20rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:400 var(--font-caption)/1.5 var(--font-mono)}
 .audit-log-pre{max-height:55vh;margin:16px 0 0;padding:16px;border-radius:var(--radius-md);background:var(--surface-2);color:var(--text-2);font:400 var(--font-caption)/1.5 var(--font-mono);white-space:pre-wrap;overflow:auto;overflow-wrap:anywhere}
@@ -30,4 +41,6 @@
 @media (max-width:359px){
   .log-entry{grid-template-columns:1fr}
   .log-entry details{grid-column:1}
+  #dns-cache-card .panel-head{flex-direction:column;align-items:stretch}
+  #dns-cache-card .header-actions{justify-content:flex-end}
 }
