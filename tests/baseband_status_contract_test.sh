@@ -101,6 +101,9 @@ PY
 }
 
 mkdir -p "$FIXTURE" "$ACTIVE_ROOT" "$UPDATE_ROOT" "$MOCK_BIN" || exit 2
+printf '%s\n' test-boot > "$TEST_ROOT/boot-id" || exit 2
+export BASEBAND_STATUS_BOOT_ID_PATH="$TEST_ROOT/boot-id"
+printf '%s' fixture-token > "$FIXTURE/.webui_token" || exit 2
 cp "$COMMON_SCRIPT" "$FIXTURE/_common.sh" || exit 2
 cp "$STATUS_SCRIPT" "$FIXTURE/_baseband_status.sh" || exit 2
 
@@ -193,7 +196,7 @@ run_info() {
     mkdir -p "$FIXTURE/webroot/cgi-bin" || return 1
     cp "$COMMON_SCRIPT" "$STATUS_SCRIPT" "$SOURCE_ROOT/webroot/cgi-bin/info.sh" "$FIXTURE/webroot/cgi-bin/" || return 1
     env PATH="$MOCK_BIN:$PATH" PIXEL9PRO_MODDIR="$FIXTURE" \
-        REMOTE_ADDR=127.0.0.1 REQUEST_METHOD=GET \
+        REMOTE_ADDR=127.0.0.1 REQUEST_METHOD=GET HTTP_X_PIXEL9PRO_TOKEN=fixture-token \
         BASEBAND_STATUS_ACTIVE_ROOT="$ACTIVE_ROOT" BASEBAND_STATUS_UPDATE_ROOT="$UPDATE_ROOT" \
         sh "$FIXTURE/webroot/cgi-bin/info.sh" > "$TEST_ROOT/info.http" || return 1
     sed -n '/^{/,$p' "$TEST_ROOT/info.http" > "$TEST_ROOT/info.json"

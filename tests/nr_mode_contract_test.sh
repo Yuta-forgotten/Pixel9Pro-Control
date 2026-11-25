@@ -12,6 +12,7 @@ check_eq() {
 }
 
 mkdir -p "$TEST_ROOT" || exit 2
+. "$SOURCE_ROOT/scripts/state_io_lib.sh" || exit 2
 . "$SOURCE_ROOT/scripts/runtime_defaults_lib.sh" || exit 2
 . "$SOURCE_ROOT/scripts/nr_mode_lib.sh" || exit 2
 . "$SOURCE_ROOT/scripts/background_tasks_lib.sh" || exit 2

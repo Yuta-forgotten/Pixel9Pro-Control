@@ -43,22 +43,6 @@ chmod 755 "$MODPATH/service.sh" "$MODPATH/post-fs-data.sh" "$MODPATH/post-mount.
 . "$MODPATH/scripts/state_io_lib.sh" || abort 'Control state I/O library missing'
 THERMAL_CONFIG_NAME=$(getprop vendor.thermal.config 2>/dev/null)
 [ -n "$THERMAL_CONFIG_NAME" ] || THERMAL_CONFIG_NAME=thermal_info_config.json
-case "$THERMAL_CONFIG_NAME" in
-    thermal_info_config.json)
-        ;;
-    thermal_info_config_lpm.json)
-        # LPM is a top-level overlay that includes thermal_info_config.json;
-        # target sensors live in the included base file, not in this delta.
-        [ -r "/vendor/etc/$THERMAL_CONFIG_NAME" ] || {
-            ui_print "  ✗ 当前 Thermal HAL 配置缺失: $THERMAL_CONFIG_NAME"
-            abort
-        }
-        ;;
-    *)
-        ui_print "  ✗ 不支持的 Thermal HAL 配置: $THERMAL_CONFIG_NAME"
-        abort
-        ;;
-esac
 
 if [ ! -r "$MODPATH/scripts/scheduler_detect_lib.sh" ] \
     || ! . "$MODPATH/scripts/scheduler_detect_lib.sh"; then
@@ -147,23 +131,17 @@ EVENT_FILE="$TMPDIR/pixel9pro_control_events.$$"
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-_flush_keys() { timeout 1 getevent -qlc 1 >/dev/null 2>&1; }
-
 chooseport() {
-    _flush_keys
-    # APD/automation often has no physical key event stream. Avoid spending
-    # 30s per prompt there; retain the displayed default immediately.
+    # Ignore touch, key-up and unrelated events throughout a single deadline.
     if [ "${PIXEL9PRO_NONINTERACTIVE:-0}" = "1" ] || [ ! -c /dev/input/event0 ]; then
         return 1
     fi
-    # A bounded wait prevents headless/APatch installs from hanging forever.
-    # Timeout is treated as confirmation of the currently displayed default.
-    if timeout 30 /system/bin/getevent -lc 1 2>&1 \
-        | /system/bin/grep VOLUME | /system/bin/grep " DOWN" > "$EVENT_FILE"; then
-        /system/bin/grep -q VOLUMEUP "$EVENT_FILE" 2>/dev/null && return 0
+    if timeout 30 /system/bin/getevent -ql 2>/dev/null \
+        | /system/bin/grep -m 1 -E 'KEY_VOLUME(UP|DOWN)[[:space:]]+DOWN[[:space:]]*$' > "$EVENT_FILE"; then
+        /system/bin/grep -q KEY_VOLUMEUP "$EVENT_FILE" && return 0
         return 1
     fi
-    ui_print "    （30 秒未检测到音量键，保留当前默认值）"
+    ui_print "    （未收到音量键，保留当前选项）"
     return 1
 }
 
@@ -413,41 +391,34 @@ if [ "$_is_upgrade" -eq 0 ]; then
     ui_print "  [音量+] = 下一项  [音量-] = 确认"
     ui_print ""
 
-    # --- 温控阈值: 现行五档 -2 / 0 / +2 / +4 / +6°C ---
-    ui_print "  ① 温控偏移:"
-    _ofs_idx=0
-    _ofs_scan_idx=0
-    _ofs_vals="$THERMAL_ALLOWED_OFFSETS"
-    for _ofs_scan_value in $_ofs_vals; do
-        if [ "$_ofs_scan_value" = "$THERMAL_DEFAULT_OFFSET" ]; then
-            _ofs_idx=$_ofs_scan_idx
-            break
-        fi
-        _ofs_scan_idx=$((_ofs_scan_idx + 1))
-    done
-    set -- $_ofs_vals
-    _ofs_total=$#
-    while true; do
-        _i=0; _ofs_cur=""
-        for _v in $_ofs_vals; do
-            if [ "$_i" -eq "$_ofs_idx" ]; then _ofs_cur=$_v; break; fi
-            _i=$((_i + 1))
+    ui_print "  ① 温控策略（重启后生效）:"
+    set -- system $THERMAL_UI_OFFSETS
+    if [ "$THERMAL_DEFAULT_POLICY" = custom ]; then
+        _default_found=0
+        for _opt in "$@"; do
+            if [ "$1" = "$THERMAL_DEFAULT_OFFSET" ]; then _default_found=1; break; fi
+            shift; set -- "$@" "$_opt"
         done
+        [ "$_default_found" = 1 ] || abort '自定义温控默认值不在可选档位内'
+    fi
+    while true; do
+        _ofs_cur=$1
         case "$_ofs_cur" in
-            -2) _ofs_label="-2°C (提前介入)" ;;
-            0)  _ofs_label="0°C (原厂阈值)" ;;
-            2)  _ofs_label="+2°C (轻度放宽)" ;;
-            4)  _ofs_label="+4°C (日常放宽, 模块默认)" ;;
-            6)  _ofs_label="+6°C (最大放宽)" ;;
+            system) _ofs_label="系统温控（不添加配置）" ;;
+            *) _ofs_label="$(thermal_format_offset "$_ofs_cur")（$(thermal_profile_name "$_ofs_cur")）" ;;
         esac
         ui_print "    > $_ofs_label"
         if chooseport; then
-            _ofs_idx=$(( (_ofs_idx + 1) % _ofs_total ))
+            shift
+            set -- "$@" "$_ofs_cur"
         else
             break
         fi
     done
-    installer_write "$OFFSET_FILE" "$_ofs_cur"
+    case "$_ofs_cur" in
+        system) installer_write "$OFFSET_FILE" 0; installer_write "$THERMAL_POLICY_FILE" system ;;
+        *) installer_write "$OFFSET_FILE" "$_ofs_cur"; installer_write "$THERMAL_POLICY_FILE" custom ;;
+    esac
     ui_print "    ✓ $_ofs_label"
     ui_print ""
 
@@ -522,23 +493,30 @@ if [ "$_is_upgrade" -eq 0 ]; then
 
     # --- NR 息屏降级 ---
     ui_print "  ④ NR 息屏降级 (息屏自动切 LTE 省电):"
-    ui_print "    [音量+] = 关闭  [音量-] = 开启"
-    if chooseport; then
-        installer_write "$MODPATH/.nr_screen_switch" off
-        ui_print "    ✓ 关闭"
-    else
-        installer_write "$MODPATH/.nr_screen_switch" on
-        ui_print "    ✓ 开启"
-    fi
+    _nr_choice="$NR_SCREEN_SWITCH_DEFAULT"
+    while true; do
+        if [ "$_nr_choice" = on ]; then _nr_label=开启; else _nr_label=关闭; fi
+        ui_print "    > $_nr_label"
+        chooseport || break
+        if [ "$_nr_choice" = on ]; then _nr_choice=off; else _nr_choice=on; fi
+    done
+    installer_write "$MODPATH/.nr_screen_switch" "$_nr_choice"
+    ui_print "    ✓ $_nr_label"
     ui_print ""
 
     # --- NTP ---
     ui_print "  ⑤ NTP 服务器:"
+    _ntp_default=$(ntp_server_default) || abort
     _NTP_VALS=$(ntp_server_hosts)
     set -- $_NTP_VALS
     _ntp_idx=0
     _ntp_total=$#
     [ "$_ntp_total" -gt 0 ] 2>/dev/null || abort
+    for _v in $_NTP_VALS; do
+        [ "$_v" != "$_ntp_default" ] || break
+        _ntp_idx=$((_ntp_idx + 1))
+    done
+    [ "$_ntp_idx" -lt "$_ntp_total" ] || abort
     while true; do
         _i=0; _ntp_cur=""
         for _v in $_NTP_VALS; do
@@ -562,7 +540,20 @@ if [ "$_is_upgrade" -eq 0 ]; then
 
 else
     # 升级模式: 确保必要的默认值存在
-    [ -f "$OFFSET_FILE" ] || installer_write "$OFFSET_FILE" "$THERMAL_DEFAULT_OFFSET"
+    if [ ! -e "$THERMAL_POLICY_FILE" ]; then
+        # Before policies existed, a module overlay was the only evidence of
+        # ownership. Never silently replace an ambiguous or damaged install.
+        if [ -e "$OLDDIR/.state_schema" ] || [ -e "$OLDDIR/system/vendor/etc/thermal_info_config.json" ] \
+            || [ -L "$OLDDIR/system/vendor/etc/thermal_info_config.json" ]; then
+            ui_print '  ✗ 旧模块缺少温控策略，不能确认原配置；请先在旧版恢复系统温控'
+            abort
+        fi
+        installer_write "$THERMAL_POLICY_FILE" "$THERMAL_DEFAULT_POLICY"
+    fi
+    if [ ! -f "$OFFSET_FILE" ]; then
+        [ "$(thermal_policy_read)" = system ] || { ui_print '  ✗ 旧模块温控偏移缺失，已保留原配置'; abort; }
+        installer_write "$OFFSET_FILE" 0
+    fi
     [ -f "$PROFILE_FILE" ] || installer_write "$PROFILE_FILE" balanced
     if [ ! -f "$PROFILE_MANUAL_FILE" ]; then
         _profile_for_manual=$(cat "$PROFILE_FILE" 2>/dev/null | tr -d ' \n\r\t')
@@ -598,20 +589,15 @@ else
         fi
     fi
     [ -f "$MODPATH/.profile_auto_reason" ] || installer_write "$MODPATH/.profile_auto_reason" manual_policy
-    if [ "$UECAP_EXTERNAL" -eq 1 ]; then
-        installer_write "$MODPATH/.uecap_manual_mode" stock
-        installer_write "$MODPATH/.uecap_mode" stock
-        installer_write "$MODPATH/.uecap_policy" external
-        installer_write "$MODPATH/.uecap_reason" device_external_stock
-    elif [ "$UECAP_DISABLED" -eq 0 ]; then
-        _ue_default=$(sh "$MODPATH/uecap_profile.sh" default 2>/dev/null) \
-            || { ui_print "  ✗ 无法读取 UECap default contract"; abort; }
-        [ -f "$MODPATH/.uecap_manual_mode" ] || installer_write "$MODPATH/.uecap_manual_mode" "$_ue_default"
-        [ -f "$MODPATH/.uecap_mode" ] || installer_write "$MODPATH/.uecap_mode" "$_ue_default"
-        [ -f "$MODPATH/.uecap_policy" ] || installer_write "$MODPATH/.uecap_policy" manual
-    fi
-    # 不兼容的 root/设备升级时覆盖旧 UECap 状态，避免迁移出不可用档位。
-    if [ "$UECAP_EXTERNAL" -eq 1 ]; then
+    if [ "$UECAP_EXTERNAL" -eq 1 ] && [ "$UECAP_RUNTIME_POLICY" = single_candidate ] \
+        && [ "$(cat "$OLDDIR/.device_variant" 2>/dev/null)" = "$device" ] \
+        && [ "$(cat "$MODPATH/.uecap_manual_mode" 2>/dev/null)" = candidate ] \
+        && uecap_is_valid_mode candidate; then
+        # Only an explicit, same-SKU choice can carry this payload across an update.
+        UECAP_EXTERNAL=0
+        installer_write "$MODPATH/.uecap_mode" candidate
+        installer_write "$MODPATH/.uecap_policy" "$UECAP_RUNTIME_POLICY"
+    elif [ "$UECAP_EXTERNAL" -eq 1 ]; then
         installer_write "$MODPATH/.uecap_manual_mode" stock
         installer_write "$MODPATH/.uecap_mode" stock
         installer_write "$MODPATH/.uecap_policy" external
@@ -622,6 +608,12 @@ else
         installer_write "$MODPATH/.uecap_policy" disabled
         installer_write "$MODPATH/.uecap_reason" "$UECAP_DISABLED_REASON"
     else
+        _ue_saved=$(state_read_entry "$MODPATH/.uecap_manual_mode") || abort
+        if [ -z "$_ue_saved" ]; then _ue_saved=$(state_read_entry "$MODPATH/.uecap_mode") || abort; fi
+        case "$_ue_saved" in ''|disabled) _ue_saved=$UECAP_DEFAULT_MODE ;; esac
+        uecap_is_valid_mode "$_ue_saved" || { ui_print '  ✗ 已保存的 UECap 档位不适用于当前机型'; abort; }
+        installer_write "$MODPATH/.uecap_manual_mode" "$_ue_saved"
+        installer_write "$MODPATH/.uecap_mode" "$_ue_saved"
         # UECap has no automatic policy. Normalize any retired automatic state so
         # service/WebUI never need to carry the retired branch.
         installer_write "$MODPATH/.uecap_policy" manual
@@ -648,8 +640,14 @@ esac
 [ -f "$MODPATH/.zram_restore_pending" ] || installer_write "$MODPATH/.zram_restore_pending" false
 [ -f "$MODPATH/.vm_policy_ready" ] || installer_write "$MODPATH/.vm_policy_ready" false
 _memory_sdk=$(getprop ro.build.version.sdk)
-memory_config_init "$MODPATH" && vm_zram_init_limits && memory_original_refresh \
-    || { ui_print '  ✗ 无法读取当前设备的原始内存配置'; abort; }
+memory_config_init "$MODPATH" || abort
+_mem_rc=0
+memory_original_refresh || _mem_rc=$?
+case "$_mem_rc" in
+    0) ;;
+    2) ui_print '  - 未取得设备原始内存配置；原始值和依赖该数据的预设不可用' ;;
+    *) ui_print '  ✗ 无法保存已读取的原始内存配置'; abort ;;
+esac
 if [ "${_memory_sdk:-0}" -ge 37 ] && [ -x /system/bin/mmd ]; then
     installer_write "$MODPATH/.mmd_capability" "android17"
     ui_print "  ✓ Android API $_memory_sdk：MMD 内存功能按平台实际接口启用"
@@ -687,22 +685,15 @@ if so_migrate_state; then
             abort
         fi
     fi
-    if [ "$UPERF_MODULE_ENABLED" = "yes" ]; then
-        installer_write "$SCHED_OWNER_DESIRED_FILE" external
-        installer_write "$SCHED_OWNER_FILE" external
-        ui_print "  CPU 启动模式: UGT 日常基线 (重启后验证), 游戏接管: $(so_read_handoff_policy)"
-    else
-        installer_write "$SCHED_OWNER_DESIRED_FILE" pixel
-        installer_write "$SCHED_OWNER_FILE" pixel
-        ui_print "  CPU 启动模式: Pixel (重启后验证), 游戏接管: $(so_read_handoff_policy)"
-    fi
+    # Migration already resolved persistent intent. Inventory is not an owner selection.
+    case "$(so_read_desired_owner)" in external) _cpu_label=UGT ;; pixel) _cpu_label=Pixel ;; *) abort ;; esac
+    ui_print "  已保存的 CPU 启动模式: $_cpu_label (重启后验证), 游戏接管: $(so_read_handoff_policy)"
 else
     ui_print '  ✗ CPU 调度配置迁移失败，原配置未替换'
     abort
 fi
 
 THERMAL_POLICY=$(thermal_policy_read) || { ui_print '  ✗ 无法读取温控策略'; abort; }
-installer_write "$THERMAL_POLICY_FILE" "$THERMAL_POLICY"
 if [ "$THERMAL_POLICY" = custom ]; then
     thermal_policy_prepare_snapshot "$device" || { ui_print '  ✗ 当前原始温控配置读取或解析失败，详见上方错误'; abort; }
     if ! thermal_policy_profile_cache_prepare "$device"; then

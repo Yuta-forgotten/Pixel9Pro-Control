@@ -71,8 +71,20 @@ cmd() {
     esac
 }
 
-mkdir -p "$MODDIR" || exit 2
+mkdir -p "$MODDIR/scripts" || exit 2
+cp "$MOD/scripts/state_io_lib.sh" "$MODDIR/scripts/" || exit 2
+. "$MOD/scripts/state_io_lib.sh" || exit 2
 . "$MOD/scripts/bg_restrict_lib.sh" || exit 2
+
+# Mock only the Android IPC boundary; insist that production scopes user 0.
+bg_am() {
+    [ "$2:$3" = --user:0 ] || return 1
+    am "$1" "$4" "$5"
+}
+bg_cmd() {
+    [ "$3:$4" = --user:0 ] || return 1
+    cmd "$1" "$2" "$5" "$6" "$7"
+}
 
 if [ ! -e "$BG_ENABLED_FILE" ] && [ ! -e "$BG_LIST_FILE" ] \
     && [ ! -e "$BG_BASELINE_FILE" ] && [ ! -e "$BG_STOP_STATE_FILE" ]; then

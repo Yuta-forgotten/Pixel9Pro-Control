@@ -1196,6 +1196,7 @@ uecap_restore_file() {
 }
 
 uecap_commit_state() {
+    UECAP_STATE_ROLLBACK_RESULT="not_needed"
     _uecap_commit_mode="$1"
     _uecap_commit_reason="$2"
     _uecap_commit_time="$3"
@@ -1215,7 +1216,6 @@ uecap_commit_state() {
     _uecap_reason_old=$(state_read_entry "$UECAP_REASON_FILE") || return 1
     _uecap_switch_old=$(state_read_entry "$UECAP_SWITCH_FILE") || return 1
 
-    UECAP_STATE_ROLLBACK_RESULT="not_needed"
     if uecap_set_mode "$_uecap_commit_mode" \
         && uecap_set_manual_mode "$_uecap_commit_mode" \
         && uecap_set_policy "$UECAP_DEVICE_POLICY" \

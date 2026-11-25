@@ -117,6 +117,9 @@ thermal_policy_prepare_snapshot() {
     local target temporary selected
     target=$(thermal_policy_snapshot_path "$1") || return 1
     selected=$(thermal_policy_selected_config)
+    case "$selected" in thermal_info_config.json|thermal_info_config_lpm.json) ;; *)
+        printf 'unsupported selected thermal config: %s\n' "$selected" >&2; return 1 ;;
+    esac
     mkdir -p "${target%/*}" || return 1
     temporary=$(mktemp "${target}.read.XXXXXX") || return 1
     if [ "$selected" = thermal_info_config_lpm.json ]; then
@@ -249,11 +252,12 @@ thermal_policy_readback_check() {
     _tpl_effective_mode=$(thermal_policy_effective_mode)
     if [ "$_tpl_policy" = system ]; then
         [ "$_tpl_source_hash" = none ] || return 1
-        _tpl_original_text=$(thermal_policy_read_original /vendor/etc/thermal_info_config.json) || return 1
-        _tpl_original=$(printf '%s\n' "$_tpl_original_text" | sha256sum | awk '{print $1}')
+        _tpl_original=$(/system/bin/sh "$THERMAL_POLICY_ROOT/scripts/vendor_source.sh" \
+            --sha256-file /vendor/etc/thermal_info_config.json) || return 1
+        _tpl_original=${_tpl_original%% *}
         [ -n "$_tpl_original" ] && [ "$_tpl_effective_hash" = "$_tpl_original" ] || return 1
     elif [ "$_tpl_policy" = custom ]; then
-        [ "$_tpl_source_hash" != none ] && [ "$_tpl_source_hash" = "$_tpl_effective_hash" ] || return 1
+        [ "${#_tpl_source_hash}" -eq 64 ] && [ "$_tpl_source_hash" = "$_tpl_effective_hash" ] || return 1
     else
         return 1
     fi

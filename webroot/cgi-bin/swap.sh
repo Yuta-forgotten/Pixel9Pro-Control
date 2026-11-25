@@ -119,13 +119,15 @@ case "$mode" in
             fi
         done
         if [ "$MC_AUTO" = on ] && [ -n "$MC_SIZE$MC_ALGORITHM" ]; then
-            [ "$(getprop ro.build.version.sdk)" -ge 37 ] && [ -x /system/bin/mmd_setup ] \
-                && vm_zram_vendor_alias_supported || json_error '409 Conflict' 'boot ZRAM requires the supported API 37+ setup path'
+            memory_boot_zram_supported || json_error '409 Conflict' 'boot ZRAM requires the supported API 37+ setup path'
         fi
         memory_config_save || json_error '400 Bad Request' 'boot settings were not saved; invalid values or persistence failure'
         mutation_success ;;
     preset|restore_system|zram_online|zram_size|zram_restore|recover)
         kind=apply
+        case "$mode" in preset|restore_system|zram_restore)
+            memory_original_refresh || json_error '503 Service Unavailable' '无法读取当前设备的原始内存配置' ;;
+        esac
         if [ "$mode" = preset ]; then
             requested=$(vm_preset_size); algorithm=$(vm_preset_algorithm); kind=preset
         elif [ "$mode" = restore_system ] || [ "$mode" = zram_restore ]; then

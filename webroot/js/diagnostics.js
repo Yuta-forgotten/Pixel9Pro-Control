@@ -244,7 +244,7 @@
     appendLog(message, 'warn', '', { persistent: false, operation: 'logs.read', code: error?.payload?.error_code || '' });
   }
 
-  async function readAudit(session, more = false) {
+  async function readAudit(session, more = false, afterClear = false) {
     if (!isCurrentAudit(session) || session.busy || state.auditClearPending) return;
     if (session.source.value === 'page') { session.snapshot = pageSnapshot(); renderViewer(session); return; }
     if (session.source.value !== 'module') return;
@@ -261,7 +261,7 @@
         unsupportedCount: parsed.unsupportedCount + (previous ? session.snapshot.unsupportedCount : 0) });
       session.page = page; renderViewer(session);
       setStatus(session, `已读取 ${entries.length} 条${page.truncated ? '，可继续读取或导出完整快照' : '，当前快照已完整读取'}。`);
-    } catch (error) { actionError(session, revision, error, '日志读取失败'); }
+    } catch (error) { actionError(session, revision, error, afterClear ? '模块日志已清空，但重新读取失败，请刷新重试' : '日志读取失败，请刷新重试'); }
     finally { if (currentAction(session, revision)) { session.controller = null; setBusy(session, false); } }
   }
 
@@ -329,7 +329,7 @@
       state.auditClearPending = false;
       if (currentAction(session, revision)) {
         session.controller = null; setBusy(session, false);
-        if (committed && core().isWebUiActive()) await readAudit(session);
+        if (committed && core().isWebUiActive()) await readAudit(session, false, true);
       } else if (state.auditSession && isCurrentAudit(state.auditSession)) {
         setBusy(state.auditSession, state.auditSession.busy);
       }

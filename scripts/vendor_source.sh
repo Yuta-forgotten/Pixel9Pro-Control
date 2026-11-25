@@ -20,9 +20,20 @@ while :; do
 done
 source=$(awk '$2=="/vendor" && $4 ~ /^ro,/ && ($3=="ext4" || $3=="erofs") {print $1;exit}' /proc/mounts)
 [ -n "$source" ] || exit 1
-if [ "$action" = --file ]; then
+# OverlayFS is not the only mount mechanism: Magic Mount may leave a file
+# or directory bind above the stock partition. A non-recursive bind exposes
+# the partition without its submounts, only inside this private namespace.
+exec 3</vendor || exit 1
+vendor_id=$(awk '$1=="mnt_id:" {print $2}' "/proc/$$/fdinfo/3") || exit 1
+awk -v id="$vendor_id" -v src="$source" '$1==id && $4=="/" && $5=="/vendor" && $6 ~ /(^|,)ro(,|$)/ {
+    for(i=7;i<=NF;i++) if($i=="-" && ($(i+1)=="ext4" || $(i+1)=="erofs") && $(i+2)==src) ok=1
+} END {exit !ok}' /proc/self/mountinfo || exit 1
+exec 3<&-
+/system/bin/mount -o bind /vendor /vendor || exit 1
+if [ "$action" = --file ] || [ "$action" = --sha256-file ]; then
     case "${2:-}" in /vendor/etc/*) ;; *) printf 'source path must be under /vendor/etc\n' >&2; exit 2 ;; esac
     case "$2" in *'..'*|*'//'*) printf 'invalid source path\n' >&2; exit 2 ;; esac
+    [ "$action" != --sha256-file ] || exec sha256sum "$2"
     exec /system/bin/cat "$2"
 fi
 [ "$action" = --memory ] || { printf 'unknown original-source request\n' >&2; exit 2; }

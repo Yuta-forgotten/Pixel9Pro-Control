@@ -23,7 +23,7 @@ async function setup(browser, viewport = { width: 390, height: 844 }, withToken 
     ? route.fulfill({ contentType: 'text/html', body: documentHtml }) : route.abort());
   await page.goto('http://127.0.0.1:6210/');
   await page.addStyleTag({ content: styles.join('\n') });
-  for (const file of ['runtime', 'ui', 'common', 'diagnostics', ...(withMemory ? ['memory'] : [])]) {
+  for (const file of ['runtime', 'ui', 'common', 'log_model', 'diagnostics', ...(withMemory ? ['memory'] : [])]) {
     await page.addScriptTag({ content: fs.readFileSync(path.join(webroot, 'js', `${file}.js`), 'utf8') });
   }
   await page.evaluate(async ({ withToken, withMemory }) => {
@@ -73,6 +73,10 @@ async function setup(browser, viewport = { width: 390, height: 844 }, withToken 
 }
 
 async function respond(page, body, status = 200) {
+  if (body.ok === true && Array.isArray(body.lines)) {
+    body = { schema: 2, source: 'structured_audit', offset: 0, total_lines: body.lines.length,
+      complete: true, truncated: false, next_offset: null, snapshot_id: 'a'.repeat(64), ...body };
+  }
   await page.waitForFunction(() => window.testRequests.some((entry) => !entry.done));
   await page.evaluate(({ body, status }) => {
     const entry = window.testRequests.find((item) => !item.done);
@@ -733,7 +737,7 @@ async function test(name, fn) {
         await page.route('**/*', (route) => route.request().isNavigationRequest()
           ? route.fulfill({ contentType: 'text/html', body: documentHtml }) : route.abort());
         await page.goto('http://127.0.0.1:6210/');
-        for (const file of ['runtime', 'ui', 'common', 'diagnostics']) {
+        for (const file of ['runtime', 'ui', 'common', 'log_model', 'diagnostics']) {
           await page.addScriptTag({ content: fs.readFileSync(path.join(webroot, 'js', `${file}.js`), 'utf8') });
         }
         await page.clock.install();
@@ -876,6 +880,7 @@ async function test(name, fn) {
       const { context, page } = await setup(browser);
       try {
         await page.evaluate(() => { requireFeature('diagnostics').openAuditLog(); requireFeature('diagnostics').openAuditLog(); });
+        await page.waitForFunction(() => window.testRequests.length > 0);
         assert.equal(await page.evaluate(() => window.testRequests.length), 1);
         await respond(page, { ok: true, lines: ['old-record'] });
         await page.waitForFunction(() => document.querySelector('#audit-log-content').textContent.includes('old-record'));
@@ -886,7 +891,7 @@ async function test(name, fn) {
         await respond(page, { ok: true, action: 'clear' });
         await page.waitForFunction(() => !document.querySelector('#audit-log-content').textContent.includes('old-record'));
         await respond(page, { ok: true, lines: [] });
-        await page.waitForFunction(() => document.querySelector('#audit-log-status').textContent.includes('模块运行日志已清空，当前无记录'));
+        await page.waitForFunction(() => document.querySelector('#audit-log-status').textContent.includes('已读取 0 条'));
         assert.equal(await page.locator('#audit-log-clear').isEnabled(), true);
         assert.equal(await page.locator('#audit-log-clear').count(), 1);
       } finally { await context.close(); }
@@ -898,7 +903,7 @@ async function test(name, fn) {
         await page.evaluate(() => { requireFeature('diagnostics').openAuditLog(); });
         await respond(page, { error: 'Read blocked' }, 500);
         await page.waitForFunction(() => document.querySelector('#audit-log-status').classList.contains('error-panel'));
-        assert.match(await page.locator('#audit-log-status').textContent(), /请刷新重试/);
+        assert.match(await page.locator('#audit-log-status').textContent(), /日志读取失败，请刷新重试/);
         await page.locator('#audit-log-refresh').click();
         await page.evaluate(() => requireFeature('ui').openDetail('其它详情', '<p id="other-detail">必须保留</p>'));
         await page.waitForFunction(() => window.testRequests.at(-1).aborted);
@@ -918,7 +923,7 @@ async function test(name, fn) {
         await respond(page, { ok: true, action: 'clear' });
         await respond(page, { error: 'Readback unavailable' }, 500);
         await page.waitForFunction(() => document.querySelector('#audit-log-status').classList.contains('error-panel'));
-        assert.match(await page.locator('#audit-log-status').textContent(), /清空请求已提交，但结果读取失败/);
+        assert.match(await page.locator('#audit-log-status').textContent(), /模块日志已清空，但重新读取失败/);
         assert.doesNotMatch(await page.locator('#audit-log-content').textContent(), /stale-before-clear/);
         assert.equal(await page.locator('#audit-log-refresh').isEnabled(), true);
       } finally { await context.close(); }
@@ -934,7 +939,7 @@ async function test(name, fn) {
         await page.locator('#audit-log-clear').click();
         await page.evaluate(() => requireFeature('ui').openDetail('其它详情', '<p id="preserved-detail">保持此详情</p>'));
         await respond(page, { ok: true, action: 'clear' });
-        await respond(page, { ok: true, lines: [] });
+        assert.equal(await page.evaluate(() => window.testRequests.length), 2);
         assert.equal(await page.locator('#preserved-detail').textContent(), '保持此详情');
         assert.equal(await page.locator('#audit-log-content').count(), 0);
         assert.equal(await page.locator('#toast-wrap').textContent(), '');
@@ -954,11 +959,13 @@ async function test(name, fn) {
           requireFeature('ui').closeDetailModal();
           requireFeature('diagnostics').openAuditLog();
         });
-        assert.match(await page.locator('#audit-log-status').textContent(), /正在确认上次日志清空结果/);
+        assert.match(await page.locator('#audit-log-status').textContent(), /上次清空操作尚未结束/);
         assert.equal(await page.locator('#audit-log-clear').isDisabled(), true);
         assert.equal(await page.evaluate(() => window.testRequests.length), 2);
         await respond(page, { ok: true, action: 'clear' });
-        await respond(page, { ok: true, lines: [] });
+        await page.waitForFunction(() => !document.querySelector('#audit-log-refresh').disabled);
+        assert.equal(await page.evaluate(() => window.testRequests.length), 2);
+        await page.locator('#audit-log-refresh').click();
         await respond(page, { ok: true, lines: ['new-session-record'] });
         await page.waitForFunction(() => document.querySelector('#audit-log-content').textContent.includes('new-session-record'));
         assert.equal(await page.locator('#audit-log-clear').isEnabled(), true);

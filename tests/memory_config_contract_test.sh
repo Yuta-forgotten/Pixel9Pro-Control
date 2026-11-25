@@ -35,6 +35,7 @@ setprop() {
 vm_zram_current_boot_id() { printf fixture-boot; }
 vm_zram_active_state() { printf inactive; }
 vm_zram_vendor_alias_supported() { return 0; }
+memory_boot_zram_supported() { [ "$SDK" -ge 37 ] && vm_zram_vendor_alias_supported; }
 vm_zram_algorithm_valid() { [ "$1" = lz77eh ] || [ "$1" = lz4 ]; }
 vm_zram_read_requested_size() { getprop mmd.zram.size; }
 vm_zram_property_value() { getprop "$1"; }

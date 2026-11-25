@@ -154,7 +154,7 @@ vm_zram_mem_total_bytes() {
 }
 
 vm_zram_init_limits() {
-    VM_ZRAM_SIZE_STEP_BYTES=$(vm_zram_page_size) || VM_ZRAM_SIZE_STEP_BYTES=0
+    VM_ZRAM_SIZE_STEP_BYTES=$(vm_zram_page_size) || return 1
     _vz_ram=$(vm_zram_mem_total_bytes)
     case "$_vz_ram" in ''|*[!0-9]*) return 1 ;; esac
     # Product bounds: at least two pages for swap format, at most twice RAM
@@ -406,8 +406,8 @@ memory_config_init() {
 
 memory_original_refresh() {
     local original
-    original=$(/system/bin/sh "$MC_ROOT/scripts/vendor_source.sh") || return 1
-    state_atomic_write "$MC_ORIGINAL" "$original"
+    original=$(/system/bin/sh "$MC_ROOT/scripts/vendor_source.sh") || return 2
+    state_atomic_write "$MC_ORIGINAL" "$original" || return 1
 }
 
 memory_original_params() {
@@ -508,6 +508,11 @@ memory_restore_vm() {
         && state_atomic_write "$MC_ROOT/.feature_vm" system
 }
 
+memory_boot_zram_supported() {
+    [ "$(getprop ro.build.version.sdk)" -ge 37 ] && [ -x /system/bin/mmd_setup ] \
+        && vm_zram_vendor_alias_supported
+}
+
 memory_boot_prepare() {
     local boot fingerprint original_size original_algo requested_size requested_algo phase attempt=0
     boot=$(vm_zram_current_boot_id)
@@ -531,8 +536,7 @@ algorithm=$original_algo" || return 1
     [ "$MC_AUTO" != on ] || memory_config_validate || return 1
     phase=observe
     if [ "$MC_AUTO" = on ] && { [ -n "$MC_SIZE" ] || [ -n "$MC_ALGORITHM" ]; }; then
-        [ "$(getprop ro.build.version.sdk)" -ge 37 ] && [ -x /system/bin/mmd_setup ] \
-            && vm_zram_vendor_alias_supported || return 1
+        memory_boot_zram_supported || return 1
         # The hook precedes sys.boot_completed and the first mmd_setup. Never
         # rebuild an already initialized swap as a late-boot compensation.
         [ "$(vm_zram_property_value mmd.setup_complete)" != true ] \

@@ -17,6 +17,7 @@ check_eq() {
 }
 
 mkdir -p "$TEST_ROOT" || exit 2
+. "$SOURCE_ROOT/scripts/state_io_lib.sh" || exit 2
 mkdir -p "$TEST_ROOT/config" "$TEST_ROOT/system/vendor/firmware/uecapconfig" || exit 2
 cat > "$TEST_ROOT/config/uecap_devices.tsv" <<'EOF'
 # device|label|uecap_policy|target_name|source_dir|mode_order|default_mode
@@ -164,7 +165,8 @@ check_eq 'failed transaction restores active mode' balanced "$(cat "$UECAP_MODE_
 check_eq 'failed transaction restores manual mode' balanced "$(cat "$UECAP_MANUAL_MODE_FILE")"
 check_eq 'failed transaction preserves reason' old_reason "$(cat "$UECAP_REASON_FILE")"
 check_eq 'failed transaction preserves switch time' 100 "$(cat "$UECAP_SWITCH_FILE")"
-check_eq 'failed transaction reports incomplete state rollback' incomplete "$UECAP_STATE_ROLLBACK_RESULT"
+check_eq 'unreadable entry is rejected before writes, so no rollback is needed' not_needed "$UECAP_STATE_ROLLBACK_RESULT"
+[ -d "$UECAP_POLICY_FILE" ] || exit 1
 
 rmdir "$UECAP_POLICY_FILE" || exit 2
 printf 'manual' > "$UECAP_POLICY_FILE"
@@ -374,13 +376,13 @@ UECAP_RUNTIME_POLICY=managed_profiles
 STAGED_SOURCE=$(uecap_hybrid_transaction_path source)
 reset_hybrid_fixture
 _tx_before=$(hybrid_inventory)
-rm -f "$MODDIR/.uecap_backend"
+mv "$MODDIR/.uecap_backend" "$TEST_ROOT/backend.before" || exit 2
 mkdir "$MODDIR/.uecap_backend" || exit 2
 uecap_apply_mode special manual_locked
 check_eq 'nonregular marker is rejected before staging' 1 "$?"
 check_eq 'preflight rejection is distinct from rollback failure' hybrid_snapshot_failed "$UECAP_APPLY_RESULT"
 rmdir "$MODDIR/.uecap_backend" || exit 2
-printf hybrid_mount > "$MODDIR/.uecap_backend"
+mv "$TEST_ROOT/backend.before" "$MODDIR/.uecap_backend" || exit 2
 check_eq 'preflight rejection leaves every original file unchanged' "$_tx_before" "$(hybrid_inventory)"
 
 # Receipt observation is independent from the unsupported dynamic mutation

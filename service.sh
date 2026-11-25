@@ -141,10 +141,12 @@ if [ -r "$MODDIR/scripts/memory_lib.sh" ]; then
     . "$MODDIR/scripts/memory_lib.sh" 2>/dev/null && vm_zram_init_limits && VM_PROFILE_AVAILABLE=1
 fi
 if [ "$SERVICE_MODE" = boot ] && [ "$VM_PROFILE_AVAILABLE" -eq 1 ]; then
-    memory_config_init "$MODDIR" \
-        && vm_zram_init_limits && memory_original_refresh \
-        && memory_boot_prepare \
-        || log -t pixel9pro_ctrl 'Memory startup request was not prepared before mmd; no late rebuild attempted'
+    if memory_config_init "$MODDIR"; then
+        memory_original_refresh || log -t pixel9pro_ctrl 'Could not refresh original memory values for this build'
+        memory_boot_prepare || log -t pixel9pro_ctrl 'Memory startup request was not prepared before mmd; no late rebuild attempted'
+    else
+        log -t pixel9pro_ctrl 'Memory settings unavailable; startup request not prepared'
+    fi
 fi
 scheduler_owner_init "$MODDIR" "/data/adb/fas_rs"
 sbm_init "$MODDIR" "/data/adb/fas_rs"

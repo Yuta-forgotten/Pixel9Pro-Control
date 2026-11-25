@@ -87,7 +87,11 @@ if [ "$THERMAL_POLICY_AVAILABLE" -eq 1 ] \
         log -t pixel9pro_ctrl "WARNING: thermal transaction receipt verified but journal cleanup failed"
 fi
 
-if [ "$UECAP_PROFILE_AVAILABLE" -ne 1 ] || ! uecap_is_available; then
+if [ "$UECAP_PROFILE_AVAILABLE" -ne 1 ]; then
+    log -t pixel9pro_ctrl 'UECap post-mount skipped: runtime not installed'
+    exit 0
+fi
+if ! uecap_is_available; then
     log -t pixel9pro_ctrl "UECap post-mount skipped: $(uecap_current_reason)"
     exit 0
 fi
